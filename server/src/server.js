@@ -10,6 +10,7 @@ import connectDB from './config/db.js'
 import empRoutes from '../src/routes/empRoutes.js'
 import userRoutes from '../src/routes/userRoutes.js'
 import attendanceRoutes from '../src/routes/attendanceRoutes.js'
+import siteRoutes from '../src/routes/siteRoutes.js'
 
 
 
@@ -17,6 +18,7 @@ import attendanceRoutes from '../src/routes/attendanceRoutes.js'
 app.use('/api/employees', empRoutes)
 app.use('/api/user', userRoutes)
 app.use('/api/attendance', attendanceRoutes)
+app.use('/api/site', siteRoutes)
 
 
 connectDB().then(() => {

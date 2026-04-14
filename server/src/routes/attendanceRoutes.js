@@ -1,9 +1,11 @@
 import express from 'express'
 
+import Attendance from '../controllers/attendanceController.js'
+
 const router = express.Router()
 
 
-//admin
+//Admin
 
 // GET /api/attendance/report?month=04&year=2026
 // GET /api/attendance?date=2026-04-14
@@ -12,15 +14,15 @@ const router = express.Router()
 // PUT /api/attendance/admin-override/:id
 
 
-router.get('/report', getMonthly())
+router.get('/report', Attendance.getMonthly)
 
-router.get('/', getDaily())
+router.get('/', Attendance.getDaily)
 
-router.get('/daily-summary', getSummary())
+router.get('/daily-summary', Attendance.getSummary)
 
-router.get('/worker/:workerId', getWorker())
+router.get('/worker/:workerId', Attendance.getWorkerAttendance)
 
-router.put('/admin-override/:id',  editAttendanceAfterFreeze())
+router.put('/admin-override/:id',  Attendance.editAttendanceAfterFreeze)
 
 
 
@@ -32,13 +34,13 @@ router.put('/admin-override/:id',  editAttendanceAfterFreeze())
 // PATCH /api/attendance/update/:id
 
 
-router.get('/by-site/:siteId', getDailyBySite())
+router.get('/by-site/:siteId', Attendance.getDailyBySite)
 
-router.get('/by-site/:siteId/monthly', getMonthlyBySite())
+router.get('/by-site/:siteId/monthly', Attendance.getMonthlyBySite)
 
-router.post('/submit', confirmAttendance() )
+router.post('/submit', Attendance.confirmAttendance )
 
-router.patch('/update/:id', editAttendance())
+router.patch('/update/:id', Attendance.editAttendance)
 
 
 

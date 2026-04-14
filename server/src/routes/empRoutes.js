@@ -1,5 +1,7 @@
 import express from 'express'
 
+import empController from '../controllers/empController.js'
+
 const router = express.Router()
 
 
@@ -7,20 +9,23 @@ const router = express.Router()
 
 // GET /api/workers
 // POST /api/workers/add
+// POST /api/workers/add/Supervisors
 // PATCH /api/workers/:id 
 
-router.get('/', getAllEmployees())
+router.get('/', empController.getAllEmployees)
 
-router.post('/add', addEmployee())
+router.post('/add', empController.addEmployee)
 
-router.patch('/:id ', getEmployee())
+router.post('/add/Supervisors', empController.addSupervisor)
+
+router.patch('/:id ', empController.getEmployee)
 
 
 //Supervisor
 
 // GET /api/workers/by-site/:siteId
 
-router.get('/by-site/:siteId', getEmployeeBySite())
+router.get('/by-site/:siteId', empController.getEmployeeBySite)
 
 
 

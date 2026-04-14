@@ -20,6 +20,5 @@ const siteSchema = new mongoose.Schema({
   timestamps: true
 });
 
-const Site = mongoose.model('Site', siteSchema);
+export default mongoose.model('Site', siteSchema);
 
-module.exports = Site;
