@@ -26,7 +26,7 @@ router.put('/admin-override/:id',  Attendance.editAttendanceAfterFreeze)
 
 
 
-//supervisor
+//Supervisor
 
 // GET /api/attendance/by-site/:siteId ?date=2026-04-14
 // GET /api/attendance/by-site/:siteId/monthly ?month=04&year=2026
@@ -41,7 +41,5 @@ router.get('/by-site/:siteId/monthly', Attendance.getMonthlyBySite)
 router.post('/submit', Attendance.confirmAttendance )
 
 router.patch('/update/:id', Attendance.editAttendance)
-
-
 
 export default router

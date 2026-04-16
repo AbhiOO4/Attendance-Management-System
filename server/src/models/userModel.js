@@ -25,15 +25,13 @@ const userSchema = new mongoose.Schema({
     default: 'Supervisor'
   },
   assignedSite: {
-    type: String, // Or mongoose.Schema.ObjectId if referencing a Site model
-    required: [true, 'A user must be assigned to a site']
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site', 
   },
   createdAt: {
     type: Date,
     default: Date.now
-  }
+  },
 });
 
-const User = mongoose.model('User', userSchema);
-
-module.exports = User;
+export default mongoose.model('User', userSchema);

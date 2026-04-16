@@ -2,19 +2,21 @@ import express from 'express'
 
 import empController from '../controllers/empController.js'
 
+import { employeeValidation } from '../middlewares/validation.js'
+
 const router = express.Router()
 
 
 //Admin
 
-// GET /api/workers
-// POST /api/workers/add
-// POST /api/workers/add/Supervisors
-// PATCH /api/workers/:id 
+// GET /api/employees
+// POST /api/employees/add
+// POST /api/employees/add/Supervisors
+// PATCH /api/employees/:id 
 
-router.get('/', empController.getAllEmployees)
+router.get('/',  empController.getAllEmployees)
 
-router.post('/add', empController.addEmployee)
+router.post('/add', employeeValidation, empController.addEmployee)
 
 router.post('/add/Supervisors', empController.addSupervisor)
 

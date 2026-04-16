@@ -19,9 +19,13 @@ const employeeSchema = new mongoose.Schema({
     required: [true, 'Job title is required'],
     trim: true
   },
+  isSupervisor: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
   currentSite: {
-    type: String,
-    default: ""
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site', 
   },
   status: {
     type: String,

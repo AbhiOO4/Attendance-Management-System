@@ -6,6 +6,8 @@ dotenv.config({quiet: true})
 
 import connectDB from './config/db.js'
 
+app.use(express.json()); // Essential to parse JSON payloads
+
 //Importing routes
 import empRoutes from '../src/routes/empRoutes.js'
 import userRoutes from '../src/routes/userRoutes.js'
@@ -19,6 +21,7 @@ app.use('/api/employees', empRoutes)
 app.use('/api/user', userRoutes)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/site', siteRoutes)
+
 
 
 connectDB().then(() => {
