@@ -27,13 +27,9 @@ const employeeSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Site', 
   },
-  status: {
-    type: String,
-    enum: {
-      values: ['active', 'inactive'],
-      message: '{VALUE} is not a valid status'
-    },
-    default: 'active'
+  isActive: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true // Automatically creates 'createdAt' and 'updatedAt' fields

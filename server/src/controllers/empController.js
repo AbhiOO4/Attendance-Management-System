@@ -37,7 +37,6 @@ export const addEmployee = async (req, res) => {
 //Req: Takes the name, email, password and the employee id of the person.
 export const addSupervisor = async (req, res) => {
     try {
-        console.log(req.body)
         const { name, employeeId, email, password } = req.body
         const role = "Supervisor"
         const supervisor = new userModel({ name, email, password, role })
@@ -56,15 +55,77 @@ export const addSupervisor = async (req, res) => {
     }
 }
 
-export const getEmployee = async (req, res) => {
+//Req: employee object id
+export const editEmployee = async (req, res) => {
+    try{
+        const {id} = req.params
+        const {name, employeeId, jobTitle} = req.body
+        const employee = await empModel.findByIdAndUpdate(id, {name, employeeId, jobTitle})
+        if (employee.isSupervisor){
+            await userModel.findByIdAndUpdate(employee.isSupervisor, {name})
+        }
+        res.status(200).json({message: "Updated employee details successfully"})
 
+    }catch(error){
+        res.status(500).json({message: "Internal Server Error"})
+    }
 }
 
+//Req: employee object id
+export const deleteEmployee = async (req, res) => {
+    try{
+        const {id} = req.params
+        const employee = await empModel.findOne({_id: id})
+        if (!employee){
+            res.status(404).json({message: "Employee doesnt exist"})
+            return 
+        }
+        if (employee.isSupervisor){
+            await userModel.deleteOne({_id: employee.isSupervisor})
+        }
+        employee.isActive = false
+        await employee.save()
+        res.status(200).json({message: "Deactivated the employee"})
+    }catch(error){
+         res.status(500).json({message: "Internal Server Error"})
+    }
+}
+
+  
 
 //Supervisor
 
+//Req: Take in the siteId 
+//Res: Responds with list of employees in that current site.
 export const getEmployeeBySite = async (req, res) => {
+    try{
+        const {siteId} = req.params
+        const employees = await empModel.find({siteId: siteId})
+        if (!employees){
+            return res.status(400).json({message: "No employees assigned"})
+        }
+        res.status(200).json(employees)
+    }
+    catch(error){
+        res.status(500).json({message: "Internal Server Error"})
+    }
+}
 
+
+//Req: object id of employee
+export const getEmployee = async (req, res) => {
+    try{
+        const {id} = req.params
+        const employee = await empModel.find({_id: id})
+        if (!employee){
+            res.status(400).json({message: "Employee doesnt exist"})
+            return 
+        }
+        res.status(200).json(employee)
+    }
+    catch(error){
+        res.status(500).json({message: "Internal Server Error"})
+    }
 }
 
 
@@ -74,7 +135,9 @@ const empController = {
     addEmployee,
     addSupervisor,
     getEmployee,
-    getEmployeeBySite
+    getEmployeeBySite,
+    deleteEmployee,
+    editEmployee
 };
 
 export default empController;

@@ -14,13 +14,19 @@ const router = express.Router()
 // POST /api/employees/add/Supervisors
 // PATCH /api/employees/:id 
 
-router.get('/',  empController.getAllEmployees)
+router.get('/',  empController.getAllEmployees)//
 
-router.post('/add', employeeValidation, empController.addEmployee)
+router.get('/:id', empController.getEmployee)//
 
-router.post('/add/Supervisors', empController.addSupervisor)
+router.post('/add', employeeValidation, empController.addEmployee)// 
 
-router.patch('/:id ', empController.getEmployee)
+router.put('/:id', empController.editEmployee)// server validation req
+
+router.delete('/:id', empController.deleteEmployee)//
+
+router.post('/add/Supervisors', empController.addSupervisor)//  server validation req
+
+
 
 
 //Supervisor
