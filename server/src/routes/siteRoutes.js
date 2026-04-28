@@ -6,9 +6,13 @@ const router = express.Router()
 
 //Admin
 
-// POST /api/sites
-// PATCH /api/sites/:siteId/assign-supervisor
-// PATCH /api/sites/:siteId/add-employees
+// POST /api/site
+// PATCH /api/site/:siteId/assign-supervisor
+// PATCH /api/site/:siteId/add-employees
+
+router.get('/', siteController.getSites) 
+
+router.get('/:id', siteController.getSite) 
 
 router.post('/', siteController.createSite) // server validation req
 

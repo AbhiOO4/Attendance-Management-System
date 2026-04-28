@@ -5,6 +5,26 @@ import userModel from '../models/userModel.js'
 
 //Admin
 
+export const getSites = async (req, res) => {
+    try{
+        const sites = await siteModel.find({})
+        res.status(200).json(sites)
+    }catch(error){  
+        res.status(500).json({message: "Internal server error"})
+        console.log(error)
+    }
+}
+
+export const getSite = async (req, res) => {
+    try{
+        const { id } = req.params
+        const site = await siteModel.findById(id)
+        res.status(200).json(site)
+    }catch(error){
+        res.status(500).json({message: "Internal server error"})
+        console.log(error)
+    }
+}
 
 //Req: siteName, locationDetails
 //Res: status 201 created
@@ -97,6 +117,8 @@ export const removeEmployee = async (req, res) => {
 //to null
 
 const siteController = {
+    getSites,
+    getSite,
     createSite,
     assignEmployee,
     assignSupervisor,

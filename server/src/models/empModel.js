@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose"
 
 
@@ -17,7 +18,8 @@ const employeeSchema = new mongoose.Schema({
   jobTitle: {
     type: String,
     required: [true, 'Job title is required'],
-    trim: true
+    trim: true,
+    lowercase: true
   },
   isSupervisor: {
     type: mongoose.Schema.Types.ObjectId,

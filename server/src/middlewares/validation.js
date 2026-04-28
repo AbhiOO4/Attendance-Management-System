@@ -1,6 +1,58 @@
 import Joi from 'joi'
 
-const employeeValidationSchema = Joi.object({
+
+const employeeSchema = Joi.object({
+  name: Joi.string().trim().required()
+    .messages({
+      'string.empty': 'Employee name is required'
+    }),
+
+  employeeId: Joi.string().trim().uppercase().required()
+    .messages({
+      'string.empty': 'Employee ID is required'
+    }),
+
+  jobTitle: Joi.string().trim().required()
+    .messages({
+      'string.empty': 'Job title is required'
+    }),
+
+  isSupervisor: Joi.string().hex().length(24).optional(), // ObjectId
+  currentSite: Joi.string().hex().length(24).optional(),  // ObjectId
+
+  isActive: Joi.boolean().default(true),
+
+  employmentType: Joi.string()
+    .valid('salaried', 'hourly')
+    .required(),
+
+  monthlySalary: Joi.number()
+    .min(0)
+    .when('employmentType', {
+      is: 'salaried',
+      then: Joi.required(),
+      otherwise: Joi.forbidden()
+    })
+    .messages({
+      'any.required': 'Monthly salary is required for salaried employees',
+      'any.unknown': 'Monthly salary should not be provided for hourly employees'
+    }),
+
+  hourlyRate: Joi.number()
+    .min(0)
+    .when('employmentType', {
+      is: 'hourly',
+      then: Joi.required(),
+      otherwise: Joi.forbidden()
+    })
+    .messages({
+      'any.required': 'Hourly rate is required for hourly employees',
+      'any.unknown': 'Hourly rate should not be provided for salaried employees'
+    })
+});
+
+
+const supervisorValidationSchema = Joi.object({
   name: Joi.string()
     .trim()
     .required()
@@ -8,7 +60,6 @@ const employeeValidationSchema = Joi.object({
       'any.required': 'Employee name is required',
       'string.empty': 'Employee name cannot be empty',
     }),
-
   employeeId: Joi.string()
     .uppercase()
     .trim()
@@ -17,38 +68,28 @@ const employeeValidationSchema = Joi.object({
       'any.required': 'Employee ID is required',
       'string.empty': 'Employee ID cannot be empty',
     }),
-
-  jobTitle: Joi.string()
-    .trim()
+  email: Joi.string()
+    .email()
+    .required(),
+  password: Joi.string()
+    .min(6)
+    .max(30)
     .required()
-    .messages({
-      'any.required': 'Job title is required',
-      'string.empty': 'Job title cannot be empty',
-    }),
-
-  currentSite: Joi.string()
-    .pattern(/^[0-9a-fA-F]{24}$/) // Mongo ObjectId regex
-    .optional()
-    .allow(null),
-  
-  isSupervisor: Joi.string()
-    .pattern(/^[0-9a-fA-F]{24}$/)
-    .optional()
-    .allow(null),
-
-
-  status: Joi.string()
-    .valid('active', 'inactive')
-    .default('active')
-    .messages({
-      'any.only': '{#value} is not a valid status',
-    }),
-});
+})
 
 
 
 export const employeeValidation = (req, res, next) => {
-    const {error, value} = employeeValidationSchema.validate(req.body)
+    const {error, value} = employeeSchema.validate(req.body)
+    if (error){
+        return res.status(400).json({message: error.details[0].message})
+    }
+    req.body = value
+    next()
+}
+
+export const supervisorValidation = (req, res, next) => {
+  const {error, value} = supervisorValidationSchema.validate(req.body)
     if (error){
         return res.status(400).json({message: error.details[0].message})
     }

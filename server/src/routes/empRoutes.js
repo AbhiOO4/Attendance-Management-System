@@ -16,15 +16,18 @@ const router = express.Router()
 
 router.get('/',  empController.getAllEmployees)//
 
+router.post('/', employeeValidation, empController.addEmployee)// 
+
+router.get('/Supervisors', empController.getSupervisors)//
+
 router.get('/:id', empController.getEmployee)//
 
-router.post('/add', employeeValidation, empController.addEmployee)// 
-
-router.put('/:id', empController.editEmployee)// server validation req
+router.put('/:id',employeeValidation, empController.editEmployee)// 
 
 router.delete('/:id', empController.deleteEmployee)//
 
-router.post('/add/Supervisors', empController.addSupervisor)//  server validation req
+router.post('/Supervisors', empController.addSupervisor)// 
+
 
 
 

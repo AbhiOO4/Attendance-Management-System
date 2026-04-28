@@ -1,6 +1,5 @@
 import mongoose from "mongoose"
 
-
 const attendanceSchema = new mongoose.Schema({
   employee: {
     type: mongoose.Schema.Types.ObjectId,
@@ -9,7 +8,7 @@ const attendanceSchema = new mongoose.Schema({
   },
   siteId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Site', // Assumes your site model is named 'Site'
+    ref: 'Site',
     required: [true, 'Site ID is required']
   },
   markedBy: {
@@ -21,24 +20,42 @@ const attendanceSchema = new mongoose.Schema({
     type: Date, 
     required: [true, 'Date is required'],
   },
+
   status: {
     type: String,
     enum: {
-      values: ['Present', 'absent', 'halfday'],
+      values: ['present', 'absent', 'halfday'],
       message: '{VALUE} is not a valid status'
     },
     required: true
   },
-  remarks: {
-    type: String,
-    trim: true
+
+  // NEW: marks if the day is a holiday
+  isHoliday: {
+    type: Boolean,
+    default: false
+  },
+
+  // NEW: actual working hours for the day
+  workHours: {
+    type: Number,
+    default: 0
+  },
+
+  // RENAMED: clearer meaning
+  overtimeHours: {
+    type: Number,
+    default: 0
   }
+
 }, { 
   timestamps: true 
 });
 
-// This index ensures an employee can't have two attendance records for the same day
+// Prevent duplicate attendance per employee per day
 attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
 
-export default mongoose.model('Attendance', attendanceSchema);
+// Optional: useful for site/day queries
+attendanceSchema.index({ siteId: 1, date: 1 });
 
+export default mongoose.model('Attendance', attendanceSchema);

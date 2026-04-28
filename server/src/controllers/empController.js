@@ -3,20 +3,35 @@ import userModel from '../models/userModel.js'
 
 //Admin
 
-//Req: null
+//Req: null //queries: siteId, jobTitle
 //Res: 200 status code 
 export const getAllEmployees = async (req, res) => {
-    try{
-        const employees = await empModel.find({})
-        res.status(200).json(employees)
-    }catch(error){
-        res.status(500).json({ message: "failed to fetch employees" });
-        console.log(error);
+  try {
+    const { site, jobTitle } = req.query;
+
+    let filter = {
+      isActive: true
+    };
+
+    if (site) {
+      filter.currentSite = site;
     }
-}
+
+    if (jobTitle) {
+      filter.jobTitle = jobTitle.toLowerCase();
+    }
+
+    const employees = await empModel.find(filter);
+
+    res.status(200).json(employees);
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "failed to fetch employees" });
+  }
+};
 
 
-//Req: takes in the name, employeeId and Job title of the employee
+//Req: takes in the name, employeeId, Job title, employementType, Salary based on employ type of the employee
 //Res: 201 status code
 export const addEmployee = async (req, res) => {
     try{
@@ -55,14 +70,14 @@ export const addSupervisor = async (req, res) => {
     }
 }
 
-//Req: employee object id
+//Req: employee object id , and destructuring name, id, jobtitle and currentsite
 export const editEmployee = async (req, res) => {
     try{
         const {id} = req.params
-        const {name, employeeId, jobTitle} = req.body
-        const employee = await empModel.findByIdAndUpdate(id, {name, employeeId, jobTitle})
+        const { name, currentSite } = req.body
+        const employee = await empModel.findByIdAndUpdate(id, req.body)
         if (employee.isSupervisor){
-            await userModel.findByIdAndUpdate(employee.isSupervisor, {name})
+            await userModel.findByIdAndUpdate(employee.isSupervisor, {name, assignedSite: currentSite})
         }
         res.status(200).json({message: "Updated employee details successfully"})
 
@@ -100,7 +115,7 @@ export const deleteEmployee = async (req, res) => {
 export const getEmployeeBySite = async (req, res) => {
     try{
         const {siteId} = req.params
-        const employees = await empModel.find({siteId: siteId})
+        const employees = await empModel.find({currentSite: siteId, isActive: true})
         if (!employees){
             return res.status(400).json({message: "No employees assigned"})
         }
@@ -130,6 +145,30 @@ export const getEmployee = async (req, res) => {
 
 
 
+export const getSupervisors = async (req, res) => {
+  try {
+    const { site } = req.query;
+
+    let filter = {
+      isActive: true,
+      isSupervisor: { $ne: null } 
+    };
+
+    if (site) {
+      filter.site = site;
+    }
+
+    const employees = await empModel.find(filter) 
+
+    res.status(200).json(employees);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching employees", error });
+    console.log(error)
+  }
+};
+
+
+
 const empController = {
     getAllEmployees,
     addEmployee,
@@ -137,7 +176,8 @@ const empController = {
     getEmployee,
     getEmployeeBySite,
     deleteEmployee,
-    editEmployee
+    editEmployee,
+    getSupervisors
 };
 
 export default empController;
