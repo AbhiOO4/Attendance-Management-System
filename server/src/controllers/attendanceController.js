@@ -591,7 +591,11 @@ export const getSummary = async (req, res) => {
             _id: 0,
             siteId: '$_id',
             siteName: {
-              $ifNull: ['$site.name', 'In Office Attendance']
+              $cond: [
+                { $eq: ['$_id', null] },
+                'in office',
+                '$site.name'
+              ]
             },
             presentWorkers: 1,
             totalWorkers: 1
