@@ -594,7 +594,7 @@ export const getSummary = async (req, res) => {
               $cond: [
                 { $eq: ['$_id', null] },
                 'in office',
-                '$site.name'
+                '$site.siteName'
               ]
             },
             presentWorkers: 1,
