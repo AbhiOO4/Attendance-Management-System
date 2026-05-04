@@ -490,6 +490,7 @@ export const getDaily = async (req, res) => {
             {
               $project: {
                 _id: 0,
+                attendanceId: '$_id',
                 name: '$employee.name',
                 employeeId: '$employee.employeeId',
                 jobTitle: '$employee.jobTitle',
