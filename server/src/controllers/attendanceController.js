@@ -529,7 +529,102 @@ export const getDaily = async (req, res) => {
 };
 
 export const getSummary = async (req, res) => {
-    // Logic for high-level stats/dashboard
+  try {
+    const { date } = req.query
+
+    if (!date) {
+      return res.status(400).json({ message: 'date is required' })
+    }
+
+    const queryDate = new Date(date)
+    if (Number.isNaN(queryDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid date format' })
+    }
+
+    const start = new Date(queryDate)
+    start.setUTCHours(0, 0, 0, 0)
+
+    const end = new Date(queryDate)
+    end.setUTCHours(23, 59, 59, 999)
+
+    const [overallSummary, siteSummary] = await Promise.all([
+      Attendance.aggregate([
+        { $match: { date: { $gte: start, $lte: end } } },
+        {
+          $group: {
+            _id: null,
+            totalWorkers: { $sum: 1 },
+            presentWorkers: {
+              $sum: {
+                $cond: [{ $eq: ['$status', 'present'] }, 1, 0]
+              }
+            }
+          }
+        }
+      ]),
+      Attendance.aggregate([
+        { $match: { date: { $gte: start, $lte: end } } },
+        {
+          $group: {
+            _id: '$siteId',
+            totalWorkers: { $sum: 1 },
+            presentWorkers: {
+              $sum: {
+                $cond: [{ $eq: ['$status', 'present'] }, 1, 0]
+              }
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: 'sites',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'site'
+          }
+        },
+        { $unwind: { path: '$site', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            _id: 0,
+            siteId: '$_id',
+            siteName: {
+              $cond: [
+                { $eq: ['$_id', null] },
+                'in office',
+                '$site.name'
+              ]
+            },
+            presentWorkers: 1,
+            totalWorkers: 1
+          }
+        },
+        { $sort: { siteName: 1 } }
+      ])
+    ])
+
+    const totals = overallSummary?.[0] || { presentWorkers: 0, totalWorkers: 0 }
+
+    return res.json({
+      message: 'Daily attendance summary fetched',
+      date,
+      overall: {
+        presentWorkers: totals.presentWorkers,
+        totalWorkers: totals.totalWorkers,
+        attendance: `${totals.presentWorkers}/${totals.totalWorkers}`
+      },
+      siteAttendance: siteSummary.map((site) => ({
+        ...site,
+        attendance: `${site.presentWorkers}/${site.totalWorkers}`
+      }))
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({
+      message: 'Failed to fetch daily summary',
+      error: error.message
+    })
+  }
 };
 
 export const getWorkerAttendance = async (req, res) => {
