@@ -19,7 +19,7 @@ router.get('/reports/monthly', Attendance.getMonthlyReport)
 
 router.get('/reports/daily', Attendance.getDaily)
 
-// router.get('/daily-summary', Attendance.getSummary)
+router.get('/reports/daily-summary', Attendance.getSummary)
 
 // router.get('/worker/:workerId', Attendance.getWorkerAttendance)
 
