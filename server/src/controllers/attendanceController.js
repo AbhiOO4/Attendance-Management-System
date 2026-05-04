@@ -410,6 +410,7 @@ export const getMonthlyReport = async (req, res) => {
   }
 }
 
+//GET /api/attendance/reports/daily
 export const getDaily = async (req, res) => {
   try {
     const {
@@ -528,6 +529,7 @@ export const getDaily = async (req, res) => {
   }
 };
 
+//GET /api/attendance/daily-summary
 export const getSummary = async (req, res) => {
   try {
     const { date } = req.query
