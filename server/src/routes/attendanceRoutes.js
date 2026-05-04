@@ -17,7 +17,7 @@ router.patch('/unlock', Attendance.unlockAttendance)
 
 router.get('/reports/monthly', Attendance.getMonthlyReport)
 
-// router.get('/', Attendance.getDaily)
+router.get('/reports/daily', Attendance.getDaily)
 
 // router.get('/daily-summary', Attendance.getSummary)
 
