@@ -7,39 +7,22 @@ const router = express.Router()
 
 //Admin
 
-// GET /api/attendance/report?month=04&year=2026
-// GET /api/attendance?date=2026-04-14
-// GET api/attendance/daily-summary
-// GET /api/attendance/worker/:workerId
-// PUT /api/attendance/admin-override/:id
+//prefix : /api/attendance
+
+router.post('/submit', Attendance.submitDaily)
+
+router.patch('/bulk-update', Attendance.bulkUpdateAttendance)
+
+router.patch('/unlock', Attendance.unlockAttendance)
+
+router.get('/reports/monthly', Attendance.getMonthlyReport)
+
+// router.get('/', Attendance.getDaily)
+
+// router.get('/daily-summary', Attendance.getSummary)
+
+// router.get('/worker/:workerId', Attendance.getWorkerAttendance)
 
 
-router.get('/report', Attendance.getMonthly)
-
-router.get('/', Attendance.getDaily)
-
-router.get('/daily-summary', Attendance.getSummary)
-
-router.get('/worker/:workerId', Attendance.getWorkerAttendance)
-
-router.put('/admin-override/:id',  Attendance.editAttendanceAfterFreeze)
-
-
-
-//Supervisor
-
-// GET /api/attendance/by-site/:siteId ?date=2026-04-14
-// GET /api/attendance/by-site/:siteId/monthly ?month=04&year=2026
-// POST /api/attendance/submit
-// PATCH /api/attendance/update/:id
-
-
-router.get('/by-site/:siteId', Attendance.getDailyBySite)
-
-router.get('/by-site/:siteId/monthly', Attendance.getMonthlyBySite)
-
-router.post('/submit', Attendance.confirmAttendance )
-
-router.patch('/update/:id', Attendance.editAttendance)
 
 export default router

@@ -14,7 +14,7 @@ const router = express.Router()
 // POST /api/employees/add/Supervisors
 // PATCH /api/employees/:id 
 
-router.get('/',  empController.getAllEmployees)//
+router.get('/',  empController.getAllEmployees)// 
 
 router.post('/', employeeValidation, empController.addEmployee)// 
 
@@ -26,7 +26,7 @@ router.put('/:id',employeeValidation, empController.editEmployee)//
 
 router.delete('/:id', empController.deleteEmployee)//
 
-router.post('/Supervisors', empController.addSupervisor)// 
+router.post('/Supervisor', empController.addSupervisor)// 
 
 
 

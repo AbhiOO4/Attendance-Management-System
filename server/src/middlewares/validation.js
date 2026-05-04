@@ -17,38 +17,17 @@ const employeeSchema = Joi.object({
       'string.empty': 'Job title is required'
     }),
 
-  isSupervisor: Joi.string().hex().length(24).optional(), // ObjectId
+  user: Joi.string().hex().length(24).optional(), // ObjectId
   currentSite: Joi.string().hex().length(24).optional(),  // ObjectId
 
   isActive: Joi.boolean().default(true),
 
-  employmentType: Joi.string()
-    .valid('salaried', 'hourly')
-    .required(),
-
   monthlySalary: Joi.number()
     .min(0)
-    .when('employmentType', {
-      is: 'salaried',
-      then: Joi.required(),
-      otherwise: Joi.forbidden()
-    })
     .messages({
       'any.required': 'Monthly salary is required for salaried employees',
-      'any.unknown': 'Monthly salary should not be provided for hourly employees'
     }),
 
-  hourlyRate: Joi.number()
-    .min(0)
-    .when('employmentType', {
-      is: 'hourly',
-      then: Joi.required(),
-      otherwise: Joi.forbidden()
-    })
-    .messages({
-      'any.required': 'Hourly rate is required for hourly employees',
-      'any.unknown': 'Hourly rate should not be provided for salaried employees'
-    })
 });
 
 

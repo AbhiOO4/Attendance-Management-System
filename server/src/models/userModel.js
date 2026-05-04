@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema({
     required: [true, 'Please provide a name'],
     trim: true
   },
+
   email: {
     type: String,
     required: [true, 'Please provide an email'],
@@ -13,25 +14,31 @@ const userSchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
+
   password: {
     type: String,
     required: [true, 'Please provide a password'],
-    minlength: 8,
-    select: false // Prevents password from being returned in queries by default
+    minlength: 6,
+    select: false
   },
+
   role: {
     type: String,
-    enum: ['admin', 'Supervisor'],
-    default: 'Supervisor'
+    enum: ['admin', 'supervisor'],
+    default: 'supervisor'
   },
+
   assignedSite: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Site', 
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
+    ref: 'Site',
+    default: null
+  }
+
+}, {
+  timestamps: true
 });
+
+
+userSchema.index({ assignedSite: 1 });
 
 export default mongoose.model('User', userSchema);
