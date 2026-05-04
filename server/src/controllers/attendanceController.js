@@ -411,7 +411,120 @@ export const getMonthlyReport = async (req, res) => {
 }
 
 export const getDaily = async (req, res) => {
-    // Logic for admin to view all sites daily
+  try {
+    const {
+      date,
+      site,
+      name,
+      employeeId,
+      page = 1,
+      limit = 10
+    } = req.query
+
+    if (!date) {
+      return res.status(400).json({ message: 'date is required' })
+    }
+
+    const pageNumber = Math.max(Number(page) || 1, 1)
+    const limitNumber = Math.max(Number(limit) || 10, 1)
+    const skip = (pageNumber - 1) * limitNumber
+
+    const queryDate = new Date(date)
+    if (Number.isNaN(queryDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid date format' })
+    }
+
+    const start = new Date(queryDate)
+    start.setUTCHours(0, 0, 0, 0)
+
+    const end = new Date(queryDate)
+    end.setUTCHours(23, 59, 59, 999)
+
+    const attendanceMatch = {
+      date: { $gte: start, $lte: end }
+    }
+
+    if (site && mongoose.Types.ObjectId.isValid(site)) {
+      attendanceMatch.siteId = new mongoose.Types.ObjectId(site)
+    }
+
+    const employeeMatch = {}
+    if (name) {
+      employeeMatch['employee.name'] = { $regex: name, $options: 'i' }
+    }
+    if (employeeId) {
+      employeeMatch['employee.employeeId'] = { $regex: employeeId, $options: 'i' }
+    }
+    if (site && !mongoose.Types.ObjectId.isValid(site)) {
+      employeeMatch['site.name'] = { $regex: site, $options: 'i' }
+    }
+
+    const pipeline = [
+      { $match: attendanceMatch },
+      {
+        $lookup: {
+          from: 'employees',
+          localField: 'employee',
+          foreignField: '_id',
+          as: 'employee'
+        }
+      },
+      { $unwind: '$employee' },
+      {
+        $lookup: {
+          from: 'sites',
+          localField: 'siteId',
+          foreignField: '_id',
+          as: 'site'
+        }
+      },
+      { $unwind: { path: '$site', preserveNullAndEmptyArrays: true } },
+      { $match: employeeMatch },
+      { $sort: { 'employee.name': 1 } },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [
+            { $skip: skip },
+            { $limit: limitNumber },
+            {
+              $project: {
+                _id: 0,
+                name: '$employee.name',
+                employeeId: '$employee.employeeId',
+                jobTitle: '$employee.jobTitle',
+                status: '$status',
+                overtimeHours: { $ifNull: ['$overtimeHours', 0] }
+              }
+            }
+          ]
+        }
+      }
+    ]
+
+    const [result] = await Attendance.aggregate(pipeline)
+    const total = result?.metadata?.[0]?.total || 0
+    const data = (result?.data || []).map((record, index) => ({
+      serialNumber: skip + index + 1,
+      ...record
+    }))
+
+    return res.json({
+      message: 'Daily report fetched',
+      page: pageNumber,
+      limit: limitNumber,
+      totalPages: Math.ceil(total / limitNumber),
+      totalRecords: total,
+      filters: { date, site: site || null, name: name || null, employeeId: employeeId || null },
+      data
+    })
+  } catch (error) {
+    console.error(error)
+    return res.status(500).json({
+      message: 'Failed to fetch daily report',
+      error: error.message
+    })
+  }
 };
 
 export const getSummary = async (req, res) => {
