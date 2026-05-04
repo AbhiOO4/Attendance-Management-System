@@ -54,7 +54,7 @@ export const addEmployee = async (req, res) => {
 };
 
 
-// POST /api/employees/Supervisors
+// POST /api/employees/Supervisor
 export const addSupervisor = async (req, res) => {
   try {
     const { name, employeeId, email, password } = req.body;
