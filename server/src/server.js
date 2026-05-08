@@ -1,6 +1,15 @@
 import express from 'express'
 const app = express()
 
+import cors from "cors"
+
+app.use(
+  cors({
+    origin: "http://localhost:5173", // your frontend
+    credentials: true,
+  })
+) 
+
 import dotenv from 'dotenv'
 dotenv.config({quiet: true})
 
@@ -21,6 +30,9 @@ app.use('/api/employees', empRoutes)
 app.use('/api/user', userRoutes)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/site', siteRoutes)
+
+
+
 
 
 

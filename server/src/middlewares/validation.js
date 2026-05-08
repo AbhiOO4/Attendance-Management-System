@@ -61,7 +61,7 @@ const supervisorValidationSchema = Joi.object({
 export const employeeValidation = (req, res, next) => {
     const {error, value} = employeeSchema.validate(req.body)
     if (error){
-        return res.status(400).json({message: error.details[0].message})
+        return res.status(422).json({message: error.details[0].message})
     }
     req.body = value
     next()
@@ -70,7 +70,7 @@ export const employeeValidation = (req, res, next) => {
 export const supervisorValidation = (req, res, next) => {
   const {error, value} = supervisorValidationSchema.validate(req.body)
     if (error){
-        return res.status(400).json({message: error.details[0].message})
+        return res.status(422).json({message: error.details[0].message})
     }
     req.body = value
     next()

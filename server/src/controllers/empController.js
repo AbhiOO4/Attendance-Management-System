@@ -7,28 +7,48 @@ import userModel from '../models/userModel.js'
 
 export const getAllEmployees = async (req, res) => {
   try {
-    const { name, employeeId, site, jobTitle } = req.query;
+    const { name, employeeId, site, jobTitle, page = 1, limit = 10 } = req.query;
 
-    let filter = {}
+    let filter = {};
 
-    filter.isActive = true
+    filter.isActive = true;
 
     if (site) filter.currentSite = site;
 
-    if (jobTitle) filter.jobTitle = jobTitle;
+    if (jobTitle) {
+      filter.jobTitle = { $regex: jobTitle, $options: "i" }
+    }
 
     if (name) {
-      filter.name = { $regex: `^${name}`, $options: "i" }; // starts with, case-insensitive
+      filter.name = { $regex: `^${name}`, $options: "i" };
     }
 
-    if (employeeId){
-       filter.employeeId = { $regex: `^${employeeId}`, $options: "i" };
+    if (employeeId) {
+      filter.employeeId = {
+        $regex: `^${employeeId}`,
+        $options: "i",
+      };
     }
 
-    const employees = await empModel.find(filter);
+    const skip = (page - 1) * limit;
 
-    res.status(200).json(employees);
-    
+    const employees = await empModel
+      .find(
+        filter,
+        "_id name employeeId jobTitle monthlySalary currentSite"
+      )
+      .skip(skip)
+      .limit(Number(limit));
+
+    const totalEmployees = await empModel.countDocuments(filter);
+
+    res.status(200).json({
+      employees,
+      currentPage: Number(page),
+      totalPages: Math.ceil(totalEmployees / limit),
+      totalEmployees,
+    });
+
   } catch (error) {
     console.log(error);
     res.status(500).json({ message: "failed to fetch employees" });
