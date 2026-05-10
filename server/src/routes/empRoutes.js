@@ -28,6 +28,8 @@ router.delete('/:id', empController.deleteEmployee)//
 
 router.post('/Supervisor', empController.addSupervisor)// 
 
+router.delete('/Supervisor/:id', empController.deleteSupervisor)
+
 
 
 

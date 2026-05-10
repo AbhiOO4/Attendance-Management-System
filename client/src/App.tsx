@@ -6,6 +6,7 @@ import MarkAttendance from './pages/MarkAttendance'
 import Reports from './pages/Reports'
 import Supervisor from './pages/Supervisor'
 import Site from './pages/Site'
+import AddSupervisor from './pages/AddSupervisor'
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           <Route path='/attendance' element={<MarkAttendance />}></Route>
           <Route path='/reports' element={<Reports />}></Route>
           <Route path='/supervisor' element={<Supervisor />}></Route>
+          <Route path='/addsupervisor/:id' element={<AddSupervisor />}></Route>
           <Route path='/site' element={<Site />}></Route>
         </Route>
       </Routes>

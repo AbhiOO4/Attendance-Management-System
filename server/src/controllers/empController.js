@@ -7,9 +7,16 @@ import userModel from '../models/userModel.js'
 
 export const getAllEmployees = async (req, res) => {
   try {
-    const { name, employeeId, site, jobTitle, page = 1, limit = 10 } = req.query;
+    const { name, employeeId, site, jobTitle, page = 1, limit = 10, notSupervisor = "false" } = req.query;
 
     let filter = {};
+
+    if (notSupervisor === "true") {
+      filter.$or = [
+        { user: { $exists: false } },
+        { user: null }
+      ];
+    }
 
     filter.isActive = true;
 
@@ -96,6 +103,11 @@ export const addSupervisor = async (req, res) => {
     res.status(201).json(savedUser);
 
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "Conflict: Email ID already exists in the system."
+      });
+    }
     console.log(error);
     res.status(500).json({ message: "Internal server error" });
   }
@@ -206,27 +218,112 @@ export const getEmployee = async (req, res) => {
 // GET /api/employees/Supervisors?siteId=
 export const getSupervisors = async (req, res) => {
   try {
-    const { siteId } = req.query;
+    const {
+      name,
+      employeeId,
+      site,
+      jobTitle,
+      page = 1,
+      limit = 10
+    } = req.query;
 
     let filter = {
       isActive: true,
-      user: { $ne: null } 
+      user: { $ne: null }
     };
 
-    if (siteId) {
-      filter.currentSite = siteId;
+    if (site) {
+      filter.currentSite = site;
     }
 
-    const employees = await empModel.find(filter);
+    if (jobTitle) {
+      filter.jobTitle = {
+        $regex: jobTitle,
+        $options: "i"
+      };
+    }
 
-    res.status(200).json(employees);
+    if (name) {
+      filter.name = {
+        $regex: `^${name}`,
+        $options: "i"
+      };
+    }
+
+    if (employeeId) {
+      filter.employeeId = {
+        $regex: `^${employeeId}`,
+        $options: "i"
+      };
+    }
+
+    const skip = (page - 1) * limit;
+
+    const employees = await empModel
+      .find(
+        filter,
+        "_id name employeeId jobTitle monthlySalary currentSite"
+      )
+      .skip(skip)
+      .limit(Number(limit));
+
+    const totalEmployees =
+      await empModel.countDocuments(filter);
+
+    res.status(200).json({
+      employees,
+      currentPage: Number(page),
+      totalPages: Math.ceil(
+        totalEmployees / limit
+      ),
+      totalEmployees
+    });
 
   } catch (error) {
     console.log(error);
-    res.status(500).json({ message: "Error fetching employees" });
+
+    res.status(500).json({
+      message: "Error fetching supervisors"
+    });
   }
 };
 
+export const deleteSupervisor = async (req, res) => {
+  const { id } = req.params
+
+  try {
+
+    const employee = await empModel.findById(id)
+
+    if (!employee){
+      return res.status(404).json({message: "Employee Doesn't Exist"})
+    }
+
+    const findUser = await userModel.findById(employee.user)
+
+    if (!findUser) {
+      return res.status(404).json({
+        message: "The user doesn't exist",
+      })
+    } 
+
+    await userModel.findByIdAndDelete(employee.user)
+
+    employee.user = null
+
+    await employee.save()
+
+    return res.status(200).json({
+      message: "Supervisor deleted successfully",
+    })
+  } catch (error) {
+    console.log(error)
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    })
+  }
+}
 
 const empController = {
   getAllEmployees,
@@ -236,7 +333,8 @@ const empController = {
   getEmployeeBySite,
   deleteEmployee,
   editEmployee,
-  getSupervisors
+  getSupervisors,
+  deleteSupervisor
 };
 
 export default empController;
