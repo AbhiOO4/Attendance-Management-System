@@ -18,7 +18,7 @@ export const submitDaily = async (req, res) => {
       })
     }
 
-    const markedBy = req.user?._id || '69f33152d121b1a10b175d46'
+    const markedBy = req.user?.id || '69f33152d121b1a10b175d46'
 
     const parsedDate = new Date(date)
     parsedDate.setUTCHours(0, 0, 0, 0)
@@ -133,7 +133,7 @@ export const bulkUpdateAttendance = async (req, res) => {
           isHoliday: isHoliday,
           workHours: getWorkHours(entry.status),
           overtimeHours: entry.overtimeHours || 0,
-          markedBy: req.user?._id || '69f33152d121b1a10b175d46'
+          markedBy: req.user?.id || '69f33152d121b1a10b175d46'
         }
       }
     }))
@@ -145,7 +145,7 @@ export const bulkUpdateAttendance = async (req, res) => {
       { siteId, date: parsedDate },
       {
         isLocked: true,
-        lockedBy: req.user?._id || '69f33152d121b1a10b175d46',
+        lockedBy: req.user?.id || '69f33152d121b1a10b175d46',
         lockedAt: new Date()
       }
     )
@@ -175,7 +175,7 @@ export const unlockAttendance = async (req, res) => {
       { siteId, date: parsedDate },
       {
         isLocked: false,
-        unlockedBy: req.user?._id || '69f33152d121b1a10b175d46',
+        unlockedBy: req.user?.id || '69f33152d121b1a10b175d46',
         unlockedAt: new Date()
       },
       { new: true }

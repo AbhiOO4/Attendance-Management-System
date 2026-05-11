@@ -1,6 +1,8 @@
 import express from 'express'
 
 import siteController from '../controllers/siteController.js'
+import { verifyToken } from '../middlewares/verifyToken.js'
+import { authorizeRoles } from '../middlewares/rbac.js'
 
 const router = express.Router()
 
@@ -10,19 +12,21 @@ const router = express.Router()
 // PATCH /api/site/:siteId/assign-supervisor
 // PATCH /api/site/:siteId/add-employees
 
-router.get('/', siteController.getSites) 
+router.use(verifyToken)
 
-router.get('/:id', siteController.getSite) 
+router.get('/', authorizeRoles("admin"),  siteController.getSites) 
 
-router.post('/', siteController.createSite) // server validation req
+router.get('/:id',authorizeRoles("admin"), siteController.getSite) 
 
-router.patch('/:siteId/assign-supervisor', siteController.assignSupervisor) // sever validation req
+router.post('/',authorizeRoles("admin"), siteController.createSite) // server validation req
 
-router.patch('/:siteId/remove-supervisor', siteController.removeSupervisor) // sever validation req
+router.patch('/:siteId/assign-supervisor', authorizeRoles("admin"), siteController.assignSupervisor) // sever validation req
 
-router.patch('/:siteId/add-employee', siteController.assignEmployee) // sever validation req
+router.patch('/:siteId/remove-supervisor', authorizeRoles("admin"), siteController.removeSupervisor) // sever validation req
 
-router.patch('/:siteId/remove-employee', siteController.removeEmployee) // sever validation req
+router.patch('/:siteId/add-employee', authorizeRoles("admin"), siteController.assignEmployee) // sever validation req
+
+router.patch('/:siteId/remove-employee', authorizeRoles("admin"), siteController.removeEmployee) // sever validation req
 
 
 

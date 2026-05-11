@@ -1,4 +1,5 @@
 import express from 'express'
+import cookieParser from "cookie-parser"
 const app = express()
 
 import cors from "cors"
@@ -23,7 +24,7 @@ import userRoutes from '../src/routes/userRoutes.js'
 import attendanceRoutes from '../src/routes/attendanceRoutes.js'
 import siteRoutes from '../src/routes/siteRoutes.js'
 
-
+app.use(cookieParser())
 
 //Connecting routes
 app.use('/api/employees', empRoutes)

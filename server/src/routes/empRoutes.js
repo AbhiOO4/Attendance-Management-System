@@ -3,6 +3,8 @@ import express from 'express'
 import empController from '../controllers/empController.js'
 
 import { employeeValidation } from '../middlewares/validation.js'
+import { verifyToken } from '../middlewares/verifyToken.js'
+import { authorizeRoles } from '../middlewares/rbac.js'
 
 const router = express.Router()
 
@@ -14,21 +16,23 @@ const router = express.Router()
 // POST /api/employees/add/Supervisors
 // PATCH /api/employees/:id 
 
-router.get('/',  empController.getAllEmployees)// 
+router.use(verifyToken)
 
-router.post('/', employeeValidation, empController.addEmployee)// 
+router.get('/', authorizeRoles("admin"), empController.getAllEmployees)// 
 
-router.get('/Supervisors', empController.getSupervisors)//
+router.post('/', authorizeRoles("admin"), employeeValidation, empController.addEmployee)// 
 
-router.get('/:id', empController.getEmployee)//
+router.get('/Supervisors', authorizeRoles("admin"), empController.getSupervisors)//
 
-router.put('/:id',employeeValidation, empController.editEmployee)// 
+router.get('/:id', authorizeRoles("admin"), empController.getEmployee)//
 
-router.delete('/:id', empController.deleteEmployee)//
+router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.editEmployee)// 
 
-router.post('/Supervisor', empController.addSupervisor)// 
+router.delete('/:id', authorizeRoles("admin"), empController.deleteEmployee)//
 
-router.delete('/Supervisor/:id', empController.deleteSupervisor)
+router.post('/Supervisor', authorizeRoles("admin"), empController.addSupervisor)// 
+
+router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSupervisor)
 
 
 
