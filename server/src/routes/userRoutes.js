@@ -8,8 +8,22 @@ const router = express.Router()
 
 //current user check
 router.get("/me", verifyToken, async (req, res) => {
+
     const user = await userModel.findById(req.user.id)
-    res.json(user)
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      })
+    }
+
+    res.json({
+      user: {
+        _id: user._id,
+        role: user.role,
+        email: user.email,
+      },
+    })
   }
 )
 

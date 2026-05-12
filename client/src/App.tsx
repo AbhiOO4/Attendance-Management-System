@@ -1,27 +1,137 @@
-import {Route, Routes} from 'react-router-dom'
-import DashBoard from './pages/DashBoard'
-import SidebarLayout from './components/SidebarLayout'
-import Employees from './pages/Employees'
-import MarkAttendance from './pages/MarkAttendance'
-import Reports from './pages/Reports'
-import Supervisor from './pages/Supervisor'
-import Site from './pages/Site'
-import AddSupervisor from './pages/AddSupervisor'
+import { Route, Routes } from "react-router-dom"
+
+import DashBoard from "./pages/DashBoard"
+import SidebarLayout from "./components/SidebarLayout"
+import Employees from "./pages/Employees"
+import MarkAttendance from "./pages/MarkAttendance"
+import Reports from "./pages/Reports"
+import Supervisor from "./pages/Supervisor"
+import Site from "./pages/Site"
+import AddSupervisor from "./pages/AddSupervisor"
+import Login from "./pages/Login"
+import SiteAttendance from "./pages/SiteAttendance"
+
+import ProtectedRoute from "./components/ProtectedRoute"
 
 function App() {
+
   return (
     <div>
+
       <Routes>
-        <Route path="/" element={<SidebarLayout />}>
-          <Route path='/' element={<DashBoard />}></Route>
-          <Route path='/employees' element={<Employees />}></Route>
-          <Route path='/attendance' element={<MarkAttendance />}></Route>
-          <Route path='/reports' element={<Reports />}></Route>
-          <Route path='/supervisor' element={<Supervisor />}></Route>
-          <Route path='/addsupervisor/:id' element={<AddSupervisor />}></Route>
-          <Route path='/site' element={<Site />}></Route>
+
+        {/* PUBLIC ROUTE */}
+
+        <Route
+          path="/login"
+          element={<Login />}
+        />
+
+        {/* PROTECTED ROUTES */}
+
+        <Route
+          path="/"
+          element={<SidebarLayout />}
+        >
+
+          {/* ADMIN + SUPERVISOR */}
+
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin", "supervisor"]}
+              >
+                <DashBoard />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* SUPERVISOR ONLY */}
+
+          <Route
+            path="/siteattendance"
+            element={
+              <ProtectedRoute
+                allowedRoles={["supervisor"]}
+              >
+                <SiteAttendance />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ADMIN ONLY */}
+
+          <Route
+            path="/employees"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <Employees />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/attendance"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <MarkAttendance />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/reports"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <Reports />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supervisor"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <Supervisor />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/addsupervisor/:id"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <AddSupervisor />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/site"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <Site />
+              </ProtectedRoute>
+            }
+          />
+
         </Route>
+
       </Routes>
+
     </div>
   )
 }

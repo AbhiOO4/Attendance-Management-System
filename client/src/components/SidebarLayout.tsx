@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { Menu } from "lucide-react";
+import { api } from "@/lib/api";
 
 import { Button } from "@/components/ui/button";
 
@@ -13,6 +14,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import toast from "react-hot-toast";
 
 const navItems = [
   { name: "Dashboard", path: "/" },
@@ -27,8 +29,19 @@ export default function SidebarLayout() {
   const [open, setOpen] = useState(false);
   const [openModal, setOpenModal] = useState(false);
 
+  const navigate = useNavigate()
+
   // define later
-  const handleLogout = () => {};
+  const handleLogout = async () => {
+    try{
+      await api.post('/api/user/logout')
+      navigate('/login')
+      toast.success("Logged out successfully")
+    }catch(error){
+      console.log(error)
+      toast.error("Log out failed")
+    }
+  };
 
   return (
     <div className="flex h-screen w-full">
