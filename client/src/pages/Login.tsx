@@ -47,7 +47,7 @@ function Login() {
                 res.data.message || "Login successful"
             )
 
-            window.location.href = "/dashboard"
+            window.location.href = "/"
 
         } catch (error: any) {
 

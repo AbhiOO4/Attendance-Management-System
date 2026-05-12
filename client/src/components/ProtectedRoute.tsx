@@ -1,5 +1,7 @@
 import { Navigate } from "react-router-dom"
 import { useAuth } from "@/context/AuthContext"
+import { Spinner } from "@/components/ui/spinner"
+import { Badge } from "@/components/ui/badge"
 
 type Props = {
   children: React.ReactNode
@@ -14,7 +16,10 @@ export default function ProtectedRoute({
   const { user, loading } = useAuth()
 
   if (loading) {
-    return <div>Loading...</div>
+    return <div className="flex items-center justify-center"><Badge>
+      <Spinner data-icon="inline-start" />
+      Loading
+    </Badge></div>
   }
 
   if (!user) {
