@@ -7,7 +7,18 @@ import userModel from '../models/userModel.js'
 
 export const getSites = async (req, res) => {
     try{
-        const sites = await siteModel.find({})
+        const { siteName, isActive } = req.query
+        let filter  = {}
+        if (siteName) {
+            filter.siteName = { $regex: `^${siteName}`, $options: "i" };
+        }
+
+        if (isActive === "true"){
+           filter.isActive = true
+        }
+
+        
+        const sites = await siteModel.find(filter,"_id siteName locationDetails isActive").sort({isActive: -1})
         res.status(200).json(sites)
     }catch(error){  
         res.status(500).json({message: "Internal server error"})
@@ -36,6 +47,10 @@ export const createSite = async (req , res) => {
         res.status(201).json(newSite)
     }
     catch(error){
+        console.log(error)
+        if (error.code === 11000){
+            return res.status(404).json({message: "Site name is supposed to be unique"})
+        }
         res.status(500).json({message: "Internal server error"})
     }
 }

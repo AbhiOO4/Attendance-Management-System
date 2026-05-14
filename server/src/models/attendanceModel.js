@@ -11,6 +11,10 @@ const attendanceSchema = new mongoose.Schema({
     ref: 'Site',
     required: [true, 'Site ID is required']
   },
+  jobId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Job',
+  },
   markedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

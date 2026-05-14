@@ -20,7 +20,13 @@ export const getAllEmployees = async (req, res) => {
 
     filter.isActive = true;
 
-    if (site) filter.currentSite = site;
+    if (site){
+      if (site === "null"){
+        filter.currentSite = null
+      }else{
+        filter.currentSite = site
+      }
+    } 
 
     if (jobTitle) {
       filter.jobTitle = { $regex: jobTitle, $options: "i" }
@@ -42,7 +48,7 @@ export const getAllEmployees = async (req, res) => {
     const employees = await empModel
       .find(
         filter,
-        "_id name employeeId jobTitle monthlySalary currentSite"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob"
       )
       .skip(skip)
       .limit(Number(limit));
@@ -233,7 +239,11 @@ export const getSupervisors = async (req, res) => {
     };
 
     if (site) {
-      filter.currentSite = site;
+      if (site === "null"){
+        filter.currentSite = null
+      }else{
+        filter.currentSite = site;
+      }
     }
 
     if (jobTitle) {
@@ -262,7 +272,7 @@ export const getSupervisors = async (req, res) => {
     const employees = await empModel
       .find(
         filter,
-        "_id name employeeId jobTitle monthlySalary currentSite"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob"
       )
       .skip(skip)
       .limit(Number(limit));

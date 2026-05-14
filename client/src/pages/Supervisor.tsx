@@ -309,7 +309,7 @@ function Supervisor() {
 
                     <TableCell>
 
-                      <Link to={`/addsupervisor/${employee._id}`}>
+                      <Link to={`/supervisor/${employee._id}`}>
 
                         <Button
                           size="icon"

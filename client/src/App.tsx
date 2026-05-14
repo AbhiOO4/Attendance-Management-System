@@ -6,12 +6,15 @@ import Employees from "./pages/Employees"
 import MarkAttendance from "./pages/MarkAttendance"
 import Reports from "./pages/Reports"
 import Supervisor from "./pages/Supervisor"
-import Site from "./pages/Site"
 import AddSupervisor from "./pages/AddSupervisor"
 import Login from "./pages/Login"
 import SiteAttendance from "./pages/SiteAttendance"
 
 import ProtectedRoute from "./components/ProtectedRoute"
+import SitesPage from "./pages/SitesPage"
+import SiteDetail from "./pages/SiteDetail"
+import ManageSupervisors from "./pages/ManageSupervisors"
+import ManageEmployees from "./pages/ManageEmployees"
 
 function App() {
 
@@ -107,7 +110,7 @@ function App() {
           />
 
           <Route
-            path="/addsupervisor/:id"
+            path="/supervisor/:id"
             element={
               <ProtectedRoute
                 allowedRoles={["admin"]}
@@ -123,7 +126,40 @@ function App() {
               <ProtectedRoute
                 allowedRoles={["admin"]}
               >
-                <Site />
+                <SitesPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/site/:id"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <SiteDetail />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/site/:id/manage-supervisors"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <ManageSupervisors />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/site/:id/manage-employees"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <ManageEmployees />
               </ProtectedRoute>
             }
           />

@@ -5,13 +5,18 @@ const siteSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Site name is required'],
     unique: true,
-    trim: true
+    trim: true,
+    index: true
   },
   locationDetails: {
     type: String,
     trim: true,
     default: "" // Optional field
   },
+  jobs: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Job'
+  }],
   isActive: {
     type: Boolean,
     default: true
