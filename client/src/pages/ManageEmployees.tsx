@@ -24,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Input } from "@/components/ui/input"
 
 interface Employee {
   _id: string
@@ -32,6 +33,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
+  currentJob : string | null
 }
 
 interface EmployeesResponse {
@@ -48,10 +50,20 @@ interface Site {
   isActive: boolean
 }
 
+interface Filters {
+  name: string,
+  employeeId: string,
+  jobTitle: string
+}
+
 function ManageEmployees() {
   const { id } = useParams()
 
   const [site, setSite] = useState<Site | null>(null)
+
+  const [filters, setFilters] = useState<Filters>({name: "", employeeId: "", jobTitle: ""})
+
+  const [filters2, setFilters2] = useState<Filters>({name: "", employeeId: "", jobTitle: ""})
 
   const [employees, setEmployees] = useState<
     Employee[]
@@ -80,6 +92,7 @@ function ManageEmployees() {
         "/api/employees",
         {
           params: {
+            ...filters,
             site: id,
           },
         }
@@ -101,6 +114,7 @@ function ManageEmployees() {
         "/api/employees",
         {
           params: {
+            ...filters2,
             site: "null",
           },
         }
@@ -114,14 +128,12 @@ function ManageEmployees() {
     }
   }
 
-  async function assignEmployee(
-    employeeId: string
-  ) {
+  async function assignEmployee( uid: string ) {
     try {
-      await api.post(
+      await api.patch(
         `/api/site/${id}/add-employee`,
         {
-          _id: employeeId,
+          _id: uid,
         }
       )
 
@@ -137,14 +149,12 @@ function ManageEmployees() {
     }
   }
 
-  async function removeEmployee(
-    employeeId: string
-  ) {
+  async function removeEmployee( uid: string ) {
     try {
-      await api.post(
+      await api.patch(
         `/api/site/${id}/remove-employee`,
         {
-          _id: employeeId,
+          _id: uid,
         }
       )
 
@@ -162,9 +172,16 @@ function ManageEmployees() {
 
   useEffect(() => {
     fetchSite()
-    fetchEmployees()
-    fetchAvailableEmployees()
   }, [id])
+
+  useEffect(() => {
+    fetchEmployees()
+  }, [filters])
+
+  useEffect(() => {
+    fetchAvailableEmployees()
+  }, [filters2])
+  
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -193,6 +210,42 @@ function ManageEmployees() {
           <h2 className="mb-6 text-2xl font-bold">
             Current Employees
           </h2>
+
+          <div className="grid grid-cols-1 md: grid-cols-2 lg:grid-cols-4 gap-4">
+            <Input
+            placeholder="Search by name"
+            value={filters.name}
+            onChange={(e) =>
+              setFilters({
+                ...filters,
+                name: e.target.value,
+              })
+            }
+            />
+
+            <Input
+            placeholder="Employee ID"
+            value={filters.employeeId}
+            onChange={(e) =>
+              setFilters({
+                ...filters,
+                employeeId: e.target.value,
+              })
+            }
+          />
+
+          <Input
+            placeholder="Job Title"
+            value={filters.jobTitle}
+            onChange={(e) =>
+              setFilters({
+                ...filters,
+                jobTitle: e.target.value,
+              })
+            }
+          />
+
+          </div>
 
           <div className="overflow-hidden rounded-2xl border">
             <div className="max-h-[400px] overflow-y-auto">
@@ -276,6 +329,42 @@ function ManageEmployees() {
           <h2 className="mb-6 text-2xl font-bold">
             Available Employees
           </h2>
+
+          <div className="grid grid-cols-1 md: grid-cols-2 lg:grid-cols-4 gap-4">
+            <Input
+            placeholder="Search by name"
+            value={filters2.name}
+            onChange={(e) =>
+              setFilters2({
+                ...filters2,
+                name: e.target.value,
+              })
+            }
+            />
+
+            <Input
+            placeholder="Employee ID"
+            value={filters2.employeeId}
+            onChange={(e) =>
+              setFilters2({
+                ...filters2,
+                employeeId: e.target.value,
+              })
+            }
+          />
+
+          <Input
+            placeholder="Job Title"
+            value={filters2.jobTitle}
+            onChange={(e) =>
+              setFilters2({
+                ...filters2,
+                jobTitle: e.target.value,
+              })
+            }
+          />
+
+          </div>
 
           <div className="overflow-hidden rounded-2xl border">
             <div className="max-h-[500px] overflow-y-auto">

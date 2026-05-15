@@ -59,11 +59,18 @@ export const createSite = async (req , res) => {
 //Res: status 200 supervisor details
 export const  assignSupervisor = async (req , res) => {
     try {
-        const { supervisorId, employeeId } = req.body
-        const {siteId} = req.params
-        const supervisor = await userModel.findOne({ _id: supervisorId })
+        const { _id } = req.body
+        const { siteId } = req.params
+        const employee = await empModel.findById(_id)
+
+        if (!employee){
+            return res.status(404).json({message: "Employee Doesnt exist"})
+        }
+
+        const supervisor = await userModel.findOne({ _id: employee.user })
+
         supervisor.assignedSite = siteId
-        const employee = await empModel.findOne({ employeeId: employeeId })
+        
         employee.currentSite = siteId
         await supervisor.save()
         await employee.save()
@@ -81,15 +88,17 @@ export const  assignSupervisor = async (req , res) => {
 export const removeSupervisor = async (req, res) => {
     try{
         const {_id} = req.body
-        const employee = await empModel.findOne({_id})
+        const employee = await empModel.findById(_id)
         employee.currentSite = null
-        const supervisor = await userModel.findOne({_id: employee.isSupervisor})
+        const supervisor = await userModel.findOne({_id: employee.user})
         supervisor.assignedSite = null
         await supervisor.save()
         await employee.save()
         res.status(200).json(supervisor)
-    }catch{error}{
-         res.status(500).json({message: "Internal server error"})
+    }
+    catch(error){
+        console.log(error)
+        res.status(500).json({message: "Internal server error"})
     }
 }
 

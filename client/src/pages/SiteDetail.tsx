@@ -5,6 +5,7 @@ import {
   Search,
   Plus,
   MapPin,
+  ArrowLeft,
 } from "lucide-react"
 
 import { api } from "@/lib/api"
@@ -201,7 +202,19 @@ async function deactivateSite() {
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
+      
       <div className="mx-auto max-w-7xl space-y-8">
+
+        <Link
+          to="/site"
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground"
+        >
+          <Button variant="outline" size="icon">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+
+          <span>Back</span>
+        </Link>
         {/* Site Header */}
 
         <Card className="rounded-3xl border bg-card p-8 shadow-sm">
