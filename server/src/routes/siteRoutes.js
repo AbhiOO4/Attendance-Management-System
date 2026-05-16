@@ -30,6 +30,8 @@ router.patch('/:siteId/add-employee', siteController.assignEmployee) // sever va
 
 router.patch('/:siteId/remove-employee', siteController.removeEmployee) // sever validation req
 
+router.post('/:siteId/check-pending', siteController.checkPending)
+
 //Job routes
 
 

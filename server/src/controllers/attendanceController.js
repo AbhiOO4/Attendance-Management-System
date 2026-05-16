@@ -17,8 +17,10 @@ export const submitDaily = async (req, res) => {
         message: "siteId, date and attendance array are required"
       })
     }
+    
+    const markedBy = req.user?.id 
 
-    const markedBy = req.user?.id || '69f33152d121b1a10b175d46'
+    console.log(markedBy)
 
     const parsedDate = new Date(date)
     parsedDate.setUTCHours(0, 0, 0, 0)
@@ -418,19 +420,16 @@ export const getDaily = async (req, res) => {
       site,
       name,
       employeeId,
-      page = 1,
-      limit = 10
+      page,
+      limit
     } = req.query
 
     if (!date) {
       return res.status(400).json({ message: 'date is required' })
     }
 
-    const pageNumber = Math.max(Number(page) || 1, 1)
-    const limitNumber = Math.max(Number(limit) || 10, 1)
-    const skip = (pageNumber - 1) * limitNumber
-
     const queryDate = new Date(date)
+
     if (Number.isNaN(queryDate.getTime())) {
       return res.status(400).json({ message: 'Invalid date format' })
     }
@@ -450,18 +449,31 @@ export const getDaily = async (req, res) => {
     }
 
     const employeeMatch = {}
+
     if (name) {
-      employeeMatch['employee.name'] = { $regex: name, $options: 'i' }
+      employeeMatch['employee.name'] = {
+        $regex: name,
+        $options: 'i'
+      }
     }
+
     if (employeeId) {
-      employeeMatch['employee.employeeId'] = { $regex: employeeId, $options: 'i' }
+      employeeMatch['employee.employeeId'] = {
+        $regex: employeeId,
+        $options: 'i'
+      }
     }
+
     if (site && !mongoose.Types.ObjectId.isValid(site)) {
-      employeeMatch['site.name'] = { $regex: site, $options: 'i' }
+      employeeMatch['site.name'] = {
+        $regex: site,
+        $options: 'i'
+      }
     }
 
     const pipeline = [
       { $match: attendanceMatch },
+
       {
         $lookup: {
           from: 'employees',
@@ -470,7 +482,9 @@ export const getDaily = async (req, res) => {
           as: 'employee'
         }
       },
+
       { $unwind: '$employee' },
+
       {
         $lookup: {
           from: 'sites',
@@ -479,10 +493,31 @@ export const getDaily = async (req, res) => {
           as: 'site'
         }
       },
-      { $unwind: { path: '$site', preserveNullAndEmptyArrays: true } },
-      { $match: employeeMatch },
-      { $sort: { 'employee.name': 1 } },
+
       {
+        $unwind: {
+          path: '$site',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+
+      { $match: employeeMatch },
+
+      { $sort: { 'employee.name': 1 } }
+    ]
+
+    const shouldPaginate = page && limit
+
+    let pageNumber = null
+    let limitNumber = null
+    let skip = 0
+
+    if (shouldPaginate) {
+      pageNumber = Math.max(Number(page) || 1, 1)
+      limitNumber = Math.max(Number(limit) || 10, 1)
+      skip = (pageNumber - 1) * limitNumber
+
+      pipeline.push({
         $facet: {
           metadata: [{ $count: 'total' }],
           data: [
@@ -492,42 +527,97 @@ export const getDaily = async (req, res) => {
               $project: {
                 _id: 0,
                 attendanceId: '$_id',
+                employee: '$employee._id',
                 name: '$employee.name',
                 employeeId: '$employee.employeeId',
                 jobTitle: '$employee.jobTitle',
                 status: '$status',
-                overtimeHours: { $ifNull: ['$overtimeHours', 0] }
+                isHoliday: '$isHoliday',
+                overtimeHours: {
+                  $ifNull: ['$overtimeHours', 0]
+                }
               }
             }
           ]
         }
-      }
-    ]
+      })
 
-    const [result] = await Attendance.aggregate(pipeline)
-    const total = result?.metadata?.[0]?.total || 0
-    const data = (result?.data || []).map((record, index) => ({
-      serialNumber: skip + index + 1,
+      const [result] = await Attendance.aggregate(pipeline)
+
+      const total = result?.metadata?.[0]?.total || 0
+
+      const data = (result?.data || []).map((record, index) => ({
+        serialNumber: skip + index + 1,
+        ...record
+      }))
+
+      const isHoliday =
+        result?.data?.[0]?.isHoliday || false
+
+      return res.json({
+        message: 'Daily report fetched',
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber),
+        totalRecords: total,
+        isHoliday,
+        filters: {
+          date,
+          site: site || null,
+          name: name || null,
+          employeeId: employeeId || null
+        },
+        data
+      })
+    }
+
+    pipeline.push({
+      $project: {
+        _id: 0,
+        attendanceId: '$_id',
+        employee: '$employee._id',
+        name: '$employee.name',
+        employeeId: '$employee.employeeId',
+        jobTitle: '$employee.jobTitle',
+        status: '$status',
+        isHoliday: '$isHoliday',
+        overtimeHours: {
+          $ifNull: ['$overtimeHours', 0]
+        }
+      }
+    })
+
+    const result = await Attendance.aggregate(pipeline)
+
+    const data = result.map((record, index) => ({
+      serialNumber: index + 1,
       ...record
     }))
 
+    const isHoliday =
+      result?.[0]?.isHoliday || false
+
     return res.json({
       message: 'Daily report fetched',
-      page: pageNumber,
-      limit: limitNumber,
-      totalPages: Math.ceil(total / limitNumber),
-      totalRecords: total,
-      filters: { date, site: site || null, name: name || null, employeeId: employeeId || null },
+      totalRecords: data.length,
+      isHoliday,
+      filters: {
+        date,
+        site: site || null,
+        name: name || null,
+        employeeId: employeeId || null
+      },
       data
     })
   } catch (error) {
     console.error(error)
+
     return res.status(500).json({
       message: 'Failed to fetch daily report',
       error: error.message
     })
   }
-};
+}
 
 //GET /api/attendance/daily-summary
 export const getSummary = async (req, res) => {

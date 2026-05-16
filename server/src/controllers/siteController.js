@@ -1,6 +1,7 @@
 import empModel from '../models/empModel.js'
 import siteModel from '../models/siteModel.js'
 import userModel from '../models/userModel.js'
+import AttendanceLock from '../models/lockModel.js'
 
 
 //Admin
@@ -136,6 +137,25 @@ export const removeEmployee = async (req, res) => {
     }
 }
 
+export const checkPending = async (req, res) => {
+    try {
+        const { siteId } = req.params
+        const { date } = req.body
+
+        const parsedDate = new Date(date)
+        parsedDate.setUTCHours(0, 0, 0, 0)
+
+        const lock = await AttendanceLock.findOne({ siteId, date: parsedDate })
+        let status = true
+        if (!lock) {
+            status = false
+        }
+        res.status(200).json({status, lock})
+    } catch (error) {
+        res.status(500).json({message: "Internal Server Error"})
+    }
+}
+
 //A funtion to make the currentSite null after we deactivate a site when its complete.
 //It should iterate thru the list of employees and set the current site to null as well as check if the supervisor is true then also set the assignedSite 
 //to null
@@ -147,7 +167,8 @@ const siteController = {
     assignEmployee,
     assignSupervisor,
     removeSupervisor,
-    removeEmployee
+    removeEmployee,
+    checkPending
 }
 
 export default siteController;

@@ -7,29 +7,37 @@ import userModel from '../models/userModel.js'
 
 export const getAllEmployees = async (req, res) => {
   try {
-    const { name, employeeId, site, jobTitle, page = 1, limit = 10, notSupervisor = "false" } = req.query;
+    const {
+      name,
+      employeeId,
+      site,
+      jobTitle,
+      page,
+      limit,
+      notSupervisor = "false",
+    } = req.query;
 
     let filter = {};
 
     if (notSupervisor === "true") {
       filter.$or = [
         { user: { $exists: false } },
-        { user: null }
+        { user: null },
       ];
     }
 
     filter.isActive = true;
 
-    if (site){
-      if (site === "null"){
-        filter.currentSite = null
-      }else{
-        filter.currentSite = site
+    if (site) {
+      if (site === "null") {
+        filter.currentSite = null;
+      } else {
+        filter.currentSite = site;
       }
-    } 
+    }
 
     if (jobTitle) {
-      filter.jobTitle = { $regex: jobTitle, $options: "i" }
+      filter.jobTitle = { $regex: jobTitle, $options: "i" };
     }
 
     if (name) {
@@ -43,31 +51,44 @@ export const getAllEmployees = async (req, res) => {
       };
     }
 
-    const skip = (page - 1) * limit;
+    let query = empModel.find(
+      filter,
+      "_id name employeeId jobTitle monthlySalary currentSite currentJob"
+    );
 
-    const employees = await empModel
-      .find(
-        filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob"
-      )
-      .skip(skip)
-      .limit(Number(limit));
+    // apply pagination only if both page and limit are provided
+    if (page && limit) {
+      const pageNumber = Math.max(Number(page), 1);
+      const limitNumber = Math.max(Number(limit), 1);
+      const skip = (pageNumber - 1) * limitNumber;
 
+      query = query.skip(skip).limit(limitNumber);
+    }
+
+    const employees = await query;
     const totalEmployees = await empModel.countDocuments(filter);
 
-    res.status(200).json({
+    const response = {
       employees,
-      currentPage: Number(page),
-      totalPages: Math.ceil(totalEmployees / limit),
       totalEmployees,
-    });
+    };
+
+    // send pagination data only when pagination is used
+    if (page && limit) {
+      const pageNumber = Number(page);
+      const limitNumber = Number(limit);
+
+      response.currentPage = pageNumber;
+      response.totalPages = Math.ceil(totalEmployees / limitNumber);
+    }
+
+    res.status(200).json(response);
 
   } catch (error) {
     console.log(error);
     res.status(500).json({ message: "failed to fetch employees" });
   }
 };
-
 
 // POST /api/employees
 export const addEmployee = async (req, res) => {

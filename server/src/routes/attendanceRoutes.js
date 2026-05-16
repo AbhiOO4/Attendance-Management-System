@@ -1,6 +1,7 @@
 import express from 'express'
 
 import Attendance from '../controllers/attendanceController.js'
+import { verifyToken } from '../middlewares/verifyToken.js'
 
 const router = express.Router()
 
@@ -8,6 +9,8 @@ const router = express.Router()
 //Admin
 
 //prefix : /api/attendance
+
+router.use(verifyToken)
 
 router.post('/submit', Attendance.submitDaily)
 

@@ -3,7 +3,7 @@ import { Route, Routes } from "react-router-dom"
 import DashBoard from "./pages/DashBoard"
 import SidebarLayout from "./components/SidebarLayout"
 import Employees from "./pages/Employees"
-import MarkAttendance from "./pages/MarkAttendance"
+// import MarkAttendance from "./pages/MarkAttendance"
 import Reports from "./pages/Reports"
 import Supervisor from "./pages/Supervisor"
 import AddSupervisor from "./pages/AddSupervisor"
@@ -15,6 +15,9 @@ import SitesPage from "./pages/SitesPage"
 import SiteDetail from "./pages/SiteDetail"
 import ManageSupervisors from "./pages/ManageSupervisors"
 import ManageEmployees from "./pages/ManageEmployees"
+import MarkAttendancePage from "./pages/MarkAttendancePage"
+import MarkAttendance from "./pages/MarkAttendance"
+import MarkSiteAttendance from "./pages/MarkSiteAttendance"
 
 function App() {
 
@@ -82,7 +85,30 @@ function App() {
               <ProtectedRoute
                 allowedRoles={["admin"]}
               >
-                <MarkAttendance />
+                <MarkAttendance/>
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/attendance/:id"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <MarkSiteAttendance/>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* temp route */}
+          <Route
+            path="/attendancepage/:id"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <MarkAttendancePage/>
               </ProtectedRoute>
             }
           />
