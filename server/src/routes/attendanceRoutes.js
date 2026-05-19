@@ -24,6 +24,8 @@ router.get('/reports/daily', Attendance.getDaily)
 
 router.get('/reports/daily-summary', Attendance.getSummary)
 
+router.patch('/update/:attendanceId', Attendance.updateAttendanceRecord)
+
 // router.get('/worker/:workerId', Attendance.getWorkerAttendance)
 
 

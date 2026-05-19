@@ -18,7 +18,7 @@ const employeeSchema = Joi.object({
     }),
 
   user: Joi.string().hex().length(24).optional(), // ObjectId
-  currentSite: Joi.string().hex().length(24).optional(),  // ObjectId
+  currentSite: Joi.string().hex().length(24).allow(null).optional(),  // ObjectId
 
   isActive: Joi.boolean().default(true),
 

@@ -12,7 +12,17 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
 import { Input } from "@/components/ui/input"
+import toast from "react-hot-toast"
 
 interface Employee {
   _id: string
@@ -27,16 +37,24 @@ type UpdateInfo = {
   name: string
   employeeId: string
   jobTitle: string
+  currentSite: string | null
   monthlySalary: number
+}
+
+interface Site {
+  _id: string
+  siteName: string
 }
 
 interface Props {
   employee: Employee
 
   onSave: ( id: string, updateInfo: UpdateInfo ) => Promise<void>
+  sites: Site []
 }
 
-function EditEmployee({employee, onSave }: Props) {
+function EditEmployee({employee, onSave, sites }: Props) {
+
   const [open, setOpen] = useState(false)
 
   const [formData, setFormData] =
@@ -44,10 +62,30 @@ function EditEmployee({employee, onSave }: Props) {
       name: employee.name,
       employeeId: employee.employeeId,
       jobTitle: employee.jobTitle,
+      currentSite: employee.currentSite,
       monthlySalary: employee.monthlySalary,
     })
 
   const handleSave = async () => {
+    if (!formData.name.trim()) {
+      toast.error("Name is required")
+      return
+    }
+
+    if (!formData.employeeId.trim()) {
+      toast.error("Employee ID is required")
+      return
+    }
+
+    if (!formData.jobTitle.trim()) {
+      toast.error("Job title is required")
+      return
+    }
+
+    if (formData.monthlySalary <= 0) {
+      toast.error("Monthly salary must be greater than 0")
+      return
+    }
     await onSave(employee._id, formData)
     setOpen(false)
   }
@@ -100,6 +138,34 @@ function EditEmployee({employee, onSave }: Props) {
               })
             }
           />
+
+           <Select
+            value={formData.currentSite == null ? " ": formData.currentSite}
+            onValueChange={(value) => setFormData({
+              ...formData,
+              currentSite: value
+            })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Assign Site" />
+            </SelectTrigger>
+
+            <SelectContent>
+              <SelectItem value=" ">
+                Not Assigned
+              </SelectItem>
+
+              {sites.map((site) => (
+                <SelectItem
+                  key={site._id}
+                  value={site._id}
+                >
+                  {site.siteName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
 
           <Input
             placeholder="Monthly Salary"

@@ -5,6 +5,9 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, MapPin } from "lucide-react"
 import { useNavigate } from "react-router-dom"
+import { Button } from "@/components/ui/button"
+import { Link } from "react-router-dom"
+import { Pencil } from "lucide-react"
 
 type Site = {
   _id: string
@@ -95,14 +98,23 @@ function MarkAttendance() {
   return (
     <div className="min-h-screen bg-muted/30 p-6">
       <div className="mx-auto max-w-6xl space-y-8">
-        <div className="space-y-1">
-          <h1 className="text-3xl font-bold">
-            Mark Attendance
-          </h1>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h1 className="text-3xl font-bold">
+              Mark Attendance
+            </h1>
 
-          <p className="text-muted-foreground">
-            {formattedDate}
-          </p>
+            <p className="text-muted-foreground">
+              {formattedDate}
+            </p>
+          </div>
+
+          <Button asChild variant="outline" >
+            <Link to="/attendance/edit">
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit Past Attendance
+            </Link>
+          </Button>
         </div>
 
         {sites.length === 0 ? (

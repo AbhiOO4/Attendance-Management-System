@@ -285,6 +285,32 @@ function MarkSiteAttendance() {
     }
   }, [isDirty])
 
+  useEffect(() => {
+    const handlePopState = ( e: PopStateEvent ) => { 
+      if (!isDirty) return
+      e.preventDefault()
+
+      window.history.pushState( null, "", window.location.pathname)
+
+      setPendingPath("BACK")
+      setShowLeaveDialog(true)
+    }
+
+    window.history.pushState( null, "", window.location.pathname)
+
+    window.addEventListener(
+      "popstate",
+      handlePopState
+    )
+
+    return () => {
+      window.removeEventListener(
+        "popstate",
+        handlePopState
+      )
+    }
+  }, [isDirty])
+
 
   const filteredAttendance = useMemo(() => {
     return attendance.filter((emp) => {
@@ -596,13 +622,7 @@ function MarkSiteAttendance() {
                           </p>
 
                           <p className="text-sm text-muted-foreground">
-                            {
-                              emp.employeeId
-                            }{" "}
-                            •{" "}
-                            {
-                              emp.jobTitle
-                            }
+                            { emp.employeeId}{" "}•{" "}{emp.jobTitle}
                           </p>
                         </div>
                       </TableCell>
@@ -634,22 +654,11 @@ function MarkSiteAttendance() {
                         <Input
                           type="number"
                           min={0}
-                          value={
-                            emp.overtimeHours
-                          }
-                          disabled={
-                            isLocked ||
-                            emp.status ===
-                              "absent"
-                          }
+                          step={0.5}
+                          value={emp.overtimeHours}
+                          disabled={ isLocked || emp.status === "absent"}
                           onChange={(e) =>
-                            updateOvertime(
-                              emp.employee,
-                              Number(
-                                e.target
-                                  .value
-                              )
-                            )
+                            updateOvertime(emp.employee, Number(e.target.value))
                           }
                           className="w-24"
                         />

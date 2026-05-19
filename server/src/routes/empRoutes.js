@@ -42,7 +42,7 @@ router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSu
 
 // GET /api/workers/by-site/:siteId
 
-router.get('/by-site/:siteId', empController.getEmployeeBySite)
+router.get('/by-site/:siteId', empController.getEmployeeBySite) 
 
 
 

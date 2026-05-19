@@ -1,4 +1,5 @@
 import empModel from '../models/empModel.js'
+import jobModel from '../models/jobModel.js';
 import userModel from '../models/userModel.js'
 
 //Admin
@@ -147,30 +148,61 @@ export const editEmployee = async (req, res) => {
     const { id } = req.params;
     const { name, currentSite } = req.body;
 
+    const existingEmployee = await empModel.findById(id);
+
+    if (!existingEmployee) {
+      return res.status(404).json({
+        message: "Employee not found",
+      });
+    }
+
+    const prevSite = existingEmployee.currentSite?.toString() || null;
+    const newSite = currentSite || null;
+
+    // If site changed OR site removed
+    if (prevSite !== newSite) {
+
+      // Remove employee from previous job employees array
+      if (existingEmployee.currentJob) {
+        await jobModel.findByIdAndUpdate(
+          existingEmployee.currentJob,
+          {
+            $pull: {
+              employees: existingEmployee._id,
+            },
+          }
+        );
+      }
+
+      // Clear currentJob
+      req.body.currentJob = null;
+    }
+
     const employee = await empModel.findByIdAndUpdate(
       id,
       req.body,
       { new: true }
     );
 
-    if (!employee) {
-      return res.status(404).json({ message: "Employee not found" });
-    }
-
     if (employee.user) {
       await userModel.findByIdAndUpdate(employee.user, {
         name,
-        assignedSite: currentSite
+        assignedSite: currentSite,
       });
     }
 
-    res.status(200).json({ message: "Updated employee details successfully" });
+    res.status(200).json({
+      message: "Updated employee details successfully",
+    });
 
   } catch (error) {
-    res.status(500).json({ message: "Internal Server Error" });
+    console.log(error);
+
+    res.status(500).json({
+      message: "Internal Server Error",
+    });
   }
 };
-
 
 // DELETE /api/employees/:id
 export const deleteEmployee = async (req, res) => {

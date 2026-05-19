@@ -8,16 +8,16 @@ import Reports from "./pages/Reports"
 import Supervisor from "./pages/Supervisor"
 import AddSupervisor from "./pages/AddSupervisor"
 import Login from "./pages/Login"
-import SiteAttendance from "./pages/SiteAttendance"
+
 
 import ProtectedRoute from "./components/ProtectedRoute"
 import SitesPage from "./pages/SitesPage"
 import SiteDetail from "./pages/SiteDetail"
 import ManageSupervisors from "./pages/ManageSupervisors"
 import ManageEmployees from "./pages/ManageEmployees"
-import MarkAttendancePage from "./pages/MarkAttendancePage"
 import MarkAttendance from "./pages/MarkAttendance"
 import MarkSiteAttendance from "./pages/MarkSiteAttendance"
+import EditPastAttendance from "./pages/EditPastAttendance"
 
 function App() {
 
@@ -61,7 +61,7 @@ function App() {
               <ProtectedRoute
                 allowedRoles={["supervisor"]}
               >
-                <SiteAttendance />
+                <MarkSiteAttendance />
               </ProtectedRoute>
             }
           />
@@ -101,17 +101,19 @@ function App() {
             }
           />
 
-          {/* temp route */}
           <Route
-            path="/attendancepage/:id"
+            path="/attendance/edit"
             element={
               <ProtectedRoute
                 allowedRoles={["admin"]}
               >
-                <MarkAttendancePage/>
+                <EditPastAttendance/>
               </ProtectedRoute>
             }
           />
+
+          
+          
 
           <Route
             path="/reports"

@@ -12,13 +12,13 @@ const router = express.Router()
 // PATCH /api/site/:siteId/assign-supervisor
 // PATCH /api/site/:siteId/add-employees
 
-// router.use(verifyToken)
+router.use(verifyToken)
 
-// router.use(authorizeRoles("admin"))
+router.use(authorizeRoles("admin"))
 
-router.get('/', siteController.getSites) 
+router.get('/', siteController.getSites) //
 
-router.get('/:id', siteController.getSite) 
+router.get('/:id', siteController.getSite) //
 
 router.post('/', siteController.createSite) // server validation req
 
@@ -30,9 +30,28 @@ router.patch('/:siteId/add-employee', siteController.assignEmployee) // sever va
 
 router.patch('/:siteId/remove-employee', siteController.removeEmployee) // sever validation req
 
-router.post('/:siteId/check-pending', siteController.checkPending)
+router.post('/:siteId/check-pending', siteController.checkPending)//
+
+router.get('/:siteId/site-data',siteController.siteManHoursAndDays)
+
+router.patch("/deactivate/:siteId", siteController.deactivateSite)//
+
+router.patch("/reactivate/:siteId",siteController.reactivateSite)//
 
 //Job routes
+
+router.post('/:siteId/add-job', siteController.addJob)//
+
+router.delete('/:jobId/remove-employee', siteController.removeEmployeeFromJob)//
+
+router.post('/:jobId/add-employee', siteController.addEmployeeToJob)//
+
+router.get('/:jobId/job-data', siteController.jobManHoursAndDays)//
+
+router.get('/:siteId/Jobs', siteController.getSiteJobs)//
+
+
+
 
 
 

@@ -12,6 +12,7 @@ const jobSchema = new mongoose.Schema({
   site: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Site",
+    required: true
   },
 
   employees: [{

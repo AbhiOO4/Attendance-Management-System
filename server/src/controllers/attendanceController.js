@@ -239,8 +239,16 @@ export const getMonthlyReport = async (req, res) => {
                     { $eq: ["$employee", "$$empId"] },
                     { $gte: ["$date", start] },
                     { $lte: ["$date", end] },
+
                     ...(siteId
-                      ? [{ $eq: ["$siteId", new mongoose.Types.ObjectId(siteId)] }]
+                      ? [
+                          {
+                            $eq: [
+                              "$siteId",
+                              new mongoose.Types.ObjectId(siteId)
+                            ]
+                          }
+                        ]
                       : [])
                   ]
                 }
@@ -251,7 +259,7 @@ export const getMonthlyReport = async (req, res) => {
         }
       },
 
-      // 🔥 Apply business logic
+      // Attendance calculations
       {
         $addFields: {
           presentDays: {
@@ -272,7 +280,9 @@ export const getMonthlyReport = async (req, res) => {
             $size: {
               $filter: {
                 input: "$attendance",
-                cond: { $eq: ["$$this.status", "absent"] }
+                cond: {
+                  $eq: ["$$this.status", "absent"]
+                }
               }
             }
           },
@@ -292,9 +302,18 @@ export const getMonthlyReport = async (req, res) => {
           },
 
           totalWorkHours: {
-            $sum: "$attendance.workHours"
+            $sum: {
+              $map: {
+                input: "$attendance",
+                as: "att",
+                in: {
+                  $ifNull: ["$$att.workHours", 0]
+                }
+              }
+            }
           },
 
+          // Updated OT Logic
           totalOvertime: {
             $sum: {
               $map: {
@@ -303,8 +322,21 @@ export const getMonthlyReport = async (req, res) => {
                 in: {
                   $cond: [
                     { $eq: ["$$att.isHoliday", true] },
-                    "$$att.workHours", // holiday → full OT
-                    { $ifNull: ["$$att.overtimeHours", 0] }
+
+                    // Holiday:
+                    // full worked hours + extra overtime
+                    {
+                      $add: [
+                        { $ifNull: ["$$att.workHours", 0] },
+                        { $ifNull: ["$$att.overtimeHours", 0] }
+                      ]
+                    },
+
+                    // Normal day:
+                    // only overtimeHours
+                    {
+                      $ifNull: ["$$att.overtimeHours", 0]
+                    }
                   ]
                 }
               }
@@ -313,52 +345,62 @@ export const getMonthlyReport = async (req, res) => {
         }
       },
 
+      // Payable days
       {
         $addFields: {
           payableDays: {
             $add: [
               "$presentDays",
-              { $multiply: ["$halfDays", 0.5] }
+              {
+                $multiply: ["$halfDays", 0.5]
+              }
             ]
           }
         }
       },
 
-      // 🔥 Salary calculation
+      // Salary setup
       {
         $addFields: {
           perDayPay: {
-            $divide: ["$monthlySalary", 26] // adjust if needed
+            $divide: ["$monthlySalary", 26]
           },
+
           hourlyRate: {
             $divide: [
-              { $divide: ["$monthlySalary", 26] },
-              10 // hours/day
+              {
+                $divide: ["$monthlySalary", 26]
+              },
+              10
             ]
           }
         }
       },
+
+      // Salary calculations
       {
         $addFields: {
           baseSalary: {
             $round: [
-              { $multiply: ["$perDayPay", "$payableDays"] },
+              {
+                $multiply: [
+                  "$perDayPay",
+                  "$payableDays"
+                ]
+              },
               2
             ]
           },
+
           otPay: {
             $round: [
-              { $multiply: ["$totalOvertime", "$hourlyRate", 1.25] },
-              2
-            ]
-          }
-        }
-      },
-      {
-        $addFields: {
-          totalSalary: {
-            $round: [
-              { $add: ["$baseSalary", "$otPay"] },
+              {
+                $multiply: [
+                  "$totalOvertime",
+                  "$hourlyRate",
+                  1.25
+                ]
+              },
               2
             ]
           }
@@ -366,8 +408,26 @@ export const getMonthlyReport = async (req, res) => {
       },
 
       {
+        $addFields: {
+          totalSalary: {
+            $round: [
+              {
+                $add: [
+                  "$baseSalary",
+                  "$otPay"
+                ]
+              },
+              2
+            ]
+          }
+        }
+      },
+
+      // Final response fields
+      {
         $project: {
           _id: 0,
+
           employeeId: 1,
           name: 1,
           jobTitle: 1,
@@ -405,6 +465,7 @@ export const getMonthlyReport = async (req, res) => {
 
   } catch (error) {
     console.error(error)
+
     res.status(500).json({
       message: "Failed to generate report",
       error: error.message
@@ -418,6 +479,7 @@ export const getDaily = async (req, res) => {
     const {
       date,
       site,
+      jobTitle,
       name,
       employeeId,
       page,
@@ -425,13 +487,17 @@ export const getDaily = async (req, res) => {
     } = req.query
 
     if (!date) {
-      return res.status(400).json({ message: 'date is required' })
+      return res.status(400).json({
+        message: 'date is required'
+      })
     }
 
     const queryDate = new Date(date)
 
     if (Number.isNaN(queryDate.getTime())) {
-      return res.status(400).json({ message: 'Invalid date format' })
+      return res.status(400).json({
+        message: 'Invalid date format'
+      })
     }
 
     const start = new Date(queryDate)
@@ -445,7 +511,8 @@ export const getDaily = async (req, res) => {
     }
 
     if (site && mongoose.Types.ObjectId.isValid(site)) {
-      attendanceMatch.siteId = new mongoose.Types.ObjectId(site)
+      attendanceMatch.siteId =
+        new mongoose.Types.ObjectId(site)
     }
 
     const employeeMatch = {}
@@ -464,15 +531,27 @@ export const getDaily = async (req, res) => {
       }
     }
 
-    if (site && !mongoose.Types.ObjectId.isValid(site)) {
-      employeeMatch['site.name'] = {
+    if (jobTitle) {
+      employeeMatch['employee.jobTitle'] = {
+        $regex: jobTitle,
+        $options: 'i'
+      }
+    }
+
+    if (
+      site &&
+      !mongoose.Types.ObjectId.isValid(site)
+    ) {
+      employeeMatch['site.siteName'] = {
         $regex: site,
         $options: 'i'
       }
     }
 
     const pipeline = [
-      { $match: attendanceMatch },
+      {
+        $match: attendanceMatch
+      },
 
       {
         $lookup: {
@@ -483,7 +562,9 @@ export const getDaily = async (req, res) => {
         }
       },
 
-      { $unwind: '$employee' },
+      {
+        $unwind: '$employee'
+      },
 
       {
         $lookup: {
@@ -501,9 +582,15 @@ export const getDaily = async (req, res) => {
         }
       },
 
-      { $match: employeeMatch },
+      {
+        $match: employeeMatch
+      },
 
-      { $sort: { 'employee.name': 1 } }
+      {
+        $sort: {
+          'employee.name': 1
+        }
+      }
     ]
 
     const shouldPaginate = page && limit
@@ -512,103 +599,153 @@ export const getDaily = async (req, res) => {
     let limitNumber = null
     let skip = 0
 
+    const projectStage = {
+      _id: 0,
+      attendanceId: '$_id',
+
+      employee: '$employee._id',
+
+      siteId: '$siteId',
+
+      date: '$date',
+
+      siteName: '$site.siteName',
+
+      name: '$employee.name',
+
+      employeeId: '$employee.employeeId',
+
+      jobTitle: '$employee.jobTitle',
+
+      status: '$status',
+
+      isHoliday: '$isHoliday',
+
+      overtimeHours: {
+        $ifNull: ['$overtimeHours', 0]
+      }
+    }
+
     if (shouldPaginate) {
-      pageNumber = Math.max(Number(page) || 1, 1)
-      limitNumber = Math.max(Number(limit) || 10, 1)
-      skip = (pageNumber - 1) * limitNumber
+      pageNumber =
+        Math.max(Number(page) || 1, 1)
+
+      limitNumber =
+        Math.max(Number(limit) || 10, 1)
+
+      skip =
+        (pageNumber - 1) * limitNumber
 
       pipeline.push({
         $facet: {
-          metadata: [{ $count: 'total' }],
-          data: [
-            { $skip: skip },
-            { $limit: limitNumber },
+          metadata: [
             {
-              $project: {
-                _id: 0,
-                attendanceId: '$_id',
-                employee: '$employee._id',
-                name: '$employee.name',
-                employeeId: '$employee.employeeId',
-                jobTitle: '$employee.jobTitle',
-                status: '$status',
-                isHoliday: '$isHoliday',
-                overtimeHours: {
-                  $ifNull: ['$overtimeHours', 0]
-                }
-              }
+              $count: 'total'
+            }
+          ],
+
+          data: [
+            {
+              $skip: skip
+            },
+
+            {
+              $limit: limitNumber
+            },
+
+            {
+              $project: projectStage
             }
           ]
         }
       })
 
-      const [result] = await Attendance.aggregate(pipeline)
+      const [result] =
+        await Attendance.aggregate(pipeline)
 
-      const total = result?.metadata?.[0]?.total || 0
+      const total =
+        result?.metadata?.[0]?.total || 0
 
-      const data = (result?.data || []).map((record, index) => ({
-        serialNumber: skip + index + 1,
-        ...record
-      }))
+      const data = (result?.data || []).map(
+        (record, index) => ({
+          serialNumber: skip + index + 1,
+          ...record
+        })
+      )
 
       const isHoliday =
         result?.data?.[0]?.isHoliday || false
 
       return res.json({
         message: 'Daily report fetched',
+
         page: pageNumber,
+
         limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber),
+
+        totalPages: Math.ceil(
+          total / limitNumber
+        ),
+
         totalRecords: total,
+
         isHoliday,
+
         filters: {
           date,
+
           site: site || null,
+
           name: name || null,
-          employeeId: employeeId || null
+
+          employeeId: employeeId || null,
+
+          jobTitle: jobTitle || null
         },
+
         data
       })
     }
 
     pipeline.push({
-      $project: {
-        _id: 0,
-        attendanceId: '$_id',
-        employee: '$employee._id',
-        name: '$employee.name',
-        employeeId: '$employee.employeeId',
-        jobTitle: '$employee.jobTitle',
-        status: '$status',
-        isHoliday: '$isHoliday',
-        overtimeHours: {
-          $ifNull: ['$overtimeHours', 0]
-        }
-      }
+      $project: projectStage
     })
 
-    const result = await Attendance.aggregate(pipeline)
+    const result =
+      await Attendance.aggregate(pipeline)
 
-    const data = result.map((record, index) => ({
-      serialNumber: index + 1,
-      ...record
-    }))
+    const data = result.map(
+      (record, index) => ({
+        serialNumber: index + 1,
+        ...record
+      })
+    )
 
     const isHoliday =
       result?.[0]?.isHoliday || false
 
     return res.json({
       message: 'Daily report fetched',
+
       totalRecords: data.length,
+
       isHoliday,
+
       filters: {
         date,
+
         site: site || null,
+
         name: name || null,
-        employeeId: employeeId || null
+
+        employeeId: employeeId || null,
+
+        jobTitle: jobTitle || null
       },
+
       data
     })
+
   } catch (error) {
     console.error(error)
 
@@ -723,6 +860,77 @@ export const getWorkerAttendance = async (req, res) => {
     // Logic to get history for a specific employee
 };
 
+export const updateAttendanceRecord = async (req, res) => {
+    try {
+      const { attendanceId } = req.params
+
+      const {status,overtimeHours = 0} = req.body
+
+      const attendance = await Attendance.findById( attendanceId)
+
+      if (!attendance) {
+        return res.status(404).json({
+          message:
+            "Attendance record not found"
+        })
+      }
+
+      const normalizedDate =
+        new Date(attendance.date)
+
+      normalizedDate.setUTCHours(0,0,0,0)
+
+      const lock = await AttendanceLock.findOne({siteId: attendance.siteId, date: normalizedDate })
+
+      if (!lock) {
+        return res.status(404).json({
+          message:
+            "Attendance lock not found"
+        })
+      }
+
+      if (lock.isLocked) { return res.status(400).json({message: "Attendance is locked" })}
+
+      const getWorkHours = (status) => {
+        if (status === "present")
+          return 10
+
+        if (status === "halfday")
+          return 5
+
+        return 0
+      }
+
+      attendance.status = status
+
+      attendance.overtimeHours = overtimeHours
+
+      attendance.workHours = getWorkHours(status)
+
+      attendance.markedBy = req.user?.id
+
+      await attendance.save()
+
+      await AttendanceLock.findOneAndUpdate(
+        {
+          siteId: attendance.siteId,
+          date: normalizedDate
+        },
+        {
+          isLocked: true,
+          lockedBy: req.user?.id,
+          lockedAt: new Date()
+        }
+      )
+
+      return res.json({message: "Attendance updated successfully"})
+    } catch (error) {
+      console.error(error)
+
+      return res.status(500).json({message:"Failed to update attendance",error: error.message})
+    }
+  }
+
 
 
 
@@ -735,7 +943,8 @@ const attendanceController = {
     getWorkerAttendance,
     submitDaily,
     bulkUpdateAttendance,
-    unlockAttendance
+    unlockAttendance,
+    updateAttendanceRecord
 };
 
 export default attendanceController;

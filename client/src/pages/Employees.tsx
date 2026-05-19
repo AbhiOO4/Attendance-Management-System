@@ -38,6 +38,7 @@ import {
 
 import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
+import axios from "axios"
 
 interface Employee {
   _id: string
@@ -74,6 +75,7 @@ type UpdateInfo = {
   name: string
   employeeId: string
   jobTitle: string
+  currentSite: string | null
   monthlySalary: number
 }
 
@@ -142,12 +144,23 @@ function Employees() {
     fetchEmployees()
   }, [filters])
 
-  const addEmployee = async ( newEmployee: Omit<Employee, "_id" | "currentSite"> ) => {
+  const addEmployee = async ( newEmployee: Omit<Employee, "_id"> ) => {
     try{
+
+      if (newEmployee.currentSite === " "){
+        newEmployee.currentSite = null
+      } 
       await api.post('/api/employees', newEmployee)
       toast.success("Employee added successfully")
     }catch(error){
       console.log(error)
+      if (axios.isAxiosError(error)) {
+      toast.error(
+        error.response?.data?.message || "Failed to add employee"
+      )
+    } else {
+      toast.error("Something went wrong")
+    }
     }
   }
 
@@ -164,11 +177,11 @@ function Employees() {
     }
   }
 
-  const editEmployee = async (
-    id: string,
-    updateInfo: UpdateInfo
-  ) => {
+  const editEmployee = async (id: string, updateInfo: UpdateInfo ) => {
     try {
+      if (updateInfo.currentSite === " "){
+        updateInfo.currentSite = null
+      }
       await api.put(`/api/employees/${id}`, updateInfo)
 
       toast.success("Employee updated successfully")
@@ -187,7 +200,7 @@ function Employees() {
       </h1>
 
       <div className="flex justify-end">
-        <AddEmployee onAdd={addEmployee} />
+        <AddEmployee onAdd={addEmployee} sites={sites} />
       </div>
 
       {/* FILTER SECTION */}
@@ -324,6 +337,7 @@ function Employees() {
                     <EditEmployee
                       employee={employee}
                       onSave={editEmployee}
+                      sites={sites}
                     />
 
                     {/* DELETE */}
