@@ -18,6 +18,11 @@ import ManageEmployees from "./pages/ManageEmployees"
 import MarkAttendance from "./pages/MarkAttendance"
 import MarkSiteAttendance from "./pages/MarkSiteAttendance"
 import EditPastAttendance from "./pages/EditPastAttendance"
+import ManageJobEmployees from "./pages/ManageJobEmployees"
+import MonthlyReport from "./pages/MonthlyReport"
+import Configure from "./pages/Configure"
+import ManageUsers from "./pages/ManageUsers"
+
 
 function App() {
 
@@ -121,7 +126,7 @@ function App() {
               <ProtectedRoute
                 allowedRoles={["admin"]}
               >
-                <Reports />
+                <MonthlyReport />
               </ProtectedRoute>
             }
           />
@@ -188,6 +193,39 @@ function App() {
                 allowedRoles={["admin"]}
               >
                 <ManageEmployees />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/site/job/:jobId"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <ManageJobEmployees />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/configure"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <Configure />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/manage-users"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <ManageUsers />
               </ProtectedRoute>
             }
           />

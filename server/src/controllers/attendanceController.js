@@ -2,6 +2,7 @@ import Attendance from '../models/attendanceModel.js';
 import AttendanceLock from '../models/lockModel.js'
 import Employee from '../models/empModel.js';
 import mongoose from 'mongoose';
+import workModel from '../models/workModel.js';
 
 // --- ADMINS ---
 
@@ -34,9 +35,13 @@ export const submitDaily = async (req, res) => {
       })
     }
 
+    const workSchedule = await workModel.findOne()
+
+    const shiftHours = workSchedule?.shiftHours || 10
+
     const getWorkHours = (status) => {
-      if (status === 'present') return 10
-      if (status === 'halfday') return 5
+      if (status === 'present') return shiftHours
+      if (status === 'halfday') return shiftHours/2
       return 0
     }
 
@@ -105,9 +110,13 @@ export const bulkUpdateAttendance = async (req, res) => {
     const parsedDate = new Date(date)
     parsedDate.setUTCHours(0, 0, 0, 0)
 
+    const workSchedule = await workModel.findOne()
+
+    const shiftHours = workSchedule?.shiftHours || 10
+
     const getWorkHours = (status) => {
-      if (status === 'present') return 10
-      if (status === 'halfday') return 5
+      if (status === 'present') return shiftHours
+      if (status === 'halfday') return shiftHours/2
       return 0
     }
 
@@ -199,6 +208,7 @@ export const getMonthlyReport = async (req, res) => {
       siteId,
       name,
       employeeId,
+      jobTitle,
       page = 1,
       limit = 10
     } = req.query
@@ -209,43 +219,95 @@ export const getMonthlyReport = async (req, res) => {
       })
     }
 
-    const skip = (page - 1) * limit
+    const skip =
+      (Number(page) - 1) * Number(limit)
 
-    const start = new Date(Date.UTC(year, month - 1, 1))
-    const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999))
+    const start = new Date(
+      Date.UTC(year, month - 1, 1)
+    )
+
+    const end = new Date(
+      Date.UTC(
+        year,
+        month,
+        0,
+        23,
+        59,
+        59,
+        999
+      )
+    )
 
     const empMatch = {}
 
     if (name) {
-      empMatch.name = { $regex: name, $options: "i" }
+      empMatch.name = {
+        $regex: name,
+        $options: "i"
+      }
     }
 
     if (employeeId) {
-      empMatch.employeeId = { $regex: employeeId, $options: "i" }
+      empMatch.employeeId = {
+        $regex: employeeId,
+        $options: "i"
+      }
+    }
+
+    if (jobTitle) {
+      empMatch.jobTitle = {
+        $regex: jobTitle,
+        $options: "i"
+      }
     }
 
     const pipeline = [
-      { $match: empMatch },
+      {
+        $match: empMatch
+      },
 
       {
         $lookup: {
           from: "attendances",
-          let: { empId: "$_id" },
+
+          let: {
+            empId: "$_id"
+          },
+
           pipeline: [
             {
               $match: {
                 $expr: {
                   $and: [
-                    { $eq: ["$employee", "$$empId"] },
-                    { $gte: ["$date", start] },
-                    { $lte: ["$date", end] },
+                    {
+                      $eq: [
+                        "$employee",
+                        "$$empId"
+                      ]
+                    },
+
+                    {
+                      $gte: [
+                        "$date",
+                        start
+                      ]
+                    },
+
+                    {
+                      $lte: [
+                        "$date",
+                        end
+                      ]
+                    },
 
                     ...(siteId
                       ? [
                           {
                             $eq: [
                               "$siteId",
-                              new mongoose.Types.ObjectId(siteId)
+                              new mongoose.Types.ObjectId(
+                                siteId
+                              )
                             ]
                           }
                         ]
@@ -255,21 +317,35 @@ export const getMonthlyReport = async (req, res) => {
               }
             }
           ],
+
           as: "attendance"
         }
       },
 
       // Attendance calculations
+
       {
         $addFields: {
           presentDays: {
             $size: {
               $filter: {
                 input: "$attendance",
+
                 cond: {
                   $and: [
-                    { $eq: ["$$this.status", "present"] },
-                    { $eq: ["$$this.isHoliday", false] }
+                    {
+                      $eq: [
+                        "$$this.status",
+                        "present"
+                      ]
+                    },
+
+                    {
+                      $eq: [
+                        "$$this.isHoliday",
+                        false
+                      ]
+                    }
                   ]
                 }
               }
@@ -280,8 +356,12 @@ export const getMonthlyReport = async (req, res) => {
             $size: {
               $filter: {
                 input: "$attendance",
+
                 cond: {
-                  $eq: ["$$this.status", "absent"]
+                  $eq: [
+                    "$$this.status",
+                    "absent"
+                  ]
                 }
               }
             }
@@ -291,10 +371,22 @@ export const getMonthlyReport = async (req, res) => {
             $size: {
               $filter: {
                 input: "$attendance",
+
                 cond: {
                   $and: [
-                    { $eq: ["$$this.status", "halfday"] },
-                    { $eq: ["$$this.isHoliday", false] }
+                    {
+                      $eq: [
+                        "$$this.status",
+                        "halfday"
+                      ]
+                    },
+
+                    {
+                      $eq: [
+                        "$$this.isHoliday",
+                        false
+                      ]
+                    }
                   ]
                 }
               }
@@ -305,37 +397,58 @@ export const getMonthlyReport = async (req, res) => {
             $sum: {
               $map: {
                 input: "$attendance",
+
                 as: "att",
+
                 in: {
-                  $ifNull: ["$$att.workHours", 0]
+                  $ifNull: [
+                    "$$att.workHours",
+                    0
+                  ]
                 }
               }
             }
           },
 
-          // Updated OT Logic
           totalOvertime: {
             $sum: {
               $map: {
                 input: "$attendance",
+
                 as: "att",
+
                 in: {
                   $cond: [
-                    { $eq: ["$$att.isHoliday", true] },
-
-                    // Holiday:
-                    // full worked hours + extra overtime
                     {
-                      $add: [
-                        { $ifNull: ["$$att.workHours", 0] },
-                        { $ifNull: ["$$att.overtimeHours", 0] }
+                      $eq: [
+                        "$$att.isHoliday",
+                        true
                       ]
                     },
 
-                    // Normal day:
-                    // only overtimeHours
                     {
-                      $ifNull: ["$$att.overtimeHours", 0]
+                      $add: [
+                        {
+                          $ifNull: [
+                            "$$att.workHours",
+                            0
+                          ]
+                        },
+
+                        {
+                          $ifNull: [
+                            "$$att.overtimeHours",
+                            0
+                          ]
+                        }
+                      ]
+                    },
+
+                    {
+                      $ifNull: [
+                        "$$att.overtimeHours",
+                        0
+                      ]
                     }
                   ]
                 }
@@ -346,13 +459,70 @@ export const getMonthlyReport = async (req, res) => {
       },
 
       // Payable days
+
       {
         $addFields: {
           payableDays: {
             $add: [
               "$presentDays",
+
               {
-                $multiply: ["$halfDays", 0.5]
+                $multiply: [
+                  "$halfDays",
+                  0.5
+                ]
+              }
+            ]
+          }
+        }
+      },
+
+      // Attendance percentage
+
+      {
+        $addFields: {
+          attendancePercentage: {
+            $cond: [
+              {
+                $eq: [
+                  {
+                    $add: [
+                      "$presentDays",
+                      "$absentDays",
+                      "$halfDays"
+                    ]
+                  },
+
+                  0
+                ]
+              },
+
+              0,
+
+              {
+                $round: [
+                  {
+                    $multiply: [
+                      {
+                        $divide: [
+                          "$payableDays",
+
+                          {
+                            $add: [
+                              "$presentDays",
+                              "$absentDays",
+                              "$halfDays"
+                            ]
+                          }
+                        ]
+                      },
+
+                      100
+                    ]
+                  },
+
+                  0
+                ]
               }
             ]
           }
@@ -360,17 +530,25 @@ export const getMonthlyReport = async (req, res) => {
       },
 
       // Salary setup
+
       {
         $addFields: {
           perDayPay: {
-            $divide: ["$monthlySalary", 26]
+            $divide: [
+              "$monthlySalary",
+              26
+            ]
           },
 
           hourlyRate: {
             $divide: [
               {
-                $divide: ["$monthlySalary", 26]
+                $divide: [
+                  "$monthlySalary",
+                  26
+                ]
               },
+
               10
             ]
           }
@@ -378,6 +556,7 @@ export const getMonthlyReport = async (req, res) => {
       },
 
       // Salary calculations
+
       {
         $addFields: {
           baseSalary: {
@@ -388,6 +567,7 @@ export const getMonthlyReport = async (req, res) => {
                   "$payableDays"
                 ]
               },
+
               2
             ]
           },
@@ -401,6 +581,7 @@ export const getMonthlyReport = async (req, res) => {
                   1.25
                 ]
               },
+
               2
             ]
           }
@@ -417,13 +598,15 @@ export const getMonthlyReport = async (req, res) => {
                   "$otPay"
                 ]
               },
+
               2
             ]
           }
         }
       },
 
-      // Final response fields
+      // Final response
+
       {
         $project: {
           _id: 0,
@@ -436,6 +619,8 @@ export const getMonthlyReport = async (req, res) => {
           absentDays: 1,
           halfDays: 1,
 
+          attendancePercentage: 1,
+
           totalWorkHours: 1,
           totalOvertime: 1,
 
@@ -447,27 +632,44 @@ export const getMonthlyReport = async (req, res) => {
         }
       },
 
-      { $skip: Number(skip) },
-      { $limit: Number(limit) }
+      {
+        $skip: Number(skip)
+      },
+
+      {
+        $limit: Number(limit)
+      }
     ]
 
-    const data = await Employee.aggregate(pipeline)
+    const data =
+      await Employee.aggregate(pipeline)
 
-    const total = await Employee.countDocuments(empMatch)
+    const total =
+      await Employee.countDocuments(
+        empMatch
+      )
 
     res.json({
-      message: "Monthly report fetched",
+      message:
+        "Monthly report fetched",
+
       page: Number(page),
-      totalPages: Math.ceil(total / limit),
+
+      totalPages: Math.ceil(
+        total / Number(limit)
+      ),
+
       totalEmployees: total,
+
       data
     })
-
   } catch (error) {
     console.error(error)
 
     res.status(500).json({
-      message: "Failed to generate report",
+      message:
+        "Failed to generate report",
+
       error: error.message
     })
   }
@@ -931,6 +1133,60 @@ export const updateAttendanceRecord = async (req, res) => {
     }
   }
 
+export const toggleHolidayStatus = async (req, res) => {
+  try {
+    const { date, isHoliday } = req.body
+
+    if (!date) {
+      return res.status(400).json({
+        message: "Date is required",
+      })
+    }
+
+    if (typeof isHoliday !== "boolean") {
+      return res.status(400).json({
+        message: "isHoliday must be a boolean",
+      })
+    }
+
+    // Create day range
+    const startOfDay = new Date(date)
+    startOfDay.setHours(0, 0, 0, 0)
+
+    const endOfDay = new Date(date)
+    endOfDay.setHours(23, 59, 59, 999)
+
+    // Update all attendance records for that day
+    const result = await Attendance.updateMany(
+      {
+        date: {
+          $gte: startOfDay,
+          $lte: endOfDay,
+        },
+      },
+      {
+        $set: {
+          isHoliday,
+        },
+      }
+    )
+
+    return res.status(200).json({
+      message: isHoliday
+        ? "Day marked as holiday successfully"
+        : "Holiday removed successfully",
+
+      modifiedCount: result.modifiedCount,
+    })
+  } catch (error) {
+    console.log(error)
+
+    return res.status(500).json({
+      message: "Failed to update holiday status",
+    })
+  }
+}
+
 
 
 
@@ -944,7 +1200,8 @@ const attendanceController = {
     submitDaily,
     bulkUpdateAttendance,
     unlockAttendance,
-    updateAttendanceRecord
+    updateAttendanceRecord,
+    toggleHolidayStatus
 };
 
 export default attendanceController;

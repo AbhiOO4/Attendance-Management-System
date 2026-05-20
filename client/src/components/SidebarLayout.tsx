@@ -5,6 +5,7 @@ import { Menu } from "lucide-react";
 import { api } from "@/lib/api";
 
 import { Button } from "@/components/ui/button";
+import ScrollToTop from "./ScrollToTop"
 
 import {
   Dialog,
@@ -23,6 +24,8 @@ const navItems = [
   { name: "Reports", path: "/reports" },
   { name: "Add Supervisors", path: "/supervisor" },
   { name: "Site", path: "/site" },
+  { name: "configure", path: "/configure" },
+  { name: "Manage Users", path: "/manage-users" }
 ];
 
 export default function SidebarLayout() {
@@ -142,8 +145,10 @@ export default function SidebarLayout() {
         />
       )}
 
+      <ScrollToTop />
+
       {/* Main Content */}
-      <main className="flex-1 p-6 overflow-auto mt-14 md:mt-0">
+      <main  id="main-scroll-container" className="flex-1 p-6 overflow-auto mt-14 md:mt-0">
         <Outlet />
       </main>
     </div>

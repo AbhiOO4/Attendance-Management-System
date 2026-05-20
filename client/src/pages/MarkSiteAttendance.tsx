@@ -104,9 +104,12 @@ function MarkSiteAttendance() {
 
   const [isLocked, setIsLocked] = useState(false)
 
+  const [isDirty, setIsDirty] = useState(false)
+
   const [isHoliday, setIsHoliday] = useState(false)
 
-  const [isDirty, setIsDirty] = useState(false)
+  const [holidayReason, setHolidayReason] = useState("")
+
 
   const handleSafeNavigation = (path: string) => {
     if (!isDirty) {
@@ -214,7 +217,12 @@ function MarkSiteAttendance() {
 
       setAttendance(fetchedAttendance)
 
-      setIsHoliday(res.data.isHoliday || false)
+      // setIsHoliday(res.data.isHoliday || false)
+      // if (res.data.isHoliday) {
+      //   setHolidayReason("Holiday")
+      // } else {
+      //   setHolidayReason("")
+      // }
     } catch (error) {
       console.log(error)
     }
@@ -238,18 +246,66 @@ function MarkSiteAttendance() {
     }
   }
 
+  const checkHolidayStatus = async () => {
+    try {
+
+      // ---------------- GET WORK SCHEDULE ----------------
+      const configRes = await api.get("/api/config")
+
+      const weeklyHolidays =
+        configRes.data.data.weeklyHolidays || []
+
+      const todayDay = new Date()
+        .toLocaleDateString("en-US", {
+          weekday: "long",
+        })
+        .toLowerCase()
+
+      // ---------------- WEEKLY HOLIDAY PRIORITY ----------------
+      if (weeklyHolidays.includes(todayDay)) {
+        setIsHoliday(true)
+        setHolidayReason("Weekly Holiday")
+        return
+      }
+
+      // ---------------- CUSTOM HOLIDAY CHECK ----------------
+      const holidayRes = await api.get(
+        "/api/config/custom-holidays/check",
+        {
+          params: {
+            date: today,
+          },
+        }
+      )
+
+      if (holidayRes.data.isHoliday) {
+        setIsHoliday(true)
+        setHolidayReason(
+          holidayRes.data.reason
+        )
+      } else {
+        setIsHoliday(false)
+        setHolidayReason("")
+      }
+
+    } catch (error) {
+      console.log(error)
+    }
+  }
+
   const initializePage = async () => {
     try {
       setLoading(true)
 
       await fetchSite()
-
-      const exists =
-        await checkAttendanceStatus()
+      await checkHolidayStatus()
+      
+      const exists = await checkAttendanceStatus()
 
       if (exists) {
         await fetchExistingAttendance()
       } else {
+        
         await initializeAttendanceFromEmployees()
       }
     } catch (error) {
@@ -505,6 +561,17 @@ function MarkSiteAttendance() {
               <p className="text-sm text-muted-foreground">
                 {formattedDate}
               </p>
+
+              {isHoliday && (
+                <div className="pt-2">
+                  <Badge
+                    variant="secondary"
+                    className="bg-yellow-100 text-yellow-800 border-yellow-300"
+                  >
+                    Holiday • {holidayReason}
+                  </Badge>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -520,25 +587,6 @@ function MarkSiteAttendance() {
                   : "Editable"}
               </Badge>
 
-              <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
-                <Checkbox
-                  checked={isHoliday}
-                  disabled={isLocked}
-                  onCheckedChange={(
-                    checked
-                  ) => {
-                    setIsHoliday(
-                      Boolean(checked)
-                    )
-
-                    setIsDirty(true)
-                  }}
-                />
-
-                <span className="text-sm font-medium">
-                  Holiday
-                </span>
-              </div>
 
               {attendanceExists &&
                 isLocked && (

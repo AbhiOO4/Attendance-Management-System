@@ -14,11 +14,28 @@ const connectDB = async () => {
 connectDB()
 
 import userModel from "../models/userModel.js";
+import workModel from "../models/workModel.js";
 
-
-async function createAdmin (name, email, password) {
-    const admin = new userModel({name, email, password, role: 'admin'})
-    await admin.save()
+const seeWorkSchedule = async () => {
+    try {
+        const schedule = await workModel.create({
+            type: "default",
+            name: "Default Work Schedule",
+            shiftHours: 10,
+            weeklyHolidays: ["friday"],
+            customHolidays: [],
+        })
+        console.log("Doc created")
+    }catch(error){
+        console.log(error)
+    }
 }
 
-createAdmin('Abhi', 'abhinavsree243@gmail.com', "abhi@123", )
+seeWorkSchedule()
+
+// async function createAdmin (name, email, password) {
+//     const admin = new userModel({name, email, password, role: 'admin'})
+//     await admin.save()
+// }
+
+// createAdmin('Abhi', 'abhinavsree243@gmail.com', "abhi@123", )

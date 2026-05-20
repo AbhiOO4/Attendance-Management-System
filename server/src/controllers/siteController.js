@@ -4,6 +4,8 @@ import userModel from '../models/userModel.js'
 import AttendanceLock from '../models/lockModel.js'
 import jobModel from '../models/jobModel.js'
 import attendanceModel from '../models/attendanceModel.js'
+import mongoose from 'mongoose'
+import { json } from 'express'
 
 
 //Admin
@@ -246,112 +248,145 @@ export const getSiteJobs = async (req, res) => {
     }
 
     // Get jobs for this site
-    const jobs = await jobModel.find({ site: siteId }).lean();
+    const jobs = await jobModel
+      .find({ site: siteId })
+      .lean();
 
-    // Aggregate attendance metrics
-    const attendanceStats = await attendanceModel.aggregate([
-      {
-        $match: {
-          siteId: new mongoose.Types.ObjectId(siteId),
-          jobId: { $ne: null }
-        }
-      },
-
-      {
-        $group: {
-          _id: "$jobId",
-
-          // unique days worked
-          uniqueDates: {
-            $addToSet: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$date"
-              }
-            }
+    // Attendance metrics aggregation
+    // Attendance metrics aggregation
+    const attendanceStats =
+      await attendanceModel.aggregate([
+        {
+          $match: {
+            siteId:
+              new mongoose.Types.ObjectId(
+                siteId
+              ),
+            jobId: { $ne: null },
           },
+        },
 
-          // unique employees
-          uniqueEmployees: {
-            $addToSet: "$employee"
-          },
+        {
+          $group: {
+            _id: "$jobId",
 
-          // total manhours
-          totalManHours: {
-            $sum: {
-              $add: [
-
-                // base work hours
-                {
-                  $switch: {
-                    branches: [
-                      {
-                        case: { $eq: ["$status", "present"] },
-                        then: {
-                          $cond: [
-                            { $gt: ["$workHours", 0] },
-                            "$workHours",
-                            8
-                          ]
-                        }
-                      },
-                      {
-                        case: { $eq: ["$status", "halfday"] },
-                        then: {
-                          $cond: [
-                            { $gt: ["$workHours", 0] },
-                            "$workHours",
-                            4
-                          ]
-                        }
-                      }
-                    ],
-                    default: 0
-                  }
+            // unique days worked
+            uniqueDates: {
+              $addToSet: {
+                $dateToString: {
+                  format: "%Y-%m-%d",
+                  date: "$date",
                 },
+              },
+            },
 
-                // overtime
-                {
-                  $ifNull: ["$overtimeHours", 0]
-                }
+            // total manhours
+            totalManHours: {
+              $sum: {
+                $add: [
+                  {
+                    $ifNull: [
+                      "$workHours",
+                      0,
+                    ],
+                  },
 
-              ]
-            }
-          }
-        }
-      },
+                  {
+                    $ifNull: [
+                      "$overtimeHours",
+                      0,
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
 
-      {
-        $project: {
-          _id: 1,
-          totalManHours: 1,
-          totalDays: { $size: "$uniqueDates" },
-          employeeCount: { $size: "$uniqueEmployees" }
-        }
-      }
-    ]);
+        {
+          $project: {
+            _id: 1,
 
-    // Convert stats array into lookup map
+            totalManHours: 1,
+
+            totalDays: {
+              $size: "$uniqueDates",
+            },
+          },
+        },
+      ]);
+
+    // Live employee count aggregation
+    const employeeCounts =
+      await empModel.aggregate([
+        {
+          $match: {
+            currentSite:
+              new mongoose.Types.ObjectId(
+                siteId
+              ),
+
+            currentJob: {
+              $ne: null,
+            },
+
+            isActive: true,
+          },
+        },
+
+        {
+          $group: {
+            _id: "$currentJob",
+
+            employeeCount: {
+              $sum: 1,
+            },
+          },
+        },
+      ]);
+
+    // Create lookup maps
     const statsMap = {};
 
     attendanceStats.forEach((stat) => {
-      statsMap[stat._id.toString()] = stat;
+      statsMap[stat._id.toString()] =
+        stat;
     });
 
-    // Merge stats into jobs
-    const enrichedJobs = jobs.map((job) => {
-      const stats = statsMap[job._id.toString()];
+    const employeeCountMap = {};
 
-      return {
-        ...job,
-
-        totalManHours: stats?.totalManHours || 0,
-        totalDays: stats?.totalDays || 0,
-        employeeCount: stats?.employeeCount || 0,
-      };
+    employeeCounts.forEach((item) => {
+      employeeCountMap[
+        item._id.toString()
+      ] = item.employeeCount;
     });
 
-    return res.status(200).json(enrichedJobs);
+    // Merge everything into jobs
+    const enrichedJobs = jobs.map(
+      (job) => {
+        const stats =
+          statsMap[job._id.toString()];
+
+        return {
+          ...job,
+
+          totalManHours:
+            stats?.totalManHours || 0,
+
+          totalDays:
+            stats?.totalDays || 0,
+
+          employeeCount:
+            employeeCountMap[
+              job._id.toString()
+            ] || 0,
+        };
+      }
+    );
+
+    return res
+      .status(200)
+      .json(enrichedJobs);
 
   } catch (error) {
     console.log(error);
@@ -694,6 +729,180 @@ export const reactivateSite = async (req, res) => {
   }
 };
 
+export const getUnassignedSiteEmployees = async (req, res) => {
+  try {
+    const { siteId } = req.params;
+
+    const {
+      page = 1,
+      limit = 10,
+      name,
+      employeeId,
+      jobTitle,
+    } = req.query;
+
+    const pageNumber = Math.max(Number(page) || 1, 1);
+
+    const limitNumber = Math.min(
+      Math.max(Number(limit) || 10, 1),
+      50
+    );
+
+    // Base filter
+    const filter = {
+      currentSite: siteId,
+      currentJob: null,
+      isActive: true,
+    };
+
+    // Optional filters
+    if (name) {
+      filter.name = {
+        $regex: name,
+        $options: "i",
+      };
+    }
+
+    if (employeeId) {
+      filter.employeeId = {
+        $regex: employeeId,
+        $options: "i",
+      };
+    }
+
+    if (jobTitle) {
+      filter.jobTitle = {
+        $regex: jobTitle,
+        $options: "i",
+      };
+    }
+
+    // Total count
+    const totalEmployees =
+      await empModel.countDocuments(filter);
+
+    // Paginated employees
+    const employees = await empModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNumber - 1) * limitNumber)
+      .limit(limitNumber);
+
+    return res.status(200).json({
+      employees,
+      currentPage: pageNumber,
+      totalPages: Math.ceil(
+        totalEmployees / limitNumber
+      ),
+      totalEmployees,
+    });
+
+  } catch (error) {
+    console.log(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
+
+export const getJobEmployees = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+
+    const employees = await empModel
+      .find({
+        currentJob: jobId,
+        isActive: true,
+      })
+      .sort({ name: 1 });
+
+    return res.status(200).json(employees);
+
+  } catch (error) {
+    console.log(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
+
+export const getJob = async (req, res) => {
+  try{
+    const {jobId} = req.params
+    const job = await jobModel.findById(jobId)
+
+    if (!job){
+      return res.status(404).json({message: "The Job was not found"})
+    }
+
+    res.status(200).json(job)
+
+  }catch(error){
+    console.log(error)
+    return res.status(500).json({message: "Internal Server Error"});
+  }
+}
+
+export const changeJobStatus = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+
+    const job = await jobModel.findById(jobId);
+
+    if (!job) {
+      return res.status(404).json({
+        message: "Job not found",
+      });
+    }
+
+    // If currently active -> deactivate
+    if (job.isActive) {
+
+      // Remove employees from job
+      await empModel.updateMany(
+        {
+          currentJob: jobId,
+        },
+        {
+          $set: {
+            currentJob: null,
+          },
+        }
+      );
+
+      // Optional cleanup
+      job.employees = [];
+
+      job.isActive = false;
+
+      await job.save();
+
+      return res.status(200).json({
+        message:
+          "Job deactivated successfully",
+      });
+    }
+
+    // If currently inactive -> reactivate
+    job.isActive = true;
+
+    await job.save();
+
+    return res.status(200).json({
+      message:
+        "Job re-activated successfully",
+    });
+
+  } catch (error) {
+    console.log(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
 
 //A funtion to make the currentSite null after we deactivate a site when its complete.
 //It should iterate thru the list of employees and set the current site to null as well as check if the supervisor is true then also set the assignedSite 
@@ -715,7 +924,11 @@ const siteController = {
     deactivateSite,
     getSiteJobs,
     removeEmployeeFromJob,
-    reactivateSite
+    reactivateSite,
+    getUnassignedSiteEmployees,
+    getJobEmployees,
+    getJob,
+    changeJobStatus
 }
 
 export default siteController;

@@ -8,6 +8,15 @@ import {
   ArrowLeft,
 } from "lucide-react"
 
+import {
+  Briefcase,
+  Clock3,
+  Users,
+  CalendarDays,
+} from "lucide-react"
+
+import { useNavigate } from "react-router-dom"
+
 import { api } from "@/lib/api"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -67,43 +76,83 @@ interface Site {
   jobs: string[]
 }
 
+interface Job {
+  _id: string
+  name: string
+  jobCode: string
+  totalManHours: number
+  totalDays: number
+  employeeCount: number
+  isActive: boolean
+}
+
 function SiteDetail() {
   const { id } = useParams()
 
   const [site, setSite] = useState<Site | null>(null)
 
-  const [employees, setEmployees] = useState<Employee[]>(
-    []
-  )
+  const [employees, setEmployees] = useState<Employee[]>([])
 
-  const [supervisors, setSupervisors] = useState<
-    Employee[]
-  >([])
+  const [supervisors, setSupervisors] = useState<Employee[]>([])
 
-  const [loadingEmployees, setLoadingEmployees] =
-    useState(false)
+  const [loadingEmployees, setLoadingEmployees] = useState(false)
 
-  const [loadingSupervisors, setLoadingSupervisors] =
-    useState(false)
+  const [loadingSupervisors, setLoadingSupervisors] = useState(false)
 
-  const [filters, setFilters] = useState<Filters>({
+  const [filters, setFilters] = useState<Filters>({name: "", employeeId: "",})
+
+  const [supervisorFilters, setSupervisorFilters] = useState<SupervisorFilters>({ name: "", employeeId: "", notSupervisor: false })
+
+
+  const [deactivateOpen, setDeactivateOpen] = useState(false)
+
+  const [deactivating, setDeactivating] = useState(false)
+
+
+  //jobs
+
+  const navigate = useNavigate()
+
+  const [jobs, setJobs] = useState<Job[]>([])
+
+  const [loadingJobs, setLoadingJobs] = useState(false)
+
+  const [jobDialogOpen, setJobDialogOpen] = useState(false)
+
+  const [creatingJob, setCreatingJob] = useState(false)
+
+  const [jobForm, setJobForm] = useState({
     name: "",
-    employeeId: "",
+    jobCode: "",
   })
 
-  const [supervisorFilters, setSupervisorFilters] =
-    useState<SupervisorFilters>({
-      name: "",
-      employeeId: "",
-      notSupervisor: false,
-    })
+  const [jobErrors, setJobErrors] = useState({
+    name: "",
+    jobCode: "",
+    general: "",
+  })
 
+  const [reactivating, setReactivating] = useState(false)
 
-  const [deactivateOpen, setDeactivateOpen] =
-    useState(false)
+  const isSiteActive = site?.isActive
 
-  const [deactivating, setDeactivating] =
-    useState(false)
+  async function fetchJobs() {
+    try {
+      setLoadingJobs(true)
+
+      const res = await api.get(
+        `/api/site/${id}/jobs`
+      )
+
+      setJobs(res.data)
+    } catch (error) {
+      console.log(error)
+
+      setJobs([])
+    } finally {
+      setLoadingJobs(false)
+    }
+  }
 
   async function fetchSite() {
     try {
@@ -163,8 +212,82 @@ function SiteDetail() {
     }
   }
 
+  function validateJobForm() {
+    const errors = {
+      name: "",
+      jobCode: "",
+      general: "",
+    }
+
+    let valid = true
+
+    if (!jobForm.name.trim()) {
+      errors.name = "Job name is required"
+      valid = false
+    }
+
+    if (!jobForm.jobCode.trim()) {
+      errors.jobCode = "Job code is required"
+      valid = false
+    }
+
+    setJobErrors(errors)
+
+    return valid
+  }
+
+  async function createJob() {
+    try {
+      const isValid = validateJobForm()
+
+      if (!isValid) return
+
+      setCreatingJob(true)
+
+      await api.post(
+        `/api/site/${id}/add-job`,
+        {
+          name: jobForm.name.trim(),
+          jobCode: jobForm.jobCode.trim(),
+        }
+      )
+
+      setJobForm({
+        name: "",
+        jobCode: "",
+      })
+
+      setJobErrors({
+        name: "",
+        jobCode: "",
+        general: "",
+      })
+
+      setJobDialogOpen(false)
+
+      fetchJobs()
+    } catch (error: any) {
+      console.log(error)
+
+      setJobErrors((prev) => ({
+        ...prev,
+        general:
+          error?.response?.data?.message ||
+          "Failed to create job",
+      }))
+    } finally {
+      setCreatingJob(false)
+    }
+  }
+
   useEffect(() => {
     fetchSite()
+  }, [id])
+
+  useEffect(() => {
+    if (id) {
+      fetchJobs()
+    }
   }, [id])
 
   useEffect(() => {
@@ -185,19 +308,39 @@ function SiteDetail() {
 
   // add this function inside component
 
-async function deactivateSite() {
-  try {
-    setDeactivating(true)
+  async function deactivateSite() {
+    try {
+      setDeactivating(true)
 
-    // implement later
+      await api.patch(
+        `/api/site/deactivate/${id}`
+      )
 
-    setDeactivateOpen(false)
-  } catch (error) {
-    console.log(error)
-  } finally {
-    setDeactivating(false)
+      await fetchSite()
+
+      setDeactivateOpen(false)
+    } catch (error) {
+      console.log(error)
+    } finally {
+      setDeactivating(false)
+    }
   }
-}
+
+  async function reactivateSite() {
+    try {
+      setReactivating(true)
+
+      await api.patch(
+        `/api/site/reactivate/${id}`
+      )
+
+      await fetchSite()
+    } catch (error) {
+      console.log(error)
+    } finally {
+      setReactivating(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -246,58 +389,73 @@ async function deactivateSite() {
               </div>
             </div>
 
-            <Dialog
-              open={deactivateOpen}
-              onOpenChange={setDeactivateOpen}
-            >
-              <DialogTrigger asChild>
-                <Button
-                  variant="destructive"
-                  className="rounded-xl"
-                >
-                  Deactivate Site
-                </Button>
-              </DialogTrigger>
-
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle className="text-2xl">
-                    Deactivate Site?
-                  </DialogTitle>
-
-                  <DialogDescription className="pt-3 text-base leading-relaxed">
-                    All employees and supervisors associated
-                    with this site will be removed from the
-                    site upon deactivation.
-
-                    <br />
-                    <br />
-
-                    They will need to be assigned again when
-                    the site is reactivated.
-                  </DialogDescription>
-                </DialogHeader>
-
-                <DialogFooter className="mt-4 flex-col gap-3 sm:flex-row">
-                  <Button
-                    variant="outline"
-                    onClick={() => setDeactivateOpen(false)}
-                  >
-                    Cancel
-                  </Button>
-
+            {isSiteActive ? (
+              <Dialog
+                open={deactivateOpen}
+                onOpenChange={setDeactivateOpen}
+              >
+                <DialogTrigger asChild>
                   <Button
                     variant="destructive"
-                    disabled={deactivating}
-                    onClick={deactivateSite}
+                    className="rounded-xl"
                   >
-                    {deactivating
-                      ? "Deactivating..."
-                      : "Deactivate Site"}
+                    Deactivate Site
                   </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
+                </DialogTrigger>
+
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle className="text-2xl">
+                      Deactivate Site?
+                    </DialogTitle>
+
+                    <DialogDescription className="pt-3 text-base leading-relaxed">
+                      All employees and supervisors
+                      associated with this site will be
+                      removed from the site upon
+                      deactivation.
+
+                      <br />
+                      <br />
+
+                      Jobs under this site will also
+                      become inactive.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <DialogFooter className="mt-4 flex-col gap-3 sm:flex-row">
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        setDeactivateOpen(false)
+                      }
+                    >
+                      Cancel
+                    </Button>
+
+                    <Button
+                      variant="destructive"
+                      disabled={deactivating}
+                      onClick={deactivateSite}
+                    >
+                      {deactivating
+                        ? "Deactivating..."
+                        : "Deactivate Site"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            ) : (
+              <Button
+                className="rounded-xl"
+                disabled={reactivating}
+                onClick={reactivateSite}
+              >
+                {reactivating
+                  ? "Reactivating..."
+                  : "Re-Activate Site"}
+              </Button>
+            )}
           </div>
         </Card>
 
@@ -309,14 +467,24 @@ async function deactivateSite() {
               Supervisors
             </h2>
 
-            <Link
-              to={`/site/${id}/manage-supervisors`}
-            >
-              <Button className="rounded-xl">
+            {isSiteActive ? (
+              <Link
+                to={`/site/${id}/manage-supervisors`}
+              >
+                <Button className="rounded-xl">
+                  <Plus className="mr-2 h-4 w-4" />
+                  Manage Supervisors
+                </Button>
+              </Link>
+            ) : (
+              <Button
+                disabled
+                className="rounded-xl"
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 Manage Supervisors
               </Button>
-            </Link>
+            )}
           </div>
 
           <div className="mb-6 grid gap-4 md:grid-cols-2">
@@ -414,12 +582,24 @@ async function deactivateSite() {
               Employees
             </h2>
 
-            <Link to={`/site/${id}/manage-employees`}>
-              <Button className="rounded-xl">
+            {isSiteActive ? (
+              <Link
+                to={`/site/${id}/manage-employees`}
+              >
+                <Button className="rounded-xl">
+                  <Plus className="mr-2 h-4 w-4" />
+                  Manage Employees
+                </Button>
+              </Link>
+            ) : (
+              <Button
+                disabled
+                className="rounded-xl"
+              >
                 <Plus className="mr-2 h-4 w-4" />
                 Manage Employees
               </Button>
-            </Link>
+            )}
           </div>
 
           <div className="mb-6 grid gap-4 md:grid-cols-2">
@@ -508,8 +688,224 @@ async function deactivateSite() {
             </div>
           </div>
         </Card>
-      </div>
+     
+
+      {/* Jobs Section */}
+
+      <Card className="rounded-3xl border bg-card p-8 shadow-sm">
+        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <Briefcase className="h-8 w-8" />
+
+            <h2 className="text-3xl font-bold">
+              Jobs
+            </h2>
+          </div>
+
+          <Dialog
+            open={jobDialogOpen}
+            onOpenChange={setJobDialogOpen}
+          >
+            <DialogTrigger asChild>
+              <Button className="rounded-xl" disabled={!isSiteActive}>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Job
+              </Button>
+            </DialogTrigger>
+
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-2xl">
+                  Create New Job
+                </DialogTitle>
+
+                <DialogDescription>
+                  Add a new job under this site.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-5 py-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Job Name
+                  </label>
+
+                  <Input
+                    placeholder="Enter job name"
+                    value={jobForm.name}
+                    onChange={(e) =>
+                      setJobForm((prev) => ({
+                        ...prev,
+                        name: e.target.value,
+                      }))
+                    }
+                  />
+
+                  {jobErrors.name && (
+                    <p className="text-sm text-red-500">
+                      {jobErrors.name}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Job Code
+                  </label>
+
+                  <Input
+                    placeholder="Enter job code"
+                    value={jobForm.jobCode}
+                    onChange={(e) =>
+                      setJobForm((prev) => ({
+                        ...prev,
+                        jobCode: e.target.value,
+                      }))
+                    }
+                  />
+
+                  {jobErrors.jobCode && (
+                    <p className="text-sm text-red-500">
+                      {jobErrors.jobCode}
+                    </p>
+                  )}
+                </div>
+
+                {jobErrors.general && (
+                  <p className="text-sm text-red-500">
+                    {jobErrors.general}
+                  </p>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    setJobDialogOpen(false)
+                  }
+                >
+                  Cancel
+                </Button>
+
+                <Button
+                  disabled={creatingJob}
+                  onClick={createJob}
+                >
+                  {creatingJob
+                    ? "Creating..."
+                    : "Create Job"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        {loadingJobs ? (
+          <div className="flex h-40 items-center justify-center text-muted-foreground">
+            Loading jobs...
+          </div>
+        ) : jobs.length === 0 ? (
+          <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
+            <Briefcase className="h-10 w-10 text-muted-foreground" />
+
+            <div>
+              <p className="font-medium">
+                No jobs found
+              </p>
+
+              <p className="text-sm text-muted-foreground">
+                Create your first job for this site.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+            {jobs.map((job) => (
+              <div
+                key={job._id}
+                onClick={() =>
+                  navigate(`/site/job/${job._id}`)
+                }
+                className="cursor-pointer rounded-3xl border bg-background p-6 transition hover:-translate-y-1 hover:shadow-md"
+              >
+                <div className="mb-5 flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xl font-semibold">
+                        {job.name}
+                      </h3>
+
+                      <div
+                        className={`rounded-full px-2 py-1 text-[10px] font-medium ${job.isActive
+                            ? "bg-green-100 text-green-700"
+                            : "bg-red-100 text-red-700"
+                          }`}
+                      >
+                        {job.isActive
+                          ? "Active"
+                          : "Inactive"}
+                      </div>
+                    </div>
+
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {job.jobCode}
+                    </p>
+                  </div>
+
+                  <Briefcase className="h-6 w-6 text-muted-foreground" />
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                    <div className="flex items-center gap-2">
+                      <Clock3 className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Man Hours
+                      </span>
+                    </div>
+
+                    <span className="font-semibold">
+                      {job.totalManHours}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                    <div className="flex items-center gap-2">
+                      <CalendarDays className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Days Spent
+                      </span>
+                    </div>
+
+                    <span className="font-semibold">
+                      {job.totalDays}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                    <div className="flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Employees
+                      </span>
+                    </div>
+
+                    <span className="font-semibold">
+                      {job.employeeCount}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
+     </div>
   )
 }
 

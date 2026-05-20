@@ -56,6 +56,7 @@ const employeeSchema = new mongoose.Schema({
   timestamps: true
 });
 
+employeeSchema.index({ currentJob: 1 });
 
 employeeSchema.index({ currentSite: 1 });
 

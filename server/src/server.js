@@ -23,6 +23,7 @@ import empRoutes from '../src/routes/empRoutes.js'
 import userRoutes from '../src/routes/userRoutes.js'
 import attendanceRoutes from '../src/routes/attendanceRoutes.js'
 import siteRoutes from '../src/routes/siteRoutes.js'
+import configRoutes from '../src/routes/configRoutes.js'
 
 app.use(cookieParser())
 
@@ -31,6 +32,7 @@ app.use('/api/employees', empRoutes)
 app.use('/api/user', userRoutes)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/site', siteRoutes)
+app.use('/api/config', configRoutes)
 
 
 

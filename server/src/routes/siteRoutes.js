@@ -42,18 +42,21 @@ router.patch("/reactivate/:siteId",siteController.reactivateSite)//
 
 router.post('/:siteId/add-job', siteController.addJob)//
 
-router.delete('/:jobId/remove-employee', siteController.removeEmployeeFromJob)//
+router.get('/job/:jobId',siteController.getJob)
 
-router.post('/:jobId/add-employee', siteController.addEmployeeToJob)//
+router.delete('/job/:jobId/remove-employee', siteController.removeEmployeeFromJob)//
+
+router.post('/job/:jobId/add-employee', siteController.addEmployeeToJob)//
 
 router.get('/:jobId/job-data', siteController.jobManHoursAndDays)//
 
 router.get('/:siteId/Jobs', siteController.getSiteJobs)//
 
+router.get('/job/:jobId/employees', siteController.getJobEmployees)
 
+router.get('/:siteId/free-employees',siteController.getUnassignedSiteEmployees)
 
-
-
+router.patch('/job/:jobId/status', siteController.changeJobStatus)
 
 
 

@@ -38,6 +38,20 @@ import {
   X,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+
 
 type Attendance = {
   attendanceId: string
@@ -81,22 +95,21 @@ function EditPastAttendance() {
     today.toLocaleDateString("en-CA")
   )
 
+  const todayDateString = new Date().toLocaleDateString("en-CA")
+
   const navigate = useNavigate()
 
-  const [attendance, setAttendance] =
-    useState<Attendance[]>([])
+  const [attendance, setAttendance] = useState<Attendance[]>([])
 
-  const [sites, setSites] =
-    useState<Site[]>([])
+  const [sites, setSites] = useState<Site[]>([])
 
-  const [loading, setLoading] =
-    useState(false)
+  const [loading, setLoading] = useState(false)
 
-  const [saving, setSaving] =
-    useState(false)
+  const [saving, setSaving] = useState(false)
 
-  const [editingId, setEditingId] =
-    useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+
+  const [isHoliday, setIsHoliday] = useState<boolean>(false)
 
   const [filters, setFilters] =
     useState<Filters>({
@@ -108,17 +121,90 @@ function EditPastAttendance() {
       limit: 10,
     })
 
-  const [totalPages, setTotalPages] =
-    useState(1)
+  const [totalPages, setTotalPages] = useState(1)
 
-  const formattedDate = new Date(
-    date
-  ).toLocaleDateString("en-IN", {
+  const formattedDate = new Date(date).toLocaleDateString("en-IN", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
   })
+
+  const [openHolidayDialog, setOpenHolidayDialog] = useState(false)
+
+  const [pendingHolidayValue, setPendingHolidayValue] = useState(false)
+
+  const [holidayReason, setHolidayReason] = useState<string>("")
+
+    const checkHolidayStatus = async () => {
+    try {
+
+      // ---------------- GET WORK SCHEDULE ----------------
+      const configRes = await api.get("/api/config")
+
+      const weeklyHolidays = configRes.data.data.weeklyHolidays || []
+
+
+      // ---------------- WEEKLY HOLIDAY PRIORITY ----------------
+      if (weeklyHolidays.includes(date)) {
+        setHolidayReason("Weekly Holiday")
+        return
+      }
+
+      // ---------------- CUSTOM HOLIDAY CHECK ----------------
+      const holidayRes = await api.get(
+        "/api/config/custom-holidays/check",
+        {
+          params: {
+            date: date,
+          },
+        }
+      )
+
+      if (holidayRes.data.isHoliday) {
+        setHolidayReason(holidayRes.data.reason)
+      } else {
+        setHolidayReason("")
+      }
+
+    } catch (error) {
+      console.log(error)
+    }
+  }
+
+  const handleHolidayToggle = (checked: boolean) => {
+    setPendingHolidayValue(checked)
+
+    setOpenHolidayDialog(true)
+  }
+
+  const confirmHolidayToggle = async () => {
+    try {
+      await api.patch(
+        "/api/attendance/update/set-holiday",
+        {
+          date,
+          isHoliday: pendingHolidayValue,
+        }
+      )
+
+      setIsHoliday(pendingHolidayValue)
+
+      toast.success(
+        pendingHolidayValue
+          ? "Holiday declared successfully"
+          : "Holiday removed successfully"
+      )
+
+      setOpenHolidayDialog(false)
+    } catch (error) {
+      console.log(error)
+
+      toast.error(
+        "Failed to update holiday status"
+      )
+    }
+  }
 
   const fetchSites = async () => {
     try {
@@ -152,6 +238,8 @@ function EditPastAttendance() {
           }
         )
 
+      setIsHoliday(res.data.isHoliday || false)
+
       setAttendance(res.data.data)
 
       setTotalPages(
@@ -168,19 +256,18 @@ function EditPastAttendance() {
     }
   }
 
+
   useEffect(() => {
     fetchSites()
   }, [])
 
   useEffect(() => {
+    checkHolidayStatus()
     fetchAttendance()
   }, [date, filters])
 
-  const changeDate = (
-    direction: "prev" | "next"
-  ) => {
-    const current =
-      new Date(date)
+  const changeDate = ( direction: "prev" | "next" ) => {
+    const current = new Date(date)
 
     if (direction === "prev") {
       current.setDate(
@@ -192,114 +279,104 @@ function EditPastAttendance() {
       )
     }
 
-    setDate(
-      current.toLocaleDateString(
-        "en-CA"
-      )
-    )
-  }
+    const newDate =
+      current.toLocaleDateString("en-CA")
 
-    const unlockAttendance = async ( attendanceId: string ) => {
-        try {
-            const selected = attendance.find(
-                (item) =>
-                    item.attendanceId ===
-                    attendanceId
-            )
-
-            if (!selected) return
-
-            await api.patch(
-                "/api/attendance/unlock",
-                {
-                    siteId: selected.siteId,
-
-                    date: new Date(
-                        selected.date
-                    ).toLocaleDateString(
-                        "en-CA"
-                    ),
-                }
-            )
-
-            setEditingId(attendanceId)
-
-            toast.success(
-                "Attendance unlocked"
-            )
-        } catch (error: any) {
-            toast.error(
-                error?.response?.data
-                    ?.message ||
-                "Failed to unlock attendance"
-            )
-        }
+    // prevent going beyond today
+    if (newDate > todayDateString) {
+      return
     }
 
-  const updateField = (
-    attendanceId: string,
-    field: keyof Attendance,
-    value: any
-  ) => {
+    setDate(newDate)
+  }
+
+  const unlockAttendance = async (attendanceId: string) => {
+    try {
+      const selected = attendance.find(
+        (item) =>
+          item.attendanceId ===
+          attendanceId
+      )
+
+      if (!selected) return
+
+      await api.patch(
+        "/api/attendance/unlock",
+        {
+          siteId: selected.siteId,
+
+          date: new Date(
+            selected.date
+          ).toLocaleDateString(
+            "en-CA"
+          ),
+        }
+      )
+
+      setEditingId(attendanceId)
+
+      toast.success(
+        "Attendance unlocked"
+      )
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data
+          ?.message ||
+        "Failed to unlock attendance"
+      )
+    }
+  }
+
+  const updateField = (attendanceId: string, field: keyof Attendance, value: any) => {
     setAttendance((prev) =>
       prev.map((item) =>
         item.attendanceId ===
-        attendanceId
-          ? {
-              ...item,
-              [field]: value,
-            }
-          : item
+        attendanceId ? {
+          ...item,
+          [field]: value,
+          } : item
       )
     )
   }
 
-  const saveAttendance =
-    async (
-      attendanceId: string
-    ) => {
-      try {
-        setSaving(true)
+  const saveAttendance = async (attendanceId: string) => {
+    try {
+      setSaving(true)
 
-        const selected =
-          attendance.find(
-            (item) =>
-              item.attendanceId ===
-              attendanceId
-          )
-
-        if (!selected) return
-
-        await api.patch(
-          `/api/attendance/update/${attendanceId}`,
-          {
-            status:
-              selected.status,
-
-            overtimeHours:
-              Number(
-                selected.overtimeHours
-              ) || 0,
-          }
+      const selected =
+        attendance.find(
+          (item) =>
+            item.attendanceId ===
+            attendanceId
         )
 
-        toast.success(
-          "Attendance updated"
-        )
+      if (!selected) return
 
-        setEditingId(null)
+      await api.patch(`/api/attendance/update/${attendanceId}`,
+        {
+          status:
+            selected.status,
 
-        fetchAttendance()
-      } catch (error: any) {
-        toast.error(
-          error?.response?.data
-            ?.message ||
-            "Failed to update attendance"
-        )
-      } finally {
-        setSaving(false)
-      }
+          overtimeHours:
+            Number(selected.overtimeHours) || 0,
+        }
+      )
+
+      toast.success("Attendance updated")
+
+      setEditingId(null)
+
+      fetchAttendance()
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data
+          ?.message ||
+        "Failed to update attendance"
+      )
+    } finally {
+      setSaving(false)
     }
+  }
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -330,10 +407,7 @@ function EditPastAttendance() {
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() =>
-                    changeDate(
-                      "prev"
-                    )
+                  onClick={() =>changeDate("prev")
                   }
                 >
                   <ChevronLeft className="h-4 w-4" />
@@ -342,37 +416,47 @@ function EditPastAttendance() {
                 <Input
                   type="date"
                   value={date}
-                  onChange={(e) =>
-                    setDate(
-                      e.target.value
-                    )
-                  }
+                  max={todayDateString}
+                  onChange={(e) => { 
+                    
+                    const selectedDate = e.target.value
+
+                    // prevent selecting future date
+                    if (
+                      selectedDate > todayDateString
+                    ) {
+                      toast.error(
+                        "Future dates are not allowed"
+                      )
+
+                      setDate(todayDateString)
+
+                      return
+                    }
+
+                    setDate(selectedDate)
+                  }}
                   className="w-[180px]"
                 />
 
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() =>
-                    changeDate(
-                      "next"
-                    )
-                  }
+                  onClick={() =>changeDate("next")}
                 >
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
               <Input
                 placeholder="Search name"
                 value={filters.name}
                 onChange={(e) =>
                   setFilters({
                     ...filters,
-                    name:
-                      e.target.value,
+                    name: e.target.value,
                     page: 1,
                   })
                 }
@@ -408,18 +492,7 @@ function EditPastAttendance() {
                 }
               />
 
-              <Select
-                value={filters.site}
-                onValueChange={(
-                  value
-                ) =>
-                  setFilters({
-                    ...filters,
-                    site: value,
-                    page: 1,
-                  })
-                }
-              >
+              <Select value={filters.site} onValueChange={(value) => setFilters({...filters, site: value, page: 1,})}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select Site" />
                 </SelectTrigger>
@@ -447,7 +520,32 @@ function EditPastAttendance() {
                   )}
                 </SelectContent>
               </Select>
+
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="holiday"
+                  checked={isHoliday}
+                  onCheckedChange={(checked) =>
+                    handleHolidayToggle(checked === true)
+                  }
+                />
+
+                <Label htmlFor="holiday">Holiday</Label>
+              </div>
+
+              {isHoliday && (
+                <div className="pt-2">
+                  <Badge
+                    variant="secondary"
+                    className="bg-yellow-100 text-yellow-800 border-yellow-300"
+                  >
+                    Holiday • {holidayReason}
+                  </Badge>
+                </div>
+              )}
             </div>
+
+             
           </CardContent>
         </Card>
 
@@ -709,6 +807,38 @@ function EditPastAttendance() {
             Next
           </Button>
         </div>
+        <AlertDialog
+          open={openHolidayDialog}
+          onOpenChange={setOpenHolidayDialog}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {pendingHolidayValue
+                  ? "Declare holiday?"
+                  : "Remove holiday?"}
+              </AlertDialogTitle>
+
+              <AlertDialogDescription>
+                {pendingHolidayValue
+                  ? "This day will be marked as a holiday for all employees. Are you sure you want to continue?"
+                  : "This day will no longer be treated as a holiday. Are you sure you want to continue?"}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+
+            <AlertDialogFooter>
+              <AlertDialogCancel>
+                Cancel
+              </AlertDialogCancel>
+
+              <AlertDialogAction
+                onClick={confirmHolidayToggle}
+              >
+                Confirm
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   )
