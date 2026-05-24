@@ -1,6 +1,7 @@
 import userModel from "../models/userModel.js";
 import bcrypt from "bcryptjs";
 import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
+import empModel from "../models/empModel.js";
 
 export const login = async (req, res) => {
     try{
@@ -44,5 +45,88 @@ export async function checkAuth(req, res){
         res.status(200).json({success: true, user})
     }catch(error){
         res.status(400).json({success: false, message: error.message})
+    }
+}
+
+
+export async function updateUser(req, res) {
+  try {
+    const { userId } = req.params;
+    const { email, password, assignedSite } = req.body;
+
+    const user = await userModel.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const employee = await empModel.findOne({employeeId: user.employeeId})
+
+    if (!employee){
+      return res.status(404).json({
+        success: false,
+        message: "Employe not found",
+      });
+    }
+
+    const updateData = {};
+
+    if (email) {
+      updateData.email = email;
+    }
+
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      updateData.password = hashedPassword;
+    }
+
+    if (assignedSite){
+      updateData.assignedSite = assignedSite
+      employee.currentSite = assignedSite
+    }
+
+    const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true});
+
+    await employee.save()
+
+    res.status(200).json({
+      success: true,
+      message: "The user has been updated",
+      updatedUser
+    });
+
+  } catch (error) {
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "The email already exists",
+      });
+    }
+
+    console.log(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+}
+
+export async function getUsers(req, res) {
+    try
+    {
+        const users = await userModel.find({role: "supervisor"})
+        res.status(200).json(users)
+    }
+    catch (error) {
+        console.log(error)
+        res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
     }
 }

@@ -111,42 +111,66 @@ export const addEmployee = async (req, res) => {
 
 // POST /api/employees/Supervisor
 export const addSupervisor = async (req, res) => {
+
   try {
-    const { name, employeeId, email, password } = req.body;
 
-    const role = "supervisor";
+    const {
+      name,
+      employeeId,
+      email,
+      password,
+    } = req.body
 
-    const supervisor = new userModel({ name, email, password, role });
-    const savedUser = await supervisor.save();
+    const role = "supervisor"
 
-    const employee = await empModel.findOne({ employeeId });
+    const employee = await empModel.findOne({ employeeId })
 
     if (!employee) {
-      return res.status(404).json({ message: "Employee not found" });
+      return res.status(404).json({
+        message: "Employee not found",
+      })
     }
 
-    employee.user = savedUser._id;
-    await employee.save();
+    const supervisor = new userModel({
+      name,
+      employeeId,
+      email,
+      password,
+      role,
 
-    res.status(201).json(savedUser);
+      assignedSite: employee.currentSite,
+    })
+
+    const savedUser = await supervisor.save()
+
+    employee.user = savedUser._id
+
+    await employee.save()
+
+    res.status(201).json(savedUser)
 
   } catch (error) {
+
     if (error.code === 11000) {
       return res.status(409).json({
-        message: "Conflict: Email ID already exists in the system."
-      });
+        message: "Conflict: Email ID already exists in the system.",
+      })
     }
-    console.log(error);
-    res.status(500).json({ message: "Internal server error" });
+
+    console.log(error)
+
+    res.status(500).json({
+      message: "Internal server error",
+    })
   }
-};
+}
 
 
 // PUT /api/employees/:id
 export const editEmployee = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, currentSite } = req.body;
+    const { name, currentSite, employeeId } = req.body;
 
     const existingEmployee = await empModel.findById(id);
 
@@ -187,6 +211,7 @@ export const editEmployee = async (req, res) => {
     if (employee.user) {
       await userModel.findByIdAndUpdate(employee.user, {
         name,
+        employeeId,
         assignedSite: currentSite,
       });
     }
@@ -197,6 +222,11 @@ export const editEmployee = async (req, res) => {
 
   } catch (error) {
     console.log(error);
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "Conflict: Employee ID already exists in the system."
+      });
+    }
 
     res.status(500).json({
       message: "Internal Server Error",

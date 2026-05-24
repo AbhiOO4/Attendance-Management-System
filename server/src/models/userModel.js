@@ -33,6 +33,17 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Site',
     default: null
+  },
+
+  employeeId: {
+    type: String,
+    ref: 'Employee',
+    required: function () {
+      return this.role === "supervisor";
+    },
+
+    unique: true,
+    sparse: true,
   }
 
 }, {
