@@ -1,6 +1,9 @@
 import { useState } from "react"
+import { useEffect } from "react"
+
 
 import { Button } from "@/components/ui/button"
+import SearchableSelect from "./SearchableSelect"
 
 import {
   Dialog,
@@ -20,6 +23,7 @@ import {
 
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
+import { api } from "@/lib/api"
 
 interface Site {
   _id: string
@@ -34,6 +38,11 @@ type NewEmployee = {
   monthlySalary: number
 }
 
+type JobTitle = {
+  _id: string
+  title: string
+}
+
 interface Props {
   onAdd: ( newEmployee: NewEmployee ) => Promise<void>
   sites: Site []
@@ -42,7 +51,19 @@ interface Props {
 function AddEmployee({ onAdd, sites }: Props) {
   const [open, setOpen] = useState(false)
 
+  const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
+
   const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0,})
+
+  const fetchTitles = async () => {
+    try {
+      const res = await api.get<JobTitle[]>('/api/employees/jobTitles')
+      console.log(res.data)
+      setJobTitles(res.data)
+    } catch (error) {
+      console.log(error)
+    }
+  }
 
   const handleSubmit = async () => {
 
@@ -78,6 +99,12 @@ function AddEmployee({ onAdd, sites }: Props) {
 
     setOpen(false)
   }
+
+  useEffect(() => {
+    if (open) {
+      fetchTitles()
+    }
+  }, [open])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -117,15 +144,16 @@ function AddEmployee({ onAdd, sites }: Props) {
             }
           />
 
-          <Input
-            placeholder="Job Title"
+          <SearchableSelect
+            jobs={jobTitles}
             value={formData.jobTitle}
-            onChange={(e) =>
+            onChange={(value) =>
               setFormData({
                 ...formData,
-                jobTitle: e.target.value,
+                jobTitle: value,
               })
             }
+            placeholder="Select Job Title"
           />
 
           <Select

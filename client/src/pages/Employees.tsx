@@ -79,6 +79,7 @@ type UpdateInfo = {
   monthlySalary: number
 }
 
+
 function Employees() {
   const [filters, setFilters] = useState<Filters>({
     name: "",
@@ -92,6 +93,7 @@ function Employees() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [siteMap, setSiteMap] = useState<Record<string, string>>({})
+
 
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
@@ -115,6 +117,8 @@ function Employees() {
       setEmployees([])
     }
   }
+
+
 
   const fetchSites = async () => {
     try {

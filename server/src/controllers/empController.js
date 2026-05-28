@@ -1,5 +1,6 @@
 import empModel from '../models/empModel.js'
 import jobModel from '../models/jobModel.js';
+import jobTitleModel from '../models/jobTitleModel.js';
 import userModel from '../models/userModel.js'
 
 //Admin
@@ -418,6 +419,24 @@ export const deleteSupervisor = async (req, res) => {
   }
 }
 
+export const getJobTitles = async (req, res) => {
+  try {
+    const jobTitles = await jobTitleModel
+      .find()
+      .sort({ title: 1 })
+      .lean()
+
+    res.status(200).json(jobTitles)
+
+  } catch (error) {
+    console.error(error)
+
+    res.status(500).json({
+      message: "Internal Server Errorr",
+    })
+  }
+}
+
 const empController = {
   getAllEmployees,
   addEmployee,
@@ -427,7 +446,8 @@ const empController = {
   deleteEmployee,
   editEmployee,
   getSupervisors,
-  deleteSupervisor
+  deleteSupervisor,
+  getJobTitles
 };
 
 export default empController;

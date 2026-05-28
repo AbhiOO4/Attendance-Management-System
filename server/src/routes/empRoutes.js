@@ -24,6 +24,8 @@ router.post('/', authorizeRoles("admin"), employeeValidation, empController.addE
 
 router.get('/Supervisors', authorizeRoles("admin"), empController.getSupervisors)//
 
+router.get('/jobTitles', authorizeRoles('admin'), empController.getJobTitles)
+
 router.get('/:id', authorizeRoles("admin"), empController.getEmployee)//
 
 router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.editEmployee)// 
@@ -33,6 +35,8 @@ router.delete('/:id', authorizeRoles("admin"), empController.deleteEmployee)//
 router.post('/Supervisor', authorizeRoles("admin"), empController.addSupervisor)// 
 
 router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSupervisor)
+
+
 
 
 

@@ -1,8 +1,9 @@
 // EditEmployee.tsx
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 
 import { Button } from "@/components/ui/button"
+import SearchableSelect from "./SearchableSelect"
 
 import {
   Dialog,
@@ -23,6 +24,7 @@ import {
 
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
+import { api } from "@/lib/api"
 
 interface Employee {
   _id: string
@@ -46,6 +48,11 @@ interface Site {
   siteName: string
 }
 
+type JobTitle = {
+  _id: string
+  title: string
+}
+
 interface Props {
   employee: Employee
 
@@ -57,6 +64,8 @@ function EditEmployee({employee, onSave, sites }: Props) {
 
   const [open, setOpen] = useState(false)
 
+  const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
+
   const [formData, setFormData] =
     useState<UpdateInfo>({
       name: employee.name,
@@ -65,6 +74,19 @@ function EditEmployee({employee, onSave, sites }: Props) {
       currentSite: employee.currentSite,
       monthlySalary: employee.monthlySalary,
     })
+
+  const fetchTitles = async () => {
+    try {
+      const res = await api.get<JobTitle[]>(
+        "/api/employees/jobTitles"
+      )
+
+      setJobTitles(res.data)
+
+    } catch (error) {
+      console.log(error)
+    }
+  }
 
   const handleSave = async () => {
     if (!formData.name.trim()) {
@@ -89,6 +111,12 @@ function EditEmployee({employee, onSave, sites }: Props) {
     await onSave(employee._id, formData)
     setOpen(false)
   }
+
+  useEffect(() => {
+    if (open) {
+      fetchTitles()
+    }
+  }, [open])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -128,15 +156,16 @@ function EditEmployee({employee, onSave, sites }: Props) {
             }
           />
 
-          <Input
-            placeholder="Job Title"
+          <SearchableSelect
+            jobs={jobTitles}
             value={formData.jobTitle}
-            onChange={(e) =>
+            onChange={(value) =>
               setFormData({
                 ...formData,
-                jobTitle: e.target.value,
+                jobTitle: value,
               })
             }
+            placeholder="Select Job Title"
           />
 
            <Select
