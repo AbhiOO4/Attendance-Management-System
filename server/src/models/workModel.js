@@ -14,10 +14,36 @@ const workScheduleSchema = new mongoose.Schema(
       trim: true,
     },
 
-    shiftHours: {
+    // Hours required for full-day attendance
+    fullDayHours: {
       type: Number,
       required: true,
       min: 1,
+      default: 8,
+    },
+
+    // Minimum hours required for half-day attendance
+    halfDayHours: {
+      type: Number,
+      required: true,
+      min: 1,
+      default: 4,
+    },
+
+    // Hours after which overtime starts
+    overtimeThreshold: {
+      type: Number,
+      required: true,
+      min: 1,
+      default: 8,
+    },
+
+    // OT pay rate per hour
+    overtimeRatePerHour: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
     },
 
     weeklyHolidays: {
@@ -37,4 +63,7 @@ const workScheduleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export default mongoose.model("WorkSchedule", workScheduleSchema);
+export default mongoose.model(
+  "WorkSchedule",
+  workScheduleSchema
+);

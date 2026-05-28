@@ -15,6 +15,7 @@ connectDB()
 
 import userModel from "../models/userModel.js";
 import workModel from "../models/workModel.js";
+import jobTitleModel from "../models/jobTitleModel.js";
 
 const seeWorkSchedule = async () => {
     try {
@@ -31,7 +32,9 @@ const seeWorkSchedule = async () => {
     }
 }
 
-seeWorkSchedule()
+jobTitleModel.insertMany([{title: "Welder"}, {title: "Staff"}, {title: "Mechanic"}, {title: "Fitter"}, {title: "Gas-cutter"}, {title: "Grinder"}, {title: "Mig-welder"}, {title: "T-welder"}, {title: "HSE"}])
+
+// seeWorkSchedule()
 
 // async function createAdmin (name, email, password) {
 //     const admin = new userModel({name, email, password, role: 'admin'})

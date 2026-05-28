@@ -55,7 +55,7 @@ export const getAllEmployees = async (req, res) => {
     let query = empModel.find(
       filter,
       "_id name employeeId jobTitle monthlySalary currentSite currentJob"
-    );
+    ).sort({ name: 1 });
 
     // apply pagination only if both page and limit are provided
     if (page && limit) {

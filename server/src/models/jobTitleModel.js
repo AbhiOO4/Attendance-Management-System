@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 
 const jobTitleSchema = new mongoose.Schema(
   {
-    name: {
+    title: {
       type: String,
       required: true,
       unique: true,

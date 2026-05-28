@@ -1,6 +1,7 @@
 import { api } from "@/lib/api"
 import { useEffect, useState } from "react"
 import toast from "react-hot-toast"
+import EditRecord from "@/components/EditRecord"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -29,7 +30,7 @@ import {
 } from "@/components/ui/table"
 
 import {
-    ArrowLeft,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Loader2,
@@ -53,16 +54,78 @@ import {
 } from "@/components/ui/alert-dialog"
 
 
-type Attendance = {
+// Add these updated interfaces
+
+export interface AttendanceSession {
+  _id: string
+
+  siteId: string
+
+  siteName: string
+
+  jobId?: string | null
+
+  jobName?: string
+
+  checkIn?: string | null
+
+  checkOut?: string | null
+
+  workedHours: number
+
+  markedBy: string
+}
+
+export interface AttendanceRecord {
   attendanceId: string
+
   employee: string
-  siteId: string,
-  date: string
+
   name: string
+
   employeeId: string
+
   jobTitle: string
-  status: "present" | "absent" | "halfday"
-  overtimeHours: number | ""
+
+  siteId: string
+
+  siteName: string
+
+  jobId?: string | null
+
+  jobName?: string
+
+  date: string
+
+  status: "fullday" | "halfday" | "absent"
+
+  isHoliday: boolean
+
+  totalWorkHours: number
+
+  overtimeHours: number
+
+  sessions: AttendanceSession[]
+}
+
+export interface AttendancePagination {
+  currentPage: number;
+
+  totalPages: number;
+
+  totalRecords: number;
+
+  limit: number;
+}
+
+export interface AttendanceRecordsResponse {
+  success: boolean;
+
+  isHoliday: boolean;
+
+  pagination: AttendancePagination;
+
+  data: AttendanceRecord[];
 }
 
 type Site = {
@@ -72,12 +135,6 @@ type Site = {
   isActive: boolean
 }
 
-interface DailyResponse {
-  totalPages: number
-  totalRecords: number
-  isHoliday: boolean
-  data: Attendance[]
-}
 
 interface Filters {
   name: string
@@ -91,15 +148,13 @@ interface Filters {
 function EditPastAttendance() {
   const today = new Date()
 
-  const [date, setDate] = useState(
-    today.toLocaleDateString("en-CA")
-  )
+  const [date, setDate] = useState(today.toLocaleDateString("en-CA"))
 
   const todayDateString = new Date().toLocaleDateString("en-CA")
 
   const navigate = useNavigate()
 
-  const [attendance, setAttendance] = useState<Attendance[]>([])
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
   const [sites, setSites] = useState<Site[]>([])
 
@@ -107,7 +162,8 @@ function EditPastAttendance() {
 
   const [saving, setSaving] = useState(false)
 
-  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingRecord, setEditingRecord] =
+  useState<AttendanceRecord | null>(null)
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
 
@@ -136,7 +192,7 @@ function EditPastAttendance() {
 
   const [holidayReason, setHolidayReason] = useState<string>("")
 
-    const checkHolidayStatus = async () => {
+  const checkHolidayStatus = async () => {
     try {
 
       // ---------------- GET WORK SCHEDULE ----------------
@@ -218,22 +274,17 @@ function EditPastAttendance() {
     }
   }
 
+
   const fetchAttendance = async () => {
     try {
       setLoading(true)
 
-      const res =
-        await api.get<DailyResponse>(
-          "/api/attendance/reports/daily",
+      const res = await api.get<AttendanceRecordsResponse>("/api/attendance",
           {
             params: {
               date,
               ...filters,
-              site:
-                filters.site ===
-                "all"
-                  ? ""
-                  : filters.site,
+              site: filters.site === "all" ? "" : filters.site,
             },
           }
         )
@@ -242,9 +293,7 @@ function EditPastAttendance() {
 
       setAttendance(res.data.data)
 
-      setTotalPages(
-        res.data.totalPages || 1
-      )
+      setTotalPages(res.data.pagination.totalPages)
     } catch (error: any) {
       toast.error(
         error?.response?.data
@@ -290,93 +339,16 @@ function EditPastAttendance() {
     setDate(newDate)
   }
 
-  const unlockAttendance = async (attendanceId: string) => {
-    try {
-      const selected = attendance.find(
-        (item) =>
-          item.attendanceId ===
-          attendanceId
-      )
-
-      if (!selected) return
-
-      await api.patch(
-        "/api/attendance/unlock",
-        {
-          siteId: selected.siteId,
-
-          date: new Date(
-            selected.date
-          ).toLocaleDateString(
-            "en-CA"
-          ),
-        }
-      )
-
-      setEditingId(attendanceId)
-
-      toast.success(
-        "Attendance unlocked"
-      )
-    } catch (error: any) {
-      toast.error(
-        error?.response?.data
-          ?.message ||
-        "Failed to unlock attendance"
-      )
-    }
-  }
-
-  const updateField = (attendanceId: string, field: keyof Attendance, value: any) => {
+  const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
-      prev.map((item) =>
-        item.attendanceId ===
-        attendanceId ? {
-          ...item,
-          [field]: value,
-          } : item
-      )
+      prev.map((record) => record.attendanceId === updatedRecord.attendanceId ? updatedRecord : record)
     )
   }
 
-  const saveAttendance = async (attendanceId: string) => {
-    try {
-      setSaving(true)
+ 
 
-      const selected =
-        attendance.find(
-          (item) =>
-            item.attendanceId ===
-            attendanceId
-        )
-
-      if (!selected) return
-
-      await api.patch(`/api/attendance/update/${attendanceId}`,
-        {
-          status:
-            selected.status,
-
-          overtimeHours:
-            Number(selected.overtimeHours) || 0,
-        }
-      )
-
-      toast.success("Attendance updated")
-
-      setEditingId(null)
-
-      fetchAttendance()
-    } catch (error: any) {
-      toast.error(
-        error?.response?.data
-          ?.message ||
-        "Failed to update attendance"
-      )
-    } finally {
-      setSaving(false)
-    }
-  }
+  
+ 
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -551,16 +523,25 @@ function EditPastAttendance() {
 
         <Card>
           <CardContent className="p-0">
-            {loading ? (
-              <div className="flex min-h-[300px] items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin" />
-              </div>
-            ) : (
+            <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>S.No</TableHead>
                     <TableHead>
                       Employee
+                    </TableHead>
+
+                    <TableHead>
+                      Employee ID
+                    </TableHead>
+
+                    <TableHead>
+                      Job Title
+                    </TableHead>
+
+                    <TableHead>
+                      Sessions
                     </TableHead>
 
                     <TableHead>
@@ -568,203 +549,193 @@ function EditPastAttendance() {
                     </TableHead>
 
                     <TableHead>
+                      Total Hours
+                    </TableHead>
+
+                    <TableHead>
                       OT Hours
                     </TableHead>
 
-                    <TableHead className="w-[180px]">
+                    <TableHead className="text-right">
                       Actions
                     </TableHead>
                   </TableRow>
                 </TableHeader>
 
                 <TableBody>
-                  {attendance.length >
-                  0 ? (
-                    attendance.map(
-                      (emp) => {
-                        const isEditing =
-                          editingId ===
-                          emp.attendanceId
-
-                        return (
-                          <TableRow
-                            key={
-                              emp.attendanceId
-                            }
-                          >
-                            <TableCell>
-                              <div className="space-y-1">
-                                <p className="font-medium">
-                                  {
-                                    emp.name
-                                  }
-                                </p>
-
-                                <p className="text-sm text-muted-foreground">
-                                  {
-                                    emp.employeeId
-                                  }{" "}
-                                  •{" "}
-                                  {
-                                    emp.jobTitle
-                                  }
-                                </p>
-                              </div>
-                            </TableCell>
-
-                            <TableCell>
-                              {isEditing ? (
-                                <Select
-                                  value={
-                                    emp.status
-                                  }
-                                  onValueChange={(
-                                    value
-                                  ) =>
-                                    updateField(
-                                      emp.attendanceId,
-                                      "status",
-                                      value
-                                    )
-                                  }
-                                >
-                                  <SelectTrigger className="w-[140px]">
-                                    <SelectValue />
-                                  </SelectTrigger>
-
-                                  <SelectContent>
-                                    <SelectItem value="present">
-                                      Present
-                                    </SelectItem>
-
-                                    <SelectItem value="halfday">
-                                      Half Day
-                                    </SelectItem>
-
-                                    <SelectItem value="absent">
-                                      Absent
-                                    </SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              ) : (
-                                <Badge
-                                  variant="outline"
-                                  className={
-                                    emp.status ===
-                                    "present"
-                                      ? "border-green-500 bg-green-500/10 text-green-600"
-                                      : emp.status ===
-                                          "halfday"
-                                        ? "border-yellow-500 bg-yellow-500/10 text-yellow-600"
-                                        : "border-red-500 bg-red-500/10 text-red-600"
-                                  }
-                                >
-                                  {emp.status}
-                                </Badge>
-                              )}
-                            </TableCell>
-
-                            <TableCell>
-                              {isEditing ? (
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  step={0.5}
-                                  value={
-                                    emp.overtimeHours
-                                  }
-                                  onChange={(
-                                    e
-                                  ) =>
-                                    updateField(
-                                      emp.attendanceId,
-                                      "overtimeHours",
-                                      e
-                                        .target
-                                        .value ===
-                                      ""
-                                        ? ""
-                                        : Number(
-                                            e
-                                              .target
-                                              .value
-                                          )
-                                    )
-                                  }
-                                  className="w-24"
-                                />
-                              ) : (
-                                emp.overtimeHours
-                              )}
-                            </TableCell>
-
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                {isEditing ? (
-                                  <>
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        saveAttendance(
-                                          emp.attendanceId
-                                        )
-                                      }
-                                      disabled={
-                                        saving
-                                      }
-                                    >
-                                      {saving ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                      ) : (
-                                        <Save className="h-4 w-4" />
-                                      )}
-                                    </Button>
-
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        setEditingId(
-                                          null
-                                        )
-                                      }
-                                    >
-                                      <X className="h-4 w-4" />
-                                    </Button>
-                                  </>
-                                ) : (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      unlockAttendance(
-                                        emp.attendanceId
-                                      )
-                                    }
-                                  >
-                                    <Pencil className="mr-2 h-4 w-4" />
-                                    Edit
-                                  </Button>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )
-                      }
-                    )
-                  ) : (
+                  {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
-                        className="py-10 text-center text-muted-foreground"
+                        colSpan={8}
+                        className="h-40 text-center"
+                      >
+                        <div className="flex items-center justify-center">
+                          <Loader2 className="h-6 w-6 animate-spin" />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : attendance.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={8}
+                        className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
                       </TableCell>
                     </TableRow>
+                  ) : (
+                    attendance.map((record, index) => {
+                      const serialNumber = (filters.page - 1) * filters.limit + index + 1
+                      return (
+                      <TableRow
+                        key={record.attendanceId}
+                      >
+                        <TableCell>
+                          {serialNumber}
+                        </TableCell>
+
+                        <TableCell className="font-medium">
+                          {record.name}
+                        </TableCell>
+
+                        <TableCell>
+                          {record.employeeId}
+                        </TableCell>
+
+                        <TableCell>
+                          {record.jobTitle}
+                        </TableCell>
+
+                        <TableCell>
+                          <div className="space-y-3 min-w-[300px]">
+                            {record.sessions.map(
+                              (session) => (
+                                <div
+                                  key={session._id}
+                                  className="rounded-md border p-3 text-sm"
+                                >
+                                  <div className="grid gap-1">
+                                    <p>
+                                      <span className="font-medium">
+                                        Site:
+                                      </span>{" "}
+                                      {
+                                        session.siteName
+                                      }
+                                    </p>
+
+                                    {session.jobName && (
+                                      <p>
+                                        <span className="font-medium">
+                                          Job:
+                                        </span>{" "}
+                                        {
+                                          session.jobName
+                                        }
+                                      </p>
+                                    )}
+
+                                    <p>
+                                      <span className="font-medium">
+                                        Check In:
+                                      </span>{" "}
+                                      {session.checkIn
+                                        ? new Date(
+                                          session.checkIn
+                                        ).toLocaleTimeString(
+                                          "en-IN",
+                                          {
+                                            hour: "2-digit",
+                                            minute:
+                                              "2-digit",
+                                          }
+                                        )
+                                        : "-"}
+                                    </p>
+
+                                    <p>
+                                      <span className="font-medium">
+                                        Check Out:
+                                      </span>{" "}
+                                      {session.checkOut
+                                        ? new Date(
+                                          session.checkOut
+                                        ).toLocaleTimeString(
+                                          "en-IN",
+                                          {
+                                            hour: "2-digit",
+                                            minute:
+                                              "2-digit",
+                                          }
+                                        )
+                                        : "-"}
+                                    </p>
+
+                                    <p>
+                                      <span className="font-medium">
+                                        Worked:
+                                      </span>{" "}
+                                      {
+                                        session.workedHours
+                                      }{" "}
+                                      hrs
+                                    </p>
+                                  </div>
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </TableCell>
+
+                        <TableCell>
+                          <Badge
+                            variant={
+                              record.status ===
+                                "fullday"
+                                ? "default"
+                                : record.status ===
+                                  "halfday"
+                                  ? "secondary"
+                                  : "destructive"
+                            }
+                          >
+                            {record.status}
+                          </Badge>
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            record.totalWorkHours
+                          }{" "}
+                          hrs
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            record.overtimeHours
+                          }{" "}
+                          hrs
+                        </TableCell>
+
+                        <TableCell className="text-right">
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            onClick={() =>
+                              setEditingRecord(
+                                record
+                              )
+                            }
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    )})
                   )}
                 </TableBody>
               </Table>
-            )}
+            </div>
           </CardContent>
         </Card>
 
@@ -840,6 +811,14 @@ function EditPastAttendance() {
           </AlertDialogContent>
         </AlertDialog>
       </div>
+      <EditRecord
+        open={!!editingRecord}
+        onClose={() =>
+          setEditingRecord(null)
+        }
+        record={editingRecord}
+        onUpdated={handleAttendanceUpdated}
+      />
     </div>
   )
 }

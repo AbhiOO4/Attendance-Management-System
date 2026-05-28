@@ -22,6 +22,7 @@ import ManageJobEmployees from "./pages/ManageJobEmployees"
 import MonthlyReport from "./pages/MonthlyReport"
 import Configure from "./pages/Configure"
 import ManageUsers from "./pages/ManageUsers"
+import SearchableSelect from "./pages/SearchableSelect"
 
 
 function App() {

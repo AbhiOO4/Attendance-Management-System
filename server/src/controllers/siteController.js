@@ -23,7 +23,7 @@ export const getSites = async (req, res) => {
         }
 
         
-        const sites = await siteModel.find(filter,"_id siteName locationDetails isActive").sort({isActive: -1})
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive ").sort({isActive: -1}).populate("jobs", "name")
         res.status(200).json(sites)
     }catch(error){  
         res.status(500).json({message: "Internal server error"})

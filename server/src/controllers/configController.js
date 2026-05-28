@@ -29,9 +29,17 @@ export const getWorkSchedule = async (req, res) => {
 
 export const updateWorkSchedule = async (req, res) => {
   try {
-    const { shiftHours, weeklyHolidays } = req.body;
+    const {
+      fullDayHours,
+      halfDayHours,
+      overtimeThreshold,
+      overtimeRatePerHour,
+      weeklyHolidays,
+    } = req.body;
 
-    const schedule = await workModel.findOne({ type: "default" });
+    const schedule = await workModel.findOne({
+      type: "default",
+    });
 
     if (!schedule) {
       return res.status(404).json({
@@ -40,27 +48,71 @@ export const updateWorkSchedule = async (req, res) => {
       });
     }
 
-    // Update only allowed fields
-    if (shiftHours !== undefined) {
-      schedule.shiftHours = shiftHours;
+    // Update only provided fields
+
+    if (fullDayHours !== undefined) {
+      schedule.fullDayHours = fullDayHours;
+    }
+
+    if (halfDayHours !== undefined) {
+      schedule.halfDayHours = halfDayHours;
+    }
+
+    if (overtimeThreshold !== undefined) {
+      schedule.overtimeThreshold =
+        overtimeThreshold;
+    }
+
+    if (
+      overtimeRatePerHour !== undefined
+    ) {
+      schedule.overtimeRatePerHour =
+        overtimeRatePerHour;
     }
 
     if (weeklyHolidays !== undefined) {
-      schedule.weeklyHolidays = weeklyHolidays;
+      schedule.weeklyHolidays =
+        weeklyHolidays;
     }
 
-    const updatedSchedule = await schedule.save();
+    // Optional validation
+    if (
+      schedule.halfDayHours >
+      schedule.fullDayHours
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Half day hours cannot exceed full day hours",
+      });
+    }
+
+    if (
+      schedule.overtimeThreshold <
+      schedule.fullDayHours
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Overtime threshold cannot be less than full day hours",
+      });
+    }
+
+    const updatedSchedule =
+      await schedule.save();
 
     return res.status(200).json({
       success: true,
-      message: "Work schedule updated successfully",
+      message:
+        "Work schedule updated successfully",
       data: updatedSchedule,
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Failed to update work schedule",
-      error,
+      message:
+        "Failed to update work schedule",
+      error: error.message,
     });
   }
 };

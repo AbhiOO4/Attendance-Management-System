@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import toast from "react-hot-toast"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
+import { Fragment } from "react"
 
 
 import {
@@ -35,13 +36,25 @@ import {
   Search,
 } from "lucide-react"
 
+// ================= TYPES =================
+
 interface Attendance {
   employee: string
   attendanceId?: string
+
+  jobId?: string | null
+
   name: string
   employeeId: string
   jobTitle: string
-  status: "present" | "absent" | "halfday"
+
+  checkIn: string
+  checkOut: string
+
+  workHours: number
+
+  status: | "fullday" | "halfday" | "absent"
+
   overtimeHours: number
 }
 
@@ -133,7 +146,8 @@ function MarkSiteAttendance() {
     }
   }
 
-  const initializeAttendanceFromEmployees = async () => {
+  const initializeAttendanceFromEmployees =
+    async () => {
       try {
         const res =
           await api.get<EmployeesResponse>(
@@ -146,33 +160,72 @@ function MarkSiteAttendance() {
           )
 
         const mappedAttendance =
-          res.data.employees.map((emp) => ({
-            employee: emp._id,
-            name: emp.name,
-            employeeId: emp.employeeId,
-            jobTitle: emp.jobTitle,
-            status: "absent" as const,
-            overtimeHours: 0,
-          }))
+          res.data.employees.map(
+            (emp) => ({
+              employee: emp._id,
 
-        setAttendance(mappedAttendance)
+              name: emp.name,
+              jobId: emp.currentJob,
+
+              employeeId:
+                emp.employeeId,
+
+              jobTitle: emp.jobTitle,
+
+              checkIn: "",
+
+              checkOut: "",
+
+              workHours: 0,
+
+              status:
+                "absent" as const,
+
+              overtimeHours: 0,
+            })
+          )
+
+        setAttendance(
+          mappedAttendance
+        )
       } catch (error) {
         console.log(error)
 
         setAttendance([])
       }
-  }
+    }
 
   interface AttendanceRecord {
     serialNumber: number
+
     attendanceId: string
+
+    jobId: string | null
+
     employee: string
+
     name: string
+
     employeeId: string
+
     jobTitle: string
-    status: "present" | "absent" | "halfday"
+
+    status:
+    | "fullday"
+    | "halfday"
+    | "absent"
+
     isHoliday: boolean
+
+    totalWorkHours: number
+
     overtimeHours: number
+
+    sessions: {
+      checkIn: string
+      checkOut: string
+      workedHours: number
+    }[]
   }
 
   interface DailyReportResponse {
@@ -188,61 +241,112 @@ function MarkSiteAttendance() {
     data: AttendanceRecord[]
   }
 
-  
+  const formatTimeForInput = (dateString: string) => {
+    const date = new Date(dateString)
 
+    const hours = String(date.getHours()).padStart(2, "0")
+    const minutes = String(date.getMinutes()).padStart(2, "0")
 
-  const fetchExistingAttendance = async () => {
-    try {
-      const res =
-        await api.get<DailyReportResponse>(
-          "/api/attendance/reports/daily",
-          {
-            params: {
-              date: today,
-              site: id,
-            },
-          }
-        )
-
-      const fetchedAttendance: Attendance[] =
-        res.data.data.map((emp) => ({
-          employee: emp.employee,
-          attendanceId: emp.attendanceId,
-          name: emp.name,
-          employeeId: emp.employeeId,
-          jobTitle: emp.jobTitle,
-          status: emp.status,
-          overtimeHours: emp.overtimeHours,
-        }))
-
-      setAttendance(fetchedAttendance)
-
-      // setIsHoliday(res.data.isHoliday || false)
-      // if (res.data.isHoliday) {
-      //   setHolidayReason("Holiday")
-      // } else {
-      //   setHolidayReason("")
-      // }
-    } catch (error) {
-      console.log(error)
-    }
+    return `${hours}:${minutes}`
   }
+
+
+
+  const fetchExistingAttendance =
+    async () => {
+      try {
+        const res =
+          await api.get<DailyReportResponse>(
+            "/api/attendance/reports/daily",
+            {
+              params: {
+                date: today,
+                siteId: id,
+              },
+            }
+          )
+
+        const fetchedAttendance:
+          Attendance[] =
+          res.data.data.map((emp) => ({
+            employee: emp.employee,
+
+            attendanceId:emp.attendanceId,
+            
+            jobId: emp.jobId ,
+ 
+            name: emp.name,
+
+            employeeId:
+              emp.employeeId,
+
+            jobTitle:
+              emp.jobTitle,
+
+            checkIn:
+              emp.sessions?.[0]?.checkIn
+                ? formatTimeForInput(
+                  emp.sessions[0].checkIn
+                )
+                : "",
+
+            checkOut:
+              emp.sessions?.[0]?.checkOut
+                ? formatTimeForInput(
+                  emp.sessions[0].checkOut
+                )
+                : "",
+
+            workHours:
+              emp.sessions?.[0]?.workedHours,
+
+            status: emp.status,
+
+            overtimeHours:
+              emp.overtimeHours,
+          }))
+
+        setAttendance(
+          fetchedAttendance
+        )
+      } catch (error) {
+        console.log(error)
+      }
+    }
 
   const checkAttendanceStatus = async () => {
     try {
-      const res = await api.post(`/api/site/${id}/check-pending`,
+      const res = await api.post(
+        `/api/site/${id}/check-pending`,
         {
           date: today,
         }
       )
 
-      setAttendanceExists(res.data.status)
-      setIsLocked(res.data.lock.isLocked)
+      const exists = res.data.status || false
 
-      return res.data.status
+      const locked =
+        res.data.lock?.isLocked || false
+
+      setAttendanceExists(exists)
+
+      setIsLocked(locked)
+
+      return {
+        exists,
+        locked,
+      }
     } catch (error) {
       console.log(error)
-      return false
+
+      setAttendanceExists(false)
+
+      setIsLocked(false)
+
+      return {
+        exists: false,
+        locked: false,
+      }
     }
   }
 
@@ -294,26 +398,28 @@ function MarkSiteAttendance() {
   }
 
   const initializePage = async () => {
-    try {
-      setLoading(true)
+  try {
+    setLoading(true)
 
-      await fetchSite()
-      await checkHolidayStatus()
-      
-      const exists = await checkAttendanceStatus()
+    await fetchSite()
 
-      if (exists) {
-        await fetchExistingAttendance()
-      } else {
-        
-        await initializeAttendanceFromEmployees()
-      }
-    } catch (error) {
-      console.log(error)
-    } finally {
-      setLoading(false)
+    await checkHolidayStatus()
+
+    const attendanceStatus =
+      await checkAttendanceStatus()
+
+    if (attendanceStatus.exists) {
+      await fetchExistingAttendance()
+    } else {
+      await initializeAttendanceFromEmployees()
     }
+
+  } catch (error) {
+    console.log(error)
+  } finally {
+    setLoading(false)
   }
+}
 
   useEffect(() => {
     initializePage()
@@ -386,120 +492,181 @@ function MarkSiteAttendance() {
     })
   }, [attendance, search])
 
-  const cycleStatus = (current: "present" | "absent" | "halfday" ) => {
-    if (current === "absent")
-      return "present"
+  const updateAttendanceTime = (
+    employee: string,
 
-    if (current === "present")
+    field:
+      | "checkIn"
+      | "checkOut",
+
+    value: string
+  ) => {
+    if (isLocked) return
+
+    setAttendance((prev) =>
+      prev.map((item) => {
+        if (
+          item.employee !== employee
+        )
+          return item
+
+        const updated = {
+          ...item,
+
+          [field]: value,
+        }
+
+        const workHours =
+          calculateHours(
+            updated.checkIn,
+            updated.checkOut
+          )
+
+        return {
+          ...updated,
+
+          workHours,
+
+          status:
+            calculateStatus(
+              workHours
+            ),
+
+          overtimeHours:
+            calculateOT(
+              workHours
+            ),
+        }
+      })
+    )
+
+    setIsDirty(true)
+  }
+
+  const calculateHours = (
+    checkIn: string,
+    checkOut: string
+  ) => {
+    if (!checkIn || !checkOut)
+      return 0
+
+    const start =
+      new Date(
+        `2000-01-01T${checkIn}`
+      )
+
+    const end =
+      new Date(
+        `2000-01-01T${checkOut}`
+      )
+
+    const diff =
+      (end.getTime() -
+        start.getTime()) /
+      (1000 * 60 * 60)
+
+    return diff > 0 ? diff : 0
+  }
+
+  const calculateStatus = (
+    hours: number
+  ):
+    | "fullday"
+    | "halfday"
+    | "absent" => {
+    if (hours >= 8)
+      return "fullday"
+
+    if (hours >= 4)
       return "halfday"
 
     return "absent"
   }
 
-  const updateStatus = ( employee: string ) => {
-    if (isLocked) return
+  const calculateOT = (
+    hours: number
+  ) => {
+    if (hours <= 8) return 0
 
-    setAttendance((prev) =>
-      prev.map((item) => {
-        if (item.employee !== employee)
-          return item
-
-        const nextStatus = cycleStatus(
-          item.status
-        )
-
-        return {
-          ...item,
-          status: nextStatus,
-          overtimeHours:
-            nextStatus === "absent"
-              ? 0
-              : item.overtimeHours,
-        }
-      })
-    )
-    setIsDirty(true)
-  }
-
-  const updateOvertime = ( employee: string, value: number ) => {
-    if (isLocked) return
-
-    setAttendance((prev) =>
-      prev.map((item) =>
-        item.employee === employee
-          ? {
-              ...item,
-              overtimeHours: value,
-            }
-          : item
-      )
-    )
-
-    setIsDirty(true)
+    return hours - 8
   }
 
   const handleSubmit = async () => {
-    try {
-      setSaving(true)
+  try {
+    setSaving(true)
 
-      if (!attendanceExists) {
-        await api.post(
-          "/api/attendance/submit",
-          {
-            siteId: id,
-            date: today,
-            isHoliday,
-            attendance: attendance.map(
-              (item) => ({
-                employee: item.employee,
-                status: item.status,
-                overtimeHours:
-                  item.overtimeHours,
-              })
-            ),
-          }
-        )
+    const payload =
+      attendance.map((item) => ({
+        employeeId:
+          item.employee,
 
-        toast.success(
-          "Attendance submitted"
-        )
+        checkIn: item.checkIn
+          ? `${today}T${item.checkIn}`
+          : null,
 
-        setAttendanceExists(true)
+        checkOut:
+          item.checkOut
+            ? `${today}T${item.checkOut}`
+            : null,
+      }))
 
-        await fetchExistingAttendance()
+    if (!attendanceExists) {
+      await api.post(
+        "/api/attendance/submit",
+        {
+          siteId: id,
 
-        setIsLocked(true)
-      } else {
-        await api.patch(
-          "/api/attendance/bulk-update",
-          {
-            siteId: id,
-            date: today,
-            isHoliday,
-            updates: attendance.map(
-              (item) => ({
-                attendanceId: item.attendanceId,
-                status: item.status,
-                overtimeHours: item.overtimeHours,
-              })
-            ),
-          }
-        )
+          date: today,
 
-        toast.success("Attendance updated")
+          isHoliday,
 
-        setIsLocked(true)
-      }
-      setIsDirty(false)
-    } catch (error: any) {
-      toast.error(
-        error?.response?.data?.message ||
-        "Failed to save attendance"
+          attendance: payload,
+        }
       )
-    } finally {
-      setSaving(false)
+
+      toast.success(
+        "Attendance submitted"
+      )
+
+      setAttendanceExists(true)
+
+      await fetchExistingAttendance()
+
+      setIsLocked(true)
+    } else {
+      await api.patch(
+        "/api/attendance/bulk-update",
+        {
+          siteId: id,
+
+          date: today,
+
+          isHoliday,
+
+          attendance: payload,
+        }
+      )
+
+      toast.success(
+        "Attendance updated"
+      )
+
+      await fetchExistingAttendance()
+
+      setIsLocked(true)
     }
+
+    setIsDirty(false)
+  } catch (error: any) {
+    toast.error(
+      error?.response?.data
+        ?.message ||
+        "Failed to save attendance"
+    )
+  } finally {
+    setSaving(false)
   }
+}
 
   const unlockAttendance = async () => {
     try {
@@ -641,28 +808,32 @@ function MarkSiteAttendance() {
         <Card>
           <CardContent className="p-0">
             <Table>
-              <TableHeader>
+              <TableHeader className="hidden md:table-header-group">
                 <TableRow>
                   <TableHead>
                     Employee
                   </TableHead>
 
-                  <TableHead className="w-[140px]">
-                    Status
+                  <TableHead>
+                    Check In
                   </TableHead>
 
                   <TableHead>
-                    OT Hours
+                    Check Out
+                  </TableHead>
+
+                  <TableHead>
+                    Work Hours
                   </TableHead>
                 </TableRow>
               </TableHeader>
 
               <TableBody>
-                {filteredAttendance.map(
-                  (emp) => (
-                    <TableRow
-                      key={emp.employee}
-                    >
+                {filteredAttendance.map((emp) => (
+                  <Fragment key={emp.employee}>
+
+                    {/* DESKTOP ROW */}
+                    <TableRow className="hidden md:table-row">
                       <TableCell>
                         <div className="space-y-1">
                           <p className="font-medium">
@@ -670,50 +841,121 @@ function MarkSiteAttendance() {
                           </p>
 
                           <p className="text-sm text-muted-foreground">
-                            { emp.employeeId}{" "}•{" "}{emp.jobTitle}
+                            {emp.employeeId} • {emp.jobTitle}
                           </p>
                         </div>
                       </TableCell>
 
                       <TableCell>
-                        <Button
-                          type="button"
-                          variant="outline"
+                        <Input
+                          type="time"
+                          value={emp.checkIn}
                           disabled={isLocked}
-                          onClick={() =>
-                            updateStatus(emp.employee)
+                          onChange={(e) =>
+                            updateAttendanceTime(
+                              emp.employee,
+                              "checkIn",
+                              e.target.value
+                            )
                           }
-                          className={`w-[110px] justify-center ${emp.status === "present"
-                              ? "border-green-500 text-green-600"
-                              : emp.status === "halfday"
-                                ? "border-yellow-500 text-yellow-600"
-                                : "border-red-500 text-red-600"
-                            }`}
-                        >
-                          {emp.status === "present"
-                            ? "Present"
-                            : emp.status === "halfday"
-                              ? "Half Day"
-                              : "Absent"}
-                        </Button>
+                          className="w-[140px]"
+                        />
                       </TableCell>
 
                       <TableCell>
                         <Input
-                          type="number"
-                          min={0}
-                          step={0.5}
-                          value={emp.overtimeHours}
-                          disabled={ isLocked || emp.status === "absent"}
+                          type="time"
+                          value={emp.checkOut}
+                          disabled={isLocked}
                           onChange={(e) =>
-                            updateOvertime(emp.employee, Number(e.target.value))
+                            updateAttendanceTime(
+                              emp.employee,
+                              "checkOut",
+                              e.target.value
+                            )
                           }
-                          className="w-24"
+                          className="w-[140px]"
                         />
                       </TableCell>
+
+                      <TableCell>
+                        <Badge variant="secondary">
+                          {emp.workHours.toFixed(1)} hrs
+                        </Badge>
+                      </TableCell>
+
                     </TableRow>
-                  )
-                )}
+
+                    {/* MOBILE CARD */}
+                    <TableRow className="md:hidden">
+                      <TableCell colSpan={6} className="p-4">
+                        <div className="space-y-4 rounded-lg border p-4">
+
+                          {/* TOP */}
+                          <div>
+                            <p className="font-medium">
+                              {emp.name}
+                            </p>
+
+                            <p className="text-sm text-muted-foreground">
+                              {emp.employeeId} • {emp.jobTitle}
+                            </p>
+                          </div>
+
+                          {/* TIME INPUTS */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <p className="mb-1 text-xs text-muted-foreground">
+                                Check In
+                              </p>
+
+                              <Input
+                                type="time"
+                                value={emp.checkIn}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateAttendanceTime(
+                                    emp.employee,
+                                    "checkIn",
+                                    e.target.value
+                                  )
+                                }
+                              />
+                            </div>
+
+                            <div>
+                              <p className="mb-1 text-xs text-muted-foreground">
+                                Check Out
+                              </p>
+
+                              <Input
+                                type="time"
+                                value={emp.checkOut}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateAttendanceTime(
+                                    emp.employee,
+                                    "checkOut",
+                                    e.target.value
+                                  )
+                                }
+                              />
+                            </div>
+                          </div>
+
+                          {/* STATS */}
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="secondary">
+                              {emp.workHours.toFixed(1)} hrs
+                            </Badge>
+                          </div>
+
+                        </div>
+                      </TableCell>
+                    </TableRow>
+
+                  </Fragment>
+                ))}
               </TableBody>
             </Table>
           </CardContent>

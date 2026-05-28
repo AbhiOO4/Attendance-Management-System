@@ -23,7 +23,10 @@ import {
 } from "@/components/ui/select";
 
 type WorkSchedule = {
-  shiftHours: number;
+  fullDayHours: number;
+  halfDayHours: number;
+  overtimeThreshold: number;
+  overtimeRatePerHour: number;
   weeklyHolidays: string[];
 };
 
@@ -68,7 +71,10 @@ const getCurrentMonthYear = () => {
 
 export default function Configure() {
   const [schedule, setSchedule] = useState<WorkSchedule>({
-    shiftHours: 8,
+    fullDayHours: 8,
+    halfDayHours: 4,
+    overtimeThreshold: 8,
+    overtimeRatePerHour: 0,
     weeklyHolidays: [],
   });
 
@@ -106,7 +112,11 @@ export default function Configure() {
   const updateSchedule = async () => {
     try {
       await api.patch("/api/config/update", {
-        shiftHours: schedule.shiftHours,
+        fullDayHours: schedule.fullDayHours,
+        halfDayHours: schedule.halfDayHours,
+        overtimeThreshold: schedule.overtimeThreshold,
+        overtimeRatePerHour:
+          schedule.overtimeRatePerHour,
         weeklyHolidays: schedule.weeklyHolidays,
       });
 
@@ -176,33 +186,109 @@ export default function Configure() {
           <CardContent className="space-y-8 p-6">
 
             {/* SHIFT HOURS */}
-            <div className="space-y-3">
+            {/* WORK HOURS CONFIG */}
+            <div className="space-y-6">
+
               <div>
                 <h3 className="font-medium">
-                  Shift Hours
+                  Work Configuration
                 </h3>
 
                 <p className="text-sm text-muted-foreground">
-                  Configure standard working hours per shift.
+                  Configure attendance thresholds and overtime settings.
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
-                <Input
-                  type="number"
-                  value={schedule.shiftHours}
-                  onChange={(e) =>
-                    setSchedule({
-                      ...schedule,
-                      shiftHours: Number(e.target.value),
-                    })
-                  }
-                  className="w-40"
-                />
+              <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
 
-                <span className="text-sm text-muted-foreground">
-                  Hours
-                </span>
+                {/* FULL DAY HOURS */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Full Day Hours
+                  </label>
+
+                  <Input
+                    type="number"
+                    value={schedule.fullDayHours}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        fullDayHours: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Minimum hours required for full day attendance.
+                  </p>
+                </div>
+
+                {/* HALF DAY HOURS */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Half Day Hours
+                  </label>
+
+                  <Input
+                    type="number"
+                    value={schedule.halfDayHours}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        halfDayHours: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Minimum hours required for half day attendance.
+                  </p>
+                </div>
+
+                {/* OT THRESHOLD */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Overtime Threshold
+                  </label>
+
+                  <Input
+                    type="number"
+                    value={schedule.overtimeThreshold}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        overtimeThreshold: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Overtime starts after these many hours.
+                  </p>
+                </div>
+
+                {/* OT RATE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    OT Rate Per Hour
+                  </label>
+
+                  <Input
+                    type="number"
+                    value={schedule.overtimeRatePerHour}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        overtimeRatePerHour: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Overtime pay amount per hour.
+                  </p>
+                </div>
+
               </div>
             </div>
 

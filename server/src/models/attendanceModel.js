@@ -1,65 +1,118 @@
-import mongoose from "mongoose"
+import mongoose from "mongoose";
 
-const attendanceSchema = new mongoose.Schema({
-  employee: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Employee',
-    required: [true, 'Attendance must belong to an employee']
-  },
-  siteId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Site',
-    required: [true, 'Site ID is required']
-  },
-  jobId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Job',
-  },
-  markedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'The supervisor/admin marking attendance must be recorded']
-  },
-  date: {
-    type: Date, 
-    required: [true, 'Date is required'],
-  },
-
-  status: {
-    type: String,
-    enum: {
-      values: ['present', 'absent', 'halfday'],
-      message: '{VALUE} is not a valid status'
+const attendanceSessionSchema = new mongoose.Schema(
+  {
+    siteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      required: [true, "Site ID is required"],
     },
-    required: true
-  },
 
-  // NEW: marks if the day is a holiday
-  isHoliday: {
-    type: Boolean,
-    default: false
-  },
+    jobId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Job",
+    },
 
-  // NEW: actual working hours for the day
-  workHours: {
-    type: Number,
-    default: 0
-  },
+    checkIn: {
+      type: Date,
+    },
 
-  // RENAMED: clearer meaning
-  overtimeHours: {
-    type: Number,
-    default: 0
+    checkOut: {
+      type: Date,
+    },
+
+    workedHours: {
+      type: Number,
+      default: 0,
+    },
+
+    markedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: [true, "The supervisor/admin marking attendance must be recorded"],
+    },
+  },
+  { _id: true }
+);
+
+const attendanceSchema = new mongoose.Schema(
+  {
+    employee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Employee",
+      required: [true, "Attendance must belong to an employee"],
+    },
+
+    // Primary/default site reference (optional but useful)
+    siteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      required: [true, "Site ID is required"],
+    },
+
+    jobId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Job",
+    },
+
+    markedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: [true, "The supervisor/admin marking attendance must be recorded"],
+    },
+
+    date: {
+      type: Date,
+      required: [true, "Date is required"],
+    },
+
+    status: {
+      type: String,
+      enum: {
+        values: ["fullday", "halfday", "absent"],
+        message: "{VALUE} is not a valid status",
+      },
+      required: true,
+    },
+
+    // Marks if the day is a holiday
+    isHoliday: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Total worked hours across all sessions
+    totalWorkHours: {
+      type: Number,
+      default: 0,
+    },
+
+    overtimeHours: {
+      type: Number,
+      default: 0,
+    },
+
+    // Multi-site work sessions
+    sessions: {
+      type: [attendanceSessionSchema],
+      default: [],
+    },
+  },
+  {
+    timestamps: true,
   }
-
-}, { 
-  timestamps: true 
-});
+);
 
 // Prevent duplicate attendance per employee per day
-attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
+attendanceSchema.index(
+  { employee: 1, date: 1 },
+  { unique: true }
+);
 
-// Optional: useful for site/day queries
+// Useful for site/day queries
 attendanceSchema.index({ siteId: 1, date: 1 });
 
-export default mongoose.model('Attendance', attendanceSchema);
+// Useful for querying temporary workers by session site
+attendanceSchema.index({"sessions.siteId": 1, date: 1});
+
+export default mongoose.model("Attendance", attendanceSchema);

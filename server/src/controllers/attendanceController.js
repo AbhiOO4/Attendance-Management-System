@@ -3,6 +3,7 @@ import AttendanceLock from '../models/lockModel.js'
 import Employee from '../models/empModel.js';
 import mongoose from 'mongoose';
 import workModel from '../models/workModel.js';
+import Site from '../models/siteModel.js'
 
 // --- ADMINS ---
 
@@ -1188,6 +1189,1599 @@ export const toggleHolidayStatus = async (req, res) => {
 }
 
 
+//new submit attendance record one at a time 
+export const saveAttendanceRecord = async (req, res) => {
+  try {
+    const {
+      employeeId,
+      siteId,
+      jobId,
+      date,
+
+      checkIn,
+      checkOut,
+
+      isHoliday = false,
+    } = req.body;
+
+    const markedBy = req.user.id;
+
+    // Normalize date
+    const attendanceDate = new Date(date);
+    attendanceDate.setHours(0, 0, 0, 0);
+
+    // Get work schedule config
+    const workConfig = await workModel.findOne();
+
+    if (!workConfig) {
+      return res.status(404).json({
+        success: false,
+        message: "Work schedule configuration not found",
+      });
+    }
+
+    const {
+      fullDayHours,
+      halfDayHours,
+      overtimeThreshold,
+    } = workConfig;
+
+    // Find existing attendance record
+    let attendance = await attendanceModel.findOne({
+      employee: employeeId,
+      date: attendanceDate,
+    });
+
+    // Calculate worked hours for this session
+    let workedHours = 0;
+
+    if (checkIn && checkOut) {
+      const diffMs =
+        new Date(checkOut) - new Date(checkIn);
+
+      workedHours =
+        diffMs / (1000 * 60 * 60);
+
+      // Prevent negative values
+      if (workedHours < 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Check-out time cannot be before check-in time",
+        });
+      }
+    }
+
+    const sessionData = {
+      siteId,
+      jobId,
+      checkIn,
+      checkOut,
+      workedHours,
+      markedBy,
+    };
+
+    // CREATE NEW ATTENDANCE
+    if (!attendance) {
+      // Calculate status
+      let status = "absent";
+
+      if (workedHours >= fullDayHours) {
+        status = "fullday";
+      } else if (
+        workedHours >= halfDayHours
+      ) {
+        status = "halfday";
+      }
+
+      // Calculate overtime
+      let overtimeHours = 0;
+
+      if (
+        workedHours > overtimeThreshold
+      ) {
+        overtimeHours =
+          workedHours - overtimeThreshold;
+      }
+
+      attendance =
+        await attendanceModel.create({
+          employee: employeeId,
+
+          siteId,
+          jobId,
+
+          markedBy,
+
+          date: attendanceDate,
+
+          status,
+
+          isHoliday,
+
+          totalWorkHours: workedHours,
+
+          overtimeHours,
+
+          sessions: [sessionData],
+        });
+
+      return res.status(201).json({
+        success: true,
+        message:
+          "Attendance created successfully",
+        attendance,
+      });
+    }
+
+    // CHECK IF SESSION FOR THIS SITE EXISTS
+    const existingSessionIndex =
+      attendance.sessions.findIndex(
+        (session) =>
+          session.siteId.toString() ===
+          siteId.toString()
+      );
+
+    // UPDATE EXISTING SESSION
+    if (existingSessionIndex !== -1) {
+      attendance.sessions[
+        existingSessionIndex
+      ] = {
+        ...attendance.sessions[
+          existingSessionIndex
+        ].toObject(),
+
+        ...sessionData,
+      };
+    }
+
+    // ADD NEW SESSION
+    else {
+      attendance.sessions.push(
+        sessionData
+      );
+    }
+
+    // RECALCULATE TOTAL WORK HOURS
+    const totalWorkHours =
+      attendance.sessions.reduce(
+        (acc, session) =>
+          acc +
+          (session.workedHours || 0),
+        0
+      );
+
+    // CALCULATE STATUS
+    let status = "absent";
+
+    if (totalWorkHours >= fullDayHours) {
+      status = "fullday";
+    } else if (
+      totalWorkHours >= halfDayHours
+    ) {
+      status = "halfday";
+    }
+
+    // CALCULATE OVERTIME
+    let overtimeHours = 0;
+
+    if (
+      totalWorkHours >
+      overtimeThreshold
+    ) {
+      overtimeHours =
+        totalWorkHours -
+        overtimeThreshold;
+    }
+
+    // UPDATE ATTENDANCE
+    attendance.totalWorkHours =
+      totalWorkHours;
+
+    attendance.status = status;
+
+    attendance.overtimeHours =
+      overtimeHours;
+
+    attendance.isHoliday =
+      isHoliday;
+
+    await attendance.save();
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Attendance updated successfully",
+      attendance,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
+
+
+//check in check out
+
+//submit
+export const bulkSubmitAttendance = async (
+  req,
+  res
+) => {
+  try {
+    const {
+      siteId,
+      date,
+      isHoliday = false,
+      attendance,
+    } = req.body;
+
+    // VALIDATION
+    if (
+      !siteId ||
+      !date ||
+      !attendance ||
+      !Array.isArray(attendance) ||
+      attendance.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "siteId, date and attendance array are required",
+      });
+    }
+
+    const markedBy = req.user?.id;
+
+    // NORMALIZE DATE
+    const attendanceDate =
+      new Date(date);
+
+    attendanceDate.setUTCHours(
+      0,
+      0,
+      0,
+      0
+    );
+
+    // CHECK LOCK
+    const existingLock =
+      await AttendanceLock.findOne({
+        siteId,
+        date: attendanceDate,
+        isLocked: true,
+      });
+
+    if (existingLock) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Attendance already submitted and locked for this site/date",
+      });
+    }
+
+    // GET WORK CONFIG
+    const workConfig =
+      await workModel.findOne();
+
+    if (!workConfig) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Work schedule configuration not found",
+      });
+    }
+
+    const {
+      fullDayHours,
+      halfDayHours,
+      overtimeThreshold,
+    } = workConfig;
+
+    const processedRecords = [];
+
+    // PROCESS EACH EMPLOYEE
+    for (const entry of attendance) {
+      const {
+        employeeId,
+        jobId,
+        checkIn,
+        checkOut,
+      } = entry;
+
+      // CALCULATE SESSION WORK HOURS
+      let workedHours = 0;
+
+      if (checkIn && checkOut) {
+        const diffMs =
+          new Date(checkOut) -
+          new Date(checkIn);
+
+        workedHours =
+          diffMs /
+          (1000 * 60 * 60);
+
+        // INVALID TIME RANGE
+        if (workedHours < 0) {
+          continue;
+        }
+      }
+
+      // SESSION OBJECT
+      const sessionData = {
+        siteId,
+        jobId,
+        checkIn,
+        checkOut,
+        workedHours,
+        markedBy,
+      };
+
+      // FIND EXISTING ATTENDANCE
+      let attendanceDoc =
+        await Attendance.findOne({
+          employee: employeeId,
+          date: attendanceDate,
+        });
+
+      // CREATE NEW ATTENDANCE
+      if (!attendanceDoc) {
+        // CALCULATE STATUS
+        let status = "absent";
+
+        if (
+          workedHours >=
+          fullDayHours
+        ) {
+          status = "fullday";
+        } else if (
+          workedHours >=
+          halfDayHours
+        ) {
+          status = "halfday";
+        }
+
+        // CALCULATE OT
+        let overtimeHours = 0;
+
+        if (
+          workedHours >
+          overtimeThreshold
+        ) {
+          overtimeHours =
+            workedHours -
+            overtimeThreshold;
+        }
+
+        attendanceDoc =
+          await Attendance.create({
+            employee: employeeId,
+
+            siteId,
+            jobId,
+
+            markedBy,
+
+            date: attendanceDate,
+
+            status,
+
+            isHoliday,
+
+            totalWorkHours:
+              workedHours,
+
+            overtimeHours,
+
+            sessions: [sessionData],
+          });
+
+        processedRecords.push(
+          attendanceDoc
+        );
+
+        continue;
+      }
+
+      // CHECK IF SESSION FOR THIS SITE EXISTS
+      const existingSessionIndex =
+        attendanceDoc.sessions.findIndex(
+          (session) =>
+            session.siteId.toString() ===
+            siteId.toString()
+        );
+
+      // UPDATE EXISTING SESSION
+      if (
+        existingSessionIndex !== -1
+      ) {
+        attendanceDoc.sessions[
+          existingSessionIndex
+        ] = {
+          ...attendanceDoc.sessions[
+            existingSessionIndex
+          ].toObject(),
+
+          ...sessionData,
+        };
+      }
+
+      // ADD NEW SESSION
+      else {
+        attendanceDoc.sessions.push(
+          sessionData
+        );
+      }
+
+      // RECALCULATE TOTAL WORK HOURS
+      const totalWorkHours =
+        attendanceDoc.sessions.reduce(
+          (acc, session) => {
+            return (
+              acc +
+              (session.workedHours ||
+                0)
+            );
+          },
+          0
+        );
+
+      // RECALCULATE STATUS
+      let status = "absent";
+
+      if (
+        totalWorkHours >=
+        fullDayHours
+      ) {
+        status = "fullday";
+      } else if (
+        totalWorkHours >=
+        halfDayHours
+      ) {
+        status = "halfday";
+      }
+
+      // RECALCULATE OT
+      let overtimeHours = 0;
+
+      if (
+        totalWorkHours >
+        overtimeThreshold
+      ) {
+        overtimeHours =
+          totalWorkHours -
+          overtimeThreshold;
+      }
+
+      // UPDATE DOC
+      attendanceDoc.totalWorkHours =
+        totalWorkHours;
+
+      attendanceDoc.status =
+        status;
+
+      attendanceDoc.overtimeHours =
+        overtimeHours;
+
+      attendanceDoc.isHoliday =
+        isHoliday;
+
+      await attendanceDoc.save();
+
+      processedRecords.push(
+        attendanceDoc
+      );
+    }
+
+    // CREATE LOCK AFTER SUCCESSFUL SUBMISSION
+    await AttendanceLock.create({
+      siteId,
+      date: attendanceDate,
+
+      isLocked: true,
+
+      lockedBy: markedBy,
+
+      lockedAt: new Date(),
+    });
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Attendance submitted successfully",
+
+      recordsProcessed:
+        processedRecords.length,
+
+      data: processedRecords,
+    });
+  } catch (error) {
+    console.error(error);
+
+    // DUPLICATE KEY ERROR
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Duplicate attendance detected",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to submit attendance",
+
+      error: error.message,
+    });
+  }
+};
+
+//get saved attendance for a site 
+export const getSiteAttendance = async (
+  req,
+  res
+) => {
+  try {
+    const {
+      date,
+      siteId,
+
+      name,
+      employeeId,
+      jobTitle,
+
+      page,
+      limit,
+    } = req.query;
+
+    // VALIDATION
+    if (!date || !siteId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "date and siteId are required",
+      });
+    }
+
+    // VALIDATE DATE
+    const queryDate =
+      new Date(date);
+
+    if (
+      Number.isNaN(queryDate.getTime())
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invalid date format",
+      });
+    }
+
+    // NORMALIZE DATE RANGE
+    const start = new Date(queryDate);
+
+    start.setUTCHours(0, 0, 0, 0);
+
+    const end = new Date(queryDate);
+
+    end.setHours(
+      23,
+      59,
+      59,
+      999
+    );
+
+    const existingLock =
+      await AttendanceLock.findOne({
+        siteId,
+        date: start,
+      });
+
+    const isLocked =
+      existingLock?.isLocked || false;
+
+    // MAIN MATCH
+    const attendanceMatch = {
+      date: {
+        $gte: start,
+        $lte: end,
+      },
+    };
+
+    // FILTER EMPLOYEE SEARCHES
+    const employeeMatch = {};
+
+    if (name) {
+      employeeMatch["employee.name"] =
+        {
+          $regex: name,
+          $options: "i",
+        };
+    }
+
+    if (employeeId) {
+      employeeMatch[
+        "employee.employeeId"
+      ] = {
+        $regex: employeeId,
+        $options: "i",
+      };
+    }
+
+    if (jobTitle) {
+      employeeMatch[
+        "employee.jobTitle"
+      ] = {
+        $regex: jobTitle,
+        $options: "i",
+      };
+    }
+
+    // PIPELINE
+    const pipeline = [
+      // DATE MATCH
+      {
+        $match: attendanceMatch,
+      },
+
+      // FILTER ONLY SESSIONS
+      // BELONGING TO THIS SITE
+      {
+        $addFields: {
+          filteredSessions: {
+            $filter: {
+              input: "$sessions",
+
+              as: "session",
+
+              cond: {
+                $eq: [
+                  "$$session.siteId",
+                  new mongoose.Types.ObjectId(
+                    siteId
+                  ),
+                ],
+              },
+            },
+          },
+        },
+      },
+
+      // REMOVE ATTENDANCE DOCS
+      // WITH NO MATCHING SESSION
+      {
+        $match: {
+          filteredSessions: {
+            $ne: [],
+          },
+        },
+      },
+
+      // EMPLOYEE LOOKUP
+      {
+        $lookup: {
+          from: "employees",
+
+          localField: "employee",
+
+          foreignField: "_id",
+
+          as: "employee",
+        },
+      },
+
+      {
+        $unwind: "$employee",
+      },
+
+      // SITE LOOKUP
+      {
+        $lookup: {
+          from: "sites",
+
+          localField:
+            "filteredSessions.siteId",
+
+          foreignField: "_id",
+
+          as: "site",
+        },
+      },
+
+      {
+        $unwind: {
+          path: "$site",
+
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+
+      // APPLY EMPLOYEE FILTERS
+      {
+        $match: employeeMatch,
+      },
+
+      // SORT ALPHABETICALLY
+      {
+        $sort: {
+          "employee.name": 1,
+        },
+      },
+    ];
+
+    const shouldPaginate =
+      page && limit;
+
+    // RESPONSE SHAPE
+    const projectStage = {
+      _id: 0,
+
+      attendanceId: "$_id",
+
+      employee:
+        "$employee._id",
+
+      name: "$employee.name",
+
+      employeeId:
+        "$employee.employeeId",
+
+      jobTitle:
+        "$employee.jobTitle",
+
+      siteId: "$site._id",
+
+      siteName:
+        "$site.siteName",
+
+      date: "$date",
+
+      status: "$status",
+
+      isHoliday:
+        "$isHoliday",
+
+      totalWorkHours:
+        "$totalWorkHours",
+
+      overtimeHours:
+        "$overtimeHours",
+
+      sessions:
+        "$filteredSessions",
+    };
+
+    // PAGINATION
+    if (shouldPaginate) {
+      const pageNumber =
+        Math.max(
+          Number(page) || 1,
+          1
+        );
+
+      const limitNumber =
+        Math.max(
+          Number(limit) || 10,
+          1
+        );
+
+      const skip =
+        (pageNumber - 1) *
+        limitNumber;
+
+      pipeline.push({
+        $facet: {
+          metadata: [
+            {
+              $count: "total",
+            },
+          ],
+
+          data: [
+            {
+              $skip: skip,
+            },
+
+            {
+              $limit: limitNumber,
+            },
+
+            {
+              $project:
+                projectStage,
+            },
+          ],
+        },
+      });
+
+      const [result] =
+        await attendanceModel.aggregate(
+          pipeline
+        );
+
+      const total =
+        result?.metadata?.[0]
+          ?.total || 0;
+
+      const data = (
+        result?.data || []
+      ).map((record, index) => ({
+        serialNumber:
+          skip + index + 1,
+
+        ...record,
+      }));
+
+      return res.status(200).json({
+        success: true,
+
+        message:
+          "Attendance fetched successfully",
+        isLocked,
+
+        page: pageNumber,
+
+        limit: limitNumber,
+
+        totalPages: Math.ceil(
+          total / limitNumber
+        ),
+
+        totalRecords: total,
+
+        filters: {
+          date,
+
+          siteId,
+
+          name:
+            name || null,
+
+          employeeId:
+            employeeId ||
+            null,
+
+          jobTitle:
+            jobTitle || null,
+        },
+
+        data,
+      });
+    }
+
+    // NON PAGINATED
+    pipeline.push({
+      $project: projectStage,
+    });
+
+    const result =
+      await Attendance.aggregate(
+        pipeline
+      );
+
+    const data = result.map(
+      (record, index) => ({
+        serialNumber:
+          index + 1,
+
+        ...record,
+      })
+    );
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        "Attendance fetched successfully",
+      isLocked,
+
+      totalRecords:
+        data.length,
+
+      filters: {
+        date,
+
+        siteId,
+
+        name:
+          name || null,
+
+        employeeId:
+          employeeId ||
+          null,
+
+        jobTitle:
+          jobTitle || null,
+      },
+
+      data,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+
+      message:
+        "Failed to fetch attendance",
+
+      error: error.message,
+    });
+  }
+};
+
+//fetch attendance records 
+export const getAttendanceRecords = async (req, res) => {
+  try {
+    let {
+      date,
+      name,
+      employeeId,
+      jobTitle,
+      site,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    // -----------------------------
+    // Pagination
+    // -----------------------------
+    page = Number(page) || 1;
+
+    limit = Math.min(Number(limit) || 20, 20);
+
+    const skip = (page - 1) * limit;
+
+    // -----------------------------
+    // Attendance filters
+    // -----------------------------
+    let attendanceFilter = {};
+
+    // Filter by date
+    if (date) {
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+
+      attendanceFilter.date = {
+        $gte: startDate,
+        $lte: endDate,
+      };
+    }
+
+    // -----------------------------
+    // Employee filters
+    // -----------------------------
+    let employeeFilter = {};
+
+    if (name) {
+      employeeFilter.name = {
+        $regex: name,
+        $options: "i",
+      };
+    }
+
+    if (employeeId) {
+      employeeFilter.employeeId = {
+        $regex: employeeId,
+        $options: "i",
+      };
+    }
+
+    if (jobTitle) {
+      employeeFilter.jobTitle = {
+        $regex: jobTitle,
+        $options: "i",
+      };
+    }
+
+    // Get employee IDs if employee filters exist
+    if (
+      name ||
+      employeeId ||
+      jobTitle
+    ) {
+      const employees = await Employee.find(
+        employeeFilter
+      ).select("_id");
+
+      attendanceFilter.employee = {
+        $in: employees.map((emp) => emp._id),
+      };
+    }
+
+    // -----------------------------
+    // Site filter
+    // -----------------------------
+    if (site) {
+      attendanceFilter.siteId = site
+    }
+
+    // -----------------------------
+    // Count documents
+    // -----------------------------
+    const totalRecords =
+      await Attendance.countDocuments(
+        attendanceFilter
+      );
+
+    const totalPages = Math.ceil(
+      totalRecords / limit
+    );
+
+    // -----------------------------
+    // Fetch attendance records
+    // -----------------------------
+    const attendanceRecords =
+      await Attendance.find(attendanceFilter)
+        .populate(
+          "employee",
+          "name employeeId jobTitle"
+        )
+        .populate("siteId", "siteName")
+        .populate("jobId", "name")
+        .populate(
+          "sessions.siteId",
+          "siteName"
+        )
+        .populate(
+          "sessions.jobId",
+          "name"
+        )
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+    // -----------------------------
+    // Format response
+    // -----------------------------
+    const formattedRecords =
+      attendanceRecords.map((record) => ({
+        attendanceId: record._id,
+
+        employee: record.employee?._id,
+
+        name: record.employee?.name || "",
+
+        employeeId:
+          record.employee?.employeeId || "",
+
+        jobTitle:
+          record.employee?.jobTitle || "",
+
+        siteId: record.siteId?._id,
+
+        siteName:
+          record.siteId?.siteName || "",
+
+        jobId: record.jobId?._id || null,
+
+        jobName:
+          record.jobId?.name || "",
+
+        date: record.date,
+
+        status: record.status,
+
+        isHoliday: record.isHoliday,
+
+        totalWorkHours:
+          record.totalWorkHours,
+
+        overtimeHours:
+          record.overtimeHours,
+
+        sessions: record.sessions.map(
+          (session) => ({
+            _id: session._id,
+
+            siteId:
+              session.siteId?._id,
+
+            siteName:
+              session.siteId?.siteName || "",
+
+            jobId:
+              session.jobId?._id ||
+              null,
+
+            jobName:
+              session.jobId?.name ||
+              "",
+
+            checkIn:
+              session.checkIn,
+
+            checkOut:
+              session.checkOut,
+
+            workedHours:
+              session.workedHours,
+
+            markedBy:
+              session.markedBy,
+          })
+        ),
+      }));
+
+    // Common holiday flag
+    const isHoliday =
+      formattedRecords.length > 0
+        ? formattedRecords[0].isHoliday
+        : false;
+
+    return res.status(200).json({
+      success: true,
+
+      isHoliday,
+
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalRecords,
+        limit,
+      },
+
+      data: formattedRecords,
+    });
+  } catch (error) {
+    console.error(
+      "Get attendance records error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+export const bulkEditAttendance = async (
+  req,
+  res
+) => {
+  try {
+    const {
+      siteId,
+      date,
+      isHoliday = false,
+      attendance,
+    } = req.body;
+
+    // VALIDATION
+    if (
+      !siteId ||
+      !date ||
+      !attendance ||
+      !Array.isArray(attendance) ||
+      attendance.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "siteId, date and attendance array are required",
+      });
+    }
+
+    const markedBy = req.user?.id;
+
+    // NORMALIZE DATE
+    const attendanceDate =
+      new Date(date);
+
+    attendanceDate.setUTCHours(
+      0,
+      0,
+      0,
+      0
+    );
+
+    // CHECK LOCK
+    // EDIT ONLY ALLOWED IF UNLOCKED
+    const existingLock =
+      await AttendanceLock.findOne({
+        siteId,
+        date: attendanceDate,
+        isLocked: true,
+      });
+
+    if (existingLock) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Attendance is locked. Unlock before editing.",
+      });
+    }
+
+    // GET WORK CONFIG
+    const workConfig =
+      await workModel.findOne();
+
+    if (!workConfig) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Work schedule configuration not found",
+      });
+    }
+
+    const {
+      fullDayHours,
+      halfDayHours,
+      overtimeThreshold,
+    } = workConfig;
+
+    const processedRecords = [];
+
+    // PROCESS EACH EMPLOYEE
+    for (const entry of attendance) {
+      const {
+        employeeId,
+        jobId,
+        checkIn,
+        checkOut,
+      } = entry;
+
+      // FIND ATTENDANCE DOC
+      const attendanceDoc =
+        await Attendance.findOne({
+          employee: employeeId,
+          date: attendanceDate,
+        });
+
+      // MUST EXIST DURING EDIT
+      if (!attendanceDoc) {
+        continue;
+      }
+
+      // CALCULATE WORKED HOURS
+      let workedHours = 0;
+
+      if (checkIn && checkOut) {
+        const diffMs =
+          new Date(checkOut) -
+          new Date(checkIn);
+
+        workedHours =
+          diffMs /
+          (1000 * 60 * 60);
+
+        if (workedHours < 0) {
+          continue;
+        }
+      }
+
+      // UPDATED SESSION
+      const updatedSession = {
+        siteId,
+        jobId,
+        checkIn,
+        checkOut,
+        workedHours,
+        markedBy,
+      };
+
+      // FIND EXISTING SITE SESSION
+      const existingSessionIndex =
+        attendanceDoc.sessions.findIndex(
+          (session) =>
+            session.siteId.toString() ===
+            siteId.toString()
+        );
+
+      // UPDATE EXISTING SESSION
+      if (
+        existingSessionIndex !== -1
+      ) {
+        attendanceDoc.sessions[
+          existingSessionIndex
+        ] = {
+          ...attendanceDoc.sessions[
+            existingSessionIndex
+          ].toObject(),
+
+          ...updatedSession,
+        };
+      }
+
+      // IF SESSION DOESN'T EXIST,
+      // ADD IT
+      else {
+        attendanceDoc.sessions.push(
+          updatedSession
+        );
+      }
+
+      // RECALCULATE TOTAL HOURS
+      const totalWorkHours =
+        attendanceDoc.sessions.reduce(
+          (acc, session) => {
+            return (
+              acc +
+              (session.workedHours ||
+                0)
+            );
+          },
+          0
+        );
+
+      // RECALCULATE STATUS
+      let status = "absent";
+
+      if (
+        totalWorkHours >=
+        fullDayHours
+      ) {
+        status = "fullday";
+      } else if (
+        totalWorkHours >=
+        halfDayHours
+      ) {
+        status = "halfday";
+      }
+
+      // RECALCULATE OT
+      let overtimeHours = 0;
+
+      if (
+        totalWorkHours >
+        overtimeThreshold
+      ) {
+        overtimeHours =
+          totalWorkHours -
+          overtimeThreshold;
+      }
+
+      // UPDATE DOC
+      attendanceDoc.totalWorkHours =
+        totalWorkHours;
+
+      attendanceDoc.status =
+        status;
+
+      attendanceDoc.overtimeHours =
+        overtimeHours;
+
+      attendanceDoc.isHoliday =
+        isHoliday;
+
+      await attendanceDoc.save();
+
+      processedRecords.push(
+        attendanceDoc
+      );
+    }
+
+    // LOCK AFTER EDIT
+    await AttendanceLock.findOneAndUpdate(
+      {
+        siteId,
+        date: attendanceDate,
+      },
+      {
+        isLocked: true,
+
+        lockedBy: markedBy,
+
+        lockedAt: new Date(),
+
+        unlockedBy: null,
+
+        unlockedAt: null,
+      },
+      {
+        new: true,
+      }
+    );
+    return res.status(200).json({
+      success: true,
+
+      message:
+        "Attendance edited successfully",
+
+      recordsProcessed:
+        processedRecords.length,
+
+      data: processedRecords,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+
+      message:
+        "Failed to edit attendance",
+
+      error: error.message,
+    });
+  }
+};
+
+export const updateAttendance = async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const { sessions } = req.body;
+
+    const attendance = await Attendance.findById(attendanceId);
+
+    if (!attendance) {
+      return res.status(404).json({
+        message: "Attendance record not found",
+      });
+    }
+
+    // Get singleton work schedule config
+    const workConfig = await workModel.findOne({ type: "default" });
+
+    if (!workConfig) {
+      return res.status(404).json({
+        message: "Work schedule configuration not found",
+      });
+    }
+
+    // -----------------------------
+    // Update sessions only
+    // -----------------------------
+    if (Array.isArray(sessions)) {
+      const updatedSessions = sessions.map((session) => {
+        let workedHours = 0;
+
+        if (session.checkIn && session.checkOut) {
+          const checkIn = new Date(session.checkIn);
+          const checkOut = new Date(session.checkOut);
+
+          workedHours =
+            (checkOut.getTime() - checkIn.getTime()) /
+            (1000 * 60 * 60);
+
+          // Prevent negative values
+          if (workedHours < 0) {
+            workedHours = 0;
+          }
+        }
+
+        return {
+          _id: session._id,
+          siteId: session.siteId,
+          jobId: session.jobId || null,
+          checkIn: session.checkIn || null,
+          checkOut: session.checkOut || null,
+          workedHours: Number(workedHours.toFixed(2)),
+          markedBy: session.markedBy || attendance.markedBy,
+        };
+      });
+
+      attendance.sessions = updatedSessions;
+
+      // -----------------------------
+      // Calculate total work hours
+      // -----------------------------
+      const totalHours = updatedSessions.reduce(
+        (total, session) => total + session.workedHours,
+        0
+      );
+
+      attendance.totalWorkHours = Number(
+        totalHours.toFixed(2)
+      );
+
+      // -----------------------------
+      // Calculate overtime
+      // -----------------------------
+      attendance.overtimeHours =
+        totalHours > workConfig.overtimeThreshold
+          ? Number(
+              (
+                totalHours -
+                workConfig.overtimeThreshold
+              ).toFixed(2)
+            )
+          : 0;
+
+      // -----------------------------
+      // Calculate attendance status
+      // -----------------------------
+      if (
+        totalHours >= workConfig.fullDayHours
+      ) {
+        attendance.status = "fullday";
+      } else if (
+        totalHours >= workConfig.halfDayHours
+      ) {
+        attendance.status = "halfday";
+      } else {
+        attendance.status = "absent";
+      }
+    }
+
+    await attendance.save();
+
+    const updatedAttendance = await Attendance.findById(
+      attendance._id
+    )
+      .populate("employee", "name employeeId")
+      .populate("siteId", "siteName")
+      .populate("jobId", "name")
+      .populate("sessions.siteId", "siteName")
+      .populate("sessions.jobId", "name");
+    
+    const formattedAttendance = {
+      attendanceId: updatedAttendance._id,
+
+      employee: updatedAttendance.employee?._id,
+
+      name:updatedAttendance.employee ?.name || "",
+
+      employeeId: updatedAttendance.employee?.employeeId || "",
+
+      jobTitle: updatedAttendance.employee ?.jobTitle || "",
+
+      siteId: updatedAttendance.siteId?._id,
+
+      siteName: updatedAttendance.siteId ?.siteName || "",
+
+      jobId: updatedAttendance.jobId?._id || null,
+
+      jobName: updatedAttendance.jobId ?.name || "",
+
+      date: updatedAttendance.date,
+
+      status: updatedAttendance.status,
+
+      isHoliday: updatedAttendance.isHoliday,
+
+      totalWorkHours: updatedAttendance.totalWorkHours,
+
+      overtimeHours: updatedAttendance.overtimeHours,
+
+      sessions: updatedAttendance.sessions.map(
+          (session) => ({
+            _id: session._id,
+
+            siteId: session.siteId?._id,
+
+            siteName: session.siteId?.siteName || "",
+
+            jobId: session.jobId?._id ||null,
+
+            jobName: session.jobId?.name || "",
+
+            checkIn: session.checkIn,
+
+            checkOut: session.checkOut,
+
+            workedHours: session.workedHours,
+
+            markedBy: session.markedBy,
+          })
+        ),
+    }
+
+    return res.status(200).json({
+      message: "Attendance updated successfully",
+      attendance: formattedAttendance,
+    });
+  } catch (error) {
+    console.error("Update attendance error:", error);
+
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 
 
 // --- DEFAULT EXPORT ---
@@ -1200,8 +2794,14 @@ const attendanceController = {
     submitDaily,
     bulkUpdateAttendance,
     unlockAttendance,
-    updateAttendanceRecord,
-    toggleHolidayStatus
+    updateAttendance,
+    toggleHolidayStatus,
+
+    bulkSubmitAttendance,
+    getSiteAttendance,
+    bulkEditAttendance,
+    getAttendanceRecords
+
 };
 
 export default attendanceController;
