@@ -1408,10 +1408,7 @@ export const saveAttendanceRecord = async (req, res) => {
 //check in check out
 
 //submit
-export const bulkSubmitAttendance = async (
-  req,
-  res
-) => {
+export const bulkSubmitAttendance = async (req, res) => {
   try {
     const {
       siteId,
@@ -1493,22 +1490,69 @@ export const bulkSubmitAttendance = async (
         checkOut,
       } = entry;
 
+      // VALIDATE REQUIRED FIELDS
+      if (!employeeId) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "employeeId is required",
+        });
+      }
+
+      // ONLY ONE FIELD FILLED
+      if (
+        (checkIn && !checkOut) ||
+        (!checkIn && checkOut)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Both checkIn and checkOut are required",
+        });
+      }
+
+      const newCheckIn =
+        new Date(checkIn);
+
+      const newCheckOut =
+        new Date(checkOut);
+
+      // INVALID DATES
+      if (
+        isNaN(newCheckIn) ||
+        isNaN(newCheckOut)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid checkIn/checkOut date",
+        });
+      }
+
       // CALCULATE SESSION WORK HOURS
-      let workedHours = 0;
+      const diffMs =
+        newCheckOut - newCheckIn;
 
-      if (checkIn && checkOut) {
-        const diffMs =
-          new Date(checkOut) -
-          new Date(checkIn);
+      const workedHours =
+        diffMs /
+        (1000 * 60 * 60);
 
-        workedHours =
-          diffMs /
-          (1000 * 60 * 60);
+      // INVALID TIME RANGE
+      if (workedHours < 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "checkOut must be after checkIn",
+        });
+      }
 
-        // INVALID TIME RANGE
-        if (workedHours < 0) {
-          continue;
-        }
+      // OPTIONAL SAFETY LIMIT
+      if (workedHours > 24) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shift duration cannot exceed 24 hours",
+        });
       }
 
       // SESSION OBJECT
@@ -1526,7 +1570,7 @@ export const bulkSubmitAttendance = async (
         await Attendance.findOne({
           employee: employeeId,
           date: attendanceDate,
-        });
+        }).populate("sessions.siteId", "siteName");
 
       // CREATE NEW ATTENDANCE
       if (!attendanceDoc) {
@@ -1587,13 +1631,76 @@ export const bulkSubmitAttendance = async (
         continue;
       }
 
-      // CHECK IF SESSION FOR THIS SITE EXISTS
+      // FIND EXISTING SESSION FOR SAME SITE
       const existingSessionIndex =
         attendanceDoc.sessions.findIndex(
           (session) =>
-            session.siteId.toString() ===
+            session.siteId._id.toString() ===
             siteId.toString()
         );
+
+      // CHECK OVERLAPS
+      const overlappingSession =
+        attendanceDoc.sessions.find(
+          (session, index) => {
+
+            // SKIP CURRENT SESSION WHEN UPDATING
+            if (
+              index ===
+              existingSessionIndex
+            ) {
+              return false;
+            }
+
+            // IGNORE INVALID SESSIONS
+            if (
+              !session.checkIn ||
+              !session.checkOut
+            ) {
+              return false;
+            }
+
+            const existingCheckIn =
+              new Date(
+                session.checkIn
+              );
+
+            const existingCheckOut =
+              new Date(
+                session.checkOut
+              );
+
+            return (
+              newCheckIn <
+                existingCheckOut &&
+              newCheckOut >
+                existingCheckIn
+            );
+          }
+        );
+
+      // OVERLAP FOUND
+      if (overlappingSession) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Attendance session overlaps with existing session",
+
+          overlap: {
+            employeeId,
+
+            siteName:
+              overlappingSession.siteId.siteName,
+
+            checkIn:
+              overlappingSession.checkIn,
+
+            checkOut:
+              overlappingSession.checkOut,
+          },
+        });
+      }
 
       // UPDATE EXISTING SESSION
       if (
@@ -1617,7 +1724,14 @@ export const bulkSubmitAttendance = async (
         );
       }
 
-      // RECALCULATE TOTAL WORK HOURS
+      // SORT SESSIONS BY CHECK-IN
+      attendanceDoc.sessions.sort(
+        (a, b) =>
+          new Date(a.checkIn) -
+          new Date(b.checkIn)
+      );
+
+      // RECALCULATE TOTAL HOURS
       const totalWorkHours =
         attendanceDoc.sessions.reduce(
           (acc, session) => {
@@ -1670,6 +1784,15 @@ export const bulkSubmitAttendance = async (
       attendanceDoc.isHoliday =
         isHoliday;
 
+      attendanceDoc.siteId =
+        siteId;
+
+      attendanceDoc.jobId =
+        jobId;
+
+      attendanceDoc.markedBy =
+        markedBy;
+
       await attendanceDoc.save();
 
       processedRecords.push(
@@ -1677,7 +1800,7 @@ export const bulkSubmitAttendance = async (
       );
     }
 
-    // CREATE LOCK AFTER SUCCESSFUL SUBMISSION
+    // CREATE LOCK
     await AttendanceLock.create({
       siteId,
       date: attendanceDate,
@@ -1691,6 +1814,7 @@ export const bulkSubmitAttendance = async (
 
     return res.status(201).json({
       success: true,
+
       message:
         "Attendance submitted successfully",
 
@@ -1699,6 +1823,7 @@ export const bulkSubmitAttendance = async (
 
       data: processedRecords,
     });
+
   } catch (error) {
     console.error(error);
 
@@ -1713,6 +1838,7 @@ export const bulkSubmitAttendance = async (
 
     return res.status(500).json({
       success: false,
+
       message:
         "Failed to submit attendance",
 
@@ -2662,6 +2788,10 @@ export const updateAttendance = async (req, res) => {
         };
       });
 
+      updatedSessions.sort(
+        (a, b) => new Date(a.checkIn) - new Date(b.checkIn)
+      );
+
       attendance.sessions = updatedSessions;
 
       // -----------------------------
@@ -2783,6 +2913,184 @@ export const updateAttendance = async (req, res) => {
 };
 
 
+export const getEmployeeAttendanceByMonth = async (req, res) => {
+    try {
+      const { employeeId } =
+        req.params;
+
+      const { month, year } =
+        req.query;
+
+      if (
+        !employeeId ||
+        !month ||
+        !year
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "employeeId, month and year are required",
+        });
+      }
+
+      const startDate =
+        new Date(
+          Number(year),
+          Number(month) - 1,
+          1
+        );
+
+      const endDate =
+        new Date(
+          Number(year),
+          Number(month),
+          0,
+          23,
+          59,
+          59,
+          999
+        );
+
+      const attendance =
+        await Attendance.find({
+          employee: employeeId,
+
+          date: {
+            $gte: startDate,
+            $lte: endDate,
+          },
+        })
+
+          .populate(
+            "employee",
+            "name employeeId jobTitle"
+          )
+
+          .populate(
+            "siteId",
+            "siteName"
+          )
+
+          .populate(
+            "jobId",
+            "jobName"
+          )
+
+          .populate(
+            "sessions.siteId",
+            "siteName"
+          )
+
+          .populate(
+            "sessions.jobId",
+            "name"
+          )
+
+          .sort({
+            date: 1,
+          });
+
+      const formattedData =
+        attendance.map((record) => ({
+          attendanceId:
+            record._id,
+
+          employee:
+            record.employee._id,
+
+          name:
+            record.employee.name,
+
+          employeeId:
+            record.employee.employeeId,
+
+          jobTitle:
+            record.employee.jobTitle,
+
+          siteId:
+            record.siteId?._id,
+
+          siteName:
+            record.siteId?.siteName,
+
+          jobId:
+            record.jobId?._id || null,
+
+          jobName:
+            record.jobId?.name ||
+            null,
+
+          date: record.date,
+
+          status:
+            record.status,
+
+          isHoliday:
+            record.isHoliday,
+
+          totalWorkHours:
+            record.totalWorkHours,
+
+          overtimeHours:
+            record.overtimeHours,
+
+          sessions:
+            record.sessions.map(
+              (session) => ({
+                _id: session._id,
+
+                siteId:
+                  session.siteId?._id,
+
+                siteName:
+                  session.siteId
+                    ?.siteName,
+
+                jobId:
+                  session.jobId?._id ||
+                  null,
+
+                jobName:
+                  session.jobId
+                    ?.name ||
+                  null,
+
+                checkIn:
+                  session.checkIn,
+
+                checkOut:
+                  session.checkOut,
+
+                workedHours:
+                  session.workedHours,
+
+                markedBy:
+                  session.markedBy,
+              })
+            ),
+        }));
+
+      return res.status(200).json({
+        success: true,
+
+        totalRecords:
+          formattedData.length,
+
+        data: formattedData,
+      });
+    } catch (error) {
+      console.error(error);
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch attendance",
+        error: error.message,
+      });
+    }
+};
+
+
 
 // --- DEFAULT EXPORT ---
 
@@ -2800,7 +3108,8 @@ const attendanceController = {
     bulkSubmitAttendance,
     getSiteAttendance,
     bulkEditAttendance,
-    getAttendanceRecords
+    getAttendanceRecords,
+    getEmployeeAttendanceByMonth
 
 };
 

@@ -22,6 +22,7 @@ import ManageJobEmployees from "./pages/ManageJobEmployees"
 import MonthlyReport from "./pages/MonthlyReport"
 import Configure from "./pages/Configure"
 import ManageUsers from "./pages/ManageUsers"
+import EmployeeDetailAttendance from "./pages/EmployeeDetailAttendance"
 
 
 
@@ -81,6 +82,17 @@ function App() {
                 allowedRoles={["admin"]}
               >
                 <Employees />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/employees/:id"
+            element={
+              <ProtectedRoute
+                allowedRoles={["admin"]}
+              >
+                <EmployeeDetailAttendance />
               </ProtectedRoute>
             }
           />
@@ -230,6 +242,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+
 
         </Route>
 

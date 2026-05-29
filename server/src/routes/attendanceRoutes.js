@@ -1,6 +1,5 @@
 import express from 'express'
 
-import Attendance from '../controllers/attendanceController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import attendanceController from '../controllers/attendanceController.js'
 
@@ -13,24 +12,26 @@ const router = express.Router()
 
 router.use(verifyToken)
 
-router.post('/submit', Attendance.bulkSubmitAttendance)
+router.post('/submit', attendanceController.bulkSubmitAttendance)
 
-router.get('/reports/daily', Attendance.getSiteAttendance)
+router.get('/reports/daily', attendanceController.getSiteAttendance)
 
-router.patch('/bulk-update', Attendance.bulkEditAttendance)
+router.patch('/bulk-update', attendanceController.bulkEditAttendance)
 
-router.patch('/unlock', Attendance.unlockAttendance)
+router.patch('/unlock', attendanceController.unlockAttendance)
 
-router.get('/reports/monthly', Attendance.getMonthlyReport)
+router.get('/reports/monthly', attendanceController.getMonthlyReport)
 
-router.get('/reports/daily-summary', Attendance.getSummary)
+router.get('/reports/daily-summary', attendanceController.getSummary)
 
-router.patch('/update/set-holiday', Attendance.toggleHolidayStatus)
+router.patch('/update/set-holiday', attendanceController.toggleHolidayStatus)
 
-router.patch('/update/:attendanceId', Attendance.updateAttendance)
+router.patch('/update/:attendanceId', attendanceController.updateAttendance)
 
 //GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
 router.get('/', attendanceController.getAttendanceRecords)
+
+router.get('/employee/:employeeId', attendanceController.getEmployeeAttendanceByMonth)
 
 
 

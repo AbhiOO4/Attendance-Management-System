@@ -39,6 +39,7 @@ import {
 import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
 import axios from "axios"
+import { Link } from "react-router-dom"
 
 interface Employee {
   _id: string
@@ -312,7 +313,7 @@ function Employees() {
               employees.map((employee) => (
                 <TableRow key={employee._id}>
                   <TableCell>
-                    {employee.name}
+                    <Link to={`/employees/${employee._id}`}>{employee.name}</Link>
                   </TableCell>
 
                   <TableCell>

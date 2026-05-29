@@ -123,6 +123,18 @@ function MarkSiteAttendance() {
 
   const [holidayReason, setHolidayReason] = useState("")
 
+  const [overlapErrors, setOverlapErrors] =
+  useState<
+    Record<
+      string,
+      {
+        siteName: string
+        checkIn: string
+        checkOut: string
+      }
+    >
+  >({})
+
 
   const handleSafeNavigation = (path: string) => {
     if (!isDirty) {
@@ -492,56 +504,59 @@ function MarkSiteAttendance() {
     })
   }, [attendance, search])
 
-  const updateAttendanceTime = (
-    employee: string,
+const updateAttendanceTime = (employee: string, field:| "checkIn" | "checkOut", value: string ) => {
+  if (isLocked) return
 
-    field:
-      | "checkIn"
-      | "checkOut",
+  // CLEAR OVERLAP ERROR WHEN USER EDITS
+  setOverlapErrors((prev) => {
+    const updated = {
+      ...prev,
+    }
 
-    value: string
-  ) => {
-    if (isLocked) return
+    delete updated[employee]
 
-    setAttendance((prev) =>
-      prev.map((item) => {
-        if (
-          item.employee !== employee
+    return updated
+  })
+
+  setAttendance((prev) =>
+    prev.map((item) => {
+      if (
+        item.employee !== employee
+      )
+        return item
+
+      const updated = {
+        ...item,
+
+        [field]: value,
+      }
+
+      const workHours =
+        calculateHours(
+          updated.checkIn,
+          updated.checkOut
         )
-          return item
 
-        const updated = {
-          ...item,
+      return {
+        ...updated,
 
-          [field]: value,
-        }
+        workHours,
 
-        const workHours =
-          calculateHours(
-            updated.checkIn,
-            updated.checkOut
-          )
+        status:
+          calculateStatus(
+            workHours
+          ),
 
-        return {
-          ...updated,
+        overtimeHours:
+          calculateOT(
+            workHours
+          ),
+      }
+    })
+  )
 
-          workHours,
-
-          status:
-            calculateStatus(
-              workHours
-            ),
-
-          overtimeHours:
-            calculateOT(
-              workHours
-            ),
-        }
-      })
-    )
-
-    setIsDirty(true)
-  }
+  setIsDirty(true)
+}
 
   const calculateHours = (
     checkIn: string,
@@ -658,10 +673,35 @@ function MarkSiteAttendance() {
 
     setIsDirty(false)
   } catch (error: any) {
+
+    const overlap = error?.response?.data?.overlap
+
+    if (overlap) {
+
+      setOverlapErrors({
+        [overlap.employeeId]: {
+          siteName:
+            overlap.siteName,
+
+          checkIn:
+            overlap.checkIn,
+
+          checkOut:
+            overlap.checkOut,
+        },
+      })
+
+      toast.error(
+        "Attendance overlap detected"
+      )
+
+      return
+    }
+
     toast.error(
       error?.response?.data
         ?.message ||
-        "Failed to save attendance"
+      "Failed to save attendance"
     )
   } finally {
     setSaving(false)
@@ -843,6 +883,37 @@ function MarkSiteAttendance() {
                           <p className="text-sm text-muted-foreground">
                             {emp.employeeId} • {emp.jobTitle}
                           </p>
+
+                          {overlapErrors[emp.employee] && (
+                            <p className="mt-1 text-sm font-medium text-red-600">
+                              Overlap with {
+                                overlapErrors[emp.employee]
+                                  .siteName
+                              }
+
+                              {" "}
+
+                              (
+                              {new Date(
+                                overlapErrors[emp.employee]
+                                  .checkIn
+                              ).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+
+                              {" - "}
+
+                              {new Date(
+                                overlapErrors[emp.employee]
+                                  .checkOut
+                              ).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                              )
+                            </p>
+                          )}
                         </div>
                       </TableCell>
 
@@ -900,6 +971,37 @@ function MarkSiteAttendance() {
                             <p className="text-sm text-muted-foreground">
                               {emp.employeeId} • {emp.jobTitle}
                             </p>
+
+                            {overlapErrors[emp.employee] && (
+                              <p className="mt-2 text-sm font-medium text-red-600">
+                                Overlap with {
+                                  overlapErrors[emp.employee]
+                                    .siteName
+                                }
+
+                                {" "}
+
+                                (
+                                {new Date(
+                                  overlapErrors[emp.employee]
+                                    .checkIn
+                                ).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+
+                                {" - "}
+
+                                {new Date(
+                                  overlapErrors[emp.employee]
+                                    .checkOut
+                                ).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                                )
+                              </p>
+                            )}
                           </div>
 
                           {/* TIME INPUTS */}
