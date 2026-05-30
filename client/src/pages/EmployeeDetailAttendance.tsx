@@ -156,351 +156,329 @@ function EmployeeAttendanceDetail() {
   }
 
   const exportSpreadsheet = async () => {
-  try {
-    const workbook = new ExcelJS.Workbook()
+    try {
+      const workbook = new ExcelJS.Workbook()
 
-    const worksheet =
-      workbook.addWorksheet(
-        "Attendance"
-      )
-
-    // TITLE
-    worksheet.mergeCells(
-      "A1:F1"
-    )
-
-    const titleCell =
-      worksheet.getCell("A1")
-
-    titleCell.value = `${employee?.name} Attendance Report`
-
-    titleCell.font = {
-      bold: true,
-      size: 16,
-    }
-
-    titleCell.alignment = {
-      horizontal: "center",
-      vertical: "middle",
-    }
-
-    // EMPLOYEE INFO
-    worksheet.addRow([])
-
-    worksheet.addRow([
-      "Employee ID",
-      employee?.employeeId || "-",
-    ])
-
-    worksheet.addRow([
-      "Job Title",
-      employee?.jobTitle || "-",
-    ])
-
-    worksheet.addRow([
-      "Month",
-      `${new Date(
-        Number(year),
-        Number(month) - 1
-      ).toLocaleString(
-        "en-IN",
-        {
-          month: "long",
-        }
-      )} ${year}`,
-    ])
-
-    worksheet.addRow([])
-
-    // --------------------------
-    // HEADER ROW 1
-    // --------------------------
-
-    const headerRow1 = [
-      "S.No",
-      "Date",
-    ]
-
-    for (
-      let i = 0;
-      i < maxSessions;
-      i++
-    ) {
-      headerRow1.push(
-        `Session ${i + 1}`,
-        "",
-        "",
-        "",
-        ""
-      )
-    }
-
-    headerRow1.push(
-      "Status",
-      "Total Hours",
-      "OT Hours"
-    )
-
-    const row1 =
-      worksheet.addRow(headerRow1)
-
-    // --------------------------
-    // MERGE SESSION HEADERS
-    // --------------------------
-
-    let currentCol = 3
-
-    for (
-      let i = 0;
-      i < maxSessions;
-      i++
-    ) {
-      worksheet.mergeCells(
-        7,
-        currentCol,
-        7,
-        currentCol + 4
-      )
-
-      currentCol += 5
-    }
-
-    // --------------------------
-    // HEADER ROW 2
-    // --------------------------
-
-    const headerRow2 = [
-      "",
-      "",
-    ]
-
-    for (
-      let i = 0;
-      i < maxSessions;
-      i++
-    ) {
-      headerRow2.push(
-        "Site Name",
-        "Job Name",
-        "Check In",
-        "Check Out",
-        "Worked Hours"
-      )
-    }
-
-    headerRow2.push(
-      "",
-      "",
-      ""
-    )
-
-    const row2 =
-      worksheet.addRow(headerRow2)
-
-    // --------------------------
-    // STYLE HEADERS
-    // --------------------------
-
-    ;[row1, row2].forEach(
-      (row) => {
-        row.eachCell((cell) => {
-          cell.font = {
-            bold: true,
-          }
-
-          cell.alignment = {
-            horizontal:
-              "center",
-            vertical:
-              "middle",
-            wrapText: true,
-          }
-
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: {
-              argb: "D9EAF7",
-            },
-          }
-
-          cell.border = {
-            top: {
-              style: "thin",
-            },
-            left: {
-              style: "thin",
-            },
-            bottom: {
-              style: "thin",
-            },
-            right: {
-              style: "thin",
-            },
-          }
-        })
-      }
-    )
-
-    // --------------------------
-    // DATA ROWS
-    // --------------------------
-
-    sortedAttendance.forEach(
-      (record, index) => {
-        const rowData = [
-          index + 1,
-
-          new Date(
-            record.date
-          ).toLocaleDateString(
-            "en-IN",
-            {
-              day: "2-digit",
-              month: "short",
-              year: "numeric",
-            }
-          ),
-        ]
-
-        for (
-          let i = 0;
-          i < maxSessions;
-          i++
-        ) {
-          const session =
-            record.sessions[i]
-
-          if (session) {
-            rowData.push(
-              session.siteName ||
-                "-",
-
-              session.jobName ||
-                "-",
-
-              session.checkIn
-                ? new Date(
-                    session.checkIn
-                  ).toLocaleTimeString(
-                    "en-IN",
-                    {
-                      hour:
-                        "2-digit",
-                      minute:
-                        "2-digit",
-                    }
-                  )
-                : "-",
-
-              session.checkOut
-                ? new Date(
-                    session.checkOut
-                  ).toLocaleTimeString(
-                    "en-IN",
-                    {
-                      hour:
-                        "2-digit",
-                      minute:
-                        "2-digit",
-                    }
-                  )
-                : "-",
-
-              session.workedHours ??
-                "-"
-            )
-          } else {
-            rowData.push(
-              "-",
-              "-",
-              "-",
-              "-",
-              "-"
-            )
-          }
-        }
-
-        rowData.push(
-          record.status,
-          record.totalWorkHours,
-          record.overtimeHours
+      const worksheet =
+        workbook.addWorksheet(
+          "Attendance"
         )
 
-        const row =
-          worksheet.addRow(rowData)
+      // --------------------------
+      // TITLE
+      // --------------------------
 
-        row.eachCell((cell) => {
-          cell.alignment = {
-            horizontal:
-              "center",
-            vertical:
-              "middle",
-            wrapText: true,
-          }
+      worksheet.mergeCells(
+        "A1:K1"
+      )
 
-          cell.border = {
-            top: {
-              style: "thin",
-            },
-            left: {
-              style: "thin",
-            },
-            bottom: {
-              style: "thin",
-            },
-            right: {
-              style: "thin",
-            },
-          }
-        })
+      const titleCell =
+        worksheet.getCell("A1")
+
+      titleCell.value = `${employee?.name} Attendance Report`
+
+      titleCell.font = {
+        bold: true,
+        size: 16,
       }
-    )
 
-    // --------------------------
-    // COLUMN WIDTHS
-    // --------------------------
-
-    worksheet.columns.forEach(
-      (column) => {
-        column.width = 20
+      titleCell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
       }
-    )
 
-    // --------------------------
-    // FREEZE HEADER
-    // --------------------------
+      // --------------------------
+      // EMPLOYEE INFO
+      // --------------------------
 
-    worksheet.views = [
-      {
-        state: "frozen",
-        ySplit: 8,
-      },
-    ]
+      worksheet.addRow([])
 
-    // --------------------------
-    // DOWNLOAD
-    // --------------------------
+      worksheet.addRow([
+        "Employee ID",
+        employee?.employeeId || "-",
+      ])
 
-    const buffer =
-      await workbook.xlsx.writeBuffer()
+      worksheet.addRow([
+        "Job Title",
+        employee?.jobTitle || "-",
+      ])
 
-    saveAs(
-      new Blob([buffer]),
-      `${employee?.name}-${month}-${year}-attendance.xlsx`
-    )
+      worksheet.addRow([
+        "Month",
+        `${new Date(
+          Number(year),
+          Number(month) - 1
+        ).toLocaleString(
+          "en-IN",
+          {
+            month: "long",
+          }
+        )} ${year}`,
+      ])
 
-    toast.success(
-      "Spreadsheet exported"
-    )
-  } catch (error) {
-    console.log(error)
+      worksheet.addRow([])
 
-    toast.error(
-      "Failed to export spreadsheet"
-    )
+      // --------------------------
+      // HEADERS
+      // --------------------------
+
+      const headerRow =
+        worksheet.addRow([
+          "S.No",
+          "Date",
+          "Site Name",
+          "Job Name",
+          "Check In",
+          "Check Out",
+          "Worked Hours",
+          "Status",
+          "Total Hours",
+          "OT Hours",
+        ])
+
+      headerRow.eachCell((cell) => {
+        cell.font = {
+          bold: true,
+        }
+
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: true,
+        }
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: "D9EAF7",
+          },
+        }
+
+        cell.border = {
+          top: {
+            style: "thin",
+          },
+          left: {
+            style: "thin",
+          },
+          bottom: {
+            style: "thin",
+          },
+          right: {
+            style: "thin",
+          },
+        }
+      })
+
+      // --------------------------
+      // DATA ROWS
+      // --------------------------
+
+      let currentRow = 8
+
+      sortedAttendance.forEach(
+        (record, index) => {
+          const sessions =
+            record.sessions.length > 0
+              ? record.sessions
+              : [null]
+
+          const startRow =
+            currentRow
+
+          sessions.forEach(
+            (
+              session,
+              sessionIndex
+            ) => {
+              const row =
+                worksheet.addRow([
+                  sessionIndex === 0
+                    ? index + 1
+                    : "",
+
+                  sessionIndex === 0
+                    ? new Date(
+                      record.date
+                    ).toLocaleDateString(
+                      "en-IN",
+                      {
+                        day: "2-digit",
+                        month: "short",
+                        year:
+                          "numeric",
+                      }
+                    )
+                    : "",
+
+                  session?.siteName ||
+                  "-",
+
+                  session?.jobName ||
+                  "-",
+
+                  session?.checkIn
+                    ? new Date(
+                      session.checkIn
+                    ).toLocaleTimeString(
+                      "en-IN",
+                      {
+                        hour:
+                          "2-digit",
+                        minute:
+                          "2-digit",
+                      }
+                    )
+                    : "-",
+
+                  session?.checkOut
+                    ? new Date(
+                      session.checkOut
+                    ).toLocaleTimeString(
+                      "en-IN",
+                      {
+                        hour:
+                          "2-digit",
+                        minute:
+                          "2-digit",
+                      }
+                    )
+                    : "-",
+
+                  session?.workedHours ??
+                  "-",
+
+                  sessionIndex === 0
+                    ? record.status
+                    : "",
+
+                  sessionIndex === 0
+                    ? record.totalWorkHours
+                    : "",
+
+                  sessionIndex === 0
+                    ? record.overtimeHours
+                    : "",
+                ])
+
+              row.eachCell((cell) => {
+                cell.alignment = {
+                  horizontal:
+                    "center",
+                  vertical:
+                    "middle",
+                  wrapText: true,
+                }
+
+                cell.border = {
+                  top: {
+                    style: "thin",
+                  },
+                  left: {
+                    style: "thin",
+                  },
+                  bottom: {
+                    style: "thin",
+                  },
+                  right: {
+                    style: "thin",
+                  },
+                }
+              })
+
+              currentRow++
+            }
+          )
+
+          const endRow =
+            currentRow - 1
+
+          // --------------------------
+          // MERGE COMMON CELLS
+          // --------------------------
+
+          if (
+            sessions.length > 1
+          ) {
+            ;[
+              1, // S.No
+              2, // Date
+              8, // Status
+              9, // Total Hours
+              10, // OT Hours
+            ].forEach((col) => {
+              worksheet.mergeCells(
+                startRow,
+                col,
+                endRow,
+                col
+              )
+            })
+          }
+        }
+      )
+
+      // --------------------------
+      // COLUMN WIDTHS
+      // --------------------------
+
+      worksheet.columns =
+        worksheet.columns.map(
+          (column, index) => {
+            let width = 20
+
+            if (
+              index === 0
+            )
+              width = 10
+
+            if (
+              index === 1
+            )
+              width = 18
+
+            return {
+              ...column,
+              width,
+            }
+          }
+        )
+
+      // --------------------------
+      // FREEZE HEADER
+      // --------------------------
+
+      worksheet.views = [
+        {
+          state: "frozen",
+          ySplit: 8,
+        },
+      ]
+
+      // --------------------------
+      // DOWNLOAD
+      // --------------------------
+
+      const buffer =
+        await workbook.xlsx.writeBuffer()
+
+      saveAs(
+        new Blob([buffer]),
+        `${employee?.name}-${month}-${year}-attendance.xlsx`
+      )
+
+      toast.success(
+        "Spreadsheet exported"
+      )
+    } catch (error) {
+      console.log(error)
+
+      toast.error(
+        "Failed to export spreadsheet"
+      )
+    }
   }
-}
 
   useEffect(() => {
     fetchEmployee()
@@ -697,37 +675,25 @@ function EmployeeAttendanceDetail() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>
-                      S.No
-                    </TableHead>
+                    <TableHead>S.No</TableHead>
 
-                    <TableHead>
-                      Date
-                    </TableHead>
+                    <TableHead>Date</TableHead>
 
-                    {Array.from(
-                      { length: maxSessions },
-                      (_, index) => (
-                        <TableHead
-                          key={index}
-                          className="min-w-[260px]"
-                        >
-                          Session {index + 1}
-                        </TableHead>
-                      )
-                    )}
+                    <TableHead>Site</TableHead>
 
-                    <TableHead>
-                      Status
-                    </TableHead>
+                    <TableHead>Job</TableHead>
 
-                    <TableHead>
-                      Total Hours
-                    </TableHead>
+                    <TableHead>Check In</TableHead>
 
-                    <TableHead>
-                      OT Hours
-                    </TableHead>
+                    <TableHead>Check Out</TableHead>
+
+                    <TableHead>Worked</TableHead>
+
+                    <TableHead>Status</TableHead>
+
+                    <TableHead>Total Hours</TableHead>
+
+                    <TableHead>OT Hours</TableHead>
 
                     <TableHead className="text-right">
                       Actions
@@ -739,9 +705,7 @@ function EmployeeAttendanceDetail() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={
-                          maxSessions + 6
-                        }
+                        colSpan={9}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -752,9 +716,7 @@ function EmployeeAttendanceDetail() {
                   ) : sortedAttendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={
-                          maxSessions + 6
-                        }
+                        colSpan={9}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
@@ -762,168 +724,166 @@ function EmployeeAttendanceDetail() {
                     </TableRow>
                   ) : (
                     sortedAttendance.map(
-                      (record, index) => (
-                        <TableRow
-                          key={record.attendanceId}
-                        >
-                          <TableCell>
-                            {index + 1}
-                          </TableCell>
+                      (record, index) => {
+                        const sessions =
+                          record.sessions.length > 0
+                            ? record.sessions
+                            : [null]
 
-                          <TableCell>
-                            {new Date(
-                              record.date
-                            ).toLocaleDateString(
-                              "en-IN",
-                              {
-                                day: "2-digit",
-                                month: "short",
-                                year: "numeric",
-                              }
-                            )}
-                          </TableCell>
-
-                          {/* SESSION COLUMNS */}
-                          {Array.from(
-                            {
-                              length: maxSessions,
-                            },
-                            (_, sessionIndex) => {
-                              const session =
-                                record.sessions[
-                                  sessionIndex
-                                ]
-
-                              return (
-                                <TableCell
-                                  key={sessionIndex}
-                                >
-                                  {session ? (
-                                    <div className="space-y-1 rounded-md border p-3 text-sm">
-
-                                      <p>
-                                        <span className="font-medium">
-                                          Site:
-                                        </span>{" "}
-                                        {
-                                          session.siteName
-                                        }
-                                      </p>
-
-                                      {session.jobName && (
-                                        <p>
-                                          <span className="font-medium">
-                                            Job:
-                                          </span>{" "}
-                                          {
-                                            session.jobName
-                                          }
-                                        </p>
-                                      )}
-
-                                      <p>
-                                        <span className="font-medium">
-                                          In:
-                                        </span>{" "}
-                                        {session.checkIn
-                                          ? new Date(
-                                              session.checkIn
-                                            ).toLocaleTimeString(
-                                              "en-IN",
-                                              {
-                                                hour:
-                                                  "2-digit",
-                                                minute:
-                                                  "2-digit",
-                                              }
-                                            )
-                                          : "-"}
-                                      </p>
-
-                                      <p>
-                                        <span className="font-medium">
-                                          Out:
-                                        </span>{" "}
-                                        {session.checkOut
-                                          ? new Date(
-                                              session.checkOut
-                                            ).toLocaleTimeString(
-                                              "en-IN",
-                                              {
-                                                hour:
-                                                  "2-digit",
-                                                minute:
-                                                  "2-digit",
-                                              }
-                                            )
-                                          : "-"}
-                                      </p>
-
-                                      <p>
-                                        <span className="font-medium">
-                                          Worked:
-                                        </span>{" "}
-                                        {
-                                          session.workedHours
-                                        } hrs
-                                      </p>
-                                    </div>
-                                  ) : (
-                                    <div className="text-muted-foreground text-sm">
-                                      -
-                                    </div>
-                                  )}
-                                </TableCell>
-                              )
-                            }
-                          )}
-
-                          {/* STATUS */}
-                          <TableCell>
-                            <div
-                              className={`inline-flex rounded-full px-3 py-1 text-xs font-medium text-white ${
-                                record.status ===
-                                "fullday"
-                                  ? "bg-green-600"
-                                  : record.status ===
-                                      "halfday"
-                                    ? "bg-yellow-500"
-                                    : "bg-red-600"
-                              }`}
+                        return sessions.map(
+                          (session, sessionIndex) => (
+                            <TableRow
+                              key={`${record.attendanceId}-${sessionIndex}`}
+                              className={`${index % 2 === 0
+                                  ? "bg-white dark:bg-background"
+                                  : "bg-slate-200 dark:bg-slate-900/40"
+                                } `}
                             >
-                              {record.status}
-                            </div>
-                          </TableCell>
+                              {/* COMMON CELLS */}
+                              {sessionIndex === 0 && (
+                                <>
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {index + 1}
+                                  </TableCell>
 
-                          {/* HOURS */}
-                          <TableCell>
-                            {
-                              record.totalWorkHours
-                            } hrs
-                          </TableCell>
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {new Date(
+                                      record.date
+                                    ).toLocaleDateString(
+                                      "en-IN",
+                                      {
+                                        day: "2-digit",
+                                        month: "short",
+                                        year: "numeric",
+                                      }
+                                    )}
+                                  </TableCell>
+                                </>
+                              )}
 
-                          <TableCell>
-                            {
-                              record.overtimeHours
-                            } hrs
-                          </TableCell>
+                              {/* SESSION DATA */}
+                              <TableCell>
+                                {session?.siteName || "-"}
+                              </TableCell>
 
-                          {/* ACTION */}
-                          <TableCell className="text-right">
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              onClick={() =>
-                                setEditingRecord(
-                                  record
-                                )
-                              }
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      )
+                              <TableCell>
+                                {session?.jobName || "-"}
+                              </TableCell>
+
+                              <TableCell>
+                                {session?.checkIn
+                                  ? new Date(
+                                    session.checkIn
+                                  ).toLocaleTimeString(
+                                    "en-IN",
+                                    {
+                                      hour:
+                                        "2-digit",
+                                      minute:
+                                        "2-digit",
+                                    }
+                                  )
+                                  : "-"}
+                              </TableCell>
+
+                              <TableCell>
+                                {session?.checkOut
+                                  ? new Date(
+                                    session.checkOut
+                                  ).toLocaleTimeString(
+                                    "en-IN",
+                                    {
+                                      hour:
+                                        "2-digit",
+                                      minute:
+                                        "2-digit",
+                                    }
+                                  )
+                                  : "-"}
+                              </TableCell>
+
+                              <TableCell>
+                                {session?.workedHours ??
+                                  "-"}{" "}
+                                hrs
+                              </TableCell>
+
+                              {/* COMMON CELLS */}
+                              {sessionIndex === 0 && (
+                                <>
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    <div
+                                      className={`inline-flex rounded-full px-3 py-1 text-xs font-medium text-white ${record.status ===
+                                          "fullday"
+                                          ? "bg-green-600"
+                                          : record.status ===
+                                            "halfday"
+                                            ? "bg-yellow-500"
+                                            : "bg-red-600"
+                                        }`}
+                                    >
+                                      {record.status}
+                                    </div>
+                                  </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {
+                                      record.totalWorkHours
+                                    }{" "}
+                                    hrs
+                                  </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {
+                                      record.overtimeHours
+                                    }{" "}
+                                    hrs
+                                  </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                    className="text-right"
+                                  >
+                                    <Button
+                                      size="icon"
+                                      variant="outline"
+                                      onClick={() =>
+                                        setEditingRecord(
+                                          record
+                                        )
+                                      }
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </Button>
+                                  </TableCell>
+                                </>
+                              )}
+                            </TableRow>
+                          )
+                        )
+                      }
                     )
                   )}
                 </TableBody>

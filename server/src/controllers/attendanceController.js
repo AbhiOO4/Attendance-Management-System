@@ -1499,17 +1499,7 @@ export const bulkSubmitAttendance = async (req, res) => {
         });
       }
 
-      // ONLY ONE FIELD FILLED
-      if (
-        (checkIn && !checkOut) ||
-        (!checkIn && checkOut)
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Both checkIn and checkOut are required",
-        });
-      }
+      
 
       const newCheckIn =
         new Date(checkIn);
@@ -1895,13 +1885,14 @@ export const getSiteAttendance = async (
 
     const end = new Date(queryDate);
 
-    end.setHours(
+    end.setUTCHours(
       23,
       59,
       59,
       999
     );
 
+    // LOCK CHECK
     const existingLock =
       await AttendanceLock.findOne({
         siteId,
@@ -1911,6 +1902,12 @@ export const getSiteAttendance = async (
     const isLocked =
       existingLock?.isLocked || false;
 
+    // GET SITE ONCE
+    const site =
+      await Site.findById(siteId)
+        .select("siteName")
+        .lean();
+
     // MAIN MATCH
     const attendanceMatch = {
       date: {
@@ -1919,7 +1916,7 @@ export const getSiteAttendance = async (
       },
     };
 
-    // FILTER EMPLOYEE SEARCHES
+    // EMPLOYEE FILTERS
     const employeeMatch = {};
 
     if (name) {
@@ -1955,7 +1952,7 @@ export const getSiteAttendance = async (
         $match: attendanceMatch,
       },
 
-      // FILTER ONLY SESSIONS
+      // KEEP ONLY SESSIONS
       // BELONGING TO THIS SITE
       {
         $addFields: {
@@ -1978,8 +1975,8 @@ export const getSiteAttendance = async (
         },
       },
 
-      // REMOVE ATTENDANCE DOCS
-      // WITH NO MATCHING SESSION
+      // REMOVE DOCS WITH
+      // NO MATCHING SESSIONS
       {
         $match: {
           filteredSessions: {
@@ -2005,43 +2002,18 @@ export const getSiteAttendance = async (
         $unwind: "$employee",
       },
 
-      // SITE LOOKUP
-      {
-        $lookup: {
-          from: "sites",
-
-          localField:
-            "filteredSessions.siteId",
-
-          foreignField: "_id",
-
-          as: "site",
-        },
-      },
-
-      {
-        $unwind: {
-          path: "$site",
-
-          preserveNullAndEmptyArrays: true,
-        },
-      },
-
       // APPLY EMPLOYEE FILTERS
       {
         $match: employeeMatch,
       },
 
-      // SORT ALPHABETICALLY
+      // SORT BY EMPLOYEE NAME
       {
         $sort: {
           "employee.name": 1,
         },
       },
     ];
-
-    const shouldPaginate =
-      page && limit;
 
     // RESPONSE SHAPE
     const projectStage = {
@@ -2060,10 +2032,11 @@ export const getSiteAttendance = async (
       jobTitle:
         "$employee.jobTitle",
 
-      siteId: "$site._id",
+      siteId:
+        site?._id || null,
 
       siteName:
-        "$site.siteName",
+        site?.siteName || null,
 
       date: "$date",
 
@@ -2082,7 +2055,10 @@ export const getSiteAttendance = async (
         "$filteredSessions",
     };
 
-    // PAGINATION
+    const shouldPaginate =
+      page && limit;
+
+    // PAGINATED
     if (shouldPaginate) {
       const pageNumber =
         Math.max(
@@ -2126,7 +2102,7 @@ export const getSiteAttendance = async (
       });
 
       const [result] =
-        await attendanceModel.aggregate(
+        await Attendance.aggregate(
           pipeline
         );
 
@@ -2148,6 +2124,7 @@ export const getSiteAttendance = async (
 
         message:
           "Attendance fetched successfully",
+
         isLocked,
 
         page: pageNumber,
@@ -2204,6 +2181,7 @@ export const getSiteAttendance = async (
 
       message:
         "Attendance fetched successfully",
+
       isLocked,
 
       totalRecords:
