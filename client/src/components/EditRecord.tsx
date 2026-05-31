@@ -129,6 +129,12 @@ interface EditRecordProps {
 // --------------------------------------------------
 
 function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
+  const [overlapInfo, setOverlapInfo] =
+    useState<any>(null)
+
+  const [overlapIndexes, setOverlapIndexes] =
+    useState<number[]>([])
+
   const [sites, setSites] = useState<Site[]>([])
 
   const [sessions, setSessions] =
@@ -380,6 +386,9 @@ const [sessionToDelete, setSessionToDelete] =
     updated[index].jobId = null
   }
 
+   setOverlapInfo(null)
+   setOverlapIndexes([])
+
   setSessions(updated)
 }
 
@@ -459,74 +468,6 @@ const [sessionToDelete, setSessionToDelete] =
       return
     }
 
-    // -------------------------
-    // OVERLAP VALIDATION
-    // -------------------------
-
-      const hasOverlap = sessions.some(
-        (sessionA, indexA) => {
-          if (
-            !sessionA.checkIn ||
-            !sessionA.checkOut
-          )
-            return false
-
-          const startA =
-            new Date(
-              sessionA.checkIn
-            ).getTime()
-
-          const endA =
-            new Date(
-              sessionA.checkOut
-            ).getTime()
-
-          return sessions.some(
-            (
-              sessionB,
-              indexB
-            ) => {
-              if (
-                indexA === indexB
-              )
-                return false
-
-              if (
-                !sessionB.checkIn ||
-                !sessionB.checkOut
-              )
-                return false
-
-              const startB =
-                new Date(
-                  sessionB.checkIn
-                ).getTime()
-
-              const endB =
-                new Date(
-                  sessionB.checkOut
-                ).getTime()
-
-              return (
-                startA < endB &&
-                endA > startB
-              )
-            }
-          )
-        }
-      )
-
-      if (hasOverlap) {
-        toast.error(
-          "Overlapping sessions detected"
-        )
-
-        return
-      }
-
-      // -------------------------
-      // SAVE
-      // -------------------------
 
       setSaving(true)
 
@@ -561,16 +502,35 @@ const [sessionToDelete, setSessionToDelete] =
       )
 
       onClose()
-    } catch (error) {
-      console.log(error)
+   } catch (error: any) {
+     console.log(error)
 
-      toast.error(
-        "Failed to update attendance"
-      )
-    } finally {
-      setSaving(false)
-    }
-  }
+     const overlap =
+       error?.response?.data?.overlap
+
+     if (overlap) {
+       setOverlapInfo(overlap)
+
+       setOverlapIndexes([
+         overlap.firstIndex,
+         overlap.secondIndex,
+       ])
+
+       toast.error(
+         error.response.data.message
+       )
+
+       return
+     }
+
+     toast.error(
+       error?.response?.data?.message ||
+       "Failed to update attendance"
+     )
+   } finally {
+     setSaving(false)
+   }
+ }
 
   // --------------------------------------------------
   // UTIL
@@ -598,23 +558,23 @@ const toTimeValue = (
 }
 
   const combineDateAndTime = (
-  time: string
-) => {
-  if (!record?.date || !time)
-    return null
+    time: string
+  ) => {
+    if (!record?.date || !time)
+      return null
 
-  const [hours, minutes] =
-    time.split(":")
+    const [hours, minutes] =
+      time.split(":")
 
-  const date = new Date(record.date)
+    const date = new Date(record.date)
 
-  date.setHours(Number(hours))
-  date.setMinutes(Number(minutes))
-  date.setSeconds(0)
-  date.setMilliseconds(0)
+    date.setHours(Number(hours))
+    date.setMinutes(Number(minutes))
+    date.setSeconds(0)
+    date.setMilliseconds(0)
 
-  return date.toString()
-}
+    return date.toString()
+  }
 
   // --------------------------------------------------
   // RENDER
@@ -679,7 +639,10 @@ const toTimeValue = (
                       session._id ||
                       index
                     }
-                    className="rounded-2xl border bg-background p-6 shadow-sm space-y-6"
+                    className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${overlapIndexes.includes(index)
+                        ? "border-red-500 bg-red-50"
+                        : "border bg-background"
+                      }`}
                   >
                     {/* TOP */}
                     <div className="flex items-center justify-between">
@@ -692,6 +655,13 @@ const toTimeValue = (
                         <p className="text-sm text-muted-foreground">
                           Edit session details
                         </p>
+
+                        {overlapIndexes.includes(index) && (
+                          <p className="text-sm text-red-600 font-medium mt-2">
+                            This session overlaps with another
+                            session.
+                          </p>
+                        )}
                       </div>
 
                       <Button
@@ -858,6 +828,78 @@ const toTimeValue = (
             <Plus className="mr-2 h-4 w-4" />
             Add New Session
           </Button>
+
+          {overlapInfo && (
+            <div className="rounded-xl border border-red-500 bg-red-50 p-4">
+              <h4 className="font-semibold text-red-700">
+                Session Overlap Detected
+              </h4>
+
+              <div className="mt-3 text-sm text-red-700 space-y-2">
+                <div>
+                  <strong>
+                    Session{" "}
+                    {overlapInfo.firstIndex + 1}
+                  </strong>
+
+                  <br />
+
+                  Check In:{" "}
+                  {overlapInfo.sessionA.checkIn
+                    ? new Date(
+                      overlapInfo.sessionA.checkIn
+                    ).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                    : "-"}
+
+                  <br />
+
+                  Check Out:{" "}
+                  {overlapInfo.sessionA.checkOut
+                    ? new Date(
+                      overlapInfo.sessionA.checkOut
+                    ).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                    : "-"}
+                </div>
+
+                <div>
+                  <strong>
+                    Session{" "}
+                    {overlapInfo.secondIndex + 1}
+                  </strong>
+
+                  <br />
+
+                  Check In:{" "}
+                  {overlapInfo.sessionB.checkIn
+                    ? new Date(
+                      overlapInfo.sessionB.checkIn
+                    ).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                    : "-"}
+
+                  <br />
+
+                  Check Out:{" "}
+                  {overlapInfo.sessionB.checkOut
+                    ? new Date(
+                      overlapInfo.sessionB.checkOut
+                    ).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                    : "-"}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* SUMMARY */}
           <div className="rounded-2xl border bg-muted/20 p-6 space-y-4">
