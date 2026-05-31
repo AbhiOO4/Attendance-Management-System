@@ -1501,50 +1501,60 @@ export const bulkSubmitAttendance = async (req, res) => {
 
       
 
-      const newCheckIn =
-        new Date(checkIn);
+      const hasCheckIn = !!checkIn;
+      const hasCheckOut = !!checkOut;
 
-      const newCheckOut =
-        new Date(checkOut);
-
-      // INVALID DATES
-      if (
-        isNaN(newCheckIn) ||
-        isNaN(newCheckOut)
-      ) {
+      // CHECKOUT WITHOUT CHECKIN
+      if (!hasCheckIn && hasCheckOut) {
         return res.status(400).json({
           success: false,
           message:
-            "Invalid checkIn/checkOut date",
+            "Check-out cannot exist without check-in",
         });
       }
 
-      // CALCULATE SESSION WORK HOURS
-      const diffMs =
-        newCheckOut - newCheckIn;
+      let workedHours = 0;
 
-      const workedHours =
-        diffMs /
-        (1000 * 60 * 60);
+      // ONLY VALIDATE IF BOTH EXIST
+      if (hasCheckIn && hasCheckOut) {
+        const newCheckIn =
+          new Date(checkIn);
 
-      // INVALID TIME RANGE
-      if (workedHours < 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "checkOut must be after checkIn",
-        });
+        const newCheckOut =
+          new Date(checkOut);
+
+        if (
+          isNaN(newCheckIn.getTime()) ||
+          isNaN(newCheckOut.getTime())
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Invalid checkIn/checkOut date",
+          });
+        }
+
+        workedHours =
+          (newCheckOut.getTime() -
+            newCheckIn.getTime()) /
+          (1000 * 60 * 60);
+
+        if (workedHours < 0) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "checkOut must be after checkIn",
+          });
+        }
+
+        if (workedHours > 24) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Shift duration cannot exceed 24 hours",
+          });
+        }
       }
-
-      // OPTIONAL SAFETY LIMIT
-      if (workedHours > 24) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Shift duration cannot exceed 24 hours",
-        });
-      }
-
       // SESSION OBJECT
       const sessionData = {
         siteId,
@@ -1660,11 +1670,12 @@ export const bulkSubmitAttendance = async (req, res) => {
                 session.checkOut
               );
 
+            if ( !hasCheckIn || !hasCheckOut) {
+              return false;
+            }
+
             return (
-              newCheckIn <
-                existingCheckOut &&
-              newCheckOut >
-                existingCheckIn
+              newCheckIn < existingCheckOut && newCheckOut > existingCheckIn
             );
           }
         );
@@ -2721,74 +2732,200 @@ export const updateAttendance = async (req, res) => {
 
     if (!attendance) {
       return res.status(404).json({
+        success: false,
         message: "Attendance record not found",
       });
     }
 
-    // Get singleton work schedule config
-    const workConfig = await workModel.findOne({ type: "default" });
+    const workConfig = await workModel.findOne({
+      type: "default",
+    });
 
     if (!workConfig) {
       return res.status(404).json({
-        message: "Work schedule configuration not found",
+        success: false,
+        message:
+          "Work schedule configuration not found",
       });
     }
 
-    // -----------------------------
-    // Update sessions only
-    // -----------------------------
     if (Array.isArray(sessions)) {
-      const updatedSessions = sessions.map((session) => {
-        let workedHours = 0;
+      const updatedSessions = sessions.map(
+        (session) => {
+          // -----------------------------
+          // Validation
+          // -----------------------------
 
-        if (session.checkIn && session.checkOut) {
-          const checkIn = new Date(session.checkIn);
-          const checkOut = new Date(session.checkOut);
-
-          workedHours =
-            (checkOut.getTime() - checkIn.getTime()) /
-            (1000 * 60 * 60);
-
-          // Prevent negative values
-          if (workedHours < 0) {
-            workedHours = 0;
+          // checkOut without checkIn
+          if (
+            !session.checkIn &&
+            session.checkOut
+          ) {
+            throw new Error(
+              "Check-out cannot exist without check-in"
+            );
           }
-        }
 
-        return {
-          _id: session._id,
-          siteId: session.siteId,
-          jobId: session.jobId || null,
-          checkIn: session.checkIn || null,
-          checkOut: session.checkOut || null,
-          workedHours: Number(workedHours.toFixed(2)),
-          markedBy: session.markedBy || attendance.markedBy,
-        };
+          let workedHours = 0;
+
+          if (
+            session.checkIn &&
+            session.checkOut
+          ) {
+            const checkIn = new Date(
+              session.checkIn
+            );
+
+            const checkOut = new Date(
+              session.checkOut
+            );
+
+            if (checkOut < checkIn) {
+              throw new Error(
+                "Check-out cannot be earlier than check-in"
+              );
+            }
+
+            workedHours =
+              (checkOut.getTime() -
+                checkIn.getTime()) /
+              (1000 * 60 * 60);
+          }
+
+          return {
+            _id: session._id,
+            siteId: session.siteId,
+            jobId: session.jobId || null,
+            checkIn:
+              session.checkIn || null,
+            checkOut:
+              session.checkOut || null,
+            workedHours: Number(
+              workedHours.toFixed(2)
+            ),
+            markedBy:
+              session.markedBy ||
+              attendance.markedBy,
+          };
+        }
+      );
+
+      // -----------------------------
+      // Sort by checkIn
+      // Empty sessions go last
+      // -----------------------------
+      updatedSessions.sort((a, b) => {
+        if (!a.checkIn && !b.checkIn)
+          return 0;
+
+        if (!a.checkIn) return 1;
+
+        if (!b.checkIn) return -1;
+
+        return (
+          new Date(a.checkIn) -
+          new Date(b.checkIn)
+        );
       });
 
-      updatedSessions.sort(
-        (a, b) => new Date(a.checkIn) - new Date(b.checkIn)
-      );
+      // -----------------------------
+      // Overlap validation
+      // -----------------------------
+      const sessionsForValidation =
+        updatedSessions.filter(
+          (session) => session.checkIn
+        );
 
-      attendance.sessions = updatedSessions;
+      for (
+        let i = 0;
+        i <
+        sessionsForValidation.length - 1;
+        i++
+      ) {
+        const current =
+          sessionsForValidation[i];
+
+        const next =
+          sessionsForValidation[i + 1];
+
+        const currentStart = new Date(
+          current.checkIn
+        );
+
+        const currentEnd = new Date(
+          current.checkOut ||
+            current.checkIn
+        );
+
+        const nextStart = new Date(
+          next.checkIn
+        );
+
+        const nextEnd = new Date(
+          next.checkOut ||
+            next.checkIn
+        );
+
+        const hasOverlap =
+          currentStart < nextEnd &&
+          currentEnd > nextStart;
+
+        if (hasOverlap) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Attendance sessions overlap",
+
+            overlap: {
+              firstIndex: i,
+              secondIndex: i + 1,
+
+              sessionA: {
+                _id: current._id,
+                siteId: current.siteId,
+                jobId: current.jobId,
+                checkIn:
+                  current.checkIn,
+                checkOut:
+                  current.checkOut,
+              },
+
+              sessionB: {
+                _id: next._id,
+                siteId: next.siteId,
+                jobId: next.jobId,
+                checkIn:
+                  next.checkIn,
+                checkOut:
+                  next.checkOut,
+              },
+            },
+          });
+        }
+      }
+
+      attendance.sessions =
+        updatedSessions;
 
       // -----------------------------
-      // Calculate total work hours
+      // Total worked hours
       // -----------------------------
-      const totalHours = updatedSessions.reduce(
-        (total, session) => total + session.workedHours,
-        0
-      );
+      const totalHours =
+        updatedSessions.reduce(
+          (total, session) =>
+            total + session.workedHours,
+          0
+        );
 
-      attendance.totalWorkHours = Number(
-        totalHours.toFixed(2)
-      );
+      attendance.totalWorkHours =
+        Number(totalHours.toFixed(2));
 
       // -----------------------------
-      // Calculate overtime
+      // Overtime
       // -----------------------------
       attendance.overtimeHours =
-        totalHours > workConfig.overtimeThreshold
+        totalHours >
+        workConfig.overtimeThreshold
           ? Number(
               (
                 totalHours -
@@ -2798,94 +2935,151 @@ export const updateAttendance = async (req, res) => {
           : 0;
 
       // -----------------------------
-      // Calculate attendance status
+      // Attendance status
       // -----------------------------
       if (
-        totalHours >= workConfig.fullDayHours
+        totalHours >=
+        workConfig.fullDayHours
       ) {
-        attendance.status = "fullday";
+        attendance.status =
+          "fullday";
       } else if (
-        totalHours >= workConfig.halfDayHours
+        totalHours >=
+        workConfig.halfDayHours
       ) {
-        attendance.status = "halfday";
+        attendance.status =
+          "halfday";
       } else {
-        attendance.status = "absent";
+        attendance.status =
+          "absent";
       }
     }
 
     await attendance.save();
 
-    const updatedAttendance = await Attendance.findById(
-      attendance._id
-    )
-      .populate("employee", "name employeeId")
-      .populate("siteId", "siteName")
-      .populate("jobId", "name")
-      .populate("sessions.siteId", "siteName")
-      .populate("sessions.jobId", "name");
-    
+    const updatedAttendance =
+      await Attendance.findById(
+        attendance._id
+      )
+        .populate(
+          "employee",
+          "name employeeId"
+        )
+        .populate(
+          "siteId",
+          "siteName"
+        )
+        .populate("jobId", "name")
+        .populate(
+          "sessions.siteId",
+          "siteName"
+        )
+        .populate(
+          "sessions.jobId",
+          "name"
+        );
+
     const formattedAttendance = {
-      attendanceId: updatedAttendance._id,
+      attendanceId:
+        updatedAttendance._id,
 
-      employee: updatedAttendance.employee?._id,
+      employee:
+        updatedAttendance.employee
+          ?._id,
 
-      name:updatedAttendance.employee ?.name || "",
+      name:
+        updatedAttendance.employee
+          ?.name || "",
 
-      employeeId: updatedAttendance.employee?.employeeId || "",
+      employeeId:
+        updatedAttendance.employee
+          ?.employeeId || "",
 
-      jobTitle: updatedAttendance.employee ?.jobTitle || "",
+      jobTitle:
+        updatedAttendance.employee
+          ?.jobTitle || "",
 
-      siteId: updatedAttendance.siteId?._id,
+      siteId:
+        updatedAttendance.siteId
+          ?._id,
 
-      siteName: updatedAttendance.siteId ?.siteName || "",
+      siteName:
+        updatedAttendance.siteId
+          ?.siteName || "",
 
-      jobId: updatedAttendance.jobId?._id || null,
+      jobId:
+        updatedAttendance.jobId
+          ?._id || null,
 
-      jobName: updatedAttendance.jobId ?.name || "",
+      jobName:
+        updatedAttendance.jobId
+          ?.name || "",
 
       date: updatedAttendance.date,
 
-      status: updatedAttendance.status,
+      status:
+        updatedAttendance.status,
 
-      isHoliday: updatedAttendance.isHoliday,
+      isHoliday:
+        updatedAttendance.isHoliday,
 
-      totalWorkHours: updatedAttendance.totalWorkHours,
+      totalWorkHours:
+        updatedAttendance.totalWorkHours,
 
-      overtimeHours: updatedAttendance.overtimeHours,
+      overtimeHours:
+        updatedAttendance.overtimeHours,
 
-      sessions: updatedAttendance.sessions.map(
+      sessions:
+        updatedAttendance.sessions.map(
           (session) => ({
             _id: session._id,
 
-            siteId: session.siteId?._id,
+            siteId:
+              session.siteId?._id,
 
-            siteName: session.siteId?.siteName || "",
+            siteName:
+              session.siteId
+                ?.siteName || "",
 
-            jobId: session.jobId?._id ||null,
+            jobId:
+              session.jobId?._id ||
+              null,
 
-            jobName: session.jobId?.name || "",
+            jobName:
+              session.jobId?.name ||
+              "",
 
-            checkIn: session.checkIn,
+            checkIn:
+              session.checkIn,
 
-            checkOut: session.checkOut,
+            checkOut:
+              session.checkOut,
 
-            workedHours: session.workedHours,
+            workedHours:
+              session.workedHours,
 
-            markedBy: session.markedBy,
+            markedBy:
+              session.markedBy,
           })
         ),
-    }
+    };
 
     return res.status(200).json({
-      message: "Attendance updated successfully",
-      attendance: formattedAttendance,
+      success: true,
+      message:
+        "Attendance updated successfully",
+      attendance:
+        formattedAttendance,
     });
   } catch (error) {
-    console.error("Update attendance error:", error);
+    console.error(
+      "Update attendance error:",
+      error
+    );
 
     return res.status(500).json({
-      message: "Server error",
-      error: error.message,
+      success: false,
+      message: error.message,
     });
   }
 };
