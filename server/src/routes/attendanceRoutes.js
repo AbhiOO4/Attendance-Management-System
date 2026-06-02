@@ -12,7 +12,9 @@ const router = express.Router()
 
 router.use(verifyToken)
 
-router.post('/submit', attendanceController.bulkSubmitAttendance)
+router.post('/submit', attendanceController.siteFirstSubmitAttendance)
+
+router.get("/:attendanceId",attendanceController.getAttendanceById)
 
 router.get('/reports/daily', attendanceController.getSiteAttendance)
 
@@ -27,6 +29,8 @@ router.get('/reports/daily-summary', attendanceController.getSummary)
 router.patch('/update/set-holiday', attendanceController.toggleHolidayStatus)
 
 router.patch('/update/:attendanceId', attendanceController.updateAttendance)
+
+router.post("/:attendanceId/sessions",attendanceController.addSessionToAttendance)
 
 //GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
 router.get('/', attendanceController.getAttendanceRecords)

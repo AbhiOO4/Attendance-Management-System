@@ -19,8 +19,8 @@ export const submitDaily = async (req, res) => {
         message: "siteId, date and attendance array are required"
       })
     }
-    
-    const markedBy = req.user?.id 
+
+    const markedBy = req.user?.id
 
     console.log(markedBy)
 
@@ -42,7 +42,7 @@ export const submitDaily = async (req, res) => {
 
     const getWorkHours = (status) => {
       if (status === 'present') return shiftHours
-      if (status === 'halfday') return shiftHours/2
+      if (status === 'halfday') return shiftHours / 2
       return 0
     }
 
@@ -117,7 +117,7 @@ export const bulkUpdateAttendance = async (req, res) => {
 
     const getWorkHours = (status) => {
       if (status === 'present') return shiftHours
-      if (status === 'halfday') return shiftHours/2
+      if (status === 'halfday') return shiftHours / 2
       return 0
     }
 
@@ -303,15 +303,15 @@ export const getMonthlyReport = async (req, res) => {
 
                     ...(siteId
                       ? [
-                          {
-                            $eq: [
-                              "$siteId",
-                              new mongoose.Types.ObjectId(
-                                siteId
-                              )
-                            ]
-                          }
-                        ]
+                        {
+                          $eq: [
+                            "$siteId",
+                            new mongoose.Types.ObjectId(
+                              siteId
+                            )
+                          ]
+                        }
+                      ]
                       : [])
                   ]
                 }
@@ -1060,79 +1060,79 @@ export const getSummary = async (req, res) => {
 };
 
 export const getWorkerAttendance = async (req, res) => {
-    // Logic to get history for a specific employee
+  // Logic to get history for a specific employee
 };
 
 export const updateAttendanceRecord = async (req, res) => {
-    try {
-      const { attendanceId } = req.params
+  try {
+    const { attendanceId } = req.params
 
-      const {status,overtimeHours = 0} = req.body
+    const { status, overtimeHours = 0 } = req.body
 
-      const attendance = await Attendance.findById( attendanceId)
+    const attendance = await Attendance.findById(attendanceId)
 
-      if (!attendance) {
-        return res.status(404).json({
-          message:
-            "Attendance record not found"
-        })
-      }
-
-      const normalizedDate =
-        new Date(attendance.date)
-
-      normalizedDate.setUTCHours(0,0,0,0)
-
-      const lock = await AttendanceLock.findOne({siteId: attendance.siteId, date: normalizedDate })
-
-      if (!lock) {
-        return res.status(404).json({
-          message:
-            "Attendance lock not found"
-        })
-      }
-
-      if (lock.isLocked) { return res.status(400).json({message: "Attendance is locked" })}
-
-      const getWorkHours = (status) => {
-        if (status === "present")
-          return 10
-
-        if (status === "halfday")
-          return 5
-
-        return 0
-      }
-
-      attendance.status = status
-
-      attendance.overtimeHours = overtimeHours
-
-      attendance.workHours = getWorkHours(status)
-
-      attendance.markedBy = req.user?.id
-
-      await attendance.save()
-
-      await AttendanceLock.findOneAndUpdate(
-        {
-          siteId: attendance.siteId,
-          date: normalizedDate
-        },
-        {
-          isLocked: true,
-          lockedBy: req.user?.id,
-          lockedAt: new Date()
-        }
-      )
-
-      return res.json({message: "Attendance updated successfully"})
-    } catch (error) {
-      console.error(error)
-
-      return res.status(500).json({message:"Failed to update attendance",error: error.message})
+    if (!attendance) {
+      return res.status(404).json({
+        message:
+          "Attendance record not found"
+      })
     }
+
+    const normalizedDate =
+      new Date(attendance.date)
+
+    normalizedDate.setUTCHours(0, 0, 0, 0)
+
+    const lock = await AttendanceLock.findOne({ siteId: attendance.siteId, date: normalizedDate })
+
+    if (!lock) {
+      return res.status(404).json({
+        message:
+          "Attendance lock not found"
+      })
+    }
+
+    if (lock.isLocked) { return res.status(400).json({ message: "Attendance is locked" }) }
+
+    const getWorkHours = (status) => {
+      if (status === "present")
+        return 10
+
+      if (status === "halfday")
+        return 5
+
+      return 0
+    }
+
+    attendance.status = status
+
+    attendance.overtimeHours = overtimeHours
+
+    attendance.workHours = getWorkHours(status)
+
+    attendance.markedBy = req.user?.id
+
+    await attendance.save()
+
+    await AttendanceLock.findOneAndUpdate(
+      {
+        siteId: attendance.siteId,
+        date: normalizedDate
+      },
+      {
+        isLocked: true,
+        lockedBy: req.user?.id,
+        lockedAt: new Date()
+      }
+    )
+
+    return res.json({ message: "Attendance updated successfully" })
+  } catch (error) {
+    console.error(error)
+
+    return res.status(500).json({ message: "Failed to update attendance", error: error.message })
   }
+}
 
 export const toggleHolidayStatus = async (req, res) => {
   try {
@@ -1473,11 +1473,7 @@ export const bulkSubmitAttendance = async (req, res) => {
       });
     }
 
-    const {
-      fullDayHours,
-      halfDayHours,
-      overtimeThreshold,
-    } = workConfig;
+    const {fullDayHours, halfDayHours, overtimeThreshold} = workConfig;
 
     const processedRecords = [];
 
@@ -1499,7 +1495,7 @@ export const bulkSubmitAttendance = async (req, res) => {
         });
       }
 
-      
+
 
       const hasCheckIn = !!checkIn;
       const hasCheckOut = !!checkOut;
@@ -1670,7 +1666,7 @@ export const bulkSubmitAttendance = async (req, res) => {
                 session.checkOut
               );
 
-            if ( !hasCheckIn || !hasCheckOut) {
+            if (!hasCheckIn || !hasCheckOut) {
               return false;
             }
 
@@ -1848,387 +1844,489 @@ export const bulkSubmitAttendance = async (req, res) => {
   }
 };
 
-//get saved attendance for a site 
-export const getSiteAttendance = async (
-  req,
-  res
-) => {
+
+// pst req to /api/attendance/submit
+export const siteFirstSubmitAttendance = async (req, res) => {
   try {
+    // console.log(req.body)
     const {
-      date,
       siteId,
+      date,
+      isHoliday = false,
+      attendance,
+    } = req.body
 
-      name,
-      employeeId,
-      jobTitle,
+    const markedBy = req.user?.id
 
-      page,
-      limit,
-    } = req.query;
-
+    // -----------------------------
     // VALIDATION
+    // -----------------------------
+    if (!siteId || !date || !Array.isArray(attendance) || attendance.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "siteId, date and attendance are required",
+      })
+    }
+
+    const attendanceDate = new Date(date)
+    attendanceDate.setUTCHours(0, 0, 0, 0)
+
+    // LOCK CHECK (site-first guarantee)
+    const existingLock = await AttendanceLock.findOne({
+      siteId,
+      date: attendanceDate,
+      isLocked: true,
+    })
+
+    if (existingLock) {
+      return res.status(400).json({
+        success: false,
+        message: "Attendance already submitted and locked for this site/date",
+      })
+    }
+
+    const workConfig = await workModel.findOne()
+    if (!workConfig) {
+      return res.status(404).json({
+        success: false,
+        message: "Work configuration not found",
+      })
+    }
+
+    const {
+      fullDayHours,
+      halfDayHours,
+      overtimeThreshold,
+    } = workConfig
+
+    const processedRecords = []
+
+    // -----------------------------
+    // MAIN LOOP (EMPLOYEES)
+    // -----------------------------
+    for (const entry of attendance) {
+      const {
+        employee,
+        employeeId,
+        jobId,
+        sessions,
+      } = entry
+
+      const empId = employee?._id 
+
+      if (!empId) {
+        return res.status(400).json({
+          success: false,
+          message: "employee is required",
+        })
+      }
+
+      if (!Array.isArray(sessions)) {
+        return res.status(400).json({
+          success: false,
+          message: "sessions must be an array",
+        })
+      }
+
+      let attendanceDoc = await Attendance.findOne({
+        employee: empId,
+        date: attendanceDate,
+      })
+
+      if (!attendanceDoc) {
+        attendanceDoc = new Attendance({
+          employee: empId,
+          date: attendanceDate,
+          siteId,
+          jobId: jobId || null,
+          markedBy,
+          isHoliday,
+          status: "absent",
+          sessions: [],
+        })
+      }
+
+      // -----------------------------
+      // BUILD SESSIONS
+      // -----------------------------
+      const updatedSessions = []
+
+      for (const session of sessions) {
+        const {
+          siteId: sessionSiteId,
+          job,
+          checkIn,
+          checkOut,
+        } = session
+
+        const finalSiteId = sessionSiteId || siteId
+
+        // RULE: checkOut without checkIn NOT allowed
+        if (!checkIn && checkOut) {
+          return res.status(400).json({
+            success: false,
+            message: "checkOut cannot exist without checkIn",
+          })
+        }
+
+        let workedHours = 0
+
+        // VALID SESSION ONLY IF BOTH EXIST
+        if (checkIn && checkOut) {
+          const inTime = new Date(
+            `${date}T${checkIn}:00`
+          )
+
+          const outTime = new Date(
+            `${date}T${checkOut}:00`
+          )
+
+          if (
+            isNaN(inTime.getTime()) ||
+            isNaN(outTime.getTime())
+          ) {
+            return res.status(400).json({
+              success: false,
+              message: "Invalid checkIn/checkOut",
+            })
+          }
+
+          if (outTime < inTime) {
+            return res.status(400).json({
+              success: false,
+              message: "checkOut cannot be earlier than checkIn",
+            })
+          }
+
+          workedHours =
+            (outTime.getTime() - inTime.getTime()) /
+            (1000 * 60 * 60)
+        }
+
+        const checkInDate = checkIn
+          ? new Date(`${date}T${checkIn}:00`)
+          : null
+
+        const checkOutDate = checkOut
+          ? new Date(`${date}T${checkOut}:00`)
+          : null
+
+        // RULE: checkIn only OR null/null → 0 hours
+        updatedSessions.push({
+          siteId: finalSiteId,
+          jobId: job?._id || null,
+          checkIn: checkInDate,
+          checkOut: checkOutDate,
+          workedHours: Number(workedHours.toFixed(2)),
+          markedBy,
+        })
+      }
+
+      // -----------------------------
+      // MERGE WITH OTHER SITE SESSIONS
+      // -----------------------------
+
+      const otherSiteSessions =
+        attendanceDoc.sessions.filter(
+          (s) =>
+            s.siteId.toString() !==
+            siteId.toString()
+        )
+
+      const mergedSessions = [
+        ...otherSiteSessions,
+        ...updatedSessions,
+      ]
+
+      // -----------------------------
+      // SORT ALL SESSIONS
+      // -----------------------------
+
+      mergedSessions.sort((a, b) => {
+        if (!a.checkIn && !b.checkIn)
+          return 0
+
+        if (!a.checkIn)
+          return 1
+
+        if (!b.checkIn)
+          return -1
+
+        return (
+          new Date(a.checkIn).getTime() -
+          new Date(b.checkIn).getTime()
+        )
+      })
+
+      // -----------------------------
+      // OVERLAP CHECK
+      // -----------------------------
+
+      const validSessions = mergedSessions
+        .filter((s) => s.checkIn)
+        .map((s) => ({
+          ...s,
+          _start: new Date(s.checkIn),
+          _end: s.checkOut
+            ? new Date(s.checkOut)
+            : new Date(s.checkIn),
+        }))
+
+      for (
+        let i = 0;
+        i < validSessions.length - 1;
+        i++
+      ) {
+        const a = validSessions[i]
+        const b = validSessions[i + 1]
+
+        const hasOverlap =
+          a._start < b._end &&
+          a._end > b._start
+        
+
+        if (hasOverlap) {
+          const site = await Site.findById(b.siteId)
+            .select("siteName")
+
+          if (!site) {
+            return res.status(404).json({
+              success: false,
+              message: "Site not found",
+            })
+          }
+
+          return res.status(400).json({
+            success: false,
+            message: "Attendance sessions overlap",
+
+            overlap: {
+              employeeId: empId,
+
+              conflictingSession: {
+                siteId: b.siteId,
+                siteName: site.siteName || "Unknown Site",
+                jobId: b.jobId,
+                checkIn: b.checkIn,
+                checkOut: b.checkOut,
+              },
+            },
+          })
+        }
+      }
+
+      // -----------------------------
+      // ASSIGN MERGED SESSIONS
+      // -----------------------------
+
+      attendanceDoc.sessions = mergedSessions
+
+      // -----------------------------
+      // TOTAL HOURS
+      // -----------------------------
+      const totalWorkHours =
+        mergedSessions.reduce(
+          (sum, s) =>
+            sum + (s.workedHours || 0),
+          0
+        )
+
+      let status = "absent"
+
+      if (totalWorkHours >= fullDayHours) {
+        status = "fullday"
+      } else if (totalWorkHours >= halfDayHours) {
+        status = "halfday"
+      }
+
+      let overtimeHours = 0
+
+      if (totalWorkHours > overtimeThreshold) {
+        overtimeHours = totalWorkHours - overtimeThreshold
+      }
+
+      attendanceDoc.totalWorkHours = totalWorkHours
+      attendanceDoc.status = status
+      attendanceDoc.overtimeHours = overtimeHours
+      attendanceDoc.isHoliday = isHoliday
+      attendanceDoc.siteId = siteId
+      attendanceDoc.jobId = jobId || null
+      attendanceDoc.markedBy = markedBy
+
+      await attendanceDoc.save()
+
+      processedRecords.push(attendanceDoc)
+    }
+
+    // -----------------------------
+    // CREATE LOCK
+    // -----------------------------
+    await AttendanceLock.create({
+      siteId,
+      date: attendanceDate,
+      isLocked: true,
+      lockedBy: markedBy,
+      lockedAt: new Date(),
+    })
+
+    return res.status(201).json({
+      success: true,
+      message: "Attendance submitted successfully",
+      recordsProcessed: processedRecords.length,
+      data: processedRecords,
+    })
+
+  } catch (error) {
+    console.error(error)
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to submit attendance",
+      error: error.message,
+    })
+  }
+}
+
+
+//get saved attendance for a site 
+export const getSiteAttendance = async (req, res) => {
+  try {
+    const { date, siteId } = req.query
+
     if (!date || !siteId) {
       return res.status(400).json({
         success: false,
-        message:
-          "date and siteId are required",
-      });
+        message: "date and siteId are required",
+      })
     }
 
-    // VALIDATE DATE
-    const queryDate =
-      new Date(date);
+    const queryDate = new Date(date)
 
-    if (
-      Number.isNaN(queryDate.getTime())
-    ) {
+    if (Number.isNaN(queryDate.getTime())) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid date format",
-      });
+        message: "Invalid date format",
+      })
     }
 
-    // NORMALIZE DATE RANGE
-    const start = new Date(queryDate);
+    const start = new Date(queryDate)
+    start.setUTCHours(0, 0, 0, 0)
 
-    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(queryDate)
+    end.setUTCHours(23, 59, 59, 999)
 
-    const end = new Date(queryDate);
+    const siteObjectId = new mongoose.Types.ObjectId(siteId)
 
-    end.setUTCHours(
-      23,
-      59,
-      59,
-      999
-    );
-
-    // LOCK CHECK
-    const existingLock =
-      await AttendanceLock.findOne({
-        siteId,
-        date: start,
-      });
-
-    const isLocked =
-      existingLock?.isLocked || false;
-
-    // GET SITE ONCE
-    const site =
-      await Site.findById(siteId)
-        .select("siteName")
-        .lean();
-
-    // MAIN MATCH
-    const attendanceMatch = {
-      date: {
-        $gte: start,
-        $lte: end,
-      },
-    };
-
-    // EMPLOYEE FILTERS
-    const employeeMatch = {};
-
-    if (name) {
-      employeeMatch["employee.name"] =
-        {
-          $regex: name,
-          $options: "i",
-        };
-    }
-
-    if (employeeId) {
-      employeeMatch[
-        "employee.employeeId"
-      ] = {
-        $regex: employeeId,
-        $options: "i",
-      };
-    }
-
-    if (jobTitle) {
-      employeeMatch[
-        "employee.jobTitle"
-      ] = {
-        $regex: jobTitle,
-        $options: "i",
-      };
-    }
-
-    // PIPELINE
     const pipeline = [
-      // DATE MATCH
       {
-        $match: attendanceMatch,
+        $match: {
+          date: { $gte: start, $lte: end },
+        },
       },
 
-      // KEEP ONLY SESSIONS
-      // BELONGING TO THIS SITE
+      // filter sessions by site
       {
         $addFields: {
           filteredSessions: {
             $filter: {
               input: "$sessions",
-
               as: "session",
-
               cond: {
-                $eq: [
-                  "$$session.siteId",
-                  new mongoose.Types.ObjectId(
-                    siteId
-                  ),
-                ],
+                $eq: ["$$session.siteId", siteObjectId],
               },
             },
           },
         },
       },
 
-      // REMOVE DOCS WITH
-      // NO MATCHING SESSIONS
       {
         $match: {
-          filteredSessions: {
-            $ne: [],
-          },
+          filteredSessions: { $ne: [] },
         },
       },
 
-      // EMPLOYEE LOOKUP
+      // employee lookup
       {
         $lookup: {
           from: "employees",
-
           localField: "employee",
-
           foreignField: "_id",
-
           as: "employee",
         },
       },
 
-      {
-        $unwind: "$employee",
-      },
+      { $unwind: "$employee" },
 
-      // APPLY EMPLOYEE FILTERS
-      {
-        $match: employeeMatch,
-      },
+      
 
-      // SORT BY EMPLOYEE NAME
       {
-        $sort: {
-          "employee.name": 1,
+        $project: {
+          _id: 0,
+
+          attendanceId: "$_id",
+
+          date: "$date",
+
+          isHoliday: "$isHoliday",
+
+          employee: "$employee._id",
+
+          name: "$employee.name",
+
+          employeeId: "$employee.employeeId",
+
+          jobTitle: "$employee.jobTitle",
+
+          status: "$status",
+
+          totalWorkHours: "$totalWorkHours",
+
+          overtimeHours: "$overtimeHours",
+
+          sessions: {
+            $map: {
+              input: "$filteredSessions",
+              as: "s",
+              in: {
+                _id: "$$s._id",
+
+                siteId: "$$s.siteId",
+
+                jobId: "$$s.jobId",
+
+                checkIn: "$$s.checkIn",
+
+                checkOut: "$$s.checkOut",
+
+                workedHours: "$$s.workedHours",
+              },
+            },
+          },
         },
       },
-    ];
 
-    // RESPONSE SHAPE
-    const projectStage = {
-      _id: 0,
+      { $sort: { name: 1 } },
+    ]
 
-      attendanceId: "$_id",
+    const result = await Attendance.aggregate(pipeline)
 
-      employee:
-        "$employee._id",
-
-      name: "$employee.name",
-
-      employeeId:
-        "$employee.employeeId",
-
-      jobTitle:
-        "$employee.jobTitle",
-
-      siteId:
-        site?._id || null,
-
-      siteName:
-        site?.siteName || null,
-
-      date: "$date",
-
-      status: "$status",
-
-      isHoliday:
-        "$isHoliday",
-
-      totalWorkHours:
-        "$totalWorkHours",
-
-      overtimeHours:
-        "$overtimeHours",
-
-      sessions:
-        "$filteredSessions",
-    };
-
-    const shouldPaginate =
-      page && limit;
-
-    // PAGINATED
-    if (shouldPaginate) {
-      const pageNumber =
-        Math.max(
-          Number(page) || 1,
-          1
-        );
-
-      const limitNumber =
-        Math.max(
-          Number(limit) || 10,
-          1
-        );
-
-      const skip =
-        (pageNumber - 1) *
-        limitNumber;
-
-      pipeline.push({
-        $facet: {
-          metadata: [
-            {
-              $count: "total",
-            },
-          ],
-
-          data: [
-            {
-              $skip: skip,
-            },
-
-            {
-              $limit: limitNumber,
-            },
-
-            {
-              $project:
-                projectStage,
-            },
-          ],
-        },
-      });
-
-      const [result] =
-        await Attendance.aggregate(
-          pipeline
-        );
-
-      const total =
-        result?.metadata?.[0]
-          ?.total || 0;
-
-      const data = (
-        result?.data || []
-      ).map((record, index) => ({
-        serialNumber:
-          skip + index + 1,
-
-        ...record,
-      }));
-
-      return res.status(200).json({
-        success: true,
-
-        message:
-          "Attendance fetched successfully",
-
-        isLocked,
-
-        page: pageNumber,
-
-        limit: limitNumber,
-
-        totalPages: Math.ceil(
-          total / limitNumber
-        ),
-
-        totalRecords: total,
-
-        filters: {
-          date,
-
-          siteId,
-
-          name:
-            name || null,
-
-          employeeId:
-            employeeId ||
-            null,
-
-          jobTitle:
-            jobTitle || null,
-        },
-
-        data,
-      });
-    }
-
-    // NON PAGINATED
-    pipeline.push({
-      $project: projectStage,
-    });
-
-    const result =
-      await Attendance.aggregate(
-        pipeline
-      );
-
-    const data = result.map(
-      (record, index) => ({
-        serialNumber:
-          index + 1,
-
-        ...record,
-      })
-    );
+    const isHoliday =
+      result.length > 0 ? (result[0].isHoliday ?? false) : false
 
     return res.status(200).json({
-      success: true,
-
-      message:
-        "Attendance fetched successfully",
-
-      isLocked,
-
-      totalRecords:
-        data.length,
-
-      filters: {
-        date,
-
-        siteId,
-
-        name:
-          name || null,
-
-        employeeId:
-          employeeId ||
-          null,
-
-        jobTitle:
-          jobTitle || null,
-      },
-
-      data,
-    });
+      totalRecords: result.length,
+      isHoliday,
+      data: result,
+    })
   } catch (error) {
-    console.error(error);
-
+    console.error(error)
     return res.status(500).json({
       success: false,
-
-      message:
-        "Failed to fetch attendance",
-
+      message: "Failed to fetch attendance",
       error: error.message,
-    });
+    })
   }
-};
+}
 
 //fetch attendance records 
 export const getAttendanceRecords = async (req, res) => {
@@ -2854,7 +2952,7 @@ export const updateAttendance = async (req, res) => {
 
         const currentEnd = new Date(
           current.checkOut ||
-            current.checkIn
+          current.checkIn
         );
 
         const nextStart = new Date(
@@ -2863,7 +2961,7 @@ export const updateAttendance = async (req, res) => {
 
         const nextEnd = new Date(
           next.checkOut ||
-            next.checkIn
+          next.checkIn
         );
 
         const hasOverlap =
@@ -2925,13 +3023,13 @@ export const updateAttendance = async (req, res) => {
       // -----------------------------
       attendance.overtimeHours =
         totalHours >
-        workConfig.overtimeThreshold
+          workConfig.overtimeThreshold
           ? Number(
-              (
-                totalHours -
-                workConfig.overtimeThreshold
-              ).toFixed(2)
-            )
+            (
+              totalHours -
+              workConfig.overtimeThreshold
+            ).toFixed(2)
+          )
           : 0;
 
       // -----------------------------
@@ -3086,202 +3184,501 @@ export const updateAttendance = async (req, res) => {
 
 
 export const getEmployeeAttendanceByMonth = async (req, res) => {
-    try {
-      const { employeeId } =
-        req.params;
+  try {
+    const { employeeId } =
+      req.params;
 
-      const { month, year } =
-        req.query;
+    const { month, year } =
+      req.query;
 
-      if (
-        !employeeId ||
-        !month ||
-        !year
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "employeeId, month and year are required",
-        });
-      }
-
-      const startDate =
-        new Date(
-          Number(year),
-          Number(month) - 1,
-          1
-        );
-
-      const endDate =
-        new Date(
-          Number(year),
-          Number(month),
-          0,
-          23,
-          59,
-          59,
-          999
-        );
-
-      const attendance =
-        await Attendance.find({
-          employee: employeeId,
-
-          date: {
-            $gte: startDate,
-            $lte: endDate,
-          },
-        })
-
-          .populate(
-            "employee",
-            "name employeeId jobTitle"
-          )
-
-          .populate(
-            "siteId",
-            "siteName"
-          )
-
-          .populate(
-            "jobId",
-            "jobName"
-          )
-
-          .populate(
-            "sessions.siteId",
-            "siteName"
-          )
-
-          .populate(
-            "sessions.jobId",
-            "name"
-          )
-
-          .sort({
-            date: 1,
-          });
-
-      const formattedData =
-        attendance.map((record) => ({
-          attendanceId:
-            record._id,
-
-          employee:
-            record.employee._id,
-
-          name:
-            record.employee.name,
-
-          employeeId:
-            record.employee.employeeId,
-
-          jobTitle:
-            record.employee.jobTitle,
-
-          siteId:
-            record.siteId?._id,
-
-          siteName:
-            record.siteId?.siteName,
-
-          jobId:
-            record.jobId?._id || null,
-
-          jobName:
-            record.jobId?.name ||
-            null,
-
-          date: record.date,
-
-          status:
-            record.status,
-
-          isHoliday:
-            record.isHoliday,
-
-          totalWorkHours:
-            record.totalWorkHours,
-
-          overtimeHours:
-            record.overtimeHours,
-
-          sessions:
-            record.sessions.map(
-              (session) => ({
-                _id: session._id,
-
-                siteId:
-                  session.siteId?._id,
-
-                siteName:
-                  session.siteId
-                    ?.siteName,
-
-                jobId:
-                  session.jobId?._id ||
-                  null,
-
-                jobName:
-                  session.jobId
-                    ?.name ||
-                  null,
-
-                checkIn:
-                  session.checkIn,
-
-                checkOut:
-                  session.checkOut,
-
-                workedHours:
-                  session.workedHours,
-
-                markedBy:
-                  session.markedBy,
-              })
-            ),
-        }));
-
-      return res.status(200).json({
-        success: true,
-
-        totalRecords:
-          formattedData.length,
-
-        data: formattedData,
-      });
-    } catch (error) {
-      console.error(error);
-
-      return res.status(500).json({
+    if (
+      !employeeId ||
+      !month ||
+      !year
+    ) {
+      return res.status(400).json({
         success: false,
         message:
-          "Failed to fetch attendance",
-        error: error.message,
+          "employeeId, month and year are required",
       });
     }
+
+    const startDate =
+      new Date(
+        Number(year),
+        Number(month) - 1,
+        1
+      );
+
+    const endDate =
+      new Date(
+        Number(year),
+        Number(month),
+        0,
+        23,
+        59,
+        59,
+        999
+      );
+
+    const attendance =
+      await Attendance.find({
+        employee: employeeId,
+
+        date: {
+          $gte: startDate,
+          $lte: endDate,
+        },
+      })
+
+        .populate(
+          "employee",
+          "name employeeId jobTitle"
+        )
+
+        .populate(
+          "siteId",
+          "siteName"
+        )
+
+        .populate(
+          "jobId",
+          "jobName"
+        )
+
+        .populate(
+          "sessions.siteId",
+          "siteName"
+        )
+
+        .populate(
+          "sessions.jobId",
+          "name"
+        )
+
+        .sort({
+          date: 1,
+        });
+
+    const formattedData =
+      attendance.map((record) => ({
+        attendanceId:
+          record._id,
+
+        employee:
+          record.employee._id,
+
+        name:
+          record.employee.name,
+
+        employeeId:
+          record.employee.employeeId,
+
+        jobTitle:
+          record.employee.jobTitle,
+
+        siteId:
+          record.siteId?._id,
+
+        siteName:
+          record.siteId?.siteName,
+
+        jobId:
+          record.jobId?._id || null,
+
+        jobName:
+          record.jobId?.name ||
+          null,
+
+        date: record.date,
+
+        status:
+          record.status,
+
+        isHoliday:
+          record.isHoliday,
+
+        totalWorkHours:
+          record.totalWorkHours,
+
+        overtimeHours:
+          record.overtimeHours,
+
+        sessions:
+          record.sessions.map(
+            (session) => ({
+              _id: session._id,
+
+              siteId:
+                session.siteId?._id,
+
+              siteName:
+                session.siteId
+                  ?.siteName,
+
+              jobId:
+                session.jobId?._id ||
+                null,
+
+              jobName:
+                session.jobId
+                  ?.name ||
+                null,
+
+              checkIn:
+                session.checkIn,
+
+              checkOut:
+                session.checkOut,
+
+              workedHours:
+                session.workedHours,
+
+              markedBy:
+                session.markedBy,
+            })
+          ),
+      }));
+
+    return res.status(200).json({
+      success: true,
+
+      totalRecords:
+        formattedData.length,
+
+      data: formattedData,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to fetch attendance",
+      error: error.message,
+    });
+  }
 };
+
+export const getAttendanceById = async (req, res) => {
+  try {
+    const { attendanceId } = req.params
+
+    if (
+      !mongoose.Types.ObjectId.isValid(
+        attendanceId
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid attendance id",
+      })
+    }
+
+    const result = await Attendance.aggregate([
+      {
+        $match: {
+          _id: new mongoose.Types.ObjectId(
+            attendanceId
+          ),
+        },
+      },
+
+      // Employee
+      {
+        $lookup: {
+          from: "employees",
+          localField: "employee",
+          foreignField: "_id",
+          as: "employee",
+        },
+      },
+      {
+        $unwind: "$employee",
+      },
+
+      // Main attendance site
+      {
+        $lookup: {
+          from: "sites",
+          localField: "siteId",
+          foreignField: "_id",
+          as: "attendanceSite",
+        },
+      },
+
+      // Main attendance job
+      {
+        $lookup: {
+          from: "jobs",
+          localField: "jobId",
+          foreignField: "_id",
+          as: "attendanceJob",
+        },
+      },
+
+      // Session sites
+      {
+        $lookup: {
+          from: "sites",
+          localField: "sessions.siteId",
+          foreignField: "_id",
+          as: "sessionSites",
+        },
+      },
+
+      // Session jobs
+      {
+        $lookup: {
+          from: "jobs",
+          localField: "sessions.jobId",
+          foreignField: "_id",
+          as: "sessionJobs",
+        },
+      },
+
+      {
+        $project: {
+          _id: 0,
+
+          attendanceId: "$_id",
+
+          employee: "$employee._id",
+
+          name: "$employee.name",
+
+          employeeId:
+            "$employee.employeeId",
+
+          jobTitle:
+            "$employee.jobTitle",
+
+          siteId: "$siteId",
+
+          siteName: {
+            $arrayElemAt: [
+              "$attendanceSite.siteName",
+              0,
+            ],
+          },
+
+          jobId: "$jobId",
+
+          jobName: {
+            $arrayElemAt: [
+              "$attendanceJob.name",
+              0,
+            ],
+          },
+
+          date: "$date",
+
+          status: "$status",
+
+          isHoliday: "$isHoliday",
+
+          totalWorkHours:
+            "$totalWorkHours",
+
+          overtimeHours:
+            "$overtimeHours",
+
+          sessions: {
+            $map: {
+              input: "$sessions",
+              as: "s",
+              in: {
+                _id: "$$s._id",
+
+                siteId:
+                  "$$s.siteId",
+
+                siteName: {
+                  $let: {
+                    vars: {
+                      matchedSite: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input:
+                                "$sessionSites",
+                              as: "site",
+                              cond: {
+                                $eq: [
+                                  "$$site._id",
+                                  "$$s.siteId",
+                                ],
+                              },
+                            },
+                          },
+                          0,
+                        ],
+                      },
+                    },
+                    in: "$$matchedSite.siteName",
+                  },
+                },
+
+                jobId:
+                  "$$s.jobId",
+
+                jobName: {
+                  $let: {
+                    vars: {
+                      matchedJob: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input:
+                                "$sessionJobs",
+                              as: "job",
+                              cond: {
+                                $eq: [
+                                  "$$job._id",
+                                  "$$s.jobId",
+                                ],
+                              },
+                            },
+                          },
+                          0,
+                        ],
+                      },
+                    },
+                    in: "$$matchedJob.name",
+                  },
+                },
+
+                checkIn:
+                  "$$s.checkIn",
+
+                checkOut:
+                  "$$s.checkOut",
+
+                workedHours:
+                  "$$s.workedHours",
+
+                markedBy:
+                  "$$s.markedBy",
+              },
+            },
+          },
+        },
+      },
+    ])
+
+    if (!result.length) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Attendance record not found",
+      })
+    }
+
+    return res.status(200).json(
+      result[0]
+    )
+  } catch (error) {
+    console.error(error)
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to fetch attendance record",
+      error: error.message,
+    })
+  }
+}
+
+export const addSessionToAttendance = async (
+  req,
+  res
+) => {
+  try {
+    const { attendanceId } =
+      req.params
+
+    const { session } = req.body
+
+    if (!session?.siteId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Site ID is required",
+      })
+    }
+
+    const attendance =
+      await Attendance.findById(
+        attendanceId
+      )
+
+    if (!attendance) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Attendance record not found",
+      })
+    }
+
+    attendance.sessions.push({
+      siteId: session.siteId,
+      jobId:
+        session.jobId || null,
+      checkIn:
+        session.checkIn || null,
+      checkOut:
+        session.checkOut || null,
+      workedHours: 0,
+      markedBy: req.user.id,
+    })
+
+    await attendance.save()
+
+    const newSession =
+      attendance.sessions[
+        attendance.sessions.length - 1
+      ]
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Session added successfully",
+      session: newSession,
+    })
+  } catch (error) {
+    console.log(error)
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to add session",
+    })
+  }
+}
 
 
 
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
-    getMonthlyReport,
-    getDaily,
-    getSummary,
-    getWorkerAttendance,
-    submitDaily,
-    bulkUpdateAttendance,
-    unlockAttendance,
-    updateAttendance,
-    toggleHolidayStatus,
+  getMonthlyReport,
+  getDaily,
+  getSummary,
+  getWorkerAttendance,
+  submitDaily,
+  bulkUpdateAttendance,
+  unlockAttendance,
+  updateAttendance,
+  toggleHolidayStatus,
 
-    bulkSubmitAttendance,
-    getSiteAttendance,
-    bulkEditAttendance,
-    getAttendanceRecords,
-    getEmployeeAttendanceByMonth
+  bulkSubmitAttendance,
+  getSiteAttendance,
+  bulkEditAttendance,
+  getAttendanceRecords,
+  getEmployeeAttendanceByMonth,
+  siteFirstSubmitAttendance,
+  getAttendanceById,
+  addSessionToAttendance
 
 };
 

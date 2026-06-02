@@ -540,9 +540,11 @@ function EditPastAttendance() {
                       Job Title
                     </TableHead>
 
-                    <TableHead>
-                      Sessions
-                    </TableHead>
+                    <TableHead>Site</TableHead>
+                    <TableHead>Job</TableHead>
+                    <TableHead>Check In</TableHead>
+                    <TableHead>Check Out</TableHead>
+                    <TableHead>Worked</TableHead>
 
                     <TableHead>
                       Status
@@ -566,7 +568,7 @@ function EditPastAttendance() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={8}
+                        colSpan={13}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -577,161 +579,170 @@ function EditPastAttendance() {
                   ) : attendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={8}
+                        colSpan={13}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
                       </TableCell>
                     </TableRow>
                   ) : (
-                    attendance.map((record, index) => {
-                      const serialNumber = (filters.page - 1) * filters.limit + index + 1
-                      return (
-                      <TableRow
-                        key={record.attendanceId}
-                      >
-                        <TableCell>
-                          {serialNumber}
-                        </TableCell>
+                        attendance.map((record, index) => {
+                          const serialNumber =
+                            (filters.page - 1) *
+                            filters.limit +
+                            index +
+                            1
 
-                        <TableCell className="font-medium">
-                          {record.name}
-                        </TableCell>
+                          const sessions =
+                            record.sessions.length > 0
+                              ? record.sessions
+                              : [null]
 
-                        <TableCell>
-                          {record.employeeId}
-                        </TableCell>
+                          return sessions.map(
+                            (session, sessionIndex) => (
+                              <TableRow
+                                key={`${record.attendanceId}-${sessionIndex}`}
+                                className={
+                                  index % 2 === 0
+                                    ? "bg-white dark:bg-background"
+                                    : "bg-slate-200 dark:bg-slate-900/40"
+                                }
+                              >
+                                {sessionIndex === 0 && (
+                                  <>
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {serialNumber}
+                                    </TableCell>
 
-                        <TableCell>
-                          {record.jobTitle}
-                        </TableCell>
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                      className="font-medium"
+                                    >
+                                      {record.name}
+                                    </TableCell>
 
-                        <TableCell>
-                          <div className="space-y-3 min-w-[300px]">
-                            {record.sessions.map(
-                              (session) => (
-                                <div
-                                  key={session._id}
-                                  className="rounded-md border p-3 text-sm"
-                                >
-                                  <div className="grid gap-1">
-                                    <p>
-                                      <span className="font-medium">
-                                        Site:
-                                      </span>{" "}
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {record.employeeId}
+                                    </TableCell>
+
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {record.jobTitle}
+                                    </TableCell>
+                                  </>
+                                )}
+
+                                <TableCell>
+                                  {session?.siteName || "-"}
+                                </TableCell>
+
+                                <TableCell>
+                                  {session?.jobName || "-"}
+                                </TableCell>
+
+                                <TableCell>
+                                  {session?.checkIn
+                                    ? new Date(
+                                      session.checkIn
+                                    ).toLocaleTimeString(
+                                      "en-IN",
                                       {
-                                        session.siteName
+                                        hour:
+                                          "2-digit",
+                                        minute:
+                                          "2-digit",
                                       }
-                                    </p>
+                                    )
+                                    : "-"}
+                                </TableCell>
 
-                                    {session.jobName && (
-                                      <p>
-                                        <span className="font-medium">
-                                          Job:
-                                        </span>{" "}
-                                        {
-                                          session.jobName
-                                        }
-                                      </p>
-                                    )}
-
-                                    <p>
-                                      <span className="font-medium">
-                                        Check In:
-                                      </span>{" "}
-                                      {session.checkIn
-                                        ? new Date(
-                                          session.checkIn
-                                        ).toLocaleTimeString(
-                                          "en-IN",
-                                          {
-                                            hour: "2-digit",
-                                            minute:
-                                              "2-digit",
-                                          }
-                                        )
-                                        : "-"}
-                                    </p>
-
-                                    <p>
-                                      <span className="font-medium">
-                                        Check Out:
-                                      </span>{" "}
-                                      {session.checkOut
-                                        ? new Date(
-                                          session.checkOut
-                                        ).toLocaleTimeString(
-                                          "en-IN",
-                                          {
-                                            hour: "2-digit",
-                                            minute:
-                                              "2-digit",
-                                          }
-                                        )
-                                        : "-"}
-                                    </p>
-
-                                    <p>
-                                      <span className="font-medium">
-                                        Worked:
-                                      </span>{" "}
+                                <TableCell>
+                                  {session?.checkOut
+                                    ? new Date(
+                                      session.checkOut
+                                    ).toLocaleTimeString(
+                                      "en-IN",
                                       {
-                                        session.workedHours
+                                        hour:
+                                          "2-digit",
+                                        minute:
+                                          "2-digit",
+                                      }
+                                    )
+                                    : "-"}
+                                </TableCell>
+
+                                <TableCell>
+                                  {session?.workedHours ??
+                                    "-"}{" "}
+                                  hrs
+                                </TableCell>
+
+                                {sessionIndex === 0 && (
+                                  <>
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      <Badge
+                                        variant={
+                                          record.status ===
+                                            "fullday"
+                                            ? "default"
+                                            : record.status ===
+                                              "halfday"
+                                              ? "secondary"
+                                              : "destructive"
+                                        }
+                                      >
+                                        {record.status}
+                                      </Badge>
+                                    </TableCell>
+
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {
+                                        record.totalWorkHours
                                       }{" "}
                                       hrs
-                                    </p>
-                                  </div>
-                                </div>
-                              )
-                            )}
-                          </div>
-                        </TableCell>
+                                    </TableCell>
 
-                        <TableCell>
-                          <Badge
-                            variant={
-                              record.status ===
-                                "fullday"
-                                ? "default"
-                                : record.status ===
-                                  "halfday"
-                                  ? "secondary"
-                                  : "destructive"
-                            }
-                          >
-                            {record.status}
-                          </Badge>
-                        </TableCell>
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {
+                                        record.overtimeHours
+                                      }{" "}
+                                      hrs
+                                    </TableCell>
 
-                        <TableCell>
-                          {
-                            record.totalWorkHours
-                          }{" "}
-                          hrs
-                        </TableCell>
-
-                        <TableCell>
-                          {
-                            record.overtimeHours
-                          }{" "}
-                          hrs
-                        </TableCell>
-
-                        <TableCell className="text-right">
-                          <Button
-                            size="icon"
-                            variant="outline"
-                            onClick={() =>
-                              setEditingRecord(
-                                record
-                              )
-                            }
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    )})
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                      className="text-right"
+                                    >
+                                      <Button
+                                        size="icon"
+                                        variant="outline"
+                                        onClick={() =>
+                                          setEditingRecord(
+                                            record
+                                          )
+                                        }
+                                      >
+                                        <Pencil className="h-4 w-4" />
+                                      </Button>
+                                    </TableCell>
+                                  </>
+                                )}
+                              </TableRow>
+                            )
+                          )
+                        })
                   )}
                 </TableBody>
               </Table>

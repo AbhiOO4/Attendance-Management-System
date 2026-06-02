@@ -66,11 +66,9 @@ interface AttendanceSession {
   _id?: string
 
   siteId: string
-
   siteName?: string
 
   jobId?: string | null
-
   jobName?: string
 
   checkIn?: string | null
@@ -103,6 +101,8 @@ export interface AttendanceRecord {
 
   date: string
 
+  status: "fullday" | "halfday" | "absent"
+
   isHoliday?: boolean
 
   totalWorkHours: number
@@ -112,13 +112,11 @@ export interface AttendanceRecord {
   sessions: AttendanceSession[]
 }
 
-interface EditRecordProps {
+interface EditSiteRecordProps {
   open: boolean
-
   onClose: () => void
-
-  record: AttendanceRecord | null
-
+  attendanceId: string | null
+  site: Site
   onUpdated: (updatedRecord: AttendanceRecord) => void
 }
 
@@ -126,14 +124,14 @@ interface EditRecordProps {
 // COMPONENT
 // --------------------------------------------------
 
-function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
+function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSiteRecordProps) {
   const [overlapInfo, setOverlapInfo] =
     useState<any>(null)
 
-  const [overlapIndexes, setOverlapIndexes] =
-    useState<number[]>([])
+  const [overlapSessionIds, setOverlapSessionIds] = useState<string[]>([])
 
-  const [sites, setSites] = useState<Site[]>([])
+  const [record, setRecord] =
+    useState<AttendanceRecord | null>(null)
 
   const [sessions, setSessions] =
     useState<AttendanceSession[]>([])
@@ -158,14 +156,35 @@ const [sessionToDelete, setSessionToDelete] =
   // INITIALIZE
   // --------------------------------------------------
 
-  useEffect(() => {
-    if (record) {
-      setSessions(record.sessions)
+  const fetchAttendanceRecord = async () => {
+    try {
+      if (!attendanceId) return
+
+      const res = await api.get(`/api/attendance/${attendanceId}`)
+
+      const attendance = res.data
+
+      setRecord(attendance)
+
+      setSessions(
+        attendance.sessions || []
+      )
+    } catch (error) {
+      console.log(error)
+
+      toast.error(
+        "Failed to load attendance record"
+      )
     }
-  }, [record])
+  }
 
   useEffect(() => {
-    fetchSites()
+    if (open && attendanceId) {
+      fetchAttendanceRecord()
+    }
+  }, [open, attendanceId])
+
+  useEffect(() => {
     fetchConfig()
   }, [])
 
@@ -173,15 +192,6 @@ const [sessionToDelete, setSessionToDelete] =
   // FETCHERS
   // --------------------------------------------------
 
-  const fetchSites = async () => {
-    try {
-      const res = await api.get("/api/site")
-
-      setSites(res.data || [])
-    } catch (error) {
-      console.log(error)
-    }
-  }
 
   const fetchConfig = async () => {
     try {
@@ -261,27 +271,6 @@ const [sessionToDelete, setSessionToDelete] =
     config.overtimeThreshold,
   ])
 
-  const status = useMemo(() => {
-    if (
-      totalWorkHours >=
-      config.fullDayHours
-    ) {
-      return "fullday"
-    }
-
-    if (
-      totalWorkHours >=
-      config.halfDayHours
-    ) {
-      return "halfday"
-    }
-
-    return "absent"
-  }, [
-    totalWorkHours,
-    config.fullDayHours,
-    config.halfDayHours,
-  ])
 
   // --------------------------------------------------
   // VALIDATIONS
@@ -296,6 +285,7 @@ const [sessionToDelete, setSessionToDelete] =
 
       return onlyOneExists
     })
+
 
   const hasOverlappingSessions = sessions.some((sessionA, indexA) => {
       if (
@@ -346,7 +336,7 @@ const [sessionToDelete, setSessionToDelete] =
  const updateSessionField = (
   index: number,
   field: keyof AttendanceSession,
-  value: string
+  value: string | null
 ) => {
   const updated = [...sessions]
 
@@ -358,8 +348,7 @@ const [sessionToDelete, setSessionToDelete] =
     field === "checkIn" ||
     field === "checkOut"
   ) {
-    finalValue =
-      combineDateAndTime(value)
+    finalValue = combineDateAndTime(value)
   }
 
   updated[index] = {
@@ -385,23 +374,43 @@ const [sessionToDelete, setSessionToDelete] =
   }
 
    setOverlapInfo(null)
-   setOverlapIndexes([])
+   setOverlapSessionIds([])
 
   setSessions(updated)
 }
 
-  const addSession = () => {
-    setSessions([
-      ...sessions,
-      {
-        siteId: "",
+const addSession = async () => {
+  try {
+    if (!record) return
+
+    const payload = {
+      session: {
+        siteId: site._id,
         jobId: null,
         checkIn: null,
         checkOut: null,
-        workedHours: 0,
-      },
+      }
+    }
+
+    const res = await api.post(
+      `/api/attendance/${record.attendanceId}/sessions`,
+      payload
+    )
+
+    setSessions((prev) => [
+      ...prev,
+      res.data.session,
     ])
+
+    // toast.success("Session added")
+  } catch (error) {
+    console.log(error)
+
+    toast.error(
+      "Failed to create session"
+    )
   }
+}
 
   const removeSession = (
     index: number
@@ -420,24 +429,6 @@ const [sessionToDelete, setSessionToDelete] =
  const updateARecord = async () => {
   try {
     if (!record) return
-
-    // -------------------------
-    // SITE VALIDATION
-    // -------------------------
-
-    const hasMissingSite =
-      sessions.some(
-        (session) => !session.siteId
-      )
-
-    if (hasMissingSite) {
-      toast.error(
-        "Every session must have a site selected"
-      )
-
-      return
-    }
-
     // -------------------------
     // CHECK-IN / CHECK-OUT VALIDATION
     // -------------------------
@@ -493,7 +484,15 @@ const [sessionToDelete, setSessionToDelete] =
         payload
       )
 
-      onUpdated(res.data.attendance)
+    const updatedRecord = {
+      ...res.data.attendance,
+      sessions: res.data.attendance.sessions.filter(
+        (session: AttendanceSession) =>
+          String(session.siteId) === String(site._id)
+      ),
+    }
+
+    onUpdated(updatedRecord)
 
       toast.success(
         "Attendance updated successfully"
@@ -509,9 +508,9 @@ const [sessionToDelete, setSessionToDelete] =
      if (overlap) {
        setOverlapInfo(overlap)
 
-       setOverlapIndexes([
-         overlap.firstIndex,
-         overlap.secondIndex,
+       setOverlapSessionIds([
+         overlap.sessionA._id,
+         overlap.sessionB._id,
        ])
 
        toast.error(
@@ -555,9 +554,7 @@ const toTimeValue = (
   return `${hours}:${minutes}`
 }
 
-  const combineDateAndTime = (
-    time: string
-  ) => {
+  const combineDateAndTime = (time: string | null) => {
     if (!record?.date || !time)
       return null
 
@@ -577,6 +574,7 @@ const toTimeValue = (
   // --------------------------------------------------
   // RENDER
   // --------------------------------------------------
+
 
   return (
     <Dialog
@@ -622,199 +620,200 @@ const toTimeValue = (
 
           {/* SESSIONS */}
           <div className="space-y-5">
-            {sessions.map(
-              (session, index) => {
-                const selectedSite =
-                  sites.find(
-                    (site) =>
-                      site._id ===
-                      session.siteId
-                  )
+            {sessions.map((session, index) => {
+              const isEditable =
+                String(session.siteId) === String(site._id)
 
-                return (
-                  <div
-                    key={
-                      session._id ||
-                      index
-                    }
-                    className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${overlapIndexes.includes(index)
-                        ? "border-red-500 bg-red-50"
-                        : "border bg-background"
-                      }`}
-                  >
-                    {/* TOP */}
-                    <div className="flex items-center justify-between">
-                      <div>
+              const hasOverlap =
+                session._id &&
+                overlapSessionIds.includes(
+                  String(session._id)
+                )
+
+              return (
+                <div
+                  key={session._id || index}
+                  className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${hasOverlap
+                      ? "border-red-500 bg-red-50"
+                      : isEditable
+                        ? "border bg-background"
+                        : "border bg-muted/20 opacity-50"
+                    }`}
+                >
+                  {/* TOP */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
                         <h3 className="text-lg font-semibold">
-                          Session{" "}
-                          {index + 1}
+                          Session {index + 1}
                         </h3>
 
-                        <p className="text-sm text-muted-foreground">
-                          Edit session details
-                        </p>
-
-                        {overlapIndexes.includes(index) && (
-                          <p className="text-sm text-red-600 font-medium mt-2">
-                            This session overlaps with another
-                            session.
-                          </p>
+                        {!isEditable && (
+                          <Badge variant="secondary">
+                            Read Only
+                          </Badge>
                         )}
                       </div>
 
+                      <p className="text-sm text-muted-foreground">
+                        Site:{" "}
+                        {session.siteName ||
+                          "Unknown Site"}
+                      </p>
+
+                      {hasOverlap && (
+                          <p className="text-sm text-red-600 font-medium mt-2">
+                            This session overlaps
+                            with another session.
+                          </p>
+                        )}
+                    </div>
+
+                    {isEditable && (
                       <Button
                         variant="destructive"
                         size="icon"
                         onClick={() => {
-                          setSessionToDelete(index)
-                          setDeleteDialogOpen(true)
+                          setSessionToDelete(
+                            index
+                          )
+
+                          setDeleteDialogOpen(
+                            true
+                          )
                         }}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
+                    )}
+                  </div>
+
+                  {/* FORM */}
+                  <div className="space-y-5">
+
+                    {/* JOB */}
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">
+                        Job
+                      </p>
+
+                      {isEditable ? (
+                        <Select
+                          value={
+                            session.jobId ||
+                            "not-assigned"
+                          }
+                          onValueChange={(
+                            value
+                          ) =>
+                            updateSessionField(
+                              index,
+                              "jobId",
+                              value ===
+                                "not-assigned"
+                                ? null
+                                : value
+                            )
+                          }
+                        >
+                          <SelectTrigger className="w-full h-11">
+                            <SelectValue placeholder="Select job" />
+                          </SelectTrigger>
+
+                          <SelectContent>
+                            <SelectItem value="not-assigned">
+                              Not Assigned
+                            </SelectItem>
+
+                            {site.jobs.map(
+                              (job) => (
+                                <SelectItem
+                                  key={job._id}
+                                  value={job._id}
+                                >
+                                  {job.name}
+                                </SelectItem>
+                              )
+                            )}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          readOnly
+                          value={
+                            session.jobName ||
+                            "Not Assigned"
+                          }
+                        />
+                      )}
                     </div>
 
-                    {/* FORM */}
-                    <div className="space-y-5">
+                    {/* TIMES */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
-                      {/* TOP ROW */}
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                      {/* CHECK IN */}
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">
+                          Check In
+                        </p>
 
-                        {/* SITE */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Site
-                          </p>
-
-                          <Select
-                            value={session.siteId}
-                            onValueChange={(value) =>
-                              updateSessionField(
-                                index,
-                                "siteId",
-                                value
-                              )
-                            }
-                          >
-                            <SelectTrigger className="w-full h-11">
-                              <SelectValue placeholder="Select site" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                              {sites.map((site) => (
-                                <SelectItem
-                                  key={site._id}
-                                  value={site._id}
-                                >
-                                  {site.siteName}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        {/* JOB */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Job
-                          </p>
-
-                          <Select
-                            value={session.jobId || ""}
-                            onValueChange={(value) =>
-                              updateSessionField(
-                                index,
-                                "jobId",
-                                value
-                              )
-                            }
-                          >
-                            <SelectTrigger className="w-full h-11">
-                              <SelectValue placeholder="Select job" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                              {selectedSite?.jobs.map(
-                                (job) => (
-                                  <SelectItem
-                                    key={job._id}
-                                    value={job._id}
-                                  >
-                                    {job.name}
-                                  </SelectItem>
-                                )
-                              )}
-                            </SelectContent>
-                          </Select>
-                        </div>
+                        <Input
+                          disabled={!isEditable}
+                          className="w-full h-11"
+                          type="time"
+                          value={toTimeValue(
+                            session.checkIn
+                          )}
+                          onChange={(e) =>
+                            updateSessionField(
+                              index,
+                              "checkIn",
+                              e.target.value
+                            )
+                          }
+                        />
                       </div>
 
-                      {/* BOTTOM ROW */}
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                      {/* CHECK OUT */}
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">
+                          Check Out
+                        </p>
 
-                        {/* CHECK IN */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Check In
-                          </p>
+                        <Input
+                          disabled={!isEditable}
+                          className="w-full h-11"
+                          type="time"
+                          value={toTimeValue(
+                            session.checkOut
+                          )}
+                          onChange={(e) =>
+                            updateSessionField(
+                              index,
+                              "checkOut",
+                              e.target.value
+                            )
+                          }
+                        />
+                      </div>
 
-                          <Input
-                            className="w-full h-11"
-                            type="time"
-                            value={toTimeValue(
-                              session.checkIn
-                            )}
-                            onChange={(e) =>
-                              updateSessionField(
-                                index,
-                                "checkIn",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </div>
+                      {/* WORKED HOURS */}
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">
+                          Worked Hours
+                        </p>
 
-                        {/* CHECK OUT */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Check Out
-                          </p>
-
-                          <Input
-                            className="w-full h-11"
-                            type="time"
-                            value={toTimeValue(
-                              session.checkOut
-                            )}
-                            onChange={(e) =>
-                              updateSessionField(
-                                index,
-                                "checkOut",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </div>
-
-                        {/* WORKED HOURS */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Worked Hours
-                          </p>
-
-                          <Input
-                            readOnly
-                            className="h-11 font-medium"
-                            value={`${session.workedHours} hrs`}
-                          />
-                        </div>
-
+                        <Input
+                          readOnly
+                          className="h-11 font-medium"
+                          value={`${session.workedHours} hrs`}
+                        />
                       </div>
                     </div>
                   </div>
-                )
-              }
-            )}
+                </div>
+              )
+            })}
           </div>
 
           {/* ADD SESSION */}
@@ -827,77 +826,7 @@ const toTimeValue = (
             Add New Session
           </Button>
 
-          {overlapInfo && (
-            <div className="rounded-xl border border-red-500 bg-red-50 p-4">
-              <h4 className="font-semibold text-red-700">
-                Session Overlap Detected
-              </h4>
-
-              <div className="mt-3 text-sm text-red-700 space-y-2">
-                <div>
-                  <strong>
-                    Session{" "}
-                    {overlapInfo.firstIndex + 1}
-                  </strong>
-
-                  <br />
-
-                  Check In:{" "}
-                  {overlapInfo.sessionA.checkIn
-                    ? new Date(
-                      overlapInfo.sessionA.checkIn
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                    : "-"}
-
-                  <br />
-
-                  Check Out:{" "}
-                  {overlapInfo.sessionA.checkOut
-                    ? new Date(
-                      overlapInfo.sessionA.checkOut
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                    : "-"}
-                </div>
-
-                <div>
-                  <strong>
-                    Session{" "}
-                    {overlapInfo.secondIndex + 1}
-                  </strong>
-
-                  <br />
-
-                  Check In:{" "}
-                  {overlapInfo.sessionB.checkIn
-                    ? new Date(
-                      overlapInfo.sessionB.checkIn
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                    : "-"}
-
-                  <br />
-
-                  Check Out:{" "}
-                  {overlapInfo.sessionB.checkOut
-                    ? new Date(
-                      overlapInfo.sessionB.checkOut
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                    : "-"}
-                </div>
-              </div>
-            </div>
-          )}
+          
 
           {/* SUMMARY */}
           <div className="rounded-2xl border bg-muted/20 p-6 space-y-4">
@@ -924,17 +853,9 @@ const toTimeValue = (
               </p>
             </div>
 
-            <Separator />
+           
 
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Attendance Status
-              </p>
-
-              <Badge className="mt-2 text-sm">
-                {status}
-              </Badge>
-            </div>
+           
           </div>
 
          
@@ -1008,4 +929,4 @@ const toTimeValue = (
   )
 }
 
-export default EditRecord
+export default EditSiteRecord

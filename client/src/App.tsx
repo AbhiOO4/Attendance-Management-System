@@ -23,6 +23,7 @@ import MonthlyReport from "./pages/MonthlyReport"
 import Configure from "./pages/Configure"
 import ManageUsers from "./pages/ManageUsers"
 import EmployeeDetailAttendance from "./pages/EmployeeDetailAttendance"
+import SiteAttendance from "./pages/SiteAttendance"
 
 
 
@@ -114,7 +115,7 @@ function App() {
               <ProtectedRoute
                 allowedRoles={["admin"]}
               >
-                <MarkSiteAttendance/>
+                <SiteAttendance/>
               </ProtectedRoute>
             }
           />

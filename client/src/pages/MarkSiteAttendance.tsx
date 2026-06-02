@@ -158,8 +158,7 @@ function MarkSiteAttendance() {
     }
   }
 
-  const initializeAttendanceFromEmployees =
-    async () => {
+  const initializeAttendanceFromEmployees = async () => {
       try {
         const res =
           await api.get<EmployeesResponse>(

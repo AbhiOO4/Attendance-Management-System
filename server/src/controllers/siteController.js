@@ -34,7 +34,7 @@ export const getSites = async (req, res) => {
 export const getSite = async (req, res) => {
     try{
         const { id } = req.params
-        const site = await siteModel.findById(id)
+        const site = await siteModel.findById(id).populate("jobs", "name")
         res.status(200).json(site)
     }catch(error){
         res.status(500).json({message: "Internal server error"})
