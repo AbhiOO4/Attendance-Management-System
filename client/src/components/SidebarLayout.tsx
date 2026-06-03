@@ -1,10 +1,10 @@
-import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { cn } from "@/lib/utils";
-import { Menu } from "lucide-react";
-import { api } from "@/lib/api";
+import { useMemo, useState } from "react"
+import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom"
+import { cn } from "@/lib/utils"
+import { Menu } from "lucide-react"
+import { api } from "@/lib/api"
 
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
 
 import {
@@ -14,37 +14,85 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from "@/components/ui/dialog";
-import toast from "react-hot-toast";
+} from "@/components/ui/dialog"
 
-const navItems = [
-  { name: "Dashboard", path: "/" },
+import toast from "react-hot-toast"
+import { useAuth } from "@/context/AuthContext"
+
+type NavItem = {
+  name: string
+  path: string
+}
+
+const ADMIN_NAV_ITEMS: NavItem[] = [
+  { name: "Dashboard", path: "/dashboard" },
   { name: "Employees", path: "/employees" },
   { name: "Mark Attendance", path: "/attendance" },
   { name: "Reports", path: "/reports" },
   { name: "Add Supervisors", path: "/supervisor" },
   { name: "Site", path: "/site" },
-  { name: "configure", path: "/configure" },
-  { name: "Manage Users", path: "/manage-users" }
-];
+  { name: "Configure", path: "/configure" },
+  { name: "Manage Users", path: "/manage-users" },
+]
+
+function getSupervisorNavItems(
+  assignedSite: string | null
+): NavItem[] {
+  const items: NavItem[] = [
+    { name: "Dashboard", path: "/dashboard" },
+  ]
+
+  if (assignedSite) {
+    items.push({
+      name: "Mark Attendance",
+      path: `/attendance/${assignedSite}`,
+    })
+  }
+
+  return items
+}
 
 export default function SidebarLayout() {
-  const [open, setOpen] = useState(false);
-  const [openModal, setOpenModal] = useState(false);
+  const { user, loading, clearUser } = useAuth()
+
+  const [open, setOpen] = useState(false)
+  const [openModal, setOpenModal] = useState(false)
 
   const navigate = useNavigate()
 
-  // define later
   const handleLogout = async () => {
-    try{
-      await api.post('/api/user/logout')
-      navigate('/login')
+    try {
+      await api.post("/api/user/logout")
+      clearUser()
+      navigate("/login")
       toast.success("Logged out successfully")
-    }catch(error){
+    } catch (error) {
       console.log(error)
       toast.error("Log out failed")
     }
-  };
+  }
+
+  const navItems = useMemo(() => {
+    if (!user) return []
+
+    if (user.role === "admin") {
+      return ADMIN_NAV_ITEMS
+    }
+
+    if (user.role === "supervisor") {
+      return getSupervisorNavItems(user.assignedSite)
+    }
+
+    return []
+  }, [user])
+
+  if (loading) {
+    return <div>Loading...</div>
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
 
   return (
     <div className="flex h-screen w-full">
@@ -53,7 +101,6 @@ export default function SidebarLayout() {
         <button onClick={() => setOpen(true)}>
           <Menu className="w-6 h-6" />
         </button>
-
         <span className="ml-4 font-semibold">App</span>
       </div>
 
@@ -64,12 +111,10 @@ export default function SidebarLayout() {
           open ? "translate-x-0" : "-translate-x-full md:translate-x-0"
         )}
       >
-        {/* Close on mobile */}
         <div className="md:hidden flex justify-end p-4">
           <button onClick={() => setOpen(false)}>✕</button>
         </div>
 
-        {/* Nav Links */}
         <div className="flex-1 flex items-center justify-center">
           <nav className="flex flex-col gap-3 w-full px-4">
             {navItems.map((item) => (
@@ -93,7 +138,6 @@ export default function SidebarLayout() {
           </nav>
         </div>
 
-        {/* Logout Button */}
         <div className="p-4 border-t">
           <Button
             variant="destructive"
@@ -110,25 +154,20 @@ export default function SidebarLayout() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm Logout</DialogTitle>
-
             <DialogDescription>
               Are you sure you want to logout?
             </DialogDescription>
           </DialogHeader>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setOpenModal(false)}
-            >
+            <Button variant="outline" onClick={() => setOpenModal(false)}>
               Cancel
             </Button>
-
             <Button
               variant="destructive"
               onClick={() => {
-                handleLogout();
-                setOpenModal(false);
+                handleLogout()
+                setOpenModal(false)
               }}
             >
               Yes, Logout
@@ -137,7 +176,6 @@ export default function SidebarLayout() {
         </DialogContent>
       </Dialog>
 
-      {/* Overlay for mobile */}
       {open && (
         <div
           className="fixed inset-0 bg-black/40 md:hidden z-40"
@@ -147,10 +185,12 @@ export default function SidebarLayout() {
 
       <ScrollToTop />
 
-      {/* Main Content */}
-      <main  id="main-scroll-container" className="flex-1 p-6 overflow-auto mt-14 md:mt-0">
+      <main
+        id="main-scroll-container"
+        className="flex-1 p-6 overflow-auto mt-14 md:mt-0"
+      >
         <Outlet />
       </main>
     </div>
-  );
+  )
 }

@@ -14,7 +14,7 @@ const router = express.Router()
 
 router.use(verifyToken)
 
-router.use(authorizeRoles("admin"))
+router.use(authorizeRoles("admin", "supervisor"))
 
 router.get('/', siteController.getSites) //
 
@@ -32,6 +32,7 @@ router.patch('/:siteId/remove-employee', siteController.removeEmployee) // sever
 
 router.post('/:siteId/check-pending', siteController.checkPending)//
 
+//prefix /api/site
 router.get('/:siteId/site-data',siteController.siteManHoursAndDays)
 
 router.patch("/deactivate/:siteId", siteController.deactivateSite)//
@@ -52,11 +53,15 @@ router.get('/:jobId/job-data', siteController.jobManHoursAndDays)//
 
 router.get('/:siteId/Jobs', siteController.getSiteJobs)//
 
+router.get('/:siteId/employees',siteController.getAvailableEmployeesForSite)
+
 router.get('/job/:jobId/employees', siteController.getJobEmployees)
 
 router.get('/:siteId/free-employees',siteController.getUnassignedSiteEmployees)
 
 router.patch('/job/:jobId/status', siteController.changeJobStatus)
+
+router.post('/:siteId/insta-add-employee', siteController.instaAddEmployee)
 
 
 

@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useState,
@@ -7,19 +8,64 @@ import {
 
 import { api } from "@/lib/api"
 
-type User = {
+export type User = {
   _id: string
   role: "admin" | "supervisor"
+  assignedSite: string | null
 }
 
 type AuthContextType = {
   user: User | null
   loading: boolean
+  refreshUser: () => Promise<User | null>
+  clearUser: () => void
+}
+
+function normalizeAssignedSite(
+  assignedSite: unknown
+): string | null {
+  if (!assignedSite) return null
+  if (typeof assignedSite === "string") return assignedSite
+  if (
+    typeof assignedSite === "object" &&
+    assignedSite !== null &&
+    "_id" in assignedSite
+  ) {
+    return String((assignedSite as { _id: unknown })._id)
+  }
+  return String(assignedSite)
+}
+
+export function normalizeUser(raw: unknown): User | null {
+  if (!raw || typeof raw !== "object") return null
+
+  const data = raw as {
+    _id?: unknown
+    role?: unknown
+    assignedSite?: unknown
+  }
+
+  if (
+    data.role !== "admin" &&
+    data.role !== "supervisor"
+  ) {
+    return null
+  }
+
+  if (!data._id) return null
+
+  return {
+    _id: String(data._id),
+    role: data.role,
+    assignedSite: normalizeAssignedSite(data.assignedSite),
+  }
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
+  refreshUser: async () => null,
+  clearUser: () => {},
 })
 
 export const AuthProvider = ({
@@ -31,29 +77,29 @@ export const AuthProvider = ({
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-
-    const fetchMe = async () => {
-      try {
-
-        const res = await api.get("/api/user/me")
-
-        setUser(res.data.user)
-
-      } catch (error) {
-        setUser(null)
-      } finally {
-        setLoading(false)
-      }
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await api.get("/api/user/me")
+      const nextUser = normalizeUser(res.data.user)
+      setUser(nextUser)
+      return nextUser
+    } catch {
+      setUser(null)
+      return null
     }
-
-    fetchMe()
-
   }, [])
+
+  const clearUser = useCallback(() => {
+    setUser(null)
+  }, [])
+
+  useEffect(() => {
+    refreshUser().finally(() => setLoading(false))
+  }, [refreshUser])
 
   return (
     <AuthContext.Provider
-      value={{ user, loading }}
+      value={{ user, loading, refreshUser, clearUser }}
     >
       {children}
     </AuthContext.Provider>

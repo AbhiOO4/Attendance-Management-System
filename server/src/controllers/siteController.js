@@ -234,12 +234,14 @@ export const addJob = async (req, res) => {
   }
 };
 
-export const getSiteJobs = async (req, res) => {
+export const getSiteJobs = async (req,res) => {
   try {
     const { siteId } = req.params;
 
-    // Check if site exists
-    const site = await siteModel.findById(siteId);
+    const site =
+      await siteModel.findById(
+        siteId
+      );
 
     if (!site) {
       return res.status(404).json({
@@ -247,76 +249,78 @@ export const getSiteJobs = async (req, res) => {
       });
     }
 
-    // Get jobs for this site
-    const jobs = await jobModel
-      .find({ site: siteId })
-      .lean();
+    const jobs =
+      await jobModel
+        .find({
+          site: siteId,
+        })
+        .lean();
 
-    // Attendance metrics aggregation
-    // Attendance metrics aggregation
-    const attendanceStats =
-      await attendanceModel.aggregate([
-        {
-          $match: {
-            siteId:
-              new mongoose.Types.ObjectId(
-                siteId
-              ),
-            jobId: { $ne: null },
-          },
-        },
+    const attendanceRecords =
+      await attendanceModel.find({
+        "sessions.siteId": siteId,
+      });
 
-        {
-          $group: {
-            _id: "$jobId",
+    const jobStatsMap = {};
 
-            // unique days worked
-            uniqueDates: {
-              $addToSet: {
-                $dateToString: {
-                  format: "%Y-%m-%d",
-                  date: "$date",
-                },
-              },
-            },
+    for (const record of attendanceRecords) {
+      const day = new Date(
+        record.date
+      )
+        .toISOString()
+        .split("T")[0];
 
-            // total manhours
-            totalManHours: {
-              $sum: {
-                $add: [
-                  {
-                    $ifNull: [
-                      "$workHours",
-                      0,
-                    ],
-                  },
+      // Tracks which jobs this employee
+      // contributed to on this day
+      const jobsWorkedToday =
+        new Set();
 
-                  {
-                    $ifNull: [
-                      "$overtimeHours",
-                      0,
-                    ],
-                  },
-                ],
-              },
-            },
-          },
-        },
+      for (const session of record.sessions) {
+        if (
+          session.siteId?.toString() !==
+          siteId
+        ) {
+          continue;
+        }
 
-        {
-          $project: {
-            _id: 1,
+        if (!session.jobId) {
+          continue;
+        }
 
-            totalManHours: 1,
+        const jobKey =
+          session.jobId.toString();
 
-            totalDays: {
-              $size: "$uniqueDates",
-            },
-          },
-        },
-      ]);
+        if (!jobStatsMap[jobKey]) {
+          jobStatsMap[jobKey] = {
+            totalManHours: 0,
+            totalManDays: 0,
+            calendarDays:
+              new Set(),
+          };
+        }
 
-    // Live employee count aggregation
+        jobStatsMap[
+          jobKey
+        ].totalManHours +=
+          session.workedHours || 0;
+
+        jobStatsMap[
+          jobKey
+        ].calendarDays.add(day);
+
+        jobsWorkedToday.add(jobKey);
+      }
+
+      // +1 man-day for each job
+      // the employee contributed to
+      // on this attendance record
+      for (const jobKey of jobsWorkedToday) {
+        jobStatsMap[
+          jobKey
+        ].totalManDays += 1;
+      }
+    }
+
     const employeeCounts =
       await empModel.aggregate([
         {
@@ -345,41 +349,46 @@ export const getSiteJobs = async (req, res) => {
         },
       ]);
 
-    // Create lookup maps
-    const statsMap = {};
+    const employeeCountMap =
+      {};
 
-    attendanceStats.forEach((stat) => {
-      statsMap[stat._id.toString()] =
-        stat;
-    });
+    employeeCounts.forEach(
+      (item) => {
+        employeeCountMap[
+          item._id.toString()
+        ] = item.employeeCount;
+      }
+    );
 
-    const employeeCountMap = {};
-
-    employeeCounts.forEach((item) => {
-      employeeCountMap[
-        item._id.toString()
-      ] = item.employeeCount;
-    });
-
-    // Merge everything into jobs
     const enrichedJobs = jobs.map(
       (job) => {
         const stats =
-          statsMap[job._id.toString()];
+          jobStatsMap[
+            job._id.toString()
+          ];
 
         return {
           ...job,
-
-          totalManHours:
-            stats?.totalManHours || 0,
-
-          totalDays:
-            stats?.totalDays || 0,
 
           employeeCount:
             employeeCountMap[
               job._id.toString()
             ] || 0,
+
+          totalManHours: Number(
+            (
+              stats
+                ?.totalManHours || 0
+            ).toFixed(2)
+          ),
+
+          totalManDays:
+            stats
+              ?.totalManDays || 0,
+
+          totalCalendarDays:
+            stats?.calendarDays
+              ?.size || 0,
         };
       }
     );
@@ -392,7 +401,8 @@ export const getSiteJobs = async (req, res) => {
     console.log(error);
 
     return res.status(500).json({
-      message: "Internal Server Error",
+      message:
+        "Internal Server Error",
     });
   }
 };
@@ -510,111 +520,162 @@ export const removeEmployeeFromJob = async (req, res) => {
   }
 };
 
-export const jobManHoursAndDays = async (req, res) => {
+export const jobManHoursAndDays = async (req,res) => {
   try {
     const { jobId } = req.params;
 
-    const records = await attendanceModel.find({ jobId });
+    const records =
+      await Attendance.find({
+        "sessions.jobId": jobId,
+      });
 
     if (!records.length) {
       return res.status(404).json({
-        message: "No attendance records found for this job",
+        success: false,
+        message:
+          "No attendance records found for this job",
       });
     }
 
     let totalManHours = 0;
-    const uniqueDays = new Set();
 
-    for (const rec of records) {
-      const day = new Date(rec.date).toISOString().split("T")[0];
-      uniqueDays.add(day);
+    let totalManDays = 0;
 
-      let hours = 0;
+    const calendarDays =
+      new Set();
 
-      if (rec.status === "present") {
-        hours = rec.workHours || 8;
-      } 
-      else if (rec.status === "halfday") {
-        hours = rec.workHours || 4;
-      } 
-      else {
-        hours = 0;
+    for (const record of records) {
+      let contributedToJob =
+        false;
+
+      for (const session of record.sessions) {
+        if (
+          session.jobId?.toString() ===
+          jobId
+        ) {
+          totalManHours +=
+            session.workedHours || 0;
+
+          contributedToJob =
+            true;
+        }
       }
 
-      // overtime always included
-      hours += rec.overtimeHours || 0;
+      if (contributedToJob) {
+        const day = new Date(
+          record.date
+        )
+          .toISOString()
+          .split("T")[0];
 
-      totalManHours += hours;
+        calendarDays.add(day);
+
+        totalManDays += 1;
+      }
     }
 
     return res.status(200).json({
-      jobId,
-      totalManHours,
-      totalDays: uniqueDays.size,
-    });
+      success: true,
 
+      jobId,
+
+      totalManHours:
+        Number(
+          totalManHours.toFixed(2)
+        ),
+
+      totalManDays,
+
+      totalCalendarDays:
+        calendarDays.size,
+    });
   } catch (error) {
     console.log(error);
 
     return res.status(500).json({
-      message: "Internal Server Error",
+      success: false,
+      message:
+        "Internal Server Error",
     });
   }
 };
 
-export const siteManHoursAndDays = async (req, res) => {
+export const siteManHoursAndDays = async (req,res) => {
   try {
     const { siteId } = req.params;
 
-    // Get all attendance records for this site
-    const records = await attendanceModel.find({ siteId });
+    const records =
+      await attendanceModel.find({
+        "sessions.siteId": siteId,
+      });
 
     if (!records.length) {
       return res.status(404).json({
-        message: "No attendance records found for this site",
+        success: false,
+        message:
+          "No attendance records found for this site",
       });
     }
 
     let totalManHours = 0;
 
-    const uniqueDays = new Set();
+    let totalManDays = 0;
 
-    for (const rec of records) {
-      const day = new Date(rec.date)
+    const calendarDays =
+      new Set();
+
+    for (const record of records) {
+      const day = new Date(
+        record.date
+      )
         .toISOString()
         .split("T")[0];
 
-      uniqueDays.add(day);
+      let workedOnSite =
+        false;
 
-      let hours = 0;
+      for (const session of record.sessions) {
+        if (
+          session.siteId?.toString() !==
+          siteId
+        ) {
+          continue;
+        }
 
-      if (rec.status === "present") {
-        hours = rec.workHours || 8;
-      } 
-      else if (rec.status === "halfday") {
-        hours = rec.workHours || 4;
-      } 
-      else {
-        hours = 0;
+        totalManHours +=
+          session.workedHours || 0;
+
+        workedOnSite = true;
       }
 
-      // Add overtime
-      hours += rec.overtimeHours || 0;
+      if (workedOnSite) {
+        totalManDays += 1;
 
-      totalManHours += hours;
+        calendarDays.add(day);
+      }
     }
 
     return res.status(200).json({
-      siteId,
-      totalManHours,
-      totalDays: uniqueDays.size,
-    });
+      success: true,
 
+      siteId,
+
+      totalManHours: Number(
+        totalManHours.toFixed(2)
+      ),
+
+      totalManDays,
+
+      totalCalendarDays:
+        calendarDays.size,
+    });
   } catch (error) {
     console.log(error);
 
     return res.status(500).json({
-      message: "Internal Server Error",
+      success: false,
+      message:
+        "Internal Server Error",
     });
   }
 };
@@ -904,6 +965,359 @@ export const changeJobStatus = async (req, res) => {
   }
 };
 
+export const instaAddEmployee = async (req, res) => {
+  try {
+    const { siteId } = req.params
+    const { empId } = req.body
+
+    const markedBy = req.user?.id
+
+    if (!siteId || !empId) {
+      return res.status(400).json({
+        success: false,
+        message: "siteId and empId are required",
+      })
+    }
+
+    const employee = await empModel.findById(empId)
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      })
+    }
+
+    const site = await siteModel.findById(siteId)
+
+    if (!site) {
+      return res.status(404).json({
+        success: false,
+        message: "Site not found",
+      })
+    }
+
+    // Prevent adding employee to same site
+    if (
+      employee.currentSite &&
+      employee.currentSite.toString() === siteId.toString()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee is already assigned to this site",
+      })
+    }
+
+    const today = new Date()
+    today.setUTCHours(0, 0, 0, 0)
+
+    const attendanceLock =
+      await AttendanceLock.findOne({
+        siteId,
+        date: today,
+        isLocked: true,
+      })
+
+    const oldJobId = employee.currentJob
+
+    // ----------------------------------
+    // SITE ATTENDANCE NOT SUBMITTED YET
+    // ----------------------------------
+    if (!attendanceLock) {
+      employee.currentSite = siteId
+      employee.currentJob = null
+
+      await employee.save()
+
+      if (oldJobId) {
+        await jobModel.findByIdAndUpdate(
+          oldJobId,
+          {
+            $pull: {
+              employees: employee._id,
+            },
+          }
+        )
+      }
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Employee assigned to site successfully",
+      })
+    }
+
+    // ----------------------------------
+    // SITE ATTENDANCE ALREADY SUBMITTED
+    // ----------------------------------
+
+    let attendance = await attendanceModel.findOne({
+      employee: empId,
+      date: today,
+    })
+
+    if (attendance) {
+      const alreadyHasSession =
+        attendance.sessions.some(
+          (session) =>
+            session.siteId.toString() ===
+            siteId.toString()
+        )
+
+      if (!alreadyHasSession) {
+        attendance.sessions.push({
+          siteId,
+          jobId: null,
+          checkIn: null,
+          checkOut: null,
+          workedHours: 0,
+          markedBy,
+        })
+
+        await attendance.save()
+      }
+    } else {
+      attendance = await attendanceModel.create({
+        employee: empId,
+
+        siteId,
+
+        jobId: null,
+
+        markedBy,
+
+        date: today,
+
+        status: "absent",
+
+        isHoliday: false,
+
+        totalWorkHours: 0,
+
+        overtimeHours: 0,
+
+        sessions: [
+          {
+            siteId,
+            jobId: null,
+            checkIn: null,
+            checkOut: null,
+            workedHours: 0,
+            markedBy,
+          },
+        ],
+      })
+    }
+
+    // ----------------------------------
+    // UPDATE EMPLOYEE ASSIGNMENT
+    // ----------------------------------
+
+    employee.currentSite = siteId
+    employee.currentJob = null
+
+    await employee.save()
+
+    if (oldJobId) {
+      await jobModel.findByIdAndUpdate(
+        oldJobId,
+        {
+          $pull: {
+            employees: employee._id,
+          },
+        }
+      )
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Employee added successfully",
+      attendance,
+    })
+  } catch (error) {
+    console.error(error)
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to add employee",
+      error: error.message,
+    })
+  }
+}
+
+export const getAvailableEmployeesForSite = async (
+  req,
+  res
+) => {
+  try {
+    const { siteId } = req.params
+
+    const {
+      page = 1,
+      name = "",
+      employeeId = "",
+      jobTitle = "",
+      currentSite = "",
+    } = req.query
+
+    const limit = 20
+
+    const skip =
+      (Number(page) - 1) * limit
+
+    if (!siteId) {
+      return res.status(400).json({
+        success: false,
+        message: "siteId is required",
+      })
+    }
+
+    const query = {
+      isActive: true,
+
+      $and: [
+        {
+          $or: [
+            {
+              currentSite: {
+                $ne: siteId,
+              },
+            },
+            {
+              currentSite: null,
+            },
+          ],
+        },
+      ],
+    }
+
+    // -----------------------
+    // SEARCH FILTERS
+    // -----------------------
+
+    if (name.trim()) {
+      query.$and.push({
+        name: {
+          $regex: name.trim(),
+          $options: "i",
+        },
+      })
+    }
+
+    if (employeeId.trim()) {
+      query.$and.push({
+        employeeId: {
+          $regex: employeeId.trim(),
+          $options: "i",
+        },
+      })
+    }
+
+    if (jobTitle.trim()) {
+      query.$and.push({
+        jobTitle: {
+          $regex: jobTitle.trim(),
+          $options: "i",
+        },
+      })
+    }
+
+    // -----------------------
+    // CURRENT SITE FILTER
+    // -----------------------
+
+    if (currentSite) {
+      if (currentSite === "unassigned") {
+        query.$and.push({
+          currentSite: null,
+        })
+      } else {
+        query.$and.push({
+          currentSite,
+        })
+      }
+    }
+
+    const employees =
+      await empModel
+        .find(query)
+        .populate(
+          "currentSite",
+          "siteName"
+        )
+        .populate(
+          "currentJob",
+          "name"
+        )
+
+    const sortedEmployees =
+      employees.sort((a, b) => {
+        const aSupervisor =
+          a.user ? 1 : 0
+
+        const bSupervisor =
+          b.user ? 1 : 0
+
+        // supervisors first
+        if (
+          aSupervisor !==
+          bSupervisor
+        ) {
+          return (
+            bSupervisor -
+            aSupervisor
+          )
+        }
+
+        // then alphabetical
+        return a.name.localeCompare(
+          b.name
+        )
+      })
+
+    const total =
+      sortedEmployees.length
+
+    const paginatedEmployees =
+      sortedEmployees.slice(
+        skip,
+        skip + limit
+      )
+
+    return res.status(200).json({
+      success: true,
+
+      page: Number(page),
+
+      limit,
+
+      total,
+
+      totalPages: Math.ceil(
+        total / limit
+      ),
+
+      filters: {
+        name,
+        employeeId,
+        jobTitle,
+        currentSite,
+      },
+
+      employees: paginatedEmployees,
+    })
+  } catch (error) {
+    console.error(error)
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to fetch employees",
+      error: error.message,
+    })
+  }
+}
+
 //A funtion to make the currentSite null after we deactivate a site when its complete.
 //It should iterate thru the list of employees and set the current site to null as well as check if the supervisor is true then also set the assignedSite 
 //to null
@@ -928,7 +1342,9 @@ const siteController = {
     getUnassignedSiteEmployees,
     getJobEmployees,
     getJob,
-    changeJobStatus
+    changeJobStatus,
+    instaAddEmployee,
+    getAvailableEmployeesForSite
 }
 
 export default siteController;

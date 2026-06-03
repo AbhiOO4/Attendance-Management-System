@@ -1,9 +1,11 @@
 import Attendance from '../models/attendanceModel.js';
 import AttendanceLock from '../models/lockModel.js'
 import Employee from '../models/empModel.js';
+import empModel from '../models/empModel.js';
 import mongoose from 'mongoose';
 import workModel from '../models/workModel.js';
-import Site from '../models/siteModel.js'
+import Site from '../models/siteModel.js';
+import siteModel from '../models/siteModel.js';
 
 // --- ADMINS ---
 
@@ -201,480 +203,226 @@ export const unlockAttendance = async (req, res) => {
 }
 
 //GET /api/attendance/reports/monthly
-export const getMonthlyReport = async (req, res) => {
+export const monthlyReport = async (req, res) => {
   try {
-    const {
-      month,
-      year,
-      siteId,
-      name,
-      employeeId,
-      jobTitle,
-      page = 1,
-      limit = 10
-    } = req.query
+    const { month, year } = req.params;
 
     if (!month || !year) {
       return res.status(400).json({
-        message: "month and year are required"
-      })
+        success: false,
+        message: "Month and year are required",
+      });
     }
 
-    const skip =
-      (Number(page) - 1) * Number(limit)
+    const monthNum = Number(month);
+    const yearNum = Number(year);
 
-    const start = new Date(
-      Date.UTC(year, month - 1, 1)
-    )
+    if (
+      isNaN(monthNum) ||
+      isNaN(yearNum) ||
+      monthNum < 1 ||
+      monthNum > 12
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid month or year",
+      });
+    }
 
-    const end = new Date(
-      Date.UTC(
-        year,
-        month,
-        0,
-        23,
-        59,
-        59,
-        999
+    const startDate = new Date(
+      yearNum,
+      monthNum - 1,
+      1
+    );
+
+    const endDate = new Date(
+      yearNum,
+      monthNum,
+      1
+    );
+
+    const daysInMonth = new Date(
+      yearNum,
+      monthNum,
+      0
+    ).getDate();
+
+    const WORKING_DAYS_PER_MONTH = 26; // TODO: Make configurable from WorkSchedule
+
+    const [employees, attendances, workConfig] =
+      await Promise.all([
+        empModel.find({}).lean(),
+
+        Attendance.find({
+          date: {
+            $gte: startDate,
+            $lt: endDate,
+          },
+        }).lean(),
+
+        workModel.findOne({ type: "default" }).lean(),
+      ]);
+
+    if (!workConfig) {
+      return res.status(404).json({
+        success: false,
+        message: "Work schedule configuration not found",
+      });
+    }
+
+    const attendanceMap = new Map();
+
+    for (const attendance of attendances) {
+      const employeeId =
+        attendance.employee.toString();
+
+      if (!attendanceMap.has(employeeId)) {
+        attendanceMap.set(employeeId, []);
+      }
+
+      attendanceMap
+        .get(employeeId)
+        .push(attendance);
+    }
+
+    const round = (num) =>
+      Number(num.toFixed(2));
+
+    const report = employees.map(
+      (employee) => {
+        const records =
+          attendanceMap.get(
+            employee._id.toString()
+          ) || [];
+
+        let fullDays = 0;
+        let halfDays = 0;
+        let overtimeHours = 0;
+        let payableDays = 0;
+        let holidayRecords = 0;
+
+        for (const record of records) {
+          // Holiday work:
+          // - Ignore status
+          // - No payable day
+          // - Entire worked hours are OT
+          if (record.isHoliday) {
+            holidayRecords += 1;
+
+            overtimeHours +=
+              record.totalWorkHours || 0;
+
+            continue;
+          }
+
+          overtimeHours +=
+            record.overtimeHours || 0;
+
+          if (record.status === "fullday") {
+            fullDays += 1;
+            payableDays += 1;
+          }
+
+          else if (
+            record.status === "halfday"
+          ) {
+            halfDays += 1;
+            payableDays += 0.5;
+          }
+        }
+
+        const absentDays =
+          daysInMonth -
+          fullDays -
+          halfDays -
+          holidayRecords;
+
+        const dailySalary =
+          employee.monthlySalary /
+          WORKING_DAYS_PER_MONTH;
+
+        const normalPay =
+          payableDays * dailySalary;
+
+        const overtimePay =
+          overtimeHours *
+          workConfig.overtimeRatePerHour;
+
+        const salary =
+          normalPay + overtimePay;
+
+        const attendancePercentage =
+          Math.min(
+            (payableDays /
+              WORKING_DAYS_PER_MONTH) *
+              100,
+            100
+          );
+
+        return {
+          employeeName: employee.name,
+          employeeId: employee.employeeId,
+          jobTitle: employee.jobTitle,
+
+          fullDays,
+          halfDays,
+          absentDays,
+
+          attendancePercentage: round(
+            attendancePercentage
+          ),
+
+          overtimeHours: round(
+            overtimeHours
+          ),
+
+          payableDays: round(
+            payableDays
+          ),
+
+          normalPay: round(
+            normalPay
+          ),
+
+          overtimePay: round(
+            overtimePay
+          ),
+
+          salary: round(
+            salary
+          ),
+        };
+      }
+    );
+
+    report.sort((a, b) =>
+      a.employeeName.localeCompare(
+        b.employeeName
       )
-    )
-
-    const empMatch = {}
-
-    if (name) {
-      empMatch.name = {
-        $regex: name,
-        $options: "i"
-      }
-    }
-
-    if (employeeId) {
-      empMatch.employeeId = {
-        $regex: employeeId,
-        $options: "i"
-      }
-    }
-
-    if (jobTitle) {
-      empMatch.jobTitle = {
-        $regex: jobTitle,
-        $options: "i"
-      }
-    }
-
-    const pipeline = [
-      {
-        $match: empMatch
-      },
-
-      {
-        $lookup: {
-          from: "attendances",
-
-          let: {
-            empId: "$_id"
-          },
-
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $and: [
-                    {
-                      $eq: [
-                        "$employee",
-                        "$$empId"
-                      ]
-                    },
-
-                    {
-                      $gte: [
-                        "$date",
-                        start
-                      ]
-                    },
-
-                    {
-                      $lte: [
-                        "$date",
-                        end
-                      ]
-                    },
-
-                    ...(siteId
-                      ? [
-                        {
-                          $eq: [
-                            "$siteId",
-                            new mongoose.Types.ObjectId(
-                              siteId
-                            )
-                          ]
-                        }
-                      ]
-                      : [])
-                  ]
-                }
-              }
-            }
-          ],
-
-          as: "attendance"
-        }
-      },
-
-      // Attendance calculations
-
-      {
-        $addFields: {
-          presentDays: {
-            $size: {
-              $filter: {
-                input: "$attendance",
-
-                cond: {
-                  $and: [
-                    {
-                      $eq: [
-                        "$$this.status",
-                        "present"
-                      ]
-                    },
-
-                    {
-                      $eq: [
-                        "$$this.isHoliday",
-                        false
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-
-          absentDays: {
-            $size: {
-              $filter: {
-                input: "$attendance",
-
-                cond: {
-                  $eq: [
-                    "$$this.status",
-                    "absent"
-                  ]
-                }
-              }
-            }
-          },
-
-          halfDays: {
-            $size: {
-              $filter: {
-                input: "$attendance",
-
-                cond: {
-                  $and: [
-                    {
-                      $eq: [
-                        "$$this.status",
-                        "halfday"
-                      ]
-                    },
-
-                    {
-                      $eq: [
-                        "$$this.isHoliday",
-                        false
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          },
-
-          totalWorkHours: {
-            $sum: {
-              $map: {
-                input: "$attendance",
-
-                as: "att",
-
-                in: {
-                  $ifNull: [
-                    "$$att.workHours",
-                    0
-                  ]
-                }
-              }
-            }
-          },
-
-          totalOvertime: {
-            $sum: {
-              $map: {
-                input: "$attendance",
-
-                as: "att",
-
-                in: {
-                  $cond: [
-                    {
-                      $eq: [
-                        "$$att.isHoliday",
-                        true
-                      ]
-                    },
-
-                    {
-                      $add: [
-                        {
-                          $ifNull: [
-                            "$$att.workHours",
-                            0
-                          ]
-                        },
-
-                        {
-                          $ifNull: [
-                            "$$att.overtimeHours",
-                            0
-                          ]
-                        }
-                      ]
-                    },
-
-                    {
-                      $ifNull: [
-                        "$$att.overtimeHours",
-                        0
-                      ]
-                    }
-                  ]
-                }
-              }
-            }
-          }
-        }
-      },
-
-      // Payable days
-
-      {
-        $addFields: {
-          payableDays: {
-            $add: [
-              "$presentDays",
-
-              {
-                $multiply: [
-                  "$halfDays",
-                  0.5
-                ]
-              }
-            ]
-          }
-        }
-      },
-
-      // Attendance percentage
-
-      {
-        $addFields: {
-          attendancePercentage: {
-            $cond: [
-              {
-                $eq: [
-                  {
-                    $add: [
-                      "$presentDays",
-                      "$absentDays",
-                      "$halfDays"
-                    ]
-                  },
-
-                  0
-                ]
-              },
-
-              0,
-
-              {
-                $round: [
-                  {
-                    $multiply: [
-                      {
-                        $divide: [
-                          "$payableDays",
-
-                          {
-                            $add: [
-                              "$presentDays",
-                              "$absentDays",
-                              "$halfDays"
-                            ]
-                          }
-                        ]
-                      },
-
-                      100
-                    ]
-                  },
-
-                  0
-                ]
-              }
-            ]
-          }
-        }
-      },
-
-      // Salary setup
-
-      {
-        $addFields: {
-          perDayPay: {
-            $divide: [
-              "$monthlySalary",
-              26
-            ]
-          },
-
-          hourlyRate: {
-            $divide: [
-              {
-                $divide: [
-                  "$monthlySalary",
-                  26
-                ]
-              },
-
-              10
-            ]
-          }
-        }
-      },
-
-      // Salary calculations
-
-      {
-        $addFields: {
-          baseSalary: {
-            $round: [
-              {
-                $multiply: [
-                  "$perDayPay",
-                  "$payableDays"
-                ]
-              },
-
-              2
-            ]
-          },
-
-          otPay: {
-            $round: [
-              {
-                $multiply: [
-                  "$totalOvertime",
-                  "$hourlyRate",
-                  1.25
-                ]
-              },
-
-              2
-            ]
-          }
-        }
-      },
-
-      {
-        $addFields: {
-          totalSalary: {
-            $round: [
-              {
-                $add: [
-                  "$baseSalary",
-                  "$otPay"
-                ]
-              },
-
-              2
-            ]
-          }
-        }
-      },
-
-      // Final response
-
-      {
-        $project: {
-          _id: 0,
-
-          employeeId: 1,
-          name: 1,
-          jobTitle: 1,
-
-          presentDays: 1,
-          absentDays: 1,
-          halfDays: 1,
-
-          attendancePercentage: 1,
-
-          totalWorkHours: 1,
-          totalOvertime: 1,
-
-          payableDays: 1,
-
-          baseSalary: 1,
-          otPay: 1,
-          totalSalary: 1
-        }
-      },
-
-      {
-        $skip: Number(skip)
-      },
-
-      {
-        $limit: Number(limit)
-      }
-    ]
-
-    const data =
-      await Employee.aggregate(pipeline)
-
-    const total =
-      await Employee.countDocuments(
-        empMatch
-      )
-
-    res.json({
-      message:
-        "Monthly report fetched",
-
-      page: Number(page),
-
-      totalPages: Math.ceil(
-        total / Number(limit)
-      ),
-
-      totalEmployees: total,
-
-      data
-    })
-  } catch (error) {
-    console.error(error)
-
-    res.status(500).json({
-      message:
-        "Failed to generate report",
-
-      error: error.message
-    })
+    );
+
+    return res.status(200).json({
+      success: true,
+      month: monthNum,
+      year: yearNum,
+      report,
+    });
   }
-}
+
+  catch (error) {
+    console.error(
+      "monthlyReport error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to generate monthly report",
+      error: error.message,
+    });
+  }
+};
 
 //GET /api/attendance/reports/daily
 export const getDaily = async (req, res) => {
@@ -962,100 +710,210 @@ export const getDaily = async (req, res) => {
 //GET /api/attendance/daily-summary
 export const getSummary = async (req, res) => {
   try {
-    const { date } = req.query
+    let targetDate;
 
-    if (!date) {
-      return res.status(400).json({ message: 'date is required' })
+    if (req.query.date) {
+      targetDate = new Date(
+        req.query.date
+      );
+
+      if (isNaN(targetDate)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid date",
+        });
+      }
+    } else {
+      targetDate = new Date();
     }
 
-    const queryDate = new Date(date)
-    if (Number.isNaN(queryDate.getTime())) {
-      return res.status(400).json({ message: 'Invalid date format' })
-    }
+    const startOfDay = new Date(
+      targetDate
+    );
 
-    const start = new Date(queryDate)
-    start.setUTCHours(0, 0, 0, 0)
+    startOfDay.setHours(
+      0,
+      0,
+      0,
+      0
+    );
 
-    const end = new Date(queryDate)
-    end.setUTCHours(23, 59, 59, 999)
+    const endOfDay = new Date(
+      targetDate
+    );
 
-    const [overallSummary, siteSummary] = await Promise.all([
-      Attendance.aggregate([
-        { $match: { date: { $gte: start, $lte: end } } },
-        {
-          $group: {
-            _id: null,
-            totalWorkers: { $sum: 1 },
-            presentWorkers: {
-              $sum: {
-                $cond: [{ $eq: ['$status', 'present'] }, 1, 0]
-              }
-            }
-          }
+    endOfDay.setHours(
+      23,
+      59,
+      59,
+      999
+    );
+
+    // Active employees
+    const totalEmployees =
+      await empModel.countDocuments({
+        isActive: true,
+      });
+
+    // Attendance records for selected day
+    const attendances =
+      await Attendance.find({
+        date: {
+          $gte: startOfDay,
+          $lte: endOfDay,
+        },
+      }).lean();
+
+    let presentToday = 0;
+
+    let manHoursToday = 0;
+
+    const siteMap = new Map();
+
+    for (const attendance of attendances) {
+      // Present count
+      if (
+        attendance.status ===
+        "fullday" ||
+        attendance.status ===
+        "halfday"
+      ) {
+        presentToday++;
+      }
+
+      // Total man hours
+      manHoursToday +=
+        attendance.totalWorkHours || 0;
+
+      // Site statistics
+      for (const session of attendance.sessions) {
+        const siteId =
+          session.siteId?.toString();
+
+        if (!siteId) continue;
+
+        if (!siteMap.has(siteId)) {
+          siteMap.set(siteId, {
+            siteId,
+            employees: new Set(),
+            manHoursToday: 0,
+          });
         }
-      ]),
-      Attendance.aggregate([
-        { $match: { date: { $gte: start, $lte: end } } },
-        {
-          $group: {
-            _id: '$siteId',
-            totalWorkers: { $sum: 1 },
-            presentWorkers: {
-              $sum: {
-                $cond: [{ $eq: ['$status', 'present'] }, 1, 0]
-              }
-            }
-          }
-        },
-        {
-          $lookup: {
-            from: 'sites',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'site'
-          }
-        },
-        { $unwind: { path: '$site', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            _id: 0,
-            siteId: '$_id',
-            siteName: {
-              $cond: [
-                { $eq: ['$_id', null] },
-                'in office',
-                '$site.siteName'
-              ]
-            },
-            presentWorkers: 1,
-            totalWorkers: 1
-          }
-        },
-        { $sort: { siteName: 1 } }
-      ])
-    ])
 
-    const totals = overallSummary?.[0] || { presentWorkers: 0, totalWorkers: 0 }
+        const siteStats =
+          siteMap.get(siteId);
 
-    return res.json({
-      message: 'Daily attendance summary fetched',
-      date,
-      overall: {
-        presentWorkers: totals.presentWorkers,
-        totalWorkers: totals.totalWorkers,
-        attendance: `${totals.presentWorkers}/${totals.totalWorkers}`
+        siteStats.manHoursToday +=
+          session.workedHours || 0;
+
+        siteStats.employees.add(
+          attendance.employee.toString()
+        );
+      }
+    }
+
+    // Active sites only
+    const activeSites =
+      await siteModel.find({
+        isActive: true,
+      })
+        .select("siteName")
+        .lean();
+
+    const activeSiteMap =
+      new Map(
+        activeSites.map((site) => [
+          site._id.toString(),
+          site,
+        ])
+      );
+
+    const sites = [];
+
+    for (const [
+      siteId,
+      stats,
+    ] of siteMap.entries()) {
+      const site =
+        activeSiteMap.get(siteId);
+
+      if (!site) continue;
+
+      sites.push({
+        siteId,
+
+        siteName: site.siteName,
+
+        employeesToday:
+          stats.employees.size,
+
+        manHoursToday: Number(
+          stats.manHoursToday.toFixed(
+            2
+          )
+        ),
+
+        averageHoursPerWorker:
+          stats.employees.size > 0
+            ? Number(
+              (
+                stats.manHoursToday /
+                stats.employees.size
+              ).toFixed(2)
+            )
+            : 0,
+      });
+    }
+
+    sites.sort(
+      (a, b) =>
+        b.manHoursToday -
+        a.manHoursToday
+    );
+
+    const attendancePercentage =
+      totalEmployees > 0
+        ? Number(
+          (
+            (presentToday /
+              totalEmployees) *
+            100
+          ).toFixed(2)
+        )
+        : 0;
+
+    return res.status(200).json({
+      success: true,
+
+      date:
+        startOfDay
+          .toISOString()
+          .split("T")[0],
+
+      attendance: {
+        presentToday,
+
+        totalEmployees,
+
+        attendancePercentage,
       },
-      siteAttendance: siteSummary.map((site) => ({
-        ...site,
-        attendance: `${site.presentWorkers}/${site.totalWorkers}`
-      }))
-    })
+
+      totals: {
+        manHoursToday: Number(
+          manHoursToday.toFixed(2)
+        ),
+      },
+
+      sites,
+    });
   } catch (error) {
-    console.error(error)
+    console.log(error);
+
     return res.status(500).json({
-      message: 'Failed to fetch daily summary',
-      error: error.message
-    })
+      success: false,
+      message:
+        "Internal Server Error",
+    });
   }
 };
 
@@ -3061,7 +2919,7 @@ export const updateAttendance = async (req, res) => {
       )
         .populate(
           "employee",
-          "name employeeId"
+          "name employeeId jobTitle"
         )
         .populate(
           "siteId",
@@ -3661,7 +3519,7 @@ export const addSessionToAttendance = async (
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
-  getMonthlyReport,
+  monthlyReport,
   getDaily,
   getSummary,
   getWorkerAttendance,

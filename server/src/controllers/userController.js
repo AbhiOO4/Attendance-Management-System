@@ -2,6 +2,7 @@ import userModel from "../models/userModel.js";
 import bcrypt from "bcryptjs";
 import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
 import empModel from "../models/empModel.js";
+import siteModel from "../models/siteModel.js";
 
 export const login = async (req, res) => {
     try{
@@ -129,4 +130,32 @@ export async function getUsers(req, res) {
             message: "Internal server error",
         });
     }
+}
+
+export const getMe = async (req, res) => {
+  try {
+    const user = await userModel
+      .findById(req.user.id)
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      })
+    }
+
+    return res.json({
+      user: {
+        _id: user._id,
+        role: user.role,
+        assignedSite: user.assignedSite
+          ? String(user.assignedSite)
+          : null,
+      },
+    })
+  } catch (error) {
+    console.log(error)
+    return res.status(500).json({
+      message: "Internal Server Error",
+    })
+  }
 }

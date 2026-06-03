@@ -109,6 +109,8 @@ attendanceSchema.index(
   { unique: true }
 );
 
+attendanceSchema.index({date: 1});
+
 // Useful for site/day queries
 attendanceSchema.index({ siteId: 1, date: 1 });
 

@@ -80,10 +80,18 @@ interface Job {
   _id: string
   name: string
   jobCode: string
-  totalManHours: number
-  totalDays: number
-  employeeCount: number
+  employeeCount: number,
+  totalManHours: number,
+  totalManDays: number,
+  totalCalendarDays: number,
   isActive: boolean
+}
+
+interface SiteStats {
+  siteId: string
+  totalManHours: number
+  totalManDays: number
+  totalCalendarDays: number
 }
 
 function SiteDetail() {
@@ -99,7 +107,7 @@ function SiteDetail() {
 
   const [loadingSupervisors, setLoadingSupervisors] = useState(false)
 
-  const [filters, setFilters] = useState<Filters>({name: "", employeeId: "",})
+  const [filters, setFilters] = useState<Filters>({ name: "", employeeId: "", })
 
   const [supervisorFilters, setSupervisorFilters] = useState<SupervisorFilters>({ name: "", employeeId: "", notSupervisor: false })
 
@@ -135,6 +143,30 @@ function SiteDetail() {
   const [reactivating, setReactivating] = useState(false)
 
   const isSiteActive = site?.isActive
+
+  const [siteStats, setSiteStats] =
+    useState<SiteStats | null>(null)
+
+  const [loadingSiteStats, setLoadingSiteStats] =
+    useState(false)
+
+  async function fetchSiteStats() {
+    try {
+      setLoadingSiteStats(true)
+
+      const res = await api.get(
+        `/api/site/${id}/site-data`
+      )
+
+      setSiteStats(res.data)
+    } catch (error) {
+      console.log(error)
+
+      setSiteStats(null)
+    } finally {
+      setLoadingSiteStats(false)
+    }
+  }
 
   async function fetchJobs() {
     try {
@@ -281,7 +313,10 @@ function SiteDetail() {
   }
 
   useEffect(() => {
+    if (!id) return
+
     fetchSite()
+    fetchSiteStats()
   }, [id])
 
   useEffect(() => {
@@ -344,7 +379,7 @@ function SiteDetail() {
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
-      
+
       <div className="mx-auto max-w-7xl space-y-8">
 
         <Link
@@ -368,11 +403,10 @@ function SiteDetail() {
                 </h1>
 
                 <div
-                  className={`rounded-full px-3 py-1 text-xs font-medium ${
-                    site?.isActive
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${site?.isActive
                       ? "bg-green-100 text-green-700"
                       : "bg-red-100 text-red-700"
-                  }`}
+                    }`}
                 >
                   {site?.isActive
                     ? "Active"
@@ -380,14 +414,63 @@ function SiteDetail() {
                 </div>
               </div>
 
-              <div className="mt-4 flex items-center gap-2 text-muted-foreground">
+              <div className="mt-2 flex items-center gap-2 text-muted-foreground">
                 <MapPin className="h-4 w-4" />
-
-                <p className="text-base">
-                  {site?.locationDetails}
-                </p>
+                <p>{site?.locationDetails}</p>
               </div>
-            </div>
+
+                <div className="mt-6 grid gap-4 md:grid-cols-3">
+
+                  <div className="rounded-2xl bg-muted/50 p-4">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Clock3 className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Total Man Hours
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-2xl font-bold">
+                      {loadingSiteStats
+                        ? "--"
+                        : siteStats?.totalManHours ?? 0}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/50 p-4">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Users className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Total Man Days
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-2xl font-bold">
+                      {loadingSiteStats
+                        ? "--"
+                        : siteStats?.totalManDays ?? 0}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl bg-muted/50 p-4">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <CalendarDays className="h-4 w-4" />
+
+                      <span className="text-sm">
+                        Calendar Days
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-2xl font-bold">
+                      {loadingSiteStats
+                        ? "--"
+                        : siteStats?.totalCalendarDays ?? 0}
+                    </p>
+                  </div>
+
+                </div>
+              </div>
 
             {isSiteActive ? (
               <Dialog
@@ -688,224 +771,240 @@ function SiteDetail() {
             </div>
           </div>
         </Card>
-     
 
-      {/* Jobs Section */}
 
-      <Card className="rounded-3xl border bg-card p-8 shadow-sm">
-        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3">
-            <Briefcase className="h-8 w-8" />
+        {/* Jobs Section */}
 
-            <h2 className="text-3xl font-bold">
-              Jobs
-            </h2>
-          </div>
+        <Card className="rounded-3xl border bg-card p-8 shadow-sm">
+          <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <Briefcase className="h-8 w-8" />
 
-          <Dialog
-            open={jobDialogOpen}
-            onOpenChange={setJobDialogOpen}
-          >
-            <DialogTrigger asChild>
-              <Button className="rounded-xl" disabled={!isSiteActive}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Job
-              </Button>
-            </DialogTrigger>
-
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle className="text-2xl">
-                  Create New Job
-                </DialogTitle>
-
-                <DialogDescription>
-                  Add a new job under this site.
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="space-y-5 py-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    Job Name
-                  </label>
-
-                  <Input
-                    placeholder="Enter job name"
-                    value={jobForm.name}
-                    onChange={(e) =>
-                      setJobForm((prev) => ({
-                        ...prev,
-                        name: e.target.value,
-                      }))
-                    }
-                  />
-
-                  {jobErrors.name && (
-                    <p className="text-sm text-red-500">
-                      {jobErrors.name}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    Job Code
-                  </label>
-
-                  <Input
-                    placeholder="Enter job code"
-                    value={jobForm.jobCode}
-                    onChange={(e) =>
-                      setJobForm((prev) => ({
-                        ...prev,
-                        jobCode: e.target.value,
-                      }))
-                    }
-                  />
-
-                  {jobErrors.jobCode && (
-                    <p className="text-sm text-red-500">
-                      {jobErrors.jobCode}
-                    </p>
-                  )}
-                </div>
-
-                {jobErrors.general && (
-                  <p className="text-sm text-red-500">
-                    {jobErrors.general}
-                  </p>
-                )}
-              </div>
-
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    setJobDialogOpen(false)
-                  }
-                >
-                  Cancel
-                </Button>
-
-                <Button
-                  disabled={creatingJob}
-                  onClick={createJob}
-                >
-                  {creatingJob
-                    ? "Creating..."
-                    : "Create Job"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </div>
-
-        {loadingJobs ? (
-          <div className="flex h-40 items-center justify-center text-muted-foreground">
-            Loading jobs...
-          </div>
-        ) : jobs.length === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
-            <Briefcase className="h-10 w-10 text-muted-foreground" />
-
-            <div>
-              <p className="font-medium">
-                No jobs found
-              </p>
-
-              <p className="text-sm text-muted-foreground">
-                Create your first job for this site.
-              </p>
+              <h2 className="text-3xl font-bold">
+                Jobs
+              </h2>
             </div>
-          </div>
-        ) : (
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-            {jobs.map((job) => (
-              <div
-                key={job._id}
-                onClick={() =>
-                  navigate(`/site/job/${job._id}`)
-                }
-                className="cursor-pointer rounded-3xl border bg-background p-6 transition hover:-translate-y-1 hover:shadow-md"
-              >
-                <div className="mb-5 flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-xl font-semibold">
-                        {job.name}
-                      </h3>
 
-                      <div
-                        className={`rounded-full px-2 py-1 text-[10px] font-medium ${job.isActive
+            <Dialog
+              open={jobDialogOpen}
+              onOpenChange={setJobDialogOpen}
+            >
+              <DialogTrigger asChild>
+                <Button className="rounded-xl" disabled={!isSiteActive}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Job
+                </Button>
+              </DialogTrigger>
+
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle className="text-2xl">
+                    Create New Job
+                  </DialogTitle>
+
+                  <DialogDescription>
+                    Add a new job under this site.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-5 py-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">
+                      Job Name
+                    </label>
+
+                    <Input
+                      placeholder="Enter job name"
+                      value={jobForm.name}
+                      onChange={(e) =>
+                        setJobForm((prev) => ({
+                          ...prev,
+                          name: e.target.value,
+                        }))
+                      }
+                    />
+
+                    {jobErrors.name && (
+                      <p className="text-sm text-red-500">
+                        {jobErrors.name}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">
+                      Job Code
+                    </label>
+
+                    <Input
+                      placeholder="Enter job code"
+                      value={jobForm.jobCode}
+                      onChange={(e) =>
+                        setJobForm((prev) => ({
+                          ...prev,
+                          jobCode: e.target.value,
+                        }))
+                      }
+                    />
+
+                    {jobErrors.jobCode && (
+                      <p className="text-sm text-red-500">
+                        {jobErrors.jobCode}
+                      </p>
+                    )}
+                  </div>
+
+                  {jobErrors.general && (
+                    <p className="text-sm text-red-500">
+                      {jobErrors.general}
+                    </p>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      setJobDialogOpen(false)
+                    }
+                  >
+                    Cancel
+                  </Button>
+
+                  <Button
+                    disabled={creatingJob}
+                    onClick={createJob}
+                  >
+                    {creatingJob
+                      ? "Creating..."
+                      : "Create Job"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          {loadingJobs ? (
+            <div className="flex h-40 items-center justify-center text-muted-foreground">
+              Loading jobs...
+            </div>
+          ) : jobs.length === 0 ? (
+            <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
+              <Briefcase className="h-10 w-10 text-muted-foreground" />
+
+              <div>
+                <p className="font-medium">
+                  No jobs found
+                </p>
+
+                <p className="text-sm text-muted-foreground">
+                  Create your first job for this site.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {jobs.map((job) => (
+                <div
+                  key={job._id}
+                  onClick={() =>
+                    navigate(`/site/job/${job._id}`)
+                  }
+                  className="cursor-pointer rounded-3xl border bg-background p-6 transition hover:-translate-y-1 hover:shadow-md"
+                >
+                  <div className="mb-5 flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-xl font-semibold">
+                          {job.name}
+                        </h3>
+
+                        <div
+                          className={`rounded-full px-2 py-1 text-[10px] font-medium ${job.isActive
                             ? "bg-green-100 text-green-700"
                             : "bg-red-100 text-red-700"
-                          }`}
-                      >
-                        {job.isActive
-                          ? "Active"
-                          : "Inactive"}
+                            }`}
+                        >
+                          {job.isActive
+                            ? "Active"
+                            : "Inactive"}
+                        </div>
                       </div>
+
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {job.jobCode}
+                      </p>
                     </div>
 
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {job.jobCode}
-                    </p>
+                    <Briefcase className="h-6 w-6 text-muted-foreground" />
                   </div>
 
-                  <Briefcase className="h-6 w-6 text-muted-foreground" />
+                  <div className="space-y-4">
+
+                    <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                      <div className="flex items-center gap-2">
+                        <Clock3 className="h-4 w-4" />
+
+                        <span className="text-sm">
+                          Man Hours
+                        </span>
+                      </div>
+
+                      <span className="font-semibold">
+                        {job.totalManHours}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4" />
+
+                        <span className="text-sm">
+                          Man Days
+                        </span>
+                      </div>
+
+                      <span className="font-semibold">
+                        {job.totalManDays}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="h-4 w-4" />
+
+                        <span className="text-sm">
+                          Calendar Days
+                        </span>
+                      </div>
+
+                      <span className="font-semibold">
+                        {job.totalCalendarDays}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4" />
+
+                        <span className="text-sm">
+                          Employees
+                        </span>
+                      </div>
+
+                      <span className="font-semibold">
+                        {job.employeeCount}
+                      </span>
+                    </div>
+
+                  </div>
                 </div>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
-                    <div className="flex items-center gap-2">
-                      <Clock3 className="h-4 w-4" />
-
-                      <span className="text-sm">
-                        Man Hours
-                      </span>
-                    </div>
-
-                    <span className="font-semibold">
-                      {job.totalManHours}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
-                    <div className="flex items-center gap-2">
-                      <CalendarDays className="h-4 w-4" />
-
-                      <span className="text-sm">
-                        Days Spent
-                      </span>
-                    </div>
-
-                    <span className="font-semibold">
-                      {job.totalDays}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-2xl bg-muted/50 p-3">
-                    <div className="flex items-center gap-2">
-                      <Users className="h-4 w-4" />
-
-                      <span className="text-sm">
-                        Employees
-                      </span>
-                    </div>
-
-                    <span className="font-semibold">
-                      {job.employeeCount}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
-     </div>
   )
 }
 

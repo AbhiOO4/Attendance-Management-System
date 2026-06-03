@@ -31,6 +31,7 @@ import {
   Loader2,
   Pencil,
   ArrowLeft,
+  UserPlus,
 } from "lucide-react"
 
 interface Employee {
@@ -138,6 +139,8 @@ interface Filters {
 function SiteAttendance() {
   const {id} = useParams()
 
+  console.log("id", id)
+
   const navigate = useNavigate()
 
   const today = new Date().toLocaleDateString("en-CA")
@@ -186,6 +189,7 @@ function SiteAttendance() {
   }
 
   const handleRecordUpdated = (updatedRecord: AttendanceRecord) => {
+    console.log(updatedRecord)
     setAttendance((prev) =>
       prev.map((record) =>
         record.attendanceId ===
@@ -722,22 +726,36 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
             </div>
 
-            {attendanceExists ? (
-              <Button disabled>
-                Attendance Submitted
-              </Button>
-            ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+
               <Button
-                onClick={handleSubmit}
-                disabled={saving}
+                variant="default"
+                onClick={() =>
+                  navigate(`/attendance/${id}/insta-add`)
+                }
               >
-                {saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  "Save Attendance"
-                )}
+                <UserPlus className="h-4 w-4 mr-2" />
+                Insta Add Employee
               </Button>
-            )}
+
+              {attendanceExists ? (
+                <Button disabled>
+                  Attendance Submitted
+                </Button>
+              ) : (
+                <Button
+                  onClick={handleSubmit}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    "Save Attendance"
+                  )}
+                </Button>
+              )}
+
+            </div>
 
           </div>
         </CardHeader>

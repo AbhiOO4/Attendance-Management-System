@@ -8,7 +8,7 @@ const router = express.Router()
 
 router.use(verifyToken)
 
-router.use(authorizeRoles("admin"))
+router.use(authorizeRoles("admin", "supervisor"))
 
 
 //Prefix /api/config

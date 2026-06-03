@@ -1,3 +1,4 @@
+
 // pages/MonthlyReport.tsx
 
 import { useEffect, useMemo, useState } from "react"
@@ -5,9 +6,15 @@ import { useEffect, useMemo, useState } from "react"
 import {
   CalendarDays,
   Search,
+  Download,
+  RotateCcw,
 } from "lucide-react"
 
 import { api } from "@/lib/api"
+
+import * as XLSX from "xlsx"
+
+import { saveAs } from "file-saver"
 
 import { Card } from "@/components/ui/card"
 
@@ -15,16 +22,10 @@ import { Input } from "@/components/ui/input"
 
 import { Button } from "@/components/ui/button"
 
-import * as XLSX from "xlsx"
-
-import { saveAs } from "file-saver"
-
-import { Download } from "lucide-react"
-
 import {
   Select,
   SelectContent,
- SelectItem,
+  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -39,29 +40,31 @@ import {
 } from "@/components/ui/table"
 
 interface ReportEmployee {
+  employeeName: string
   employeeId: string
-  name: string
   jobTitle: string
 
-  presentDays: number
-  absentDays: number
+  fullDays: number
   halfDays: number
+  absentDays: number
 
   attendancePercentage: number
 
-  totalWorkHours: number
-  totalOvertime: number
+  overtimeHours: number
 
   payableDays: number
 
-  totalSalary: number
+  normalPay: number
+  overtimePay: number
+
+  salary: number
 }
 
 interface MonthlyReportResponse {
-  page: number
-  totalPages: number
-  totalEmployees: number
-  data: ReportEmployee[]
+  success: boolean
+  month: number
+  year: number
+  report: ReportEmployee[]
 }
 
 function MonthlyReport() {
@@ -75,6 +78,13 @@ function MonthlyReport() {
     String(today.getFullYear())
   )
 
+  const [loading, setLoading] =
+    useState(false)
+
+  const [reports, setReports] = useState<
+    ReportEmployee[]
+  >([])
+
   const [name, setName] = useState("")
 
   const [employeeId, setEmployeeId] =
@@ -83,52 +93,16 @@ function MonthlyReport() {
   const [jobTitle, setJobTitle] =
     useState("")
 
-  const [loading, setLoading] =
-    useState(false)
-
-  const [reports, setReports] = useState<
-    ReportEmployee[]
-  >([])
-
-  const [page, setPage] = useState(1)
-
-  const [totalPages, setTotalPages] =
-    useState(1)
-
   async function fetchReports() {
     try {
       setLoading(true)
 
-      const params: any = {
-        month,
-        year,
-        page,
-        limit: 10,
-      }
-
-      if (name.trim()) {
-        params.name = name
-      }
-
-      if (employeeId.trim()) {
-        params.employeeId = employeeId
-      }
-
-      if (jobTitle.trim()) {
-        params.jobTitle = jobTitle
-      }
-
       const res =
         await api.get<MonthlyReportResponse>(
-          "/api/attendance/reports/monthly",
-          {
-            params,
-          }
+          `/api/attendance/reports/monthly/${month}/${year}`
         )
 
-      setReports(res.data.data)
-
-      setTotalPages(res.data.totalPages)
+      setReports(res.data.report || [])
     } catch (error) {
       console.log(error)
 
@@ -139,52 +113,143 @@ function MonthlyReport() {
   }
 
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      fetchReports()
-    }, 400)
+    fetchReports()
+  }, [month, year])
 
-    return () => clearTimeout(timeout)
+  const filteredReports = useMemo(() => {
+    return reports.filter((employee) => {
+      const matchesName =
+        employee.employeeName
+          .toLowerCase()
+          .includes(
+            name.toLowerCase()
+          )
+
+      const matchesEmployeeId =
+        employee.employeeId
+          .toLowerCase()
+          .includes(
+            employeeId.toLowerCase()
+          )
+
+      const matchesJobTitle =
+        employee.jobTitle
+          .toLowerCase()
+          .includes(
+            jobTitle.toLowerCase()
+          )
+
+      return (
+        matchesName &&
+        matchesEmployeeId &&
+        matchesJobTitle
+      )
+    })
   }, [
-    month,
-    year,
+    reports,
     name,
     employeeId,
     jobTitle,
-    page,
   ])
 
-  function exportToExcel() {
+  const totals = useMemo(() => {
+    return filteredReports.reduce(
+      (acc, employee) => {
+        acc.fullDays +=
+          employee.fullDays
 
-    if (reports.length === 0) return
+        acc.halfDays +=
+          employee.halfDays
 
-    const formattedData = reports.map(
-      (employee, index) => ({
-        "Sl No": (page - 1) * 10 + index + 1,
+        acc.absentDays +=
+          employee.absentDays
 
-        Name: employee.name,
+        acc.overtimeHours +=
+          employee.overtimeHours
 
-        "Employee ID": employee.employeeId,
+        acc.payableDays +=
+          employee.payableDays
 
-        "Job Title": employee.jobTitle,
+        acc.normalPay +=
+          employee.normalPay
 
-        Present: employee.presentDays,
+        acc.overtimePay +=
+          employee.overtimePay
 
-        Absent: employee.absentDays,
+        acc.salary +=
+          employee.salary
 
-        HalfDays: employee.halfDays,
+        return acc
+      },
+      {
+        fullDays: 0,
+        halfDays: 0,
+        absentDays: 0,
 
-        "Attendance %":
-          `${employee.attendancePercentage}%`,
+        overtimeHours: 0,
 
-        "OT Hours":
-          employee.totalOvertime,
+        payableDays: 0,
 
-        "Payable Days":
-          employee.payableDays,
+        normalPay: 0,
+        overtimePay: 0,
 
-        Salary: employee.totalSalary,
-      })
+        salary: 0,
+      }
     )
+  }, [filteredReports])
+
+  function clearFilters() {
+    setName("")
+    setEmployeeId("")
+    setJobTitle("")
+  }
+
+  function exportToExcel() {
+    if (filteredReports.length === 0)
+      return
+
+    const formattedData =
+      filteredReports.map(
+        (employee, index) => ({
+          "Sl No": index + 1,
+
+          "Employee Name":
+            employee.employeeName,
+
+          "Employee ID":
+            employee.employeeId,
+
+          "Job Title":
+            employee.jobTitle,
+
+          "Full Days":
+            employee.fullDays,
+
+          "Half Days":
+            employee.halfDays,
+
+          "Absent Days":
+            employee.absentDays,
+
+          "Attendance %":
+            employee.attendancePercentage,
+
+          "OT Hours":
+            employee.overtimeHours,
+
+          "Payable Days":
+            employee.payableDays,
+
+          "Normal Pay":
+            employee.normalPay,
+
+          "OT Pay":
+            employee.overtimePay,
+
+          Salary:
+            employee.salary,
+        })
+      )
 
     const worksheet =
       XLSX.utils.json_to_sheet(
@@ -200,13 +265,11 @@ function MonthlyReport() {
       "Monthly Report"
     )
 
-    const excelBuffer = XLSX.write(
-      workbook,
-      {
+    const excelBuffer =
+      XLSX.write(workbook, {
         bookType: "xlsx",
         type: "array",
-      }
-    )
+      })
 
     const fileData = new Blob(
       [excelBuffer],
@@ -222,83 +285,78 @@ function MonthlyReport() {
     )
   }
 
-  const months = useMemo(
-    () => [
-      "January",
-      "February",
-      "March",
-      "April",
-      "May",
-      "June",
-      "July",
-      "August",
-      "September",
-      "October",
-      "November",
-      "December",
-    ],
-    []
-  )
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ]
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
-      <div className="mx-auto max-w-7xl space-y-8">
-
-        {/* Header */}
-
-        {/* Header */}
+      <div className="mx-auto max-w-7xl space-y-6">
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-
           <div className="flex items-center gap-3">
             <CalendarDays className="h-8 w-8" />
 
             <div>
-              <h1 className="text-3xl font-bold sm:text-4xl">
-                Monthly Report
+              <h1 className="text-3xl font-bold">
+                Monthly Payroll Report
               </h1>
 
-              <p className="text-sm text-muted-foreground sm:text-base">
-                Attendance and salary summary
+              <p className="text-muted-foreground">
+                Attendance, OT and salary summary
               </p>
             </div>
           </div>
 
           <Button
             onClick={exportToExcel}
-            disabled={reports.length === 0}
-            className="w-full sm:w-auto"
+            disabled={
+              filteredReports.length ===
+              0
+            }
           >
             <Download className="mr-2 h-4 w-4" />
-
-            Export Excel
+            Export Spreadsheet
           </Button>
         </div>
 
-        {/* Filters */}
-
-        <Card className="rounded-3xl border bg-card p-6 shadow-sm">
+        <Card className="p-6">
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-
-            {/* Month */}
 
             <Select
               value={month}
-              onValueChange={(value) => {
-                setPage(1)
-                setMonth(value)
-              }}
+              onValueChange={
+                setMonth
+              }
             >
               <SelectTrigger>
-                <SelectValue placeholder="Month" />
+                <SelectValue />
               </SelectTrigger>
 
               <SelectContent>
                 {months.map(
-                  (monthName, index) => (
+                  (
+                    monthName,
+                    index
+                  ) => (
                     <SelectItem
-                      key={monthName}
-                      value={String(index + 1)}
+                      key={
+                        monthName
+                      }
+                      value={String(
+                        index + 1
+                      )}
                     >
                       {monthName}
                     </SelectItem>
@@ -307,246 +365,255 @@ function MonthlyReport() {
               </SelectContent>
             </Select>
 
-            {/* Year */}
-
             <Input
               placeholder="Year"
               value={year}
-              onChange={(e) => {
-                setPage(1)
-                setYear(e.target.value)
-              }}
+              onChange={(e) =>
+                setYear(
+                  e.target.value
+                )
+              }
             />
-
-            {/* Name */}
 
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
 
               <Input
-                placeholder="Employee name"
                 className="pl-10"
+                placeholder="Employee Name"
                 value={name}
-                onChange={(e) => {
-                  setPage(1)
-                  setName(e.target.value)
-                }}
+                onChange={(e) =>
+                  setName(
+                    e.target.value
+                  )
+                }
               />
             </div>
-
-            {/* Employee ID */}
 
             <Input
               placeholder="Employee ID"
               value={employeeId}
-              onChange={(e) => {
-                setPage(1)
+              onChange={(e) =>
                 setEmployeeId(
                   e.target.value
                 )
-              }}
+              }
             />
-
-            {/* Job Title */}
 
             <Input
               placeholder="Job Title"
               value={jobTitle}
-              onChange={(e) => {
-                setPage(1)
-                setJobTitle(e.target.value)
-              }}
+              onChange={(e) =>
+                setJobTitle(
+                  e.target.value
+                )
+              }
             />
+          </div>
+
+          <div className="mt-4">
+            <Button
+              variant="outline"
+              onClick={
+                clearFilters
+              }
+            >
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Clear Filters
+            </Button>
           </div>
         </Card>
 
-        {/* Report Table */}
-
-        <Card className="rounded-3xl border bg-card p-6 shadow-sm">
-          <div className="overflow-hidden rounded-2xl border">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader className="bg-background">
-                  <TableRow>
-                    <TableHead>
-                      Sl No
-                    </TableHead>
-
-                    <TableHead>
-                      Employee
-                    </TableHead>
-
-                    <TableHead>
-                      Employee ID
-                    </TableHead>
-
-                    <TableHead>
-                      Job Title
-                    </TableHead>
-
-                    <TableHead>
-                      P
-                    </TableHead>
-
-                    <TableHead>
-                      A
-                    </TableHead>
-
-                    <TableHead>
-                      H
-                    </TableHead>
-
-                    <TableHead>
-                      %
-                    </TableHead>
-
-                    <TableHead>
-                      OT
-                    </TableHead>
-
-                    <TableHead>
-                      Payable
-                    </TableHead>
-
-                    <TableHead className="text-right">
-                      Salary
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-
-                <TableBody>
-                  {loading ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={11}
-                        className="h-24 text-center"
-                      >
-                        Loading report...
-                      </TableCell>
-                    </TableRow>
-                  ) : reports.length ===
-                    0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={11}
-                        className="h-24 text-center text-muted-foreground"
-                      >
-                        No report data found
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    reports.map(
-                      (employee, index) => (
-                        <TableRow
-                          key={
-                            employee.employeeId
-                          }
-                        >
-                          <TableCell>
-                            {(page - 1) * 10 +
-                              index +
-                              1}
-                          </TableCell>
-
-                          <TableCell className="font-medium whitespace-nowrap">
-                            {employee.name}
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.employeeId
-                            }
-                          </TableCell>
-
-                          <TableCell className="capitalize">
-                            {
-                              employee.jobTitle
-                            }
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.presentDays
-                            }
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.absentDays
-                            }
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.halfDays
-                            }
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.attendancePercentage
-                            }
-                            %
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.totalOvertime
-                            }
-                          </TableCell>
-
-                          <TableCell>
-                            {
-                              employee.payableDays
-                            }
-                          </TableCell>
-
-                          <TableCell className="text-right font-semibold whitespace-nowrap">
-                            ₹
-                            {employee.totalSalary.toLocaleString()}
-                          </TableCell>
-                        </TableRow>
-                      )
-                    )
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </div>
-
-          {/* Pagination */}
-
-          <div className="mt-6 flex items-center justify-between">
-            <Button
-              variant="outline"
-              disabled={page === 1}
-              onClick={() =>
-                setPage((prev) =>
-                  prev - 1
-                )
-              }
-            >
-              Previous
-            </Button>
-
+        <div className="grid gap-4 md:grid-cols-5">
+          <Card className="p-4">
             <p className="text-sm text-muted-foreground">
-              Page {page} of{" "}
-              {totalPages}
+              Employees
             </p>
 
-            <Button
-              variant="outline"
-              disabled={
-                page === totalPages
+            <p className="text-2xl font-bold">
+              {
+                filteredReports.length
               }
-              onClick={() =>
-                setPage((prev) =>
-                  prev + 1
-                )
-              }
-            >
-              Next
-            </Button>
+            </p>
+          </Card>
+
+          <Card className="p-4">
+            <p className="text-sm text-muted-foreground">
+              OT Hours
+            </p>
+
+            <p className="text-2xl font-bold">
+              {totals.overtimeHours.toFixed(
+                2
+              )}
+            </p>
+          </Card>
+
+          <Card className="p-4">
+            <p className="text-sm text-muted-foreground">
+              Normal Pay
+            </p>
+
+            <p className="text-2xl font-bold">
+              ₹
+              {totals.normalPay.toLocaleString()}
+            </p>
+          </Card>
+
+          <Card className="p-4">
+            <p className="text-sm text-muted-foreground">
+              OT Pay
+            </p>
+
+            <p className="text-2xl font-bold">
+              ₹
+              {totals.overtimePay.toLocaleString()}
+            </p>
+          </Card>
+
+          <Card className="p-4">
+            <p className="text-sm text-muted-foreground">
+              Total Payroll
+            </p>
+
+            <p className="text-2xl font-bold">
+              ₹
+              {totals.salary.toLocaleString()}
+            </p>
+          </Card>
+        </div>
+
+        <Card className="p-6">
+          <div className="h-[650px] overflow-auto rounded-xl border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background z-10">
+                <TableRow>
+                  <TableHead>Sl</TableHead>
+                  <TableHead>Employee</TableHead>
+                  <TableHead>ID</TableHead>
+                  <TableHead>Job</TableHead>
+                  <TableHead>Full</TableHead>
+                  <TableHead>Half</TableHead>
+                  <TableHead>Absent</TableHead>
+                  <TableHead>%</TableHead>
+                  <TableHead>OT</TableHead>
+                  <TableHead>Payable</TableHead>
+                  <TableHead>Normal Pay</TableHead>
+                  <TableHead>OT Pay</TableHead>
+                  <TableHead>Salary</TableHead>
+                </TableRow>
+              </TableHeader>
+
+              <TableBody>
+                {loading ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={13}
+                      className="text-center h-24"
+                    >
+                      Loading...
+                    </TableCell>
+                  </TableRow>
+                ) : filteredReports.length ===
+                  0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={13}
+                      className="text-center h-24"
+                    >
+                      No data found
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredReports.map(
+                    (
+                      employee,
+                      index
+                    ) => (
+                      <TableRow
+                        key={
+                          employee.employeeId
+                        }
+                      >
+                        <TableCell>
+                          {index + 1}
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.employeeName
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.employeeId
+                          }
+                        </TableCell>
+
+                        <TableCell className="capitalize">
+                          {
+                            employee.jobTitle
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.fullDays
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.halfDays
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.absentDays
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.attendancePercentage
+                          }
+                          %
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.overtimeHours
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          {
+                            employee.payableDays
+                          }
+                        </TableCell>
+
+                        <TableCell>
+                          ₹
+                          {employee.normalPay.toLocaleString()}
+                        </TableCell>
+
+                        <TableCell>
+                          ₹
+                          {employee.overtimePay.toLocaleString()}
+                        </TableCell>
+
+                        <TableCell className="font-semibold">
+                          ₹
+                          {employee.salary.toLocaleString()}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  )
+                )}
+              </TableBody>
+            </Table>
           </div>
         </Card>
       </div>
@@ -555,3 +622,4 @@ function MonthlyReport() {
 }
 
 export default MonthlyReport
+

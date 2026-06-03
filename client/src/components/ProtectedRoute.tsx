@@ -23,11 +23,11 @@ export default function ProtectedRoute({
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    return <Navigate to="/login" replace={true} />
   }
 
   if (!allowedRoles.includes(user.role)) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/dashboard" replace />
   }
 
   return children

@@ -14,6 +14,8 @@ router.use(verifyToken)
 
 router.post('/submit', attendanceController.siteFirstSubmitAttendance)
 
+router.get('/dashboard', attendanceController.getSummary)
+
 router.get("/:attendanceId",attendanceController.getAttendanceById)
 
 router.get('/reports/daily', attendanceController.getSiteAttendance)
@@ -22,9 +24,10 @@ router.patch('/bulk-update', attendanceController.bulkEditAttendance)
 
 router.patch('/unlock', attendanceController.unlockAttendance)
 
-router.get('/reports/monthly', attendanceController.getMonthlyReport)
+router.get('/reports/monthly/:month/:year', attendanceController.monthlyReport)
 
-router.get('/reports/daily-summary', attendanceController.getSummary)
+//prefix /api/attendance
+
 
 router.patch('/update/set-holiday', attendanceController.toggleHolidayStatus)
 
