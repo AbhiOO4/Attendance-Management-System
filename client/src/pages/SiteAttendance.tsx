@@ -62,7 +62,7 @@ interface Site {
 }
 
 export interface AttendanceSession {
-  _id: string
+  _id?: string
 
   siteId: string,
 
@@ -660,26 +660,6 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   initialize()
 }, [])
 
-  const getStatusBadgeVariant = (
-    status: AttendanceRecord["status"]
-  ) => {
-    switch (status) {
-      case "fullday":
-        return "default"
-
-      case "halfday":
-        return "secondary"
-
-      case "absent":
-        return "destructive"
-
-      default:
-        return "outline"
-    }
-  }
-
-
-
   if (loading) {
     return (
       <div className="flex justify-center items-center h-[60vh]">
@@ -1217,9 +1197,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
       <EditSiteRecord
         open={editOpen}
         onClose={() => setEditOpen(false)}
-        attendanceId={selectedRecord?.attendanceId}
+        attendanceId={selectedRecord?.attendanceId ?? null}
         site={site!}
-        onUpdated={handleRecordUpdated}
+        onUpdated={(updatedRecord) =>
+          handleRecordUpdated(updatedRecord as AttendanceRecord)
+        }
       />
 
       <UnsavedChangesDialog

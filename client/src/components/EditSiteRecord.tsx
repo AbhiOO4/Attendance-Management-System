@@ -125,7 +125,7 @@ interface EditSiteRecordProps {
 // --------------------------------------------------
 
 function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSiteRecordProps) {
-  const [overlapInfo, setOverlapInfo] =
+  const [, setOverlapInfo] =
     useState<any>(null)
 
   const [overlapSessionIds, setOverlapSessionIds] = useState<string[]>([])
@@ -271,63 +271,6 @@ const [sessionToDelete, setSessionToDelete] =
     config.overtimeThreshold,
   ])
 
-
-  // --------------------------------------------------
-  // VALIDATIONS
-  // --------------------------------------------------
-
-  const hasInvalidSession = sessions.some((session) => {
-      const onlyOneExists =
-        (session.checkIn &&
-          !session.checkOut) ||
-        (!session.checkIn &&
-          session.checkOut)
-
-      return onlyOneExists
-    })
-
-
-  const hasOverlappingSessions = sessions.some((sessionA, indexA) => {
-      if (
-        !sessionA.checkIn ||
-        !sessionA.checkOut
-      )
-        return false
-
-      const startA = new Date(
-        sessionA.checkIn
-      ).getTime()
-
-      const endA = new Date(
-        sessionA.checkOut
-      ).getTime()
-
-      return sessions.some(
-        (sessionB, indexB) => {
-          if (indexA === indexB)
-            return false
-
-          if (
-            !sessionB.checkIn ||
-            !sessionB.checkOut
-          )
-            return false
-
-          const startB = new Date(
-            sessionB.checkIn
-          ).getTime()
-
-          const endB = new Date(
-            sessionB.checkOut
-          ).getTime()
-
-          return (
-            startA < endB &&
-            endA > startB
-          )
-        }
-      )
-    })
 
   // --------------------------------------------------
   // HANDLERS

@@ -94,7 +94,7 @@ function Supervisor() {
 
   const [totalPages, setTotalPages] = useState(1)
 
-  const [sites, setSites] = useState<Site[]>([])
+  const [, setSites] = useState<Site[]>([])
 
   const [siteMap, setSiteMap] = useState<Record<string, string>>({})
 

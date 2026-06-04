@@ -217,12 +217,22 @@ export default function Configure() {
       setJobTitleInput("");
 
       fetchJobTitles();
-    } catch (error) {
+    } catch (error: unknown) {
       console.log(error);
-      toast.error(
-        error?.response?.data?.message ||
-        "Failed to add job title"
-      );
+      const message =
+        error &&
+        typeof error === "object" &&
+        "response" in error &&
+        error.response &&
+        typeof error.response === "object" &&
+        "data" in error.response &&
+        error.response.data &&
+        typeof error.response.data === "object" &&
+        "message" in error.response.data &&
+        typeof error.response.data.message === "string"
+          ? error.response.data.message
+          : "Failed to add job title";
+      toast.error(message);
     }
   };
 

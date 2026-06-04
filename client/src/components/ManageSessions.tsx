@@ -69,7 +69,7 @@ interface ManageSessionProps {
   ) => void
 }
 
-function ManageSession({open, onClose, record, site, onUpdated}: ManageSessionProps) {
+function ManageSession(_props: ManageSessionProps) {
   return null
 }
 

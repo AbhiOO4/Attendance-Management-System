@@ -35,8 +35,6 @@ import {
   ChevronRight,
   Loader2,
   Pencil,
-  Save,
-  X,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -159,8 +157,6 @@ function EditPastAttendance() {
   const [sites, setSites] = useState<Site[]>([])
 
   const [loading, setLoading] = useState(false)
-
-  const [saving, setSaving] = useState(false)
 
   const [editingRecord, setEditingRecord] =
   useState<AttendanceRecord | null>(null)
@@ -828,7 +824,9 @@ function EditPastAttendance() {
           setEditingRecord(null)
         }
         record={editingRecord}
-        onUpdated={handleAttendanceUpdated}
+        onUpdated={(updatedRecord) =>
+          handleAttendanceUpdated(updatedRecord as AttendanceRecord)
+        }
       />
     </div>
   )

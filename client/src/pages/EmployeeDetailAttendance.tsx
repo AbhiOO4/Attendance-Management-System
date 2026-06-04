@@ -30,8 +30,6 @@ import {
 
 import { Button } from "@/components/ui/button"
 
-import { Input } from "@/components/ui/input"
-
 import {
   Select,
   SelectContent,
@@ -507,16 +505,6 @@ function EmployeeAttendanceDetail() {
       )
     }, [attendance, sortOrder])
 
-  const maxSessions = useMemo(() => {
-    return Math.max(
-      ...attendance.map(
-        (record) =>
-          record.sessions.length
-      ),
-      0
-    )
-  }, [attendance])
-
   const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
       prev.map((record) =>
@@ -900,7 +888,9 @@ function EmployeeAttendanceDetail() {
           setEditingRecord(null)
         }
         record={editingRecord}
-        onUpdated={handleAttendanceUpdated}
+        onUpdated={(updatedRecord) =>
+          handleAttendanceUpdated(updatedRecord as AttendanceRecord)
+        }
       />
     </div>
   )
