@@ -5,14 +5,20 @@ import App from './App.tsx'
 import { BrowserRouter } from 'react-router-dom'
 import {Toaster} from 'react-hot-toast'
 import { AuthProvider } from './context/AuthContext.tsx'
-
+import { ThemeProvider } from "next-themes"
 
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AuthProvider>
       <BrowserRouter>
-        <App />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+        >
+          <App />
+        </ThemeProvider>
         <Toaster />
       </BrowserRouter>
     </AuthProvider>

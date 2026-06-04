@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { replace, useNavigate } from "react-router-dom"
 import { Eye, EyeOff } from "lucide-react"
 import { api } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import toast from "react-hot-toast"
 import { useAuth } from "@/context/AuthContext"
+import logo from "../assets/ngdp logo.avif"
 
 function Login() {
   const navigate = useNavigate()
@@ -34,7 +35,7 @@ function Login() {
 
       toast.success("Login successful")
 
-      navigate("/dashboard")
+      navigate("/dashboard", {replace: true})
 
     } catch (error: any) {
       toast.error(
@@ -47,20 +48,36 @@ function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-black px-4">
-      <Card className="w-full max-w-md shadow-xl">
-        <CardHeader>
-          <CardTitle className="text-2xl font-bold text-center">
-            Login
-          </CardTitle>
+      <Card className="w-full max-w-md border shadow-2xl backdrop-blur-sm">
+        <CardHeader className="space-y-5 pb-2">
+          <div className="flex justify-center">
+            <img
+              src={logo}
+              alt="NGDP Logo"
+              className="h-20 sm:h-24 md:h-28 w-auto object-contain"
+            />
+          </div>
+
+          <div className="text-center space-y-1">
+            <CardTitle className="text-2xl font-bold">
+              Welcome Back
+            </CardTitle>
+
+            <p className="text-sm text-muted-foreground">
+              NGDP Attendance Management System
+            </p>
+          </div>
         </CardHeader>
 
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-5">
 
             <div className="space-y-2">
-              <Label>Email</Label>
+              <Label htmlFor="email">Email Address</Label>
               <Input
+                id="email"
                 type="email"
+                placeholder="Enter your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -68,11 +85,13 @@ function Login() {
             </div>
 
             <div className="space-y-2">
-              <Label>Password</Label>
+              <Label htmlFor="password">Password</Label>
 
               <div className="relative">
                 <Input
+                  id="password"
                   type={showPassword ? "text" : "password"}
+                  placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -93,9 +112,13 @@ function Login() {
               </div>
             </div>
 
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="w-full h-11 text-base" disabled={loading}>
               {loading ? "Logging in..." : "Login"}
             </Button>
+
+            <div className="pt-2 text-center text-xs text-muted-foreground">
+              © {new Date().getFullYear()} NGDP
+            </div>
 
           </form>
         </CardContent>

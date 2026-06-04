@@ -5,7 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { X } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   Table,
   TableBody,
@@ -83,8 +95,25 @@ export default function Configure() {
     reason: "",
   });
 
+  type jobTitle = {
+    _id: string,
+    title: string
+  }
+
+  const [jobTitles, setJobtitles] = useState<jobTitle[]>([])
+
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [filter, setFilter] = useState(getCurrentMonthYear());
+
+  const fetchJobTitles = async () => {
+    try{
+      const res = await api.get('/api/employees/jobTitles')
+
+      setJobtitles(res.data)
+    }catch(error){
+      console.log(error)
+    }
+  }
 
   // ---------------- FETCH ----------------
   const fetchSchedule = async () => {
@@ -151,14 +180,82 @@ export default function Configure() {
     }
   };
 
+  const formatJobTitle = (title: string) => {
+    return title
+      .trim()
+      .split(" ")
+      .filter(Boolean)
+      .map((word) => {
+        if (word.length <= 2) {
+          return word.toUpperCase();
+        }
+
+        return (
+          word.charAt(0).toUpperCase() +
+          word.slice(1).toLowerCase()
+        );
+      })
+      .join(" ");
+  };
+
+  const [jobTitleInput, setJobTitleInput] = useState("");
+
+  const addJobTitle = async () => {
+    try {
+      const formattedTitle = formatJobTitle(jobTitleInput);
+
+      if (!formattedTitle) {
+        return toast.error("Enter a job title");
+      }
+
+      await api.post("/api/employees/jobTitles", {
+        title: formattedTitle,
+      });
+
+      toast.success("Job title added");
+
+      setJobTitleInput("");
+
+      fetchJobTitles();
+    } catch (error) {
+      console.log(error);
+      toast.error(
+        error?.response?.data?.message ||
+        "Failed to add job title"
+      );
+    }
+  };
+
+  const deleteJobTitle = async (id: string) => {
+    try {
+      await api.delete(`/api/employees/jobTitles/${id}`);
+
+      toast.success("Job title deleted");
+
+      fetchJobTitles();
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.message ||
+        "Failed to delete job title"
+      );
+    }
+  };
+
   useEffect(() => {
     fetchSchedule();
     fetchHolidays();
+    fetchJobTitles();
   }, []);
 
   useEffect(() => {
     fetchHolidays(filter.month, filter.year);
   }, [filter]);
+
+  const filteredJobTitles = jobTitles.filter((job) =>
+    job.title
+      .toLowerCase()
+      .includes(jobTitleInput.toLowerCase())
+  );
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -353,6 +450,99 @@ export default function Configure() {
                 Save Changes
               </Button>
             </div>
+          </CardContent>
+        </Card>
+        
+        {/* jobtitle */}
+        <Card className="border-none shadow-sm">
+          <CardHeader className="border-b bg-muted/40">
+            <CardTitle className="text-xl">
+              Job Titles
+            </CardTitle>
+          </CardHeader>
+
+          <CardContent className="space-y-6 p-6">
+
+            {/* Add Job Title */}
+            <div className="flex gap-3">
+              <Input
+                placeholder="Enter job title"
+                value={jobTitleInput}
+                onChange={(e) =>
+                  setJobTitleInput(e.target.value)
+                }
+              />
+
+              <Button onClick={addJobTitle}>
+                Add
+              </Button>
+            </div>
+
+            {/* Existing Job Titles */}
+            <div>
+              <h3 className="mb-3 font-medium">
+                Existing Job Titles
+              </h3>
+
+              <div className="max-h-64 overflow-y-auto rounded-md border">
+                {filteredJobTitles.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    No job titles found
+                  </div>
+                ) : (
+                  <div className="divide-y">
+                    {filteredJobTitles.map((job) => (
+                      <div
+                        key={job._id}
+                        className="flex items-center justify-between px-4 py-3"
+                      >
+                        <span>{job.title}</span>
+
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="text-red-500 hover:text-red-600"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </AlertDialogTrigger>
+
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>
+                                Delete Job Title?
+                              </AlertDialogTitle>
+
+                              <AlertDialogDescription>
+                                This will permanently remove "
+                                {job.title}".
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>
+                                Cancel
+                              </AlertDialogCancel>
+
+                              <AlertDialogAction
+                                onClick={() =>
+                                  deleteJobTitle(job._id)
+                                }
+                              >
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
           </CardContent>
         </Card>
 

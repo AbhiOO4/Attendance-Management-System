@@ -6,6 +6,9 @@ import { api } from "@/lib/api"
 
 import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
+import { Moon, Sun } from "lucide-react"
+import { useTheme } from "next-themes"
+import logo from '../assets/ngdp logo.avif'
 
 import {
   Dialog,
@@ -55,6 +58,8 @@ function getSupervisorNavItems(
 export default function SidebarLayout() {
   const { user, loading, clearUser } = useAuth()
 
+  const { theme, setTheme } = useTheme()
+
   const [open, setOpen] = useState(false)
   const [openModal, setOpenModal] = useState(false)
 
@@ -101,7 +106,7 @@ export default function SidebarLayout() {
         <button onClick={() => setOpen(true)}>
           <Menu className="w-6 h-6" />
         </button>
-        <span className="ml-4 font-semibold">App</span>
+        <span className="ml-4 font-semibold">AMS</span>
       </div>
 
       {/* Sidebar */}
@@ -115,7 +120,18 @@ export default function SidebarLayout() {
           <button onClick={() => setOpen(false)}>✕</button>
         </div>
 
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col flex-1">
+          {/* Logo */}
+          <div className="flex justify-center py-6 px-4 border-b">
+            <img
+              src={logo}
+              alt="NGDP Logo"
+              className="h-16 w-auto object-contain md:h-20"
+            />
+          </div>
+
+
+          <div className="flex-1 flex items-center justify-center">
           <nav className="flex flex-col gap-3 w-full px-4">
             {navItems.map((item) => (
               <NavLink
@@ -137,8 +153,32 @@ export default function SidebarLayout() {
             ))}
           </nav>
         </div>
+        </div>
 
-        <div className="p-4 border-t">
+        <div className="p-4 border-t space-y-3">
+          <Button
+            variant="outline"
+            className="w-full justify-start"
+            onClick={() =>
+              setTheme(
+                theme === "dark"
+                  ? "light"
+                  : "dark"
+              )
+            }
+          >
+            {theme === "dark" ? (
+              <>
+                <Sun className="mr-2 h-4 w-4" />
+                Light Mode
+              </>
+            ) : (
+              <>
+                <Moon className="mr-2 h-4 w-4" />
+                Dark Mode
+              </>
+            )}
+          </Button>
           <Button
             variant="destructive"
             className="w-full"

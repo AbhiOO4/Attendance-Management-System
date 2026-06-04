@@ -438,6 +438,50 @@ export const getJobTitles = async (req, res) => {
   }
 }
 
+export const addJobTitle = async (req, res) => {
+  try{
+    const {title} = req.body
+    const newJob = new jobTitleModel({title})
+
+    await newJob.save()
+
+    res.status(201).json({message: "Job title added"})
+  }catch(error){
+    console.log(error)
+    if (error.code === 11000){
+      return res.status(400).json({message: `${error.keyValue.title} already exists`})
+    }
+    res.status(500).json({
+      message: "Internal Server Errorr",
+    })
+  }
+}
+
+export const deleteJobTitle = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const found =
+      await jobTitleModel.findByIdAndDelete(id);
+
+    if (!found) {
+      return res.status(404).json({
+        message: "Title doesn't exist",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Deleted successfully",
+    });
+  } catch (error) {
+    console.log(error);
+
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
+
 const empController = {
   getAllEmployees,
   addEmployee,
@@ -448,7 +492,10 @@ const empController = {
   editEmployee,
   getSupervisors,
   deleteSupervisor,
-  getJobTitles
+  getJobTitles,
+  addJobTitle,
+  deleteEmployee,
+  deleteJobTitle
 };
 
 export default empController;

@@ -26,9 +26,10 @@ import InstaAddEmployees from "./pages/InstaAddEmployees"
 
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
+import PublicRoute from "./components/PublicRoute"
 
 function App() {
-  const { user, loading } = useAuth()
+  const { loading } = useAuth()
 
   // ONLY block while fetching auth
   if (loading) {
@@ -42,8 +43,14 @@ function App() {
   return (
     <Routes>
       {/* PUBLIC */}
-      <Route path="/login" element={<Login />} />
-
+      <Route
+        path="/login"
+        element={
+          <PublicRoute>
+            <Login />
+          </PublicRoute>
+        }
+      />
       {/* PROTECTED LAYOUT */}
       <Route
         path="/"
@@ -54,13 +61,18 @@ function App() {
         }
       >
         {/* DASHBOARD */}
-        
-        <Route path="dashboard" 
-        element={
-        <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
-            <DashBoard />
-          </ProtectedRoute>
-        } 
+
+        <Route
+          index
+          element={<Navigate to="/dashboard" replace />}
+        />
+
+        <Route path="dashboard"
+          element={
+            <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
+              <DashBoard />
+            </ProtectedRoute>
+          }
         />
 
         {/* ADMIN ONLY */}

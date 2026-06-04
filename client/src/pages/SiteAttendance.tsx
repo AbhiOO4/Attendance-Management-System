@@ -832,253 +832,383 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         <CardContent className="pt-6">
 
           {attendanceExists ? (
+            <>
+              {/* MOBILE */}
+              <div className="space-y-3 md:hidden">
+                {filteredAttendance.map((record) => (
+                  <Card key={record.attendanceId}>
+                    <CardContent className="pt-4 space-y-3">
 
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Employee ID</TableHead>
-                  <TableHead>Job Title</TableHead>
-                  <TableHead>Total Hours</TableHead>
-                  <TableHead>Sessions</TableHead>
-                  <TableHead className="text-right">
-                    Actions
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
+                      <div>
+                        <p className="font-medium">
+                          {record.name}
+                        </p>
 
-              <TableBody>
+                        <p className="text-sm text-muted-foreground">
+                          {record.employeeId} • {record.jobTitle}
+                        </p>
+                      </div>
 
-                {filteredAttendance.map(
-                  (record) => (
-                    <TableRow
-                      key={record.attendanceId}
-                    >
-                      <TableCell>
-                        {record.name}
-                      </TableCell>
-
-                      <TableCell>
-                        {record.employeeId}
-                      </TableCell>
-
-                      <TableCell>
-                        {record.jobTitle}
-                      </TableCell>
-
-                      <TableCell>
+                      <div>
+                        <span className="font-medium">
+                          Hours:
+                        </span>{" "}
                         {getSiteWorkedHours(record)}
-                      </TableCell>
+                      </div>
 
-                      
-
-                      <TableCell>
-                        <div className="space-y-1">
-
-                          {record.sessions.map(
-                            (session) => (
-                              <div
-                                key={session._id}
-                                className="text-xs"
-                              >
-                                {session.checkIn &&
+                      <div className="space-y-1">
+                        {record.sessions.map(
+                          (session) => (
+                            <div
+                              key={session._id}
+                              className="text-sm"
+                            >
+                              {session.checkIn &&
+                                session.checkOut
+                                ? `${new Date(
+                                  session.checkIn
+                                ).toLocaleTimeString(
+                                  "en-IN",
+                                  {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  }
+                                )} - ${new Date(
                                   session.checkOut
-                                  ? `${new Date(
-                                    session.checkIn
-                                  ).toLocaleTimeString(
-                                    "en-IN",
-                                    {
-                                      hour: "2-digit",
-                                      minute:
-                                        "2-digit",
-                                    }
-                                  )} - ${new Date(
-                                    session.checkOut
-                                  ).toLocaleTimeString(
-                                    "en-IN",
-                                    {
-                                      hour: "2-digit",
-                                      minute:
-                                        "2-digit",
-                                    }
-                                  )}`
-                                  : "-"}
-                              </div>
-                            )
-                          )}
-
-                        </div>
-                      </TableCell>
-
-                      <TableCell className="text-right">
-
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          onClick={() =>
-                            openEditRecord(
-                              record
-                            )
-                          }
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-
-                      </TableCell>
-                    </TableRow>
-                  )
-                )}
-
-              </TableBody>
-            </Table>
-
-          ) : (
-
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Employee ID</TableHead>
-                  <TableHead>Job Title</TableHead>
-                  <TableHead>Check In</TableHead>
-                  <TableHead>Check Out</TableHead>
-                  <TableHead>Hours</TableHead>
-                </TableRow>
-              </TableHeader>
-
-              <TableBody>
-
-                {filteredDraftAttendance.map(
-                  (record, rowIndex) => {
-                    const session =
-                      record.sessions[0]
-
-                    return (
-                      <>
-                      <TableRow
-                        key={record.employee._id}
-                        className={
-                          isOverlapRow(
-                            record.employee._id
+                                ).toLocaleTimeString(
+                                  "en-IN",
+                                  {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  }
+                                )}`
+                                : "-"}
+                            </div>
                           )
-                            ? "bg-red-50 border-red-500"
-                            : ""
+                        )}
+                      </div>
+
+                      <Button
+                        variant="outline"
+                        onClick={() =>
+                          openEditRecord(record)
                         }
                       >
-                        <TableCell>
-                          {
-                            record.employee
-                              .name
-                          }
-                        </TableCell>
+                        <Pencil className="h-4 w-4 mr-2" />
+                        Edit
+                      </Button>
 
-                        <TableCell>
-                          {
-                            record.employeeId
-                          }
-                        </TableCell>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+              {/* DESKTOP */}
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Employee</TableHead>
+                      <TableHead>Total Hours</TableHead>
+                      <TableHead>Sessions</TableHead>
+                      <TableHead className="text-right">
+                        Actions
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
 
-                        <TableCell>
-                          {
-                            record.jobTitle
-                          }
-                        </TableCell>
+                  <TableBody>
 
-                        <TableCell>
-                          <Input
-                            type="time"
-                            value={
-                              session.checkIn
-                            }
-                            onChange={(e) =>
-                              updateDraftSession(
-                                rowIndex,
-                                0,
-                                "checkIn",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </TableCell>
+                    {filteredAttendance.map(
+                      (record) => (
+                        <TableRow
+                          key={record.attendanceId}
+                        >
+                          <TableCell>
+                            <div className="space-y-1">
+                              <p className="font-medium">
+                                {record.name}
+                              </p>
 
-                        <TableCell>
-                          <Input
-                            type="time"
-                            value={
-                              session.checkOut
-                            }
-                            onChange={(e) =>
-                              updateDraftSession(
-                                rowIndex,
-                                0,
-                                "checkOut",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </TableCell>
+                              <p className="text-sm text-muted-foreground">
+                                {record.employeeId} • {record.jobTitle}
+                              </p>
+                            </div>
+                          </TableCell>
 
-                        <TableCell>
-                          {
-                            session.workedHours
-                          }
-                        </TableCell>
-                      </TableRow>
-                        {isOverlapRow( record.employee._id) && (
-                            <TableRow>
-                              <TableCell
-                                colSpan={6}
-                                className="bg-red-50"
-                              >
-                                <div className="space-y-1 text-sm text-red-700">
-                                  <div className="font-medium">
-                                    Conflicts with existing session
+                          <TableCell>
+                            {getSiteWorkedHours(record)}
+                          </TableCell>
+
+
+
+                          <TableCell>
+                            <div className="space-y-1">
+
+                              {record.sessions.map(
+                                (session) => (
+                                  <div
+                                    key={session._id}
+                                    className="text-xs"
+                                  >
+                                    {session.checkIn &&
+                                      session.checkOut
+                                      ? `${new Date(
+                                        session.checkIn
+                                      ).toLocaleTimeString(
+                                        "en-IN",
+                                        {
+                                          hour: "2-digit",
+                                          minute:
+                                            "2-digit",
+                                        }
+                                      )} - ${new Date(
+                                        session.checkOut
+                                      ).toLocaleTimeString(
+                                        "en-IN",
+                                        {
+                                          hour: "2-digit",
+                                          minute:
+                                            "2-digit",
+                                        }
+                                      )}`
+                                      : "-"}
                                   </div>
+                                )
+                              )}
 
-                                  <div>
-                                    Site:
-                                    {" "}
-                                    {overlapError?.conflictingSession?.siteName}
-                                  </div>
+                            </div>
+                          </TableCell>
 
-                                  <div>
-                                    Time:
-                                    {" "}
-                                    {new Date(
-                                      overlapError!
-                                        .conflictingSession
-                                        .checkIn
-                                    ).toLocaleTimeString(
-                                      "en-IN",
-                                      {
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                      }
-                                    )}
-                                    {" - "}
-                                    {new Date(
-                                      overlapError!
-                                        .conflictingSession
-                                        .checkOut
-                                    ).toLocaleTimeString(
-                                      "en-IN",
-                                      {
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                      }
-                                    )}
-                                  </div>
+                          <TableCell className="text-right">
+
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              onClick={() =>
+                                openEditRecord(
+                                  record
+                                )
+                              }
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+
+                          </TableCell>
+                        </TableRow>
+                      )
+                    )}
+
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+
+          ) : (
+              <>
+                {/* MOBILE */}
+                <div className="space-y-3 md:hidden">
+                  {filteredDraftAttendance.map(
+                    (record, rowIndex) => {
+                      const session = record.sessions[0]
+
+                      return (
+                        <Card
+                          key={record.employee._id}
+                          className={
+                            isOverlapRow(record.employee._id)
+                              ? "border-red-500"
+                              : ""
+                          }
+                        >
+                          <CardContent className="space-y-4 pt-4">
+
+                            <div>
+                              <p className="font-medium">
+                                {record.employee.name}
+                              </p>
+
+                              <p className="text-sm text-muted-foreground">
+                                {record.employeeId} • {record.jobTitle}
+                              </p>
+                            </div>
+
+                            <Input
+                              type="time"
+                              value={session.checkIn}
+                              onChange={(e) =>
+                                updateDraftSession(
+                                  rowIndex,
+                                  0,
+                                  "checkIn",
+                                  e.target.value
+                                )
+                              }
+                            />
+
+                            <Input
+                              type="time"
+                              value={session.checkOut}
+                              onChange={(e) =>
+                                updateDraftSession(
+                                  rowIndex,
+                                  0,
+                                  "checkOut",
+                                  e.target.value
+                                )
+                              }
+                            />
+
+                            <div className="text-sm">
+                              Hours: {session.workedHours}
+                            </div>
+
+                          </CardContent>
+                        </Card>
+                      )
+                    }
+                  )}
+                </div>
+
+              {/* desktop */}
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Employee</TableHead>
+                      <TableHead>Check In</TableHead>
+                      <TableHead>Check Out</TableHead>
+                      <TableHead>Hours</TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody>
+
+                    {filteredDraftAttendance.map(
+                      (record, rowIndex) => {
+                        const session =
+                          record.sessions[0]
+
+                        return (
+                          <>
+                            <TableRow
+                              key={record.employee._id}
+                              className={
+                                isOverlapRow(
+                                  record.employee._id
+                                )
+                                  ? "bg-red-50 border-red-500"
+                                  : ""
+                              }
+                            >
+                              <TableCell>
+                                <div className="space-y-1">
+                                  <p className="font-medium">
+                                    {record.employee.name}
+                                  </p>
+
+                                  <p className="text-sm text-muted-foreground">
+                                    {record.employeeId} • {record.jobTitle}
+                                  </p>
                                 </div>
                               </TableCell>
-                            </TableRow>
-                          )}
-                      </>
-                    )
-                  }
-                )}
 
-              </TableBody>
-            </Table>
+                              <TableCell>
+                                <Input
+                                  type="time"
+                                  value={
+                                    session.checkIn
+                                  }
+                                  onChange={(e) =>
+                                    updateDraftSession(
+                                      rowIndex,
+                                      0,
+                                      "checkIn",
+                                      e.target.value
+                                    )
+                                  }
+                                />
+                              </TableCell>
+
+                              <TableCell>
+                                <Input
+                                  type="time"
+                                  value={
+                                    session.checkOut
+                                  }
+                                  onChange={(e) =>
+                                    updateDraftSession(
+                                      rowIndex,
+                                      0,
+                                      "checkOut",
+                                      e.target.value
+                                    )
+                                  }
+                                />
+                              </TableCell>
+
+                              <TableCell>
+                                {
+                                  session.workedHours
+                                }
+                              </TableCell>
+                            </TableRow>
+                            {isOverlapRow(record.employee._id) && (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={6}
+                                  className="bg-red-50"
+                                >
+                                  <div className="space-y-1 text-sm text-red-700">
+                                    <div className="font-medium">
+                                      Conflicts with existing session
+                                    </div>
+
+                                    <div>
+                                      Site:
+                                      {" "}
+                                      {overlapError?.conflictingSession?.siteName}
+                                    </div>
+
+                                    <div>
+                                      Time:
+                                      {" "}
+                                      {new Date(
+                                        overlapError!
+                                          .conflictingSession
+                                          .checkIn
+                                      ).toLocaleTimeString(
+                                        "en-IN",
+                                        {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                        }
+                                      )}
+                                      {" - "}
+                                      {new Date(
+                                        overlapError!
+                                          .conflictingSession
+                                          .checkOut
+                                      ).toLocaleTimeString(
+                                        "en-IN",
+                                        {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                        }
+                                      )}
+                                    </div>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </>
+                        )
+                      }
+                    )}
+
+                  </TableBody>
+                </Table>
+              </div>
+              </>
 
           )}
 

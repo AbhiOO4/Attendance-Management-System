@@ -713,9 +713,7 @@ export const getSummary = async (req, res) => {
     let targetDate;
 
     if (req.query.date) {
-      targetDate = new Date(
-        req.query.date
-      );
+      targetDate = new Date(req.query.date);
 
       if (isNaN(targetDate)) {
         return res.status(400).json({
@@ -727,9 +725,7 @@ export const getSummary = async (req, res) => {
       targetDate = new Date();
     }
 
-    const startOfDay = new Date(
-      targetDate
-    );
+    const startOfDay = new Date(targetDate);
 
     startOfDay.setHours(
       0,
@@ -738,9 +734,7 @@ export const getSummary = async (req, res) => {
       0
     );
 
-    const endOfDay = new Date(
-      targetDate
-    );
+    const endOfDay = new Date(targetDate);
 
     endOfDay.setHours(
       23,
@@ -773,10 +767,8 @@ export const getSummary = async (req, res) => {
     for (const attendance of attendances) {
       // Present count
       if (
-        attendance.status ===
-        "fullday" ||
-        attendance.status ===
-        "halfday"
+        attendance.status === "fullday" ||
+        attendance.status === "halfday"
       ) {
         presentToday++;
       }
@@ -785,7 +777,6 @@ export const getSummary = async (req, res) => {
       manHoursToday +=
         attendance.totalWorkHours || 0;
 
-      // Site statistics
       for (const session of attendance.sessions) {
         const siteId =
           session.siteId?.toString();
@@ -795,19 +786,35 @@ export const getSummary = async (req, res) => {
         if (!siteMap.has(siteId)) {
           siteMap.set(siteId, {
             siteId,
-            employees: new Set(),
             manHoursToday: 0,
+
+            // employeeId -> total hours worked
+            employeeHours:
+              new Map(),
           });
         }
 
         const siteStats =
           siteMap.get(siteId);
 
-        siteStats.manHoursToday +=
+        const workedHours =
           session.workedHours || 0;
 
-        siteStats.employees.add(
-          attendance.employee.toString()
+        siteStats.manHoursToday +=
+          workedHours;
+
+        const employeeId =
+          attendance.employee.toString();
+
+        const existingHours =
+          siteStats.employeeHours.get(
+            employeeId
+          ) || 0;
+
+        siteStats.employeeHours.set(
+          employeeId,
+          existingHours +
+            workedHours
         );
       }
     }
@@ -839,13 +846,19 @@ export const getSummary = async (req, res) => {
 
       if (!site) continue;
 
+      const employeesToday =
+        Array.from(
+          stats.employeeHours.values()
+        ).filter(
+          (hours) => hours > 0
+        ).length;
+
       sites.push({
         siteId,
 
         siteName: site.siteName,
 
-        employeesToday:
-          stats.employees.size,
+        employeesToday,
 
         manHoursToday: Number(
           stats.manHoursToday.toFixed(
@@ -854,13 +867,13 @@ export const getSummary = async (req, res) => {
         ),
 
         averageHoursPerWorker:
-          stats.employees.size > 0
+          employeesToday > 0
             ? Number(
-              (
-                stats.manHoursToday /
-                stats.employees.size
-              ).toFixed(2)
-            )
+                (
+                  stats.manHoursToday /
+                  employeesToday
+                ).toFixed(2)
+              )
             : 0,
       });
     }
@@ -874,12 +887,12 @@ export const getSummary = async (req, res) => {
     const attendancePercentage =
       totalEmployees > 0
         ? Number(
-          (
-            (presentToday /
-              totalEmployees) *
-            100
-          ).toFixed(2)
-        )
+            (
+              (presentToday /
+                totalEmployees) *
+              100
+            ).toFixed(2)
+          )
         : 0;
 
     return res.status(200).json({
@@ -892,9 +905,7 @@ export const getSummary = async (req, res) => {
 
       attendance: {
         presentToday,
-
         totalEmployees,
-
         attendancePercentage,
       },
 

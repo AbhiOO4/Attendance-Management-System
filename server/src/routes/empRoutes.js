@@ -18,13 +18,17 @@ const router = express.Router()
 
 router.use(verifyToken)
 
-router.get('/', authorizeRoles("admin"), empController.getAllEmployees)// 
+router.get('/', authorizeRoles("admin","supervisor"), empController.getAllEmployees)// 
 
 router.post('/', authorizeRoles("admin"), employeeValidation, empController.addEmployee)// 
 
 router.get('/Supervisors', authorizeRoles("admin"), empController.getSupervisors)//
 
 router.get('/jobTitles', authorizeRoles('admin'), empController.getJobTitles)
+
+router.post('/jobTitles', authorizeRoles('admin'), empController.addJobTitle)
+
+router.delete('/jobTitles/:id', authorizeRoles('admin'), empController.deleteJobTitle)
 
 router.get('/:id', authorizeRoles("admin"), empController.getEmployee)//
 

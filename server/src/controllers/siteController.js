@@ -968,7 +968,7 @@ export const changeJobStatus = async (req, res) => {
 export const instaAddEmployee = async (req, res) => {
   try {
     const { siteId } = req.params
-    const { empId } = req.body
+    const { empId, currentJob } = req.body
 
     const markedBy = req.user?.id
 
@@ -1025,7 +1025,7 @@ export const instaAddEmployee = async (req, res) => {
     // ----------------------------------
     if (!attendanceLock) {
       employee.currentSite = siteId
-      employee.currentJob = null
+      employee.currentJob = currentJob
 
       await employee.save()
 
@@ -1067,7 +1067,7 @@ export const instaAddEmployee = async (req, res) => {
       if (!alreadyHasSession) {
         attendance.sessions.push({
           siteId,
-          jobId: null,
+          jobId: currentJob,
           checkIn: null,
           checkOut: null,
           workedHours: 0,
@@ -1082,7 +1082,7 @@ export const instaAddEmployee = async (req, res) => {
 
         siteId,
 
-        jobId: null,
+        jobId: currentJob,
 
         markedBy,
 
@@ -1099,7 +1099,7 @@ export const instaAddEmployee = async (req, res) => {
         sessions: [
           {
             siteId,
-            jobId: null,
+            jobId: currentJob,
             checkIn: null,
             checkOut: null,
             workedHours: 0,
@@ -1114,7 +1114,7 @@ export const instaAddEmployee = async (req, res) => {
     // ----------------------------------
 
     employee.currentSite = siteId
-    employee.currentJob = null
+    employee.currentJob = currentJob
 
     await employee.save()
 

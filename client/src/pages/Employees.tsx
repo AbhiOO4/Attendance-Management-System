@@ -264,6 +264,9 @@ function Employees() {
           </SelectTrigger>
 
           <SelectContent>
+            <SelectItem value="null">
+              Not assigned
+            </SelectItem>
             <SelectItem value="all">
               All Sites
             </SelectItem>

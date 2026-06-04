@@ -386,7 +386,7 @@ const addSession = async () => {
     const payload = {
       session: {
         siteId: site._id,
-        jobId: null,
+        jobId: record.jobId || null,
         checkIn: null,
         checkOut: null,
       }
@@ -416,6 +416,10 @@ const addSession = async () => {
     index: number
   ) => {
     const updated = [...sessions]
+
+    if (sessions.length == 1){
+      return toast.error("Cannot delete!, Sessions can't be empty")
+    }
 
     updated.splice(index, 1)
 

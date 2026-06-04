@@ -12,7 +12,7 @@ import {
 import toast from "react-hot-toast"
 
 
-import {useNavigate} from "react-router-dom"
+import { useNavigate } from "react-router-dom"
 
 import {
     Card,
@@ -49,11 +49,11 @@ import {
 } from "lucide-react"
 
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from "@/components/ui/select"
 
 import {
@@ -96,6 +96,11 @@ interface EmployeeResponse {
     total: number
 }
 
+type Job = {
+    _id: string,
+    name: string
+}
+
 function InstaAddEmployees() {
     const { siteId } = useParams()
 
@@ -123,10 +128,15 @@ function InstaAddEmployees() {
         _id: string
         siteName: string
         locationDetails: string
+        jobs: Job[]
         isActive: boolean
     }
 
     const [sites, setSites] = useState<Site[]>([])
+
+    const [site, setSite] = useState<Site | null>(null)
+
+    const [selectedJob, setSelectedJob] = useState<string | null>(null)
 
     const [filters, setFilters] = useState({
         name: "",
@@ -137,9 +147,24 @@ function InstaAddEmployees() {
 
     const fetchSites = async () => {
         try {
-            const res = await api.get("/api/site")
+            const res = await api.get("/api/site", {
+                params: {
+                    isActive: true
+                }
+            })
 
             setSites(res.data || [])
+        } catch (error) {
+            console.log(error)
+        }
+    }
+
+    const fetchSite = async () => {
+        try {
+            const res = await api.get(`/api/site/${siteId}`)
+
+            setSite(res.data)
+
         } catch (error) {
             console.log(error)
         }
@@ -188,6 +213,7 @@ function InstaAddEmployees() {
         }
 
     useEffect(() => {
+        fetchSite()
         fetchSites()
     }, [])
 
@@ -200,29 +226,28 @@ function InstaAddEmployees() {
         fetchEmployees()
     }
 
-    const instaAdd = async (employeeId: string) => {
-        try{
-            await api.post(`/api/site/${siteId}/insta-add-employee`, {empId: employeeId})
+    const instaAdd = async (employeeId: string, jobId: string | null) => {
+        try {
+            await api.post(`/api/site/${siteId}/insta-add-employee`, { empId: employeeId, currentJob: jobId })
             toast.success("Employee Added successfully")
-        }catch(error){
+            setEmployees((prev) =>
+                prev.filter((emp) => emp._id !== employeeId)
+            )
+        } catch (error) {
             console.log(error)
             toast.error("Couldn't add employee!")
         }
     }
 
-    const confirmAdd =
-        async () => {
-            if (!selectedEmployee)
-                return
+    const confirmAdd = async () => {
+        if (!selectedEmployee) return
 
-            await instaAdd(
-                selectedEmployee._id
-            )
+        await instaAdd(selectedEmployee._id, selectedJob)
 
-            setConfirmOpen(false)
-
-            setSelectedEmployee(null)
-        }
+        setConfirmOpen(false)
+        setSelectedEmployee(null)
+        setSelectedJob(null)
+    }
 
     if (loading) {
         return (
@@ -342,14 +367,14 @@ function InstaAddEmployees() {
                                 </SelectItem>
 
                                 {sites.filter((site) => site._id !== siteId)
-                                .map((site) => (
-                                    <SelectItem
-                                        key={site._id}
-                                        value={site._id}
-                                    >
-                                        {site.siteName}
-                                    </SelectItem>
-                                ))}
+                                    .map((site) => (
+                                        <SelectItem
+                                            key={site._id}
+                                            value={site._id}
+                                        >
+                                            {site.siteName}
+                                        </SelectItem>
+                                    ))}
 
                             </SelectContent>
                         </Select>
@@ -382,10 +407,6 @@ function InstaAddEmployees() {
 
                                 <TableHead>
                                     Current Site
-                                </TableHead>
-
-                                <TableHead>
-                                    Current Job
                                 </TableHead>
 
                                 <TableHead className="text-right">
@@ -428,16 +449,15 @@ function InstaAddEmployees() {
                                         </TableCell>
 
                                         <TableCell>
-                                            {employee
+                                            <div>{employee
                                                 .currentSite
                                                 ?.siteName ||
-                                                "-"}
-                                        </TableCell>
-
-                                        <TableCell>
+                                                "-"}</div>
+                                            <div className="text-xs text-muted-foreground">
                                             {employee
                                                 .currentJob
                                                 ?.name || "-"}
+                                            </div>
                                         </TableCell>
 
                                         <TableCell className="text-right">
@@ -445,13 +465,9 @@ function InstaAddEmployees() {
                                             <Button
                                                 size="sm"
                                                 onClick={() => {
-                                                    setSelectedEmployee(
-                                                        employee
-                                                    )
-
-                                                    setConfirmOpen(
-                                                        true
-                                                    )
+                                                    setSelectedEmployee(employee)
+                                                    setSelectedJob(null) // reset job each time
+                                                    setConfirmOpen(true)
                                                 }}
                                             >
                                                 <UserPlus className="h-4 w-4 mr-2" />
@@ -522,6 +538,33 @@ function InstaAddEmployees() {
                             Confirm Employee Add
                         </DialogTitle>
                     </DialogHeader>
+
+                    <div className="space-y-2">
+                        <strong>Select Job:</strong>
+
+                        <Select
+                            value={selectedJob ?? "none"}
+                            onValueChange={(value) =>
+                                setSelectedJob(value === "none" ? null : value)
+                            }
+                        >
+                            <SelectTrigger>
+                                <SelectValue placeholder="Select job (optional)" />
+                            </SelectTrigger>
+
+                            <SelectContent>
+                                <SelectItem value="none">
+                                    Don't assign job
+                                </SelectItem>
+
+                                {site?.jobs?.map((job) => (
+                                    <SelectItem key={job._id} value={job._id}>
+                                        {job.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
 
                     {selectedEmployee && (
                         <div className="space-y-3">
