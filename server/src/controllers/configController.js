@@ -147,7 +147,6 @@ export const addCustomHoliday = async (req, res) => {
   }
 };
 
-
 export const deleteCustomHoliday = async (req, res) => {
   try {
     const { holidayId } = req.params;
@@ -181,7 +180,6 @@ export const deleteCustomHoliday = async (req, res) => {
     });
   }
 };
-
 
 export const getAllHolidays = async (req, res) => {
   try {
@@ -229,7 +227,6 @@ export const getAllHolidays = async (req, res) => {
     });
   }
 };
-
 
 export const isHoliday = async (req, res) => {
   try {

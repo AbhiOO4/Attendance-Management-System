@@ -12,170 +12,7 @@ import siteModel from '../models/siteModel.js';
 
 // POST /api/attendance/submit
 
-export const submitDaily = async (req, res) => {
-  try {
-    const { siteId, date, attendance, isHoliday = false } = req.body
 
-    if (!siteId || !date || !attendance || !attendance.length) {
-      return res.status(400).json({
-        message: "siteId, date and attendance array are required"
-      })
-    }
-
-    const markedBy = req.user?.id
-
-    console.log(markedBy)
-
-    const parsedDate = new Date(date)
-    parsedDate.setUTCHours(0, 0, 0, 0)
-
-    // 🔒 Check if already submitted (lock exists)
-    const existingLock = await AttendanceLock.findOne({ siteId, date: parsedDate })
-
-    if (existingLock) {
-      return res.status(400).json({
-        message: "Attendance already submitted for this date and site"
-      })
-    }
-
-    const workSchedule = await workModel.findOne()
-
-    const shiftHours = workSchedule?.shiftHours || 10
-
-    const getWorkHours = (status) => {
-      if (status === 'present') return shiftHours
-      if (status === 'halfday') return shiftHours / 2
-      return 0
-    }
-
-    const records = attendance.map((entry) => ({
-      employee: entry.employee,
-      siteId,
-      markedBy,
-      date: parsedDate,
-      status: entry.status,
-      isHoliday,
-      workHours: getWorkHours(entry.status),
-      overtimeHours: entry.overtimeHours || 0
-    }))
-
-    // 🚫 No need for ordered:false anymore — fail fast
-    const insertedDocs = await Attendance.insertMany(records)
-
-    // 🔒 Create lock AFTER successful insert
-    await AttendanceLock.create({
-      siteId,
-      date: parsedDate,
-      isLocked: true,
-      lockedBy: markedBy,
-      lockedAt: new Date()
-    })
-
-    return res.status(201).json({
-      message: "Attendance submitted successfully",
-      recordsCreated: insertedDocs.length
-    })
-
-  } catch (error) {
-    console.error(error)
-
-    // 🔥 Better duplicate error message
-    if (error.code === 11000) {
-      return res.status(400).json({
-        message: "Duplicate attendance detected (same employee + date)"
-      })
-    }
-
-    return res.status(500).json({
-      message: "Failed to submit attendance",
-      error: error.message
-    })
-  }
-}
-
-//PATCH /api/attendance/bulk-update
-export const bulkUpdateAttendance = async (req, res) => {
-  try {
-    const { siteId, date, updates, isHoliday = false } = req.body
-
-    if (!siteId || !date) {
-      return res.status(400).json({
-        message: "siteId and date are required"
-      })
-    }
-
-    if (!updates || !updates.length) {
-      return res.status(400).json({
-        message: "No updates provided"
-      })
-    }
-
-    const parsedDate = new Date(date)
-    parsedDate.setUTCHours(0, 0, 0, 0)
-
-    const workSchedule = await workModel.findOne()
-
-    const shiftHours = workSchedule?.shiftHours || 10
-
-    const getWorkHours = (status) => {
-      if (status === 'present') return shiftHours
-      if (status === 'halfday') return shiftHours / 2
-      return 0
-    }
-
-    // 🔒 Check lock from AttendanceLock model
-    const lock = await AttendanceLock.findOne({ siteId, date: parsedDate })
-
-    if (!lock) {
-      return res.status(404).json({
-        message: "Attendance not initialized for this date"
-      })
-    }
-
-    if (lock.isLocked) {
-      return res.status(400).json({
-        message: "Attendance is locked. Unlock before editing."
-      })
-    }
-
-    // ⚙️ Prepare bulk operations
-    const bulkOps = updates.map((entry) => ({
-      updateOne: {
-        filter: { _id: entry.attendanceId },
-        update: {
-          status: entry.status,
-          isHoliday: isHoliday,
-          workHours: getWorkHours(entry.status),
-          overtimeHours: entry.overtimeHours || 0,
-          markedBy: req.user?.id || '69f33152d121b1a10b175d46'
-        }
-      }
-    }))
-
-    await Attendance.bulkWrite(bulkOps)
-
-    // 🔒 Re-lock using AttendanceLock
-    await AttendanceLock.findOneAndUpdate(
-      { siteId, date: parsedDate },
-      {
-        isLocked: true,
-        lockedBy: req.user?.id || '69f33152d121b1a10b175d46',
-        lockedAt: new Date()
-      }
-    )
-
-    res.json({
-      message: "Attendance updated successfully"
-    })
-
-  } catch (error) {
-    console.error(error)
-    res.status(500).json({
-      message: "Failed to update attendance",
-      error: error.message
-    })
-  }
-}
 
 //PATCH /api/attendance/unlock
 export const unlockAttendance = async (req, res) => {
@@ -200,7 +37,7 @@ export const unlockAttendance = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Failed to unlock", error: err.message })
   }
-}
+} //
 
 //GET /api/attendance/reports/monthly
 export const monthlyReport = async (req, res) => {
@@ -422,290 +259,8 @@ export const monthlyReport = async (req, res) => {
       error: error.message,
     });
   }
-};
+}; //
 
-//GET /api/attendance/reports/daily
-export const getDaily = async (req, res) => {
-  try {
-    const {
-      date,
-      site,
-      jobTitle,
-      name,
-      employeeId,
-      page,
-      limit
-    } = req.query
-
-    if (!date) {
-      return res.status(400).json({
-        message: 'date is required'
-      })
-    }
-
-    const queryDate = new Date(date)
-
-    if (Number.isNaN(queryDate.getTime())) {
-      return res.status(400).json({
-        message: 'Invalid date format'
-      })
-    }
-
-    const start = new Date(queryDate)
-    start.setUTCHours(0, 0, 0, 0)
-
-    const end = new Date(queryDate)
-    end.setUTCHours(23, 59, 59, 999)
-
-    const attendanceMatch = {
-      date: { $gte: start, $lte: end }
-    }
-
-    if (site && mongoose.Types.ObjectId.isValid(site)) {
-      attendanceMatch.siteId =
-        new mongoose.Types.ObjectId(site)
-    }
-
-    const employeeMatch = {}
-
-    if (name) {
-      employeeMatch['employee.name'] = {
-        $regex: name,
-        $options: 'i'
-      }
-    }
-
-    if (employeeId) {
-      employeeMatch['employee.employeeId'] = {
-        $regex: employeeId,
-        $options: 'i'
-      }
-    }
-
-    if (jobTitle) {
-      employeeMatch['employee.jobTitle'] = {
-        $regex: jobTitle,
-        $options: 'i'
-      }
-    }
-
-    if (
-      site &&
-      !mongoose.Types.ObjectId.isValid(site)
-    ) {
-      employeeMatch['site.siteName'] = {
-        $regex: site,
-        $options: 'i'
-      }
-    }
-
-    const pipeline = [
-      {
-        $match: attendanceMatch
-      },
-
-      {
-        $lookup: {
-          from: 'employees',
-          localField: 'employee',
-          foreignField: '_id',
-          as: 'employee'
-        }
-      },
-
-      {
-        $unwind: '$employee'
-      },
-
-      {
-        $lookup: {
-          from: 'sites',
-          localField: 'siteId',
-          foreignField: '_id',
-          as: 'site'
-        }
-      },
-
-      {
-        $unwind: {
-          path: '$site',
-          preserveNullAndEmptyArrays: true
-        }
-      },
-
-      {
-        $match: employeeMatch
-      },
-
-      {
-        $sort: {
-          'employee.name': 1
-        }
-      }
-    ]
-
-    const shouldPaginate = page && limit
-
-    let pageNumber = null
-    let limitNumber = null
-    let skip = 0
-
-    const projectStage = {
-      _id: 0,
-      attendanceId: '$_id',
-
-      employee: '$employee._id',
-
-      siteId: '$siteId',
-
-      date: '$date',
-
-      siteName: '$site.siteName',
-
-      name: '$employee.name',
-
-      employeeId: '$employee.employeeId',
-
-      jobTitle: '$employee.jobTitle',
-
-      status: '$status',
-
-      isHoliday: '$isHoliday',
-
-      overtimeHours: {
-        $ifNull: ['$overtimeHours', 0]
-      }
-    }
-
-    if (shouldPaginate) {
-      pageNumber =
-        Math.max(Number(page) || 1, 1)
-
-      limitNumber =
-        Math.max(Number(limit) || 10, 1)
-
-      skip =
-        (pageNumber - 1) * limitNumber
-
-      pipeline.push({
-        $facet: {
-          metadata: [
-            {
-              $count: 'total'
-            }
-          ],
-
-          data: [
-            {
-              $skip: skip
-            },
-
-            {
-              $limit: limitNumber
-            },
-
-            {
-              $project: projectStage
-            }
-          ]
-        }
-      })
-
-      const [result] =
-        await Attendance.aggregate(pipeline)
-
-      const total =
-        result?.metadata?.[0]?.total || 0
-
-      const data = (result?.data || []).map(
-        (record, index) => ({
-          serialNumber: skip + index + 1,
-          ...record
-        })
-      )
-
-      const isHoliday =
-        result?.data?.[0]?.isHoliday || false
-
-      return res.json({
-        message: 'Daily report fetched',
-
-        page: pageNumber,
-
-        limit: limitNumber,
-
-        totalPages: Math.ceil(
-          total / limitNumber
-        ),
-
-        totalRecords: total,
-
-        isHoliday,
-
-        filters: {
-          date,
-
-          site: site || null,
-
-          name: name || null,
-
-          employeeId: employeeId || null,
-
-          jobTitle: jobTitle || null
-        },
-
-        data
-      })
-    }
-
-    pipeline.push({
-      $project: projectStage
-    })
-
-    const result =
-      await Attendance.aggregate(pipeline)
-
-    const data = result.map(
-      (record, index) => ({
-        serialNumber: index + 1,
-        ...record
-      })
-    )
-
-    const isHoliday =
-      result?.[0]?.isHoliday || false
-
-    return res.json({
-      message: 'Daily report fetched',
-
-      totalRecords: data.length,
-
-      isHoliday,
-
-      filters: {
-        date,
-
-        site: site || null,
-
-        name: name || null,
-
-        employeeId: employeeId || null,
-
-        jobTitle: jobTitle || null
-      },
-
-      data
-    })
-
-  } catch (error) {
-    console.error(error)
-
-    return res.status(500).json({
-      message: 'Failed to fetch daily report',
-      error: error.message
-    })
-  }
-}
 
 //GET /api/attendance/daily-summary
 export const getSummary = async (req, res) => {
@@ -926,82 +481,8 @@ export const getSummary = async (req, res) => {
         "Internal Server Error",
     });
   }
-};
+}; //
 
-export const getWorkerAttendance = async (req, res) => {
-  // Logic to get history for a specific employee
-};
-
-export const updateAttendanceRecord = async (req, res) => {
-  try {
-    const { attendanceId } = req.params
-
-    const { status, overtimeHours = 0 } = req.body
-
-    const attendance = await Attendance.findById(attendanceId)
-
-    if (!attendance) {
-      return res.status(404).json({
-        message:
-          "Attendance record not found"
-      })
-    }
-
-    const normalizedDate =
-      new Date(attendance.date)
-
-    normalizedDate.setUTCHours(0, 0, 0, 0)
-
-    const lock = await AttendanceLock.findOne({ siteId: attendance.siteId, date: normalizedDate })
-
-    if (!lock) {
-      return res.status(404).json({
-        message:
-          "Attendance lock not found"
-      })
-    }
-
-    if (lock.isLocked) { return res.status(400).json({ message: "Attendance is locked" }) }
-
-    const getWorkHours = (status) => {
-      if (status === "present")
-        return 10
-
-      if (status === "halfday")
-        return 5
-
-      return 0
-    }
-
-    attendance.status = status
-
-    attendance.overtimeHours = overtimeHours
-
-    attendance.workHours = getWorkHours(status)
-
-    attendance.markedBy = req.user?.id
-
-    await attendance.save()
-
-    await AttendanceLock.findOneAndUpdate(
-      {
-        siteId: attendance.siteId,
-        date: normalizedDate
-      },
-      {
-        isLocked: true,
-        lockedBy: req.user?.id,
-        lockedAt: new Date()
-      }
-    )
-
-    return res.json({ message: "Attendance updated successfully" })
-  } catch (error) {
-    console.error(error)
-
-    return res.status(500).json({ message: "Failed to update attendance", error: error.message })
-  }
-}
 
 export const toggleHolidayStatus = async (req, res) => {
   try {
@@ -1055,226 +536,8 @@ export const toggleHolidayStatus = async (req, res) => {
       message: "Failed to update holiday status",
     })
   }
-}
+} //
 
-
-//new submit attendance record one at a time 
-export const saveAttendanceRecord = async (req, res) => {
-  try {
-    const {
-      employeeId,
-      siteId,
-      jobId,
-      date,
-
-      checkIn,
-      checkOut,
-
-      isHoliday = false,
-    } = req.body;
-
-    const markedBy = req.user.id;
-
-    // Normalize date
-    const attendanceDate = new Date(date);
-    attendanceDate.setHours(0, 0, 0, 0);
-
-    // Get work schedule config
-    const workConfig = await workModel.findOne();
-
-    if (!workConfig) {
-      return res.status(404).json({
-        success: false,
-        message: "Work schedule configuration not found",
-      });
-    }
-
-    const {
-      fullDayHours,
-      halfDayHours,
-      overtimeThreshold,
-    } = workConfig;
-
-    // Find existing attendance record
-    let attendance = await attendanceModel.findOne({
-      employee: employeeId,
-      date: attendanceDate,
-    });
-
-    // Calculate worked hours for this session
-    let workedHours = 0;
-
-    if (checkIn && checkOut) {
-      const diffMs =
-        new Date(checkOut) - new Date(checkIn);
-
-      workedHours =
-        diffMs / (1000 * 60 * 60);
-
-      // Prevent negative values
-      if (workedHours < 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Check-out time cannot be before check-in time",
-        });
-      }
-    }
-
-    const sessionData = {
-      siteId,
-      jobId,
-      checkIn,
-      checkOut,
-      workedHours,
-      markedBy,
-    };
-
-    // CREATE NEW ATTENDANCE
-    if (!attendance) {
-      // Calculate status
-      let status = "absent";
-
-      if (workedHours >= fullDayHours) {
-        status = "fullday";
-      } else if (
-        workedHours >= halfDayHours
-      ) {
-        status = "halfday";
-      }
-
-      // Calculate overtime
-      let overtimeHours = 0;
-
-      if (
-        workedHours > overtimeThreshold
-      ) {
-        overtimeHours =
-          workedHours - overtimeThreshold;
-      }
-
-      attendance =
-        await attendanceModel.create({
-          employee: employeeId,
-
-          siteId,
-          jobId,
-
-          markedBy,
-
-          date: attendanceDate,
-
-          status,
-
-          isHoliday,
-
-          totalWorkHours: workedHours,
-
-          overtimeHours,
-
-          sessions: [sessionData],
-        });
-
-      return res.status(201).json({
-        success: true,
-        message:
-          "Attendance created successfully",
-        attendance,
-      });
-    }
-
-    // CHECK IF SESSION FOR THIS SITE EXISTS
-    const existingSessionIndex =
-      attendance.sessions.findIndex(
-        (session) =>
-          session.siteId.toString() ===
-          siteId.toString()
-      );
-
-    // UPDATE EXISTING SESSION
-    if (existingSessionIndex !== -1) {
-      attendance.sessions[
-        existingSessionIndex
-      ] = {
-        ...attendance.sessions[
-          existingSessionIndex
-        ].toObject(),
-
-        ...sessionData,
-      };
-    }
-
-    // ADD NEW SESSION
-    else {
-      attendance.sessions.push(
-        sessionData
-      );
-    }
-
-    // RECALCULATE TOTAL WORK HOURS
-    const totalWorkHours =
-      attendance.sessions.reduce(
-        (acc, session) =>
-          acc +
-          (session.workedHours || 0),
-        0
-      );
-
-    // CALCULATE STATUS
-    let status = "absent";
-
-    if (totalWorkHours >= fullDayHours) {
-      status = "fullday";
-    } else if (
-      totalWorkHours >= halfDayHours
-    ) {
-      status = "halfday";
-    }
-
-    // CALCULATE OVERTIME
-    let overtimeHours = 0;
-
-    if (
-      totalWorkHours >
-      overtimeThreshold
-    ) {
-      overtimeHours =
-        totalWorkHours -
-        overtimeThreshold;
-    }
-
-    // UPDATE ATTENDANCE
-    attendance.totalWorkHours =
-      totalWorkHours;
-
-    attendance.status = status;
-
-    attendance.overtimeHours =
-      overtimeHours;
-
-    attendance.isHoliday =
-      isHoliday;
-
-    await attendance.save();
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Attendance updated successfully",
-      attendance,
-    });
-  } catch (error) {
-    console.error(error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
-  }
-};
-
-
-//check in check out
 
 //submit
 export const bulkSubmitAttendance = async (req, res) => {
@@ -1711,7 +974,7 @@ export const bulkSubmitAttendance = async (req, res) => {
       error: error.message,
     });
   }
-};
+}; //
 
 
 // pst req to /api/attendance/submit
@@ -2054,7 +1317,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       error: error.message,
     })
   }
-}
+}//
 
 
 //get saved attendance for a site 
@@ -2195,7 +1458,7 @@ export const getSiteAttendance = async (req, res) => {
       error: error.message,
     })
   }
-}
+}//
 
 //fetch attendance records 
 export const getAttendanceRecords = async (req, res) => {
@@ -2426,7 +1689,7 @@ export const getAttendanceRecords = async (req, res) => {
       error: error.message,
     });
   }
-};
+};//
 
 export const bulkEditAttendance = async (
   req,
@@ -2688,7 +1951,7 @@ export const bulkEditAttendance = async (
       error: error.message,
     });
   }
-};
+};//
 
 export const updateAttendance = async (req, res) => {
   try {
@@ -3049,7 +2312,7 @@ export const updateAttendance = async (req, res) => {
       message: error.message,
     });
   }
-};
+};//
 
 
 export const getEmployeeAttendanceByMonth = async (req, res) => {
@@ -3227,7 +2490,7 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
       error: error.message,
     });
   }
-};
+};//
 
 export const getAttendanceById = async (req, res) => {
   try {
@@ -3456,7 +2719,7 @@ export const getAttendanceById = async (req, res) => {
       error: error.message,
     })
   }
-}
+}//
 
 export const addSessionToAttendance = async (
   req,
@@ -3523,7 +2786,7 @@ export const addSessionToAttendance = async (
         "Failed to add session",
     })
   }
-}
+}//
 
 
 
@@ -3531,11 +2794,7 @@ export const addSessionToAttendance = async (
 
 const attendanceController = {
   monthlyReport,
-  getDaily,
   getSummary,
-  getWorkerAttendance,
-  submitDaily,
-  bulkUpdateAttendance,
   unlockAttendance,
   updateAttendance,
   toggleHolidayStatus,
