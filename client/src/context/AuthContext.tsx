@@ -10,6 +10,7 @@ import { api } from "@/lib/api"
 
 export type User = {
   _id: string
+  name: string
   role: "admin" | "supervisor"
   assignedSite: string | null
 }
@@ -39,11 +40,12 @@ function normalizeAssignedSite(
 export function normalizeUser(raw: unknown): User | null {
   if (!raw || typeof raw !== "object") return null
 
-  const data = raw as {
-    _id?: unknown
-    role?: unknown
-    assignedSite?: unknown
-  }
+const data = raw as {
+  _id?: unknown
+  name?: unknown
+  role?: unknown
+  assignedSite?: unknown
+}
 
   if (
     data.role !== "admin" &&
@@ -56,6 +58,7 @@ export function normalizeUser(raw: unknown): User | null {
 
   return {
     _id: String(data._id),
+    name: String(data.name ?? ""),
     role: data.role,
     assignedSite: normalizeAssignedSite(data.assignedSite),
   }

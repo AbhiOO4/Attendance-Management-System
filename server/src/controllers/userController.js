@@ -146,6 +146,7 @@ export const getMe = async (req, res) => {
     return res.json({
       user: {
         _id: user._id,
+        name: user.name,
         role: user.role,
         assignedSite: user.assignedSite
           ? String(user.assignedSite)

@@ -15,6 +15,8 @@ import { Card } from "@/components/ui/card"
 
 import { Input } from "@/components/ui/input"
 
+import { useAuth } from "@/context/AuthContext"
+
 import {
   Users,
   Clock3,
@@ -59,6 +61,7 @@ interface DashboardResponse {
 
 function DashBoard() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const today = new Date()
     .toISOString()
     .split("T")[0]
@@ -134,9 +137,22 @@ function DashBoard() {
           </div>
         </div>
 
+        <Card className="rounded-3xl border bg-card p-6 shadow-sm">
+          <div className="flex flex-col gap-2">
+            <h2 className="text-2xl font-bold">
+              Hi, {user?.name || "User"} 👋
+            </h2>
+
+            <p className="text-muted-foreground">
+              Welcome back. Here's your attendance overview for{" "}
+              {new Date(date).toLocaleDateString()}
+            </p>
+          </div>
+        </Card>
+
         {/* Summary Cards */}
 
-        <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
 
           {/* Present */}
 
@@ -153,7 +169,7 @@ function DashBoard() {
               Present Employees
             </p>
 
-            <h2 className="mt-1 text-3xl font-bold">
+            <h2 className="mt-1 text-2xl md:text-3xl font-bold">
               {dashboard
                 ? `${dashboard.attendance.presentToday} / ${dashboard.attendance.totalEmployees}`
                 : "--"}
@@ -241,7 +257,7 @@ function DashBoard() {
             </p>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border">
+          <div className="hidden md:block overflow-hidden rounded-2xl border">
 
             <div className="max-h-[600px] overflow-y-auto">
 
@@ -343,6 +359,71 @@ function DashBoard() {
               </Table>
 
             </div>
+          </div>
+
+          <div className="space-y-3 md:hidden">
+
+            {loading ? (
+              <Card className="p-4">
+                Loading dashboard...
+              </Card>
+            ) : !dashboard || dashboard.sites.length === 0 ? (
+              <Card className="p-4 text-muted-foreground">
+                No attendance data found for selected date
+              </Card>
+            ) : (
+              dashboard.sites.map((site, index) => (
+                <Card
+                  key={site.siteId}
+                  onClick={() =>
+                    navigate(`/site/${site.siteId}`)
+                  }
+                  className="cursor-pointer p-4 transition hover:bg-muted/50"
+                >
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold">
+                      #{index + 1}
+                    </h3>
+
+                    <span className="text-sm text-muted-foreground">
+                      {site.siteName}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+
+                    <div>
+                      <p className="text-muted-foreground">
+                        Employees
+                      </p>
+                      <p className="font-medium">
+                        {site.employeesToday}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-muted-foreground">
+                        Man Hours
+                      </p>
+                      <p className="font-medium">
+                        {site.manHoursToday}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-muted-foreground">
+                        Avg Hours
+                      </p>
+                      <p className="font-medium">
+                        {site.averageHoursPerWorker}
+                      </p>
+                    </div>
+
+                  </div>
+                </Card>
+              ))
+            )}
+
           </div>
         </Card>
 

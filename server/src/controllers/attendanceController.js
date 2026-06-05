@@ -137,6 +137,7 @@ export const monthlyReport = async (req, res) => {
         let overtimeHours = 0;
         let payableDays = 0;
         let holidayRecords = 0;
+        let absentDays = 0;
 
         for (const record of records) {
           // Holiday work:
@@ -166,13 +167,11 @@ export const monthlyReport = async (req, res) => {
             halfDays += 1;
             payableDays += 0.5;
           }
-        }
 
-        const absentDays =
-          daysInMonth -
-          fullDays -
-          halfDays -
-          holidayRecords;
+          else if (record.status === "absent") {
+            absentDays += 1;
+          }
+        }
 
         const dailySalary =
           employee.monthlySalary /
