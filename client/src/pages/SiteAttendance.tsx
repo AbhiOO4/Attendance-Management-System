@@ -867,7 +867,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 }
               >
                 <UserPlus className="h-4 w-4 mr-2" />
-                Insta Add Employee
+                Add Employees
               </Button>
 
               {attendanceExists ? (

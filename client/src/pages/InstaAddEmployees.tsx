@@ -108,6 +108,9 @@ function InstaAddEmployees() {
     const [loading, setLoading] =
         useState(true)
 
+    const [searching, setSearching] =
+        useState(false)
+
     const [employees, setEmployees] =
         useState<Employee[]>([])
 
@@ -144,6 +147,8 @@ function InstaAddEmployees() {
         currentSite: "",
     })
 
+    const [activeFilters, setActiveFilters] = useState(filters)
+
     const fetchSites = async () => {
         try {
             const res = await api.get("/api/site", {
@@ -172,17 +177,19 @@ function InstaAddEmployees() {
     const fetchEmployees =
         async () => {
             try {
-                setLoading(true)
+                if (!loading) {
+                    setSearching(true)
+                }
 
                 const params = {
                     page,
-                    name: filters.name,
-                    employeeId: filters.employeeId,
-                    jobTitle: filters.jobTitle,
+                    name: activeFilters.name,
+                    employeeId: activeFilters.employeeId,
+                    jobTitle: activeFilters.jobTitle,
                     currentSite:
-                        filters.currentSite === "all"
+                        activeFilters.currentSite === "all"
                             ? ""
-                            : filters.currentSite,
+                            : activeFilters.currentSite,
                 }
 
                 const res =
@@ -208,6 +215,7 @@ function InstaAddEmployees() {
                 )
             } finally {
                 setLoading(false)
+                setSearching(false)
             }
         }
 
@@ -216,14 +224,22 @@ function InstaAddEmployees() {
         fetchSites()
     }, [])
 
+    // Debounce filters updates, reset page to 1 on filter changes
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setActiveFilters(filters)
+            setPage(1)
+        }, 300)
+
+        return () => {
+            clearTimeout(handler)
+        }
+    }, [filters])
+
+    // Re-fetch when page or active filters change
     useEffect(() => {
         fetchEmployees()
-    }, [page])
-
-    const handleSearch = () => {
-        setPage(1)
-        fetchEmployees()
-    }
+    }, [page, activeFilters])
 
     const instaAdd = async (employeeId: string, jobId: string | null) => {
         try {
@@ -276,8 +292,11 @@ function InstaAddEmployees() {
 
                         <div>
 
-                            <h1 className="text-3xl font-bold tracking-tight">
-                                Insta Add Employees
+                            <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
+                                Add New Employees
+                                {searching && (
+                                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                                )}
                             </h1>
 
                             <p className="text-sm text-muted-foreground mt-1">
@@ -380,145 +399,183 @@ function InstaAddEmployees() {
 
                     </div>
 
-                    <div className="mt-4">
-                        <Button
-                            onClick={
-                                handleSearch
-                            }
-                        >
-                            Search
-                        </Button>
-                    </div>
-
                 </CardContent>
             </Card>
 
             <Card>
                 <CardContent className="pt-6">
 
-                    <Table>
+                    <div className={`transition-opacity duration-200 ${searching ? "opacity-50 pointer-events-none" : ""}`}>
+                        {employees.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+                                <div className="text-muted-foreground text-lg font-medium mb-1">
+                                    No employees found
+                                </div>
+                                <p className="text-sm text-muted-foreground max-w-sm">
+                                    Try adjusting your search or filter options to find the employees you are looking for.
+                                </p>
+                            </div>
+                        ) : (
+                            <>
+                                {/* Mobile View: Card List */}
+                                <div className="grid gap-4 sm:grid-cols-2 md:hidden">
+                                    {employees.map((employee) => (
+                                        <div
+                                            key={employee._id}
+                                            className="group relative rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md hover:border-primary/20"
+                                        >
+                                            <div className="flex justify-between items-start gap-4">
+                                                <div className="space-y-1.5">
+                                                    <div className="font-semibold text-foreground text-sm tracking-tight group-hover:text-primary transition-colors">
+                                                        {employee.name}
+                                                    </div>
+                                                    <div className="text-xs text-muted-foreground font-mono">
+                                                        ID: {employee.employeeId}
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-1.5 pt-1">
+                                                        <Badge variant="outline" className="text-[10px] font-medium py-0 px-2">
+                                                            {employee.jobTitle}
+                                                        </Badge>
+                                                        {employee.user && (
+                                                            <Badge variant="secondary" className="text-[10px] font-medium py-0 px-2 bg-secondary/80 text-secondary-foreground">
+                                                                Supervisor
+                                                            </Badge>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <Button
+                                                    size="sm"
+                                                    onClick={() => {
+                                                        setSelectedEmployee(employee)
+                                                        setSelectedJob(null)
+                                                        setConfirmOpen(true)
+                                                    }}
+                                                    className="shrink-0 transition-transform active:scale-95 duration-100"
+                                                >
+                                                    <UserPlus className="h-4 w-4 mr-1.5" />
+                                                    Add
+                                                </Button>
+                                            </div>
 
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>
-                                    Employee
-                                </TableHead>
+                                            <div className="mt-4 pt-3 border-t border-border/60 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                                                <div>
+                                                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Current Site</div>
+                                                    <div className="font-medium text-foreground truncate mt-0.5">
+                                                        {employee.currentSite?.siteName || "Unassigned"}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Current Job</div>
+                                                    <div className="font-medium text-foreground truncate mt-0.5">
+                                                        {employee.currentJob?.name || "-"}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
 
-                                <TableHead>
-                                    Current Site
-                                </TableHead>
+                                {/* Desktop View: Table */}
+                                <div className="hidden md:block">
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>
+                                                    Employee
+                                                </TableHead>
+                                                <TableHead>
+                                                    Current Site
+                                                </TableHead>
+                                                <TableHead className="text-right">
+                                                    Action
+                                                </TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {employees.map((employee) => (
+                                                <TableRow key={employee._id} className="transition-colors hover:bg-muted/50">
+                                                    <TableCell>
+                                                        <div className="space-y-1">
+                                                            <div className="font-medium text-foreground">
+                                                                {employee.name}
+                                                                {employee.user && (
+                                                                    <Badge variant="secondary" className="ml-2">
+                                                                        Supervisor
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                            <div className="text-xs text-muted-foreground font-mono">
+                                                                {employee.employeeId}
+                                                            </div>
+                                                            <div className="text-xs text-muted-foreground">
+                                                                {employee.jobTitle}
+                                                            </div>
+                                                        </div>
+                                                    </TableCell>
+                                                    <TableCell>
+                                                        <div className="font-medium text-foreground">
+                                                            {employee.currentSite?.siteName || "-"}
+                                                        </div>
+                                                        <div className="text-xs text-muted-foreground">
+                                                            {employee.currentJob?.name || "-"}
+                                                        </div>
+                                                    </TableCell>
+                                                    <TableCell className="text-right">
+                                                        <Button
+                                                            size="sm"
+                                                            onClick={() => {
+                                                                setSelectedEmployee(employee)
+                                                                setSelectedJob(null)
+                                                                setConfirmOpen(true)
+                                                            }}
+                                                        >
+                                                            <UserPlus className="h-4 w-4 mr-2" />
+                                                            Add
+                                                        </Button>
+                                                    </TableCell>
+                                                </TableRow>
+                                            ))}
+                                        </TableBody>
+                                    </Table>
+                                </div>
 
-                                <TableHead className="text-right">
-                                    Action
-                                </TableHead>
-                            </TableRow>
-                        </TableHeader>
-
-                        <TableBody>
-
-                            {employees.map(
-                                (employee) => (
-                                    <TableRow
-                                        key={
-                                            employee._id
+                                <div className="flex justify-between items-center mt-6">
+                                    <Button
+                                        variant="outline"
+                                        disabled={page === 1}
+                                        onClick={() =>
+                                            setPage(
+                                                (prev) =>
+                                                    prev - 1
+                                            )
                                         }
                                     >
-                                        <TableCell>
-                                            <div className="space-y-1">
+                                        Previous
+                                    </Button>
 
-                                                <div className="font-medium">
-                                                    {employee.name}
-                                                </div>
+                                    <span className="text-sm text-muted-foreground">
+                                        Page {page} of{" "}
+                                        {totalPages}
+                                    </span>
 
-                                                <div className="text-xs text-muted-foreground">
-                                                    {employee.employeeId}
-                                                </div>
-
-                                                <div className="text-xs text-muted-foreground">
-                                                    {employee.jobTitle}
-                                                </div>
-
-                                                {employee.user && (
-                                                    <Badge variant="secondary">
-                                                        Supervisor
-                                                    </Badge>
-                                                )}
-
-                                            </div>
-                                        </TableCell>
-
-                                        <TableCell>
-                                            <div>{employee
-                                                .currentSite
-                                                ?.siteName ||
-                                                "-"}</div>
-                                            <div className="text-xs text-muted-foreground">
-                                            {employee
-                                                .currentJob
-                                                ?.name || "-"}
-                                            </div>
-                                        </TableCell>
-
-                                        <TableCell className="text-right">
-
-                                            <Button
-                                                size="sm"
-                                                onClick={() => {
-                                                    setSelectedEmployee(employee)
-                                                    setSelectedJob(null) // reset job each time
-                                                    setConfirmOpen(true)
-                                                }}
-                                            >
-                                                <UserPlus className="h-4 w-4 mr-2" />
-                                                Add
-                                            </Button>
-
-                                        </TableCell>
-
-                                    </TableRow>
-                                )
-                            )}
-
-                        </TableBody>
-
-                    </Table>
-
-                    <div className="flex justify-between items-center mt-6">
-
-                        <Button
-                            variant="outline"
-                            disabled={page === 1}
-                            onClick={() =>
-                                setPage(
-                                    (prev) =>
-                                        prev - 1
-                                )
-                            }
-                        >
-                            Previous
-                        </Button>
-
-                        <span className="text-sm text-muted-foreground">
-                            Page {page} of{" "}
-                            {totalPages}
-                        </span>
-
-                        <Button
-                            variant="outline"
-                            disabled={
-                                page ===
-                                totalPages
-                            }
-                            onClick={() =>
-                                setPage(
-                                    (prev) =>
-                                        prev + 1
-                                )
-                            }
-                        >
-                            Next
-                        </Button>
-
+                                    <Button
+                                        variant="outline"
+                                        disabled={
+                                            page ===
+                                            totalPages
+                                        }
+                                        onClick={() =>
+                                            setPage(
+                                                (prev) =>
+                                                    prev + 1
+                                            )
+                                        }
+                                    >
+                                        Next
+                                    </Button>
+                                </div>
+                            </>
+                        )}
                     </div>
 
                 </CardContent>
