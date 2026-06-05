@@ -497,35 +497,36 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   }
 
   const updateDraftSession = (
-    employeeIndex: number,
+    employeeId: string,
     sessionIndex: number,
     field: "checkIn" | "checkOut",
     value: string
   ) => {
-    setDraftAttendance((prev) => {
-      const updated = [...prev]
+    setDraftAttendance(prev =>
+      prev.map(record => {
+        if (record.employee._id !== employeeId) {
+          return record
+        }
 
-      updated[employeeIndex] = {
-        ...updated[employeeIndex],
-        sessions: [
-          ...updated[employeeIndex].sessions,
-        ],
-      }
+        const sessions = [...record.sessions]
 
-      const session =
-        updated[employeeIndex]
-          .sessions[sessionIndex]
+        sessions[sessionIndex] = {
+          ...sessions[sessionIndex],
+          [field]: value,
+        }
 
-      session[field] = value
+        sessions[sessionIndex].workedHours =
+          calculateHours(
+            sessions[sessionIndex].checkIn,
+            sessions[sessionIndex].checkOut
+          )
 
-      session.workedHours =
-        calculateHours(
-          session.checkIn,
-          session.checkOut
-        )
-
-      return updated
-    })
+        return {
+          ...record,
+          sessions,
+        }
+      })
+    )
 
     setIsDirty(true)
   }
@@ -988,7 +989,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 {/* MOBILE */}
                 <div className="space-y-3 md:hidden">
                   {filteredDraftAttendance.map(
-                    (record, rowIndex) => {
+                    (record) => {
                       const session = record.sessions[0]
 
                       return (
@@ -1017,7 +1018,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               value={session.checkIn}
                               onChange={(e) =>
                                 updateDraftSession(
-                                  rowIndex,
+                                  record.employee._id,
                                   0,
                                   "checkIn",
                                   e.target.value
@@ -1030,7 +1031,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               value={session.checkOut}
                               onChange={(e) =>
                                 updateDraftSession(
-                                  rowIndex,
+                                  record.employee._id,
                                   0,
                                   "checkOut",
                                   e.target.value
@@ -1100,7 +1101,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   }
                                   onChange={(e) =>
                                     updateDraftSession(
-                                      rowIndex,
+                                      record.employee._id,
                                       0,
                                       "checkIn",
                                       e.target.value
@@ -1117,7 +1118,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   }
                                   onChange={(e) =>
                                     updateDraftSession(
-                                      rowIndex,
+                                      record.employee._id,
                                       0,
                                       "checkOut",
                                       e.target.value
