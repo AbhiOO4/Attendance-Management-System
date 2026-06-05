@@ -1956,7 +1956,9 @@ export const bulkEditAttendance = async (
 export const updateAttendance = async (req, res) => {
   try {
     const { attendanceId } = req.params;
-    const { sessions } = req.body;
+    const { sessions, siteId: bodySiteId } = req.body;
+    const { siteId: querySiteId } = req.query;
+    const siteId = querySiteId || bodySiteId;
 
     const attendance = await Attendance.findById(attendanceId);
 
@@ -1980,7 +1982,7 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
-      const updatedSessions = sessions.map(
+      const processedSessions = sessions.map(
         (session) => {
           // -----------------------------
           // Validation
@@ -2040,11 +2042,26 @@ export const updateAttendance = async (req, res) => {
         }
       );
 
+      let combinedSessions = [];
+      if (siteId) {
+        // Filter processed sessions to only include target site sessions
+        const siteSessions = processedSessions.filter(
+          (session) => session.siteId.toString() === siteId.toString()
+        );
+        // Preserve all sessions that belong to other sites
+        const preservedSessions = attendance.sessions.filter(
+          (session) => session.siteId.toString() !== siteId.toString()
+        );
+        combinedSessions = [...preservedSessions, ...siteSessions];
+      } else {
+        combinedSessions = processedSessions;
+      }
+
       // -----------------------------
       // Sort by checkIn
       // Empty sessions go last
       // -----------------------------
-      updatedSessions.sort((a, b) => {
+      combinedSessions.sort((a, b) => {
         if (!a.checkIn && !b.checkIn)
           return 0;
 
@@ -2062,7 +2079,7 @@ export const updateAttendance = async (req, res) => {
       // Overlap validation
       // -----------------------------
       const sessionsForValidation =
-        updatedSessions.filter(
+        combinedSessions.filter(
           (session) => session.checkIn
         );
 
@@ -2135,13 +2152,13 @@ export const updateAttendance = async (req, res) => {
       }
 
       attendance.sessions =
-        updatedSessions;
+        combinedSessions;
 
       // -----------------------------
       // Total worked hours
       // -----------------------------
       const totalHours =
-        updatedSessions.reduce(
+        combinedSessions.reduce(
           (total, session) =>
             total + session.workedHours,
           0

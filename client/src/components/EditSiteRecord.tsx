@@ -427,7 +427,7 @@ const addSession = async () => {
       }
 
       const res = await api.patch(
-        `/api/attendance/update/${record.attendanceId}`,
+        `/api/attendance/update/${record.attendanceId}?siteId=${site._id}`,
         payload
       )
 
