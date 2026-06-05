@@ -30,6 +30,9 @@ import { Badge } from "@/components/ui/badge"
 import {
   Loader2,
   Pencil,
+  Plus,
+  Save,
+  X,
   ArrowLeft,
   UserPlus,
 } from "lucide-react"
@@ -180,6 +183,18 @@ function SiteAttendance() {
 
   const [editOpen, setEditOpen] =
     useState(false)
+
+  // inline editing of a saved record (single incomplete session)
+  const [editingRowId, setEditingRowId] =
+    useState<string | null>(null)
+
+  const [inlineEdit, setInlineEdit] =
+    useState<{ checkIn: string; checkOut: string }>({
+      checkIn: "",
+      checkOut: "",
+    })
+
+  const [rowSaving, setRowSaving] = useState(false)
 
   const openEditRecord = (
     record: AttendanceRecord
@@ -494,6 +509,142 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         }, 0)
         .toFixed(2)
     )
+  }
+
+  // A record routes to the modal (edit + add) once it has a complete
+  // session or more than one session. Otherwise it can be edited inline.
+  const isRecordComplete = (
+    record: AttendanceRecord
+  ) => {
+    if (record.sessions.length === 0) return false
+
+    if (record.sessions.length > 1) return true
+
+    const session = record.sessions[0]
+
+    return !!session.checkIn && !!session.checkOut
+  }
+
+  const toTimeValue = (
+    date?: string | null
+  ) => {
+    if (!date) return ""
+
+    const d = new Date(date)
+
+    if (isNaN(d.getTime())) return ""
+
+    const hours = String(d.getHours()).padStart(2, "0")
+
+    const minutes = String(d.getMinutes()).padStart(2, "0")
+
+    return `${hours}:${minutes}`
+  }
+
+  const combineDateAndTime = (
+    recordDate: string,
+    time: string | null
+  ) => {
+    if (!recordDate || !time) return null
+
+    const [hours, minutes] = time.split(":")
+
+    const date = new Date(recordDate)
+
+    date.setHours(Number(hours))
+    date.setMinutes(Number(minutes))
+    date.setSeconds(0)
+    date.setMilliseconds(0)
+
+    return date.toString()
+  }
+
+  const startInlineEdit = (
+    record: AttendanceRecord
+  ) => {
+    const session = record.sessions[0]
+
+    setEditingRowId(record.attendanceId)
+
+    setInlineEdit({
+      checkIn: toTimeValue(session?.checkIn),
+      checkOut: toTimeValue(session?.checkOut),
+    })
+  }
+
+  const cancelInlineEdit = () => {
+    setEditingRowId(null)
+
+    setInlineEdit({ checkIn: "", checkOut: "" })
+  }
+
+  const saveInlineEdit = async (
+    record: AttendanceRecord
+  ) => {
+    const { checkIn, checkOut } = inlineEdit
+
+    if (
+      (checkIn && !checkOut) ||
+      (!checkIn && checkOut)
+    ) {
+      toast.error(
+        "Check-in and check-out must both be filled or both be empty"
+      )
+
+      return
+    }
+
+    try {
+      setRowSaving(true)
+
+      const existing = record.sessions[0]
+
+      const payload = {
+        sessions: [
+          {
+            _id: existing?._id,
+            siteId: existing?.siteId ?? site?._id,
+            jobId: existing?.jobId ?? null,
+            checkIn: combineDateAndTime(
+              record.date,
+              checkIn || null
+            ),
+            checkOut: combineDateAndTime(
+              record.date,
+              checkOut || null
+            ),
+          },
+        ],
+      }
+
+      const res = await api.patch(
+        `/api/attendance/update/${record.attendanceId}`,
+        payload
+      )
+
+      const updatedRecord = {
+        ...res.data.attendance,
+        sessions: res.data.attendance.sessions.filter(
+          (session: AttendanceSession) =>
+            String(session.siteId) === String(site?._id)
+        ),
+      }
+
+      handleRecordUpdated(updatedRecord as AttendanceRecord)
+
+      toast.success("Attendance updated successfully")
+
+      cancelInlineEdit()
+    } catch (error: any) {
+      console.log(error)
+
+      toast.error(
+        error?.response?.data?.message ||
+        "Failed to update attendance"
+      )
+    } finally {
+      setRowSaving(false)
+    }
   }
 
   const updateDraftSession = (
@@ -816,72 +967,166 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
             <>
               {/* MOBILE */}
               <div className="space-y-3 md:hidden">
-                {filteredAttendance.map((record) => (
-                  <Card key={record.attendanceId}>
-                    <CardContent className="pt-4 space-y-3">
+                {filteredAttendance.map((record) => {
+                  const isEditing =
+                    editingRowId === record.attendanceId
 
-                      <div>
-                        <p className="font-medium">
-                          {record.name}
-                        </p>
+                  const complete = isRecordComplete(record)
 
-                        <p className="text-sm text-muted-foreground">
-                          {record.employeeId} • {record.jobTitle}
-                        </p>
-                      </div>
+                  return (
+                    <Card key={record.attendanceId}>
+                      <CardContent className="pt-4 space-y-3">
 
-                      <div>
-                        <span className="font-medium">
-                          Hours:
-                        </span>{" "}
-                        {getSiteWorkedHours(record)}
-                      </div>
+                        <div>
+                          <p className="font-medium">
+                            {record.name}
+                          </p>
 
-                      <div className="space-y-1">
-                        {record.sessions.map(
-                          (session) => (
-                            <div
-                              key={session._id}
-                              className="text-sm"
-                            >
-                              {session.checkIn &&
-                                session.checkOut
-                                ? `${new Date(
-                                  session.checkIn
-                                ).toLocaleTimeString(
-                                  "en-IN",
-                                  {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  }
-                                )} - ${new Date(
-                                  session.checkOut
-                                ).toLocaleTimeString(
-                                  "en-IN",
-                                  {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  }
-                                )}`
-                                : "-"}
+                          <p className="text-sm text-muted-foreground">
+                            {record.employeeId} • {record.jobTitle}
+                          </p>
+                        </div>
+
+                        <div>
+                          <span className="font-medium">
+                            Hours:
+                          </span>{" "}
+                          {getSiteWorkedHours(record)}
+                        </div>
+
+                        {isEditing ? (
+                          <div className="space-y-3">
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium">
+                                Check In
+                              </p>
+
+                              <Input
+                                type="time"
+                                value={inlineEdit.checkIn}
+                                onChange={(e) =>
+                                  setInlineEdit((prev) => ({
+                                    ...prev,
+                                    checkIn: e.target.value,
+                                  }))
+                                }
+                              />
                             </div>
-                          )
+
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium">
+                                Check Out
+                              </p>
+
+                              <Input
+                                type="time"
+                                value={inlineEdit.checkOut}
+                                onChange={(e) =>
+                                  setInlineEdit((prev) => ({
+                                    ...prev,
+                                    checkOut: e.target.value,
+                                  }))
+                                }
+                              />
+                            </div>
+
+                            <div className="flex gap-2">
+                              <Button
+                                onClick={() =>
+                                  saveInlineEdit(record)
+                                }
+                                disabled={rowSaving}
+                              >
+                                {rowSaving ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Save className="h-4 w-4 mr-2" />
+                                    Save
+                                  </>
+                                )}
+                              </Button>
+
+                              <Button
+                                variant="outline"
+                                onClick={cancelInlineEdit}
+                                disabled={rowSaving}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium">
+                                  Check In
+                                </p>
+
+                                {record.sessions.map(
+                                  (session) => (
+                                    <Input
+                                      key={session._id}
+                                      type="time"
+                                      readOnly
+                                      value={toTimeValue(
+                                        session.checkIn
+                                      )}
+                                    />
+                                  )
+                                )}
+                              </div>
+
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium">
+                                  Check Out
+                                </p>
+
+                                {record.sessions.map(
+                                  (session) => (
+                                    <Input
+                                      key={session._id}
+                                      type="time"
+                                      readOnly
+                                      value={toTimeValue(
+                                        session.checkOut
+                                      )}
+                                    />
+                                  )
+                                )}
+                              </div>
+                            </div>
+
+                            {complete ? (
+                              <Button
+                                variant="outline"
+                                onClick={() =>
+                                  openEditRecord(record)
+                                }
+                              >
+                                <Pencil className="h-4 w-4 mr-2" />
+                                <Plus className="h-4 w-4 mr-2" />
+                                Edit / Add
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                onClick={() =>
+                                  startInlineEdit(record)
+                                }
+                              >
+                                <Pencil className="h-4 w-4 mr-2" />
+                                Edit
+                              </Button>
+                            )}
+                          </>
                         )}
-                      </div>
 
-                      <Button
-                        variant="outline"
-                        onClick={() =>
-                          openEditRecord(record)
-                        }
-                      >
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Edit
-                      </Button>
-
-                    </CardContent>
-                  </Card>
-                ))}
+                      </CardContent>
+                    </Card>
+                  )
+                })}
               </div>
               {/* DESKTOP */}
               <div className="hidden md:block">
@@ -889,8 +1134,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Employee</TableHead>
-                      <TableHead>Total Hours</TableHead>
-                      <TableHead>Sessions</TableHead>
+                      <TableHead>Check In</TableHead>
+                      <TableHead>Check Out</TableHead>
+                      <TableHead>Hours</TableHead>
                       <TableHead className="text-right">
                         Actions
                       </TableHead>
@@ -900,83 +1146,151 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   <TableBody>
 
                     {filteredAttendance.map(
-                      (record) => (
-                        <TableRow
-                          key={record.attendanceId}
-                        >
-                          <TableCell>
-                            <div className="space-y-1">
-                              <p className="font-medium">
-                                {record.name}
-                              </p>
+                      (record) => {
+                        const isEditing =
+                          editingRowId === record.attendanceId
 
-                              <p className="text-sm text-muted-foreground">
-                                {record.employeeId} • {record.jobTitle}
-                              </p>
-                            </div>
-                          </TableCell>
+                        const complete = isRecordComplete(record)
 
-                          <TableCell>
-                            {getSiteWorkedHours(record)}
-                          </TableCell>
+                        return (
+                          <TableRow
+                            key={record.attendanceId}
+                          >
+                            <TableCell>
+                              <div className="space-y-1">
+                                <p className="font-medium">
+                                  {record.name}
+                                </p>
 
+                                <p className="text-sm text-muted-foreground">
+                                  {record.employeeId} • {record.jobTitle}
+                                </p>
+                              </div>
+                            </TableCell>
 
-
-                          <TableCell>
-                            <div className="space-y-1">
-
-                              {record.sessions.map(
-                                (session) => (
-                                  <div
-                                    key={session._id}
-                                    className="text-xs"
-                                  >
-                                    {session.checkIn &&
-                                      session.checkOut
-                                      ? `${new Date(
-                                        session.checkIn
-                                      ).toLocaleTimeString(
-                                        "en-IN",
-                                        {
-                                          hour: "2-digit",
-                                          minute:
-                                            "2-digit",
-                                        }
-                                      )} - ${new Date(
-                                        session.checkOut
-                                      ).toLocaleTimeString(
-                                        "en-IN",
-                                        {
-                                          hour: "2-digit",
-                                          minute:
-                                            "2-digit",
-                                        }
-                                      )}`
-                                      : "-"}
-                                  </div>
-                                )
+                            {/* CHECK IN */}
+                            <TableCell>
+                              {isEditing ? (
+                                <Input
+                                  type="time"
+                                  value={inlineEdit.checkIn}
+                                  onChange={(e) =>
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      checkIn: e.target.value,
+                                    }))
+                                  }
+                                />
+                              ) : (
+                                <div className="space-y-1">
+                                  {record.sessions.map(
+                                    (session) => (
+                                      <Input
+                                        key={session._id}
+                                        type="time"
+                                        readOnly
+                                        value={toTimeValue(
+                                          session.checkIn
+                                        )}
+                                      />
+                                    )
+                                  )}
+                                </div>
                               )}
+                            </TableCell>
 
-                            </div>
-                          </TableCell>
+                            {/* CHECK OUT */}
+                            <TableCell>
+                              {isEditing ? (
+                                <Input
+                                  type="time"
+                                  value={inlineEdit.checkOut}
+                                  onChange={(e) =>
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      checkOut: e.target.value,
+                                    }))
+                                  }
+                                />
+                              ) : (
+                                <div className="space-y-1">
+                                  {record.sessions.map(
+                                    (session) => (
+                                      <Input
+                                        key={session._id}
+                                        type="time"
+                                        readOnly
+                                        value={toTimeValue(
+                                          session.checkOut
+                                        )}
+                                      />
+                                    )
+                                  )}
+                                </div>
+                              )}
+                            </TableCell>
 
-                          <TableCell className="text-right">
+                            {/* HOURS */}
+                            <TableCell>
+                              {getSiteWorkedHours(record)}
+                            </TableCell>
 
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              onClick={() =>
-                                openEditRecord(
-                                  record
-                                )
-                              }
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
+                            {/* ACTIONS */}
+                            <TableCell className="text-right">
+                              {isEditing ? (
+                                <div className="flex justify-end gap-2">
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    onClick={() =>
+                                      saveInlineEdit(record)
+                                    }
+                                    disabled={rowSaving}
+                                  >
+                                    {rowSaving ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Save className="h-4 w-4" />
+                                    )}
+                                  </Button>
 
-                          </TableCell>
-                        </TableRow>
-                      )
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    onClick={cancelInlineEdit}
+                                    disabled={rowSaving}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ) : complete ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  title="Edit & add sessions"
+                                  onClick={() =>
+                                    openEditRecord(record)
+                                  }
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                  <Plus className="h-4 w-4 ml-1" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  title="Edit attendance"
+                                  onClick={() =>
+                                    startInlineEdit(record)
+                                  }
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      }
                     )}
 
                   </TableBody>
@@ -1065,7 +1379,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   <TableBody>
 
                     {filteredDraftAttendance.map(
-                      (record, rowIndex) => {
+                      (record) => {
                         const session =
                           record.sessions[0]
 
