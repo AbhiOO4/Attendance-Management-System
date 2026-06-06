@@ -59,6 +59,16 @@ const workScheduleSchema = new mongoose.Schema(
       ],
       default: [],
     },
+
+    // Hour (0-12) when the "logical business day" ends.
+    // Times before this cutoff are treated as belonging to the previous day.
+    nightShiftCutoffHour: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 12,
+      default: 7,
+    },
   },
   { timestamps: true }
 );

@@ -1,9 +1,10 @@
 import { api } from "@/lib/api"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
+import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isValidNightShiftTime } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -76,6 +77,8 @@ export interface AttendanceSession {
   checkOut: string | null
 
   workedHours: number
+
+  isNightShift?: boolean
 }
 
 export interface AttendanceRecord {
@@ -111,7 +114,8 @@ interface DraftSession {
   job: Job | null,
   checkIn: string,
   checkOut: string,
-  workedHours: number
+  workedHours: number,
+  isNightShift: boolean
 }
 //siteId, date, isHoliday are common fields
 interface DraftAttendanceRecord {
@@ -146,7 +150,9 @@ function SiteAttendance() {
 
   const navigate = useNavigate()
 
-  const today = new Date().toLocaleDateString("en-CA")
+  const [cutoffHour, setCutoffHour] = useState(7)
+  const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
+  const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
   const formattedDate = new Date().toLocaleDateString(
     "en-IN",
@@ -189,9 +195,10 @@ function SiteAttendance() {
     useState<string | null>(null)
 
   const [inlineEdit, setInlineEdit] =
-    useState<{ checkIn: string; checkOut: string }>({
+    useState<{ checkIn: string; checkOut: string; isNightShift: boolean }>({
       checkIn: "",
       checkOut: "",
+      isNightShift: false,
     })
 
   const [rowSaving, setRowSaving] = useState(false)
@@ -277,6 +284,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
               checkIn: "",
               checkOut: "",
               workedHours: 0,
+              isNightShift: false,
             },
           ],
         }))
@@ -477,26 +485,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     }
   }
 
-  const calculateHours = (checkIn: string, checkOut: string) => {
-    if (!checkIn || !checkOut)
-      return 0
-
-    const start =
-      new Date(
-        `2000-01-01T${checkIn}`
-      )
-
-    const end =
-      new Date(
-        `2000-01-01T${checkOut}`
-      )
-
-    const diff =
-      (end.getTime() -
-        start.getTime()) /
-      (1000 * 60 * 60)
-
-    return diff > 0 ? diff : 0
+  const calculateHours = (checkIn: string, checkOut: string, isNightShift: boolean = false) => {
+    return calculateHoursBetween(checkIn, checkOut, isNightShift, cutoffHour)
   }
 
   const getSiteWorkedHours = (
@@ -541,10 +531,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     return `${hours}:${minutes}`
   }
 
-  const combineDateAndTime = (
+  const combineDateAndTimeLocal = (
     recordDate: string,
-    time: string | null
-  ) => {
+    time: string | null,
+    referenceCheckIn?: string | null,
+    isNightShift: boolean = false
+  ): string | null => {
     if (!recordDate || !time) return null
 
     const [hours, minutes] = time.split(":")
@@ -555,6 +547,21 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     date.setMinutes(Number(minutes))
     date.setSeconds(0)
     date.setMilliseconds(0)
+
+    if (isNightShift) {
+      // Night shift: AM times before cutoff → next day
+      if (Number(hours) < cutoffHour) {
+        date.setDate(date.getDate() + 1)
+      }
+    } else if (referenceCheckIn) {
+      // Auto cross-midnight detection
+      const [inH, inM] = referenceCheckIn.split(":").map(Number)
+      const inMin = inH * 60 + inM
+      const outMin = Number(hours) * 60 + Number(minutes)
+      if (outMin < inMin) {
+        date.setDate(date.getDate() + 1)
+      }
+    }
 
     return date.toString()
   }
@@ -569,19 +576,35 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setInlineEdit({
       checkIn: toTimeValue(session?.checkIn),
       checkOut: toTimeValue(session?.checkOut),
+      isNightShift: session?.isNightShift ?? false,
     })
   }
 
   const cancelInlineEdit = () => {
     setEditingRowId(null)
 
-    setInlineEdit({ checkIn: "", checkOut: "" })
+    setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false })
+  }
+
+  const toggleInlineEditNightShift = () => {
+    const nextVal = !inlineEdit.isNightShift
+    if (nextVal) {
+      if (inlineEdit.checkIn && !isValidNightShiftTime(inlineEdit.checkIn, cutoffHour)) {
+        toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+        return
+      }
+      if (inlineEdit.checkOut && !isValidNightShiftTime(inlineEdit.checkOut, cutoffHour)) {
+        toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+        return
+      }
+    }
+    setInlineEdit(prev => ({ ...prev, isNightShift: nextVal }))
   }
 
   const saveInlineEdit = async (
     record: AttendanceRecord
   ) => {
-    const { checkIn, checkOut } = inlineEdit
+    const { checkIn, checkOut, isNightShift } = inlineEdit
 
     if (
       (checkIn && !checkOut) ||
@@ -592,6 +615,17 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
       )
 
       return
+    }
+
+    if (isNightShift) {
+      if (checkIn && !isValidNightShiftTime(checkIn, cutoffHour)) {
+        toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+        return
+      }
+      if (checkOut && !isValidNightShiftTime(checkOut, cutoffHour)) {
+        toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+        return
+      }
     }
 
     try {
@@ -605,14 +639,19 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
             _id: existing?._id,
             siteId: existing?.siteId ?? site?._id,
             jobId: existing?.jobId ?? null,
-            checkIn: combineDateAndTime(
+            checkIn: combineDateAndTimeLocal(
               record.date,
-              checkIn || null
+              checkIn || null,
+              null,
+              isNightShift
             ),
-            checkOut: combineDateAndTime(
+            checkOut: combineDateAndTimeLocal(
               record.date,
-              checkOut || null
+              checkOut || null,
+              checkIn || null,
+              isNightShift
             ),
+            isNightShift,
           },
         ],
       }
@@ -650,8 +689,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   const updateDraftSession = (
     employeeId: string,
     sessionIndex: number,
-    field: "checkIn" | "checkOut",
-    value: string
+    field: "checkIn" | "checkOut" | "isNightShift",
+    value: string | boolean
   ) => {
     setDraftAttendance(prev =>
       prev.map(record => {
@@ -669,7 +708,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         sessions[sessionIndex].workedHours =
           calculateHours(
             sessions[sessionIndex].checkIn,
-            sessions[sessionIndex].checkOut
+            sessions[sessionIndex].checkOut,
+            sessions[sessionIndex].isNightShift
           )
 
         return {
@@ -780,6 +820,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   const initialize = async () => {
     try {
       setLoading(true)
+
+      // Fetch night shift cutoff config
+      try {
+        const configRes = await api.get("/api/config")
+        if (configRes.data?.data?.nightShiftCutoffHour !== undefined) {
+          setCutoffHour(configRes.data.data.nightShiftCutoffHour)
+        }
+      } catch (err) {
+        console.error("Failed to fetch config:", err)
+      }
 
       const siteData = await fetchSite()
 
@@ -893,6 +943,30 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         </CardHeader>
       </Card>
 
+      {/* NIGHT SHIFT BANNER */}
+      {extendedPeriod && (
+        <div className="night-shift-banner" style={{
+          background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
+          color: "#e0e0ff",
+          padding: "12px 16px",
+          borderRadius: "8px",
+          marginBottom: "16px",
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          fontSize: "14px",
+          border: "1px solid rgba(100, 100, 255, 0.2)",
+        }}>
+          <span style={{ fontSize: "20px" }}>🌙</span>
+          <div>
+            <strong>Logging for {formatLogicalDateLabel(today)} (Night Shift)</strong>
+            <div style={{ fontSize: "12px", opacity: 0.8, marginTop: "2px" }}>
+              The portal is showing the previous day's roster because it's before {cutoffHour}:00 AM.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HOLIDAY INFO */}
       {isHoliday && (
         <Card className="border-yellow-500">
@@ -996,7 +1070,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
                         {isEditing ? (
                           <div className="space-y-3">
-                            <div className="space-y-1">
+                             <div className="space-y-1">
                               <p className="text-sm font-medium">
                                 Check In
                               </p>
@@ -1004,12 +1078,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               <Input
                                 type="time"
                                 value={inlineEdit.checkIn}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  const val = e.target.value
+                                  if (inlineEdit.isNightShift && val && !isValidNightShiftTime(val, cutoffHour)) {
+                                    toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+                                  }
                                   setInlineEdit((prev) => ({
                                     ...prev,
-                                    checkIn: e.target.value,
+                                    checkIn: val,
                                   }))
-                                }
+                                }}
                               />
                             </div>
 
@@ -1021,13 +1099,46 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               <Input
                                 type="time"
                                 value={inlineEdit.checkOut}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  const val = e.target.value
+                                  if (inlineEdit.isNightShift && val && !isValidNightShiftTime(val, cutoffHour)) {
+                                    toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+                                  }
                                   setInlineEdit((prev) => ({
                                     ...prev,
-                                    checkOut: e.target.value,
+                                    checkOut: val,
                                   }))
-                                }
+                                }}
                               />
+                            </div>
+
+                            <div className="flex items-center gap-2 mt-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={inlineEdit.isNightShift ? "default" : "outline"}
+                                onClick={toggleInlineEditNightShift}
+                                className={`text-xs h-7 px-2 ${
+                                  inlineEdit.isNightShift
+                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                🌙 {inlineEdit.isNightShift ? "Night" : "Day"}
+                              </Button>
+
+                              {inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift) && (
+                                <span style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  color: "#818cf8",
+                                  fontSize: "12px",
+                                  fontWeight: 500,
+                                }}>
+                                  🌙 Night Shift
+                                </span>
+                              )}
                             </div>
 
                             <div className="flex gap-2">
@@ -1136,6 +1247,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                       <TableHead>Employee</TableHead>
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
+                      <TableHead>Shift</TableHead>
                       <TableHead>Hours</TableHead>
                       <TableHead className="text-right">
                         Actions
@@ -1182,12 +1294,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   <Input
                                     type="time"
                                     value={inlineEdit.checkIn}
-                                    onChange={(e) =>
+                                    onChange={(e) => {
+                                      const val = e.target.value
+                                      if (inlineEdit.isNightShift && val && !isValidNightShiftTime(val, cutoffHour)) {
+                                        toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+                                      }
                                       setInlineEdit((prev) => ({
                                         ...prev,
-                                        checkIn: e.target.value,
+                                        checkIn: val,
                                       }))
-                                    }
+                                    }}
                                   />
                                 ) : (
                                   <Input
@@ -1206,12 +1322,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   <Input
                                     type="time"
                                     value={inlineEdit.checkOut}
-                                    onChange={(e) =>
+                                    onChange={(e) => {
+                                      const val = e.target.value
+                                      if (inlineEdit.isNightShift && val && !isValidNightShiftTime(val, cutoffHour)) {
+                                        toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+                                      }
                                       setInlineEdit((prev) => ({
                                         ...prev,
-                                        checkOut: e.target.value,
+                                        checkOut: val,
                                       }))
-                                    }
+                                    }}
                                   />
                                 ) : (
                                   <Input
@@ -1221,6 +1341,35 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       session?.checkOut
                                     )}
                                   />
+                                )}
+                              </TableCell>
+
+                              {/* SHIFT */}
+                              <TableCell>
+                                {isEditing ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={inlineEdit.isNightShift ? "default" : "outline"}
+                                    onClick={toggleInlineEditNightShift}
+                                    className={`text-xs h-7 px-2 ${
+                                      inlineEdit.isNightShift
+                                        ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                        : "text-muted-foreground"
+                                    }`}
+                                  >
+                                    🌙 {inlineEdit.isNightShift ? "Night" : "Day"}
+                                  </Button>
+                                ) : (
+                                  <span className="text-sm">
+                                    {session?.isNightShift ? (
+                                      <span title="Night shift" className="inline-flex items-center gap-1 text-indigo-600 font-medium">
+                                        🌙 Night
+                                      </span>
+                                    ) : (
+                                      <span className="text-muted-foreground">☀️ Day</span>
+                                    )}
+                                  </span>
                                 )}
                               </TableCell>
 
@@ -1352,6 +1501,42 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               }
                             />
 
+                            <div className="flex items-center gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={session.isNightShift ? "default" : "outline"}
+                                onClick={() =>
+                                  updateDraftSession(
+                                    record.employee._id,
+                                    0,
+                                    "isNightShift",
+                                    !session.isNightShift
+                                  )
+                                }
+                                className={`text-xs h-7 px-2 ${
+                                  session.isNightShift
+                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                🌙 {session.isNightShift ? "Night" : "Day"}
+                              </Button>
+
+                              {isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift) && (
+                                <span style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "4px",
+                                  color: "#818cf8",
+                                  fontSize: "12px",
+                                  fontWeight: 500,
+                                }}>
+                                  🌙 Night Shift
+                                </span>
+                              )}
+                            </div>
+
                             <div className="text-sm">
                               Hours: {session.workedHours}
                             </div>
@@ -1371,6 +1556,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                       <TableHead>Employee</TableHead>
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
+                      <TableHead>Shift</TableHead>
                       <TableHead>Hours</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1441,9 +1627,45 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               </TableCell>
 
                               <TableCell>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={session.isNightShift ? "default" : "outline"}
+                                  onClick={() =>
+                                    updateDraftSession(
+                                      record.employee._id,
+                                      0,
+                                      "isNightShift",
+                                      !session.isNightShift
+                                    )
+                                  }
+                                  className={`text-xs h-7 px-2 ${
+                                    session.isNightShift
+                                      ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                      : "text-muted-foreground"
+                                  }`}
+                                >
+                                  🌙 {session.isNightShift ? "Night" : "Day"}
+                                </Button>
+                              </TableCell>
+
+                              <TableCell>
                                 {
                                   session.workedHours
                                 }
+                                {isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift) && (
+                                  <span title="Night shift" style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    color: "#818cf8",
+                                    fontSize: "12px",
+                                    fontWeight: 500,
+                                    marginLeft: "4px",
+                                  }}>
+                                    🌙
+                                  </span>
+                                )}
                               </TableCell>
                             </TableRow>
                             {isOverlapRow(record.employee._id) && (

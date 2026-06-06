@@ -31,6 +31,12 @@ const attendanceSessionSchema = new mongoose.Schema(
       ref: "User",
       required: [true, "The supervisor/admin marking attendance must be recorded"],
     },
+
+    // When true, AM times (before cutoff) are treated as next-day
+    isNightShift: {
+      type: Boolean,
+      default: false,
+    },
   },
   { _id: true }
 );
@@ -90,6 +96,18 @@ const attendanceSchema = new mongoose.Schema(
     overtimeHours: {
       type: Number,
       default: 0,
+    },
+
+    // Night shift tracking
+    shiftType: {
+      type: String,
+      enum: ["day", "night", "flexible"],
+      default: "day",
+    },
+
+    crossedMidnight: {
+      type: Boolean,
+      default: false,
     },
 
     // Multi-site work sessions

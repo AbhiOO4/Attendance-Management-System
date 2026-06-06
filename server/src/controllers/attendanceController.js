@@ -7,6 +7,73 @@ import workModel from '../models/workModel.js';
 import Site from '../models/siteModel.js';
 import siteModel from '../models/siteModel.js';
 
+// --- NIGHT SHIFT HELPERS ---
+
+/**
+ * Combines a date string ("YYYY-MM-DD") and time string ("HH:mm")
+ * into a Date object.
+ *
+ * When isNightShift = true:
+ *   Times < cutoffHour are placed on the NEXT calendar day.
+ *   Times >= cutoffHour stay on the same calendar day (the evening).
+ *
+ * When isNightShift = false (default):
+ *   If referenceCheckIn is provided and the time is earlier,
+ *   the date is advanced by one day (auto cross-midnight detection).
+ */
+function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7 } = {}) {
+  const dt = new Date(`${dateStr}T${timeStr}:00`);
+  const [h] = timeStr.split(":").map(Number);
+
+  if (isNightShift) {
+    // Night shift mode: AM times before cutoff → next day
+    if (h < cutoffHour) {
+      dt.setDate(dt.getDate() + 1);
+    }
+  } else if (referenceCheckIn) {
+    // Auto cross-midnight: checkOut < checkIn → next day
+    const [inH, inM] = referenceCheckIn.split(":").map(Number);
+    const [outH, outM] = timeStr.split(":").map(Number);
+    if (outH * 60 + outM < inH * 60 + inM) {
+      dt.setDate(dt.getDate() + 1);
+    }
+  }
+
+  return dt;
+}
+
+/**
+ * Determines if any session in the array is a night shift.
+ * Checks both the isNightShift flag and auto-detects cross-midnight.
+ */
+function detectCrossedMidnight(sessions) {
+  return sessions.some((s) => {
+    // Explicit night shift flag
+    if (s.isNightShift) return true;
+
+    if (!s.checkIn || !s.checkOut) return false;
+    // Auto-detect from Date objects
+    let inTime, outTime;
+    if (typeof s.checkIn === "string" && s.checkIn.length === 5) {
+      inTime = s.checkIn;
+      outTime = s.checkOut;
+    } else {
+      const inDate = new Date(s.checkIn);
+      const outDate = new Date(s.checkOut);
+      // If checkOut is on a different date than checkIn, it crossed midnight
+      if (outDate.getDate() !== inDate.getDate()) return true;
+      inTime = `${String(inDate.getHours()).padStart(2, "0")}:${String(inDate.getMinutes()).padStart(2, "0")}`;
+      outTime = `${String(outDate.getHours()).padStart(2, "0")}:${String(outDate.getMinutes()).padStart(2, "0")}`;
+    }
+    const [inH] = inTime.split(":").map(Number);
+    const [outH] = outTime.split(":").map(Number);
+    const inMinutes = inH * 60 + (parseInt(inTime.split(":")[1]) || 0);
+    const outMinutes = outH * 60 + (parseInt(outTime.split(":")[1]) || 0);
+    return outMinutes < inMinutes;
+  });
+}
+
+
 // --- ADMINS ---
 
 
@@ -1088,9 +1155,33 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           job,
           checkIn,
           checkOut,
+          isNightShift: sessionIsNight = false,
         } = session
 
         const finalSiteId = sessionSiteId || siteId
+        const cutoffHour = workConfig.nightShiftCutoffHour || 7
+
+        // Night shift time checks: AM times must be before cutoff
+        if (sessionIsNight) {
+          if (checkOut) {
+            const [outH] = checkOut.split(":").map(Number);
+            if (outH >= cutoffHour && outH < 12) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              });
+            }
+          }
+          if (checkIn) {
+            const [inH] = checkIn.split(":").map(Number);
+            if (inH >= cutoffHour && inH < 12) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              });
+            }
+          }
+        }
 
         // RULE: checkOut without checkIn NOT allowed
         if (!checkIn && checkOut) {
@@ -1104,13 +1195,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
 
         // VALID SESSION ONLY IF BOTH EXIST
         if (checkIn && checkOut) {
-          const inTime = new Date(
-            `${date}T${checkIn}:00`
-          )
-
-          const outTime = new Date(
-            `${date}T${checkOut}:00`
-          )
+          const inTime = combineDateAndTime(date, checkIn, { isNightShift: sessionIsNight, cutoffHour })
+          const outTime = combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, isNightShift: sessionIsNight, cutoffHour })
 
           if (
             isNaN(inTime.getTime()) ||
@@ -1122,24 +1208,26 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             })
           }
 
-          if (outTime < inTime) {
-            return res.status(400).json({
-              success: false,
-              message: "checkOut cannot be earlier than checkIn",
-            })
-          }
-
           workedHours =
             (outTime.getTime() - inTime.getTime()) /
             (1000 * 60 * 60)
+
+          if (workedHours < 0 || workedHours > 24) {
+            return res.status(400).json({
+              success: false,
+              message: "Invalid shift duration",
+            })
+          }
         }
 
+        const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour }
+
         const checkInDate = checkIn
-          ? new Date(`${date}T${checkIn}:00`)
+          ? combineDateAndTime(date, checkIn, cutoffOpts)
           : null
 
         const checkOutDate = checkOut
-          ? new Date(`${date}T${checkOut}:00`)
+          ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...cutoffOpts })
           : null
 
         // RULE: checkIn only OR null/null → 0 hours
@@ -1150,6 +1238,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           checkOut: checkOutDate,
           workedHours: Number(workedHours.toFixed(2)),
           markedBy,
+          isNightShift: sessionIsNight,
         })
       }
 
@@ -1280,6 +1369,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.status = status
       attendanceDoc.overtimeHours = overtimeHours
       attendanceDoc.isHoliday = isHoliday
+      // Night shift detection
+      const hasCrossedMidnight = detectCrossedMidnight(mergedSessions)
+      attendanceDoc.crossedMidnight = hasCrossedMidnight
+      attendanceDoc.shiftType = hasCrossedMidnight ? "night" : "day"
       attendanceDoc.siteId = siteId
       attendanceDoc.jobId = jobId || null
       attendanceDoc.markedBy = markedBy
@@ -1414,6 +1507,10 @@ export const getSiteAttendance = async (req, res) => {
 
           overtimeHours: "$overtimeHours",
 
+          shiftType: "$shiftType",
+
+          crossedMidnight: "$crossedMidnight",
+
           sessions: {
             $map: {
               input: "$filteredSessions",
@@ -1430,6 +1527,8 @@ export const getSiteAttendance = async (req, res) => {
                 checkOut: "$$s.checkOut",
 
                 workedHours: "$$s.workedHours",
+
+                isNightShift: "$$s.isNightShift",
               },
             },
           },
@@ -1623,6 +1722,10 @@ export const getAttendanceRecords = async (req, res) => {
         overtimeHours:
           record.overtimeHours,
 
+        shiftType: record.shiftType,
+
+        crossedMidnight: record.crossedMidnight,
+
         sessions: record.sessions.map(
           (session) => ({
             _id: session._id,
@@ -1649,6 +1752,9 @@ export const getAttendanceRecords = async (req, res) => {
 
             workedHours:
               session.workedHours,
+
+            isNightShift:
+              session.isNightShift || false,
 
             markedBy:
               session.markedBy,
@@ -1981,13 +2087,44 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
+      // Validate sessions first
+      for (const session of sessions) {
+        if (!session.checkIn && session.checkOut) {
+          return res.status(400).json({
+            success: false,
+            message: "Check-out cannot exist without check-in",
+          });
+        }
+        if (session.isNightShift) {
+          const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+          if (session.checkIn) {
+            const inDate = new Date(session.checkIn);
+            const inH = inDate.getHours();
+            if (inH >= cutoffHour && inH < 12) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              });
+            }
+          }
+          if (session.checkOut) {
+            const outDate = new Date(session.checkOut);
+            const outH = outDate.getHours();
+            if (outH >= cutoffHour && outH < 12) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              });
+            }
+          }
+        }
+      }
+
       const processedSessions = sessions.map(
         (session) => {
           // -----------------------------
           // Validation
           // -----------------------------
-
-          // checkOut without checkIn
           if (
             !session.checkIn &&
             session.checkOut
@@ -2011,10 +2148,9 @@ export const updateAttendance = async (req, res) => {
               session.checkOut
             );
 
+            // Handle cross-midnight: if checkOut is on the next day
             if (checkOut < checkIn) {
-              throw new Error(
-                "Check-out cannot be earlier than check-in"
-              );
+              checkOut.setDate(checkOut.getDate() + 1);
             }
 
             workedHours =
@@ -2034,6 +2170,8 @@ export const updateAttendance = async (req, res) => {
             workedHours: Number(
               workedHours.toFixed(2)
             ),
+            isNightShift:
+              session.isNightShift || false,
             markedBy:
               session.markedBy ||
               attendance.markedBy,
@@ -2152,6 +2290,11 @@ export const updateAttendance = async (req, res) => {
 
       attendance.sessions =
         combinedSessions;
+
+      // Night shift detection
+      const hasCrossedMidnight = detectCrossedMidnight(combinedSessions);
+      attendance.crossedMidnight = hasCrossedMidnight;
+      attendance.shiftType = hasCrossedMidnight ? "night" : "day";
 
       // -----------------------------
       // Total worked hours
@@ -2275,6 +2418,10 @@ export const updateAttendance = async (req, res) => {
       overtimeHours:
         updatedAttendance.overtimeHours,
 
+      shiftType: updatedAttendance.shiftType,
+
+      crossedMidnight: updatedAttendance.crossedMidnight,
+
       sessions:
         updatedAttendance.sessions.map(
           (session) => ({
@@ -2303,6 +2450,9 @@ export const updateAttendance = async (req, res) => {
 
             workedHours:
               session.workedHours,
+
+            isNightShift:
+              session.isNightShift || false,
 
             markedBy:
               session.markedBy,
@@ -2452,6 +2602,10 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
         overtimeHours:
           record.overtimeHours,
 
+        shiftType: record.shiftType,
+
+        crossedMidnight: record.crossedMidnight,
+
         sessions:
           record.sessions.map(
             (session) => ({
@@ -2481,6 +2635,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
               workedHours:
                 session.workedHours,
+
+              isNightShift:
+                session.isNightShift || false,
 
               markedBy:
                 session.markedBy,
@@ -2631,6 +2788,10 @@ export const getAttendanceById = async (req, res) => {
           overtimeHours:
             "$overtimeHours",
 
+          shiftType: "$shiftType",
+
+          crossedMidnight: "$crossedMidnight",
+
           sessions: {
             $map: {
               input: "$sessions",
@@ -2704,6 +2865,9 @@ export const getAttendanceById = async (req, res) => {
 
                 workedHours:
                   "$$s.workedHours",
+
+                isNightShift:
+                  "$$s.isNightShift",
 
                 markedBy:
                   "$$s.markedBy",

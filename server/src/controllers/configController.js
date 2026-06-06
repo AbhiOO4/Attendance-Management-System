@@ -35,6 +35,7 @@ export const updateWorkSchedule = async (req, res) => {
       overtimeThreshold,
       overtimeRatePerHour,
       weeklyHolidays,
+      nightShiftCutoffHour,
     } = req.body;
 
     const schedule = await workModel.findOne({
@@ -73,6 +74,16 @@ export const updateWorkSchedule = async (req, res) => {
     if (weeklyHolidays !== undefined) {
       schedule.weeklyHolidays =
         weeklyHolidays;
+    }
+
+    if (nightShiftCutoffHour !== undefined) {
+      if (nightShiftCutoffHour < 0 || nightShiftCutoffHour > 12) {
+        return res.status(400).json({
+          success: false,
+          message: "Night shift cutoff hour must be between 0 and 12",
+        });
+      }
+      schedule.nightShiftCutoffHour = nightShiftCutoffHour;
     }
 
     // Optional validation

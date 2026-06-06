@@ -227,7 +227,7 @@ export default function SidebarLayout() {
 
       <main
         id="main-scroll-container"
-        className="flex-1 p-6 overflow-auto mt-14 md:mt-0"
+        className="flex-1 overflow-auto mt-14 md:mt-0"
       >
         <Outlet />
       </main>

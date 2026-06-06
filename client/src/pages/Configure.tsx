@@ -40,6 +40,7 @@ type WorkSchedule = {
   overtimeThreshold: number;
   overtimeRatePerHour: number;
   weeklyHolidays: string[];
+  nightShiftCutoffHour: number;
 };
 
 type Holiday = {
@@ -88,6 +89,7 @@ export default function Configure() {
     overtimeThreshold: 8,
     overtimeRatePerHour: 0,
     weeklyHolidays: [],
+    nightShiftCutoffHour: 7,
   });
 
   const [holidayForm, setHolidayForm] = useState({
@@ -147,6 +149,7 @@ export default function Configure() {
         overtimeRatePerHour:
           schedule.overtimeRatePerHour,
         weeklyHolidays: schedule.weeklyHolidays,
+        nightShiftCutoffHour: schedule.nightShiftCutoffHour,
       });
 
       toast.success("Work schedule updated successfully");
@@ -448,6 +451,45 @@ export default function Configure() {
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* NIGHT SHIFT SETTINGS */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-medium flex items-center gap-2">
+                  <span>🌙</span> Night Shift Settings
+                </h3>
+
+                <p className="text-sm text-muted-foreground">
+                  Configure when the "logical business day" ends for night shift workers.
+                </p>
+              </div>
+
+              <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Night Shift Cutoff Hour
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={12}
+                    value={schedule.nightShiftCutoffHour}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        nightShiftCutoffHour: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Business day extends until this hour (0–12). Times before this cutoff
+                    are credited to the previous day. Default: 7 (7:00 AM).
+                  </p>
+                </div>
               </div>
             </div>
 

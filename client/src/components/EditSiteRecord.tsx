@@ -44,6 +44,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
+import { isCrossMidnight, isValidNightShiftTime } from "@/lib/dateUtils"
 
 // --------------------------------------------------
 // TYPES
@@ -76,6 +77,8 @@ interface AttendanceSession {
   checkOut?: string | null
 
   workedHours: number
+
+  isNightShift?: boolean
 
   markedBy?: string
 }
@@ -144,6 +147,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       fullDayHours: 8,
       halfDayHours: 4,
       overtimeThreshold: 8,
+      nightShiftCutoffHour: 7,
     })
 
 const [deleteDialogOpen, setDeleteDialogOpen] =
@@ -207,6 +211,8 @@ const [sessionToDelete, setSessionToDelete] =
         overtimeThreshold:
           res.data.data
             .overtimeThreshold,
+        nightShiftCutoffHour:
+          res.data.data.nightShiftCutoffHour ?? 7,
       })
     } catch (error) {
       console.log(error)
@@ -278,47 +284,67 @@ const [sessionToDelete, setSessionToDelete] =
 
  const updateSessionField = (
   index: number,
-  field: keyof AttendanceSession,
-  value: string | null
+  field: keyof AttendanceSession | "isNightShift",
+  value: any
 ) => {
   const updated = [...sessions]
 
-  let finalValue: string | null =
-    value
+  if (field === "isNightShift") {
+    const isNight = !!value
+    if (isNight) {
+      const checkInTime = toTimeValue(updated[index].checkIn)
+      const checkOutTime = toTimeValue(updated[index].checkOut)
+      if (checkInTime && !isValidNightShiftTime(checkInTime, config.nightShiftCutoffHour)) {
+        toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+        return
+      }
+      if (checkOutTime && !isValidNightShiftTime(checkOutTime, config.nightShiftCutoffHour)) {
+        toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+        return
+      }
+    }
 
-  // convert HH:mm -> full ISO datetime
-  if (
-    field === "checkIn" ||
-    field === "checkOut"
-  ) {
-    finalValue = combineDateAndTime(value)
-  }
+    updated[index].isNightShift = isNight
 
-  updated[index] = {
-    ...updated[index],
-    [field]: finalValue,
-  }
+    const checkInTime = toTimeValue(updated[index].checkIn)
+    const checkOutTime = toTimeValue(updated[index].checkOut)
+    
+    updated[index].checkIn = checkInTime ? combineDateAndTime(checkInTime, undefined, isNight) : null
+    updated[index].checkOut = checkOutTime ? combineDateAndTime(checkOutTime, checkInTime, isNight) : null
+    updated[index].workedHours = calculateWorkedHours(updated[index].checkIn, updated[index].checkOut)
+  } else {
+    let finalValue = value
 
-  // recalculate hours
-  if (
-    field === "checkIn" ||
-    field === "checkOut"
-  ) {
-    updated[index].workedHours =
-      calculateWorkedHours(
+    if (field === "checkIn" || field === "checkOut") {
+      const isNight = !!updated[index].isNightShift
+      if (isNight && value && !isValidNightShiftTime(value, config.nightShiftCutoffHour)) {
+        toast.error(`${field === "checkIn" ? "Check-in" : "Check-out"} time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+      }
+      const referenceCheckIn = field === "checkOut"
+        ? toTimeValue(updated[index].checkIn)
+        : undefined
+      finalValue = combineDateAndTime(value, referenceCheckIn, isNight)
+    }
+
+    updated[index] = {
+      ...updated[index],
+      [field as any]: finalValue,
+    }
+
+    if (field === "checkIn" || field === "checkOut") {
+      updated[index].workedHours = calculateWorkedHours(
         updated[index].checkIn,
         updated[index].checkOut
       )
+    }
+
+    if (field === "siteId") {
+      updated[index].jobId = null
+    }
   }
 
-  // reset job when site changes
-  if (field === "siteId") {
-    updated[index].jobId = null
-  }
-
-   setOverlapInfo(null)
-   setOverlapSessionIds([])
-
+  setOverlapInfo(null)
+  setOverlapSessionIds([])
   setSessions(updated)
 }
 
@@ -405,26 +431,46 @@ const addSession = async () => {
     }
 
 
-      setSaving(true)
-
-      const payload = {
-        sessions: sessions.map(
-          (session) => ({
-            _id: session._id,
-
-            siteId: session.siteId,
-
-            jobId:
-              session.jobId || null,
-
-            checkIn:
-              session.checkIn || null,
-
-            checkOut:
-              session.checkOut || null,
-          })
-        ),
+    // Validate night shift times
+    for (const session of sessions) {
+      if (session.isNightShift) {
+        const inTime = toTimeValue(session.checkIn)
+        const outTime = toTimeValue(session.checkOut)
+        if (inTime && !isValidNightShiftTime(inTime, config.nightShiftCutoffHour)) {
+          toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+          return
+        }
+        if (outTime && !isValidNightShiftTime(outTime, config.nightShiftCutoffHour)) {
+          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+          return
+        }
       }
+    }
+
+    // Sort sessions chronologically by checkIn datetime. Empty checkIns go last.
+    const sortedSessions = [...sessions].sort((a, b) => {
+      if (!a.checkIn && !b.checkIn) return 0
+      if (!a.checkIn) return 1
+      if (!b.checkIn) return -1
+      return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
+    })
+
+    setSessions(sortedSessions)
+
+    setSaving(true)
+
+    const payload = {
+      sessions: sortedSessions.map(
+        (session) => ({
+          _id: session._id,
+          siteId: session.siteId,
+          jobId: session.jobId || null,
+          checkIn: session.checkIn || null,
+          checkOut: session.checkOut || null,
+          isNightShift: session.isNightShift || false,
+        })
+      ),
+    }
 
       const res = await api.patch(
         `/api/attendance/update/${record.attendanceId}?siteId=${site._id}`,
@@ -501,7 +547,11 @@ const toTimeValue = (
   return `${hours}:${minutes}`
 }
 
-  const combineDateAndTime = (time: string | null) => {
+  const combineDateAndTime = (
+    time: string | null,
+    referenceCheckIn?: string,
+    isNightShift: boolean = false
+  ) => {
     if (!record?.date || !time)
       return null
 
@@ -514,6 +564,21 @@ const toTimeValue = (
     date.setMinutes(Number(minutes))
     date.setSeconds(0)
     date.setMilliseconds(0)
+
+    if (isNightShift) {
+      // Night shift: AM times before cutoff → next day
+      if (Number(hours) < config.nightShiftCutoffHour) {
+        date.setDate(date.getDate() + 1)
+      }
+    } else if (referenceCheckIn) {
+      // Cross-midnight detection
+      const [inH, inM] = referenceCheckIn.split(":").map(Number)
+      const inMin = inH * 60 + inM
+      const outMin = Number(hours) * 60 + Number(minutes)
+      if (outMin < inMin) {
+        date.setDate(date.getDate() + 1)
+      }
+    }
 
     return date.toString()
   }
@@ -696,7 +761,7 @@ const toTimeValue = (
                     </div>
 
                     {/* TIMES */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                    <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
 
                       {/* CHECK IN */}
                       <div className="space-y-2">
@@ -742,6 +807,49 @@ const toTimeValue = (
                             )
                           }
                         />
+                      </div>
+
+                      {/* SHIFT */}
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">
+                          Shift
+                        </p>
+
+                        <div className="flex items-center gap-2 h-11">
+                          <Button
+                            type="button"
+                            disabled={!isEditable}
+                            size="sm"
+                            variant={session.isNightShift ? "default" : "outline"}
+                            onClick={() =>
+                              updateSessionField(
+                                index,
+                                "isNightShift",
+                                !session.isNightShift
+                              )
+                            }
+                            className={`text-xs h-9 px-3 ${
+                              session.isNightShift
+                                ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            🌙 {session.isNightShift ? "Night" : "Day"}
+                          </Button>
+
+                          {toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift) && (
+                            <span style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              color: "#818cf8",
+                              fontSize: "12px",
+                              fontWeight: 500,
+                            }}>
+                              🌙 Night Shift
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {/* WORKED HOURS */}
