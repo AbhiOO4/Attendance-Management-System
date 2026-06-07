@@ -21,8 +21,24 @@ import siteModel from '../models/siteModel.js';
  *   If referenceCheckIn is provided and the time is earlier,
  *   the date is advanced by one day (auto cross-midnight detection).
  */
-function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7 } = {}) {
-  const dt = new Date(`${dateStr}T${timeStr}:00`);
+function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7, timezoneOffset = null } = {}) {
+  // If timezoneOffset is passed (e.g. "-330"), construct standard offset string like "+05:30"
+  let offsetStr = "";
+  if (timezoneOffset !== null && timezoneOffset !== undefined) {
+    const offsetVal = parseInt(timezoneOffset, 10);
+    if (!isNaN(offsetVal)) {
+      const sign = offsetVal <= 0 ? "+" : "-";
+      const absMinutes = Math.abs(offsetVal);
+      const hours = String(Math.floor(absMinutes / 60)).padStart(2, "0");
+      const mins = String(absMinutes % 60).padStart(2, "0");
+      offsetStr = `${sign}${hours}:${mins}`;
+    }
+  } else {
+    // Default to Indian Standard Time offset (+05:30) if not specified to prevent UTC shift when hosted
+    offsetStr = "+05:30";
+  }
+
+  const dt = new Date(`${dateStr}T${timeStr}:00${offsetStr}`);
   const [h] = timeStr.split(":").map(Number);
 
   if (isNightShift) {
@@ -46,7 +62,25 @@ function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNight
  * Determines if any session in the array is a night shift.
  * Checks both the isNightShift flag and auto-detects cross-midnight.
  */
-function detectCrossedMidnight(sessions) {
+function detectCrossedMidnight(sessions, timezoneOffset = null) {
+  // Parse timezone offset (default to -330 for IST (+05:30) if not specified or invalid)
+  let offsetVal = -330;
+  if (timezoneOffset !== null && timezoneOffset !== undefined) {
+    const parsed = parseInt(timezoneOffset, 10);
+    if (!isNaN(parsed)) {
+      offsetVal = parsed;
+    }
+  }
+
+  const getLocalInfo = (dateObj) => {
+    const localTime = new Date(dateObj.getTime() - offsetVal * 60 * 1000);
+    return {
+      date: localTime.getUTCDate(),
+      hours: localTime.getUTCHours(),
+      minutes: localTime.getUTCMinutes(),
+    };
+  };
+
   return sessions.some((s) => {
     // Explicit night shift flag
     if (s.isNightShift) return true;
@@ -60,10 +94,15 @@ function detectCrossedMidnight(sessions) {
     } else {
       const inDate = new Date(s.checkIn);
       const outDate = new Date(s.checkOut);
+
+      const localIn = getLocalInfo(inDate);
+      const localOut = getLocalInfo(outDate);
+
       // If checkOut is on a different date than checkIn, it crossed midnight
-      if (outDate.getDate() !== inDate.getDate()) return true;
-      inTime = `${String(inDate.getHours()).padStart(2, "0")}:${String(inDate.getMinutes()).padStart(2, "0")}`;
-      outTime = `${String(outDate.getHours()).padStart(2, "0")}:${String(outDate.getMinutes()).padStart(2, "0")}`;
+      if (localOut.date !== localIn.date) return true;
+
+      inTime = `${String(localIn.hours).padStart(2, "0")}:${String(localIn.minutes).padStart(2, "0")}`;
+      outTime = `${String(localOut.hours).padStart(2, "0")}:${String(localOut.minutes).padStart(2, "0")}`;
     }
     const [inH] = inTime.split(":").map(Number);
     const [outH] = outTime.split(":").map(Number);
@@ -1055,6 +1094,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     } = req.body
 
     const markedBy = req.user?.id
+    const timezoneOffset = req.headers['x-timezone-offset']
 
     // -----------------------------
     // VALIDATION
@@ -1195,8 +1235,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
 
         // VALID SESSION ONLY IF BOTH EXIST
         if (checkIn && checkOut) {
-          const inTime = combineDateAndTime(date, checkIn, { isNightShift: sessionIsNight, cutoffHour })
-          const outTime = combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, isNightShift: sessionIsNight, cutoffHour })
+          const inTime = combineDateAndTime(date, checkIn, { isNightShift: sessionIsNight, cutoffHour, timezoneOffset })
+          const outTime = combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, isNightShift: sessionIsNight, cutoffHour, timezoneOffset })
 
           if (
             isNaN(inTime.getTime()) ||
@@ -1220,7 +1260,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           }
         }
 
-        const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour }
+        const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour, timezoneOffset }
 
         const checkInDate = checkIn
           ? combineDateAndTime(date, checkIn, cutoffOpts)
@@ -1370,7 +1410,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.overtimeHours = overtimeHours
       attendanceDoc.isHoliday = isHoliday
       // Night shift detection
-      const hasCrossedMidnight = detectCrossedMidnight(mergedSessions)
+      const hasCrossedMidnight = detectCrossedMidnight(mergedSessions, timezoneOffset)
       attendanceDoc.crossedMidnight = hasCrossedMidnight
       attendanceDoc.shiftType = hasCrossedMidnight ? "night" : "day"
       attendanceDoc.siteId = siteId
@@ -2064,6 +2104,15 @@ export const updateAttendance = async (req, res) => {
     const { sessions, siteId: bodySiteId } = req.body;
     const { siteId: querySiteId } = req.query;
     const siteId = querySiteId || bodySiteId;
+    const timezoneOffset = req.headers['x-timezone-offset'];
+
+    let offsetVal = -330;
+    if (timezoneOffset !== null && timezoneOffset !== undefined) {
+      const parsed = parseInt(timezoneOffset, 10);
+      if (!isNaN(parsed)) {
+        offsetVal = parsed;
+      }
+    }
 
     const attendance = await Attendance.findById(attendanceId);
 
@@ -2099,7 +2148,8 @@ export const updateAttendance = async (req, res) => {
           const cutoffHour = workConfig.nightShiftCutoffHour || 7;
           if (session.checkIn) {
             const inDate = new Date(session.checkIn);
-            const inH = inDate.getHours();
+            const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
+            const inH = localInTime.getUTCHours();
             if (inH >= cutoffHour && inH < 12) {
               return res.status(400).json({
                 success: false,
@@ -2109,7 +2159,8 @@ export const updateAttendance = async (req, res) => {
           }
           if (session.checkOut) {
             const outDate = new Date(session.checkOut);
-            const outH = outDate.getHours();
+            const localOutTime = new Date(outDate.getTime() - offsetVal * 60 * 1000);
+            const outH = localOutTime.getUTCHours();
             if (outH >= cutoffHour && outH < 12) {
               return res.status(400).json({
                 success: false,
@@ -2292,7 +2343,7 @@ export const updateAttendance = async (req, res) => {
         combinedSessions;
 
       // Night shift detection
-      const hasCrossedMidnight = detectCrossedMidnight(combinedSessions);
+      const hasCrossedMidnight = detectCrossedMidnight(combinedSessions, timezoneOffset);
       attendance.crossedMidnight = hasCrossedMidnight;
       attendance.shiftType = hasCrossedMidnight ? "night" : "day";
 

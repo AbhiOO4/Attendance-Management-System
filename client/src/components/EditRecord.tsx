@@ -44,7 +44,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, isValidNightShiftTime } from "@/lib/dateUtils"
+import { isCrossMidnight, isValidNightShiftTime, isCheckInInToggleRange } from "@/lib/dateUtils"
 
 // --------------------------------------------------
 // TYPES
@@ -165,10 +165,12 @@ const [sessionToDelete, setSessionToDelete] =
   // --------------------------------------------------
 
   useEffect(() => {
+    setOverlapInfo(null)
+    setOverlapIndexes([])
     if (record) {
       setSessions(record.sessions)
     }
-  }, [record])
+  }, [open, record])
 
   useEffect(() => {
     fetchSites()
@@ -329,7 +331,14 @@ const [sessionToDelete, setSessionToDelete] =
     let finalValue = value
 
     if (field === "checkIn" || field === "checkOut") {
-      const isNight = !!updated[index].isNightShift
+      let isNight = !!updated[index].isNightShift
+      if (field === "checkIn") {
+        const inRange = isCheckInInToggleRange(value, config.nightShiftCutoffHour)
+        if (!inRange) {
+          isNight = false
+          updated[index].isNightShift = false
+        }
+      }
       if (isNight && value && !isValidNightShiftTime(value, config.nightShiftCutoffHour)) {
         toast.error(`${field === "checkIn" ? "Check-in" : "Check-out"} time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
       }
@@ -413,27 +422,13 @@ const [sessionToDelete, setSessionToDelete] =
     // CHECK-IN / CHECK-OUT VALIDATION
     // -------------------------
 
-    const hasIncompleteSession =
+    const hasCheckoutWithoutCheckin =
       sessions.some((session) => {
-        const hasCheckIn =
-          !!session.checkIn
-
-        const hasCheckOut =
-          !!session.checkOut
-
-        return (
-          (hasCheckIn &&
-            !hasCheckOut) ||
-          (!hasCheckIn &&
-            hasCheckOut)
-        )
+        return !session.checkIn && !!session.checkOut
       })
 
-    if (hasIncompleteSession) {
-      toast.error(
-        "Check-in and check-out must both be filled or both be empty"
-      )
-
+    if (hasCheckoutWithoutCheckin) {
+      toast.error("Check-out cannot exist without check-in")
       return
     }
 
@@ -646,7 +641,7 @@ const toTimeValue = (
                       index
                     }
                     className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${overlapIndexes.includes(index)
-                        ? "border-red-500 bg-red-50"
+                        ? "border-red-500 bg-red-50 dark:bg-red-950/20"
                         : "border bg-background"
                       }`}
                   >
@@ -811,37 +806,36 @@ const toTimeValue = (
                           </p>
 
                           <div className="flex items-center gap-2 h-11">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant={session.isNightShift ? "default" : "outline"}
-                              onClick={() =>
-                                updateSessionField(
-                                  index,
-                                  "isNightShift",
-                                  !session.isNightShift
-                                )
-                              }
-                              className={`text-xs h-9 px-3 ${
-                                session.isNightShift
-                                  ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              🌙 {session.isNightShift ? "Night" : "Day"}
-                            </Button>
-
-                            {toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift) && (
-                              <span style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                                color: "#818cf8",
-                                fontSize: "12px",
-                                fontWeight: 500,
-                              }}>
-                                🌙 Night Shift
-                              </span>
+                            {toTimeValue(session.checkIn) && isCheckInInToggleRange(toTimeValue(session.checkIn), config.nightShiftCutoffHour) ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={session.isNightShift ? "default" : "outline"}
+                                onClick={() =>
+                                  updateSessionField(
+                                    index,
+                                    "isNightShift",
+                                    !session.isNightShift
+                                  )
+                                }
+                                className={`text-xs h-9 px-3 ${
+                                  session.isNightShift
+                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                    : "text-muted-foreground"
+                                }`}
+                              >
+                                {session.isNightShift ? "🌙 Night" : "☀️ Day"}
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                disabled
+                                size="sm"
+                                variant={(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "default" : "outline"}
+                                className={`text-xs h-9 px-3 cursor-not-allowed opacity-60 ${(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
+                              >
+                                {(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "🌙 Night" : "☀️ Day"}
+                              </Button>
                             )}
                           </div>
                         </div>

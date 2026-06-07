@@ -4,7 +4,7 @@ import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
-import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isValidNightShiftTime } from "@/lib/dateUtils"
+import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isValidNightShiftTime, isCheckInInToggleRange } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -606,14 +606,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   ) => {
     const { checkIn, checkOut, isNightShift } = inlineEdit
 
-    if (
-      (checkIn && !checkOut) ||
-      (!checkIn && checkOut)
-    ) {
-      toast.error(
-        "Check-in and check-out must both be filled or both be empty"
-      )
-
+    if (!checkIn && checkOut) {
+      toast.error("Check-out cannot exist without check-in")
       return
     }
 
@@ -700,9 +694,18 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
         const sessions = [...record.sessions]
 
+        let nextIsNightShift = sessions[sessionIndex].isNightShift
+        if (field === "checkIn") {
+          const inRange = isCheckInInToggleRange(value as string, cutoffHour)
+          if (!inRange) {
+            nextIsNightShift = false
+          }
+        }
+
         sessions[sessionIndex] = {
           ...sessions[sessionIndex],
           [field]: value,
+          isNightShift: nextIsNightShift,
         }
 
         sessions[sessionIndex].workedHours =
@@ -1086,6 +1089,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   setInlineEdit((prev) => ({
                                     ...prev,
                                     checkIn: val,
+                                    isNightShift: val && isCheckInInToggleRange(val, cutoffHour) ? prev.isNightShift : false,
                                   }))
                                 }}
                               />
@@ -1113,31 +1117,30 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             </div>
 
                             <div className="flex items-center gap-2 mt-2">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant={inlineEdit.isNightShift ? "default" : "outline"}
-                                onClick={toggleInlineEditNightShift}
-                                className={`text-xs h-7 px-2 ${
-                                  inlineEdit.isNightShift
-                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    : "text-muted-foreground"
-                                }`}
-                              >
-                                🌙 {inlineEdit.isNightShift ? "Night" : "Day"}
-                              </Button>
-
-                              {inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift) && (
-                                <span style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  color: "#818cf8",
-                                  fontSize: "12px",
-                                  fontWeight: 500,
-                                }}>
-                                  🌙 Night Shift
-                                </span>
+                              {inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour) ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={inlineEdit.isNightShift ? "default" : "outline"}
+                                  onClick={toggleInlineEditNightShift}
+                                  className={`text-xs h-7 px-2 ${
+                                    inlineEdit.isNightShift
+                                      ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                      : "text-muted-foreground"
+                                  }`}
+                                >
+                                  {inlineEdit.isNightShift ? "🌙 Night" : "☀️ Day"}
+                                </Button>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled
+                                  variant={(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "default" : "outline"}
+                                  className={`text-xs h-7 px-2 cursor-not-allowed opacity-60 ${(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
+                                >
+                                  {(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "🌙 Night" : "☀️ Day"}
+                                </Button>
                               )}
                             </div>
 
@@ -1302,6 +1305,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       setInlineEdit((prev) => ({
                                         ...prev,
                                         checkIn: val,
+                                        isNightShift: val && isCheckInInToggleRange(val, cutoffHour) ? prev.isNightShift : false,
                                       }))
                                     }}
                                   />
@@ -1347,22 +1351,34 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               {/* SHIFT */}
                               <TableCell>
                                 {isEditing ? (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant={inlineEdit.isNightShift ? "default" : "outline"}
-                                    onClick={toggleInlineEditNightShift}
-                                    className={`text-xs h-7 px-2 ${
-                                      inlineEdit.isNightShift
-                                        ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                        : "text-muted-foreground"
-                                    }`}
-                                  >
-                                    🌙 {inlineEdit.isNightShift ? "Night" : "Day"}
-                                  </Button>
+                                  inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour) ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant={inlineEdit.isNightShift ? "default" : "outline"}
+                                      onClick={toggleInlineEditNightShift}
+                                      className={`text-xs h-7 px-2 ${
+                                        inlineEdit.isNightShift
+                                          ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                          : "text-muted-foreground"
+                                      }`}
+                                    >
+                                      {inlineEdit.isNightShift ? "🌙 Night" : "☀️ Day"}
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled
+                                      variant={(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "default" : "outline"}
+                                      className={`text-xs h-7 px-2 cursor-not-allowed opacity-60 ${(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
+                                    >
+                                      {(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? "🌙 Night" : "☀️ Day"}
+                                    </Button>
+                                  )
                                 ) : (
                                   <span className="text-sm">
-                                    {session?.isNightShift ? (
+                                    {(session?.isNightShift || (session?.checkIn && session?.checkOut && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? (
                                       <span title="Night shift" className="inline-flex items-center gap-1 text-indigo-600 font-medium">
                                         🌙 Night
                                       </span>
@@ -1502,38 +1518,37 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             />
 
                             <div className="flex items-center gap-2">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant={session.isNightShift ? "default" : "outline"}
-                                onClick={() =>
-                                  updateDraftSession(
-                                    record.employee._id,
-                                    0,
-                                    "isNightShift",
-                                    !session.isNightShift
-                                  )
-                                }
-                                className={`text-xs h-7 px-2 ${
-                                  session.isNightShift
-                                    ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    : "text-muted-foreground"
-                                }`}
-                              >
-                                🌙 {session.isNightShift ? "Night" : "Day"}
-                              </Button>
-
-                              {isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift) && (
-                                <span style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "4px",
-                                  color: "#818cf8",
-                                  fontSize: "12px",
-                                  fontWeight: 500,
-                                }}>
-                                  🌙 Night Shift
-                                </span>
+                              {session.checkIn && isCheckInInToggleRange(session.checkIn, cutoffHour) ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={session.isNightShift ? "default" : "outline"}
+                                  onClick={() =>
+                                    updateDraftSession(
+                                      record.employee._id,
+                                      0,
+                                      "isNightShift",
+                                      !session.isNightShift
+                                    )
+                                  }
+                                  className={`text-xs h-7 px-2 ${
+                                    session.isNightShift
+                                      ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                      : "text-muted-foreground"
+                                  }`}
+                                >
+                                  {session.isNightShift ? "🌙 Night" : "☀️ Day"}
+                                </Button>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled
+                                  variant={(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "default" : "outline"}
+                                  className={`text-xs h-7 px-2 cursor-not-allowed opacity-60 ${(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
+                                >
+                                  {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "🌙 Night" : "☀️ Day"}
+                                </Button>
                               )}
                             </div>
 
@@ -1627,45 +1642,44 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               </TableCell>
 
                               <TableCell>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant={session.isNightShift ? "default" : "outline"}
-                                  onClick={() =>
-                                    updateDraftSession(
-                                      record.employee._id,
-                                      0,
-                                      "isNightShift",
-                                      !session.isNightShift
-                                    )
-                                  }
-                                  className={`text-xs h-7 px-2 ${
-                                    session.isNightShift
-                                      ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                      : "text-muted-foreground"
-                                  }`}
-                                >
-                                  🌙 {session.isNightShift ? "Night" : "Day"}
-                                </Button>
+                                {session.checkIn && isCheckInInToggleRange(session.checkIn, cutoffHour) ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={session.isNightShift ? "default" : "outline"}
+                                    onClick={() =>
+                                      updateDraftSession(
+                                        record.employee._id,
+                                        0,
+                                        "isNightShift",
+                                        !session.isNightShift
+                                      )
+                                    }
+                                    className={`text-xs h-7 px-2 ${
+                                      session.isNightShift
+                                        ? "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                        : "text-muted-foreground"
+                                    }`}
+                                  >
+                                    {session.isNightShift ? "🌙 Night" : "☀️ Day"}
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled
+                                    variant={(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "default" : "outline"}
+                                    className={`text-xs h-7 px-2 cursor-not-allowed opacity-60 ${(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
+                                  >
+                                    {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? "🌙 Night" : "☀️ Day"}
+                                  </Button>
+                                )}
                               </TableCell>
 
                               <TableCell>
                                 {
                                   session.workedHours
                                 }
-                                {isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift) && (
-                                  <span title="Night shift" style={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "4px",
-                                    color: "#818cf8",
-                                    fontSize: "12px",
-                                    fontWeight: 500,
-                                    marginLeft: "4px",
-                                  }}>
-                                    🌙
-                                  </span>
-                                )}
                               </TableCell>
                             </TableRow>
                             {isOverlapRow(record.employee._id) && (

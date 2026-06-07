@@ -141,3 +141,13 @@ export function isValidNightShiftTime(time: string | null, cutoffHour: number = 
   return true;
 }
 
+/**
+ * Checks if check-in time is within the day/night toggle range (12:00 AM to cutoffHour).
+ * In 24h format, 12:00 AM is 00:00.
+ */
+export function isCheckInInToggleRange(checkIn: string | null, cutoffHour: number = 7): boolean {
+  if (!checkIn) return false;
+  const [h] = checkIn.split(":").map(Number);
+  return h >= 0 && h < cutoffHour;
+}
+
