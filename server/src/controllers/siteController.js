@@ -13,7 +13,7 @@ import { json } from 'express'
 export const getSites = async (req, res) => {
     try{
         const { siteName, isActive } = req.query
-        let filter  = {}
+        let filter  = { isDeleted: { $ne: true } }
         if (siteName) {
             filter.siteName = { $regex: `^${siteName}`, $options: "i" };
         }
@@ -23,7 +23,7 @@ export const getSites = async (req, res) => {
         }
 
         
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive ").sort({isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent").sort({isActive: -1}).populate("jobs", "name")
         res.status(200).json(sites)
     }catch(error){  
         res.status(500).json({message: "Internal server error"})
@@ -34,7 +34,10 @@ export const getSites = async (req, res) => {
 export const getSite = async (req, res) => {
     try{
         const { id } = req.params
-        const site = await siteModel.findById(id).populate("jobs", "name")
+        const site = await siteModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("jobs", "name")
+        if (!site) {
+            return res.status(404).json({message: "Site not found"})
+        }
         res.status(200).json(site)
     }catch(error){
         res.status(500).json({message: "Internal server error"})
@@ -239,9 +242,10 @@ export const getSiteJobs = async (req,res) => {
     const { siteId } = req.params;
 
     const site =
-      await siteModel.findById(
-        siteId
-      );
+      await siteModel.findOne({
+        _id: siteId,
+        isDeleted: { $ne: true }
+      });
 
     if (!site) {
       return res.status(404).json({
@@ -253,6 +257,7 @@ export const getSiteJobs = async (req,res) => {
       await jobModel
         .find({
           site: siteId,
+          isDeleted: { $ne: true }
         })
         .lean();
 
@@ -693,6 +698,12 @@ export const deactivateSite = async (req, res) => {
       });
     }
 
+    if (site.isPermanent) {
+      return res.status(400).json({
+        message: "Cannot deactivate a permanent site",
+      });
+    }
+
     // Get all jobs associated with this site
     const jobs = await jobModel.find({ site: siteId });
 
@@ -758,6 +769,12 @@ export const reactivateSite = async (req, res) => {
     if (!site) {
       return res.status(404).json({
         message: "Site not found",
+      });
+    }
+
+    if (site.isPermanent) {
+      return res.status(400).json({
+        message: "Cannot reactivate a permanent site",
       });
     }
 
@@ -892,7 +909,7 @@ export const getJobEmployees = async (req, res) => {
 export const getJob = async (req, res) => {
   try{
     const {jobId} = req.params
-    const job = await jobModel.findById(jobId)
+    const job = await jobModel.findOne({ _id: jobId, isDeleted: { $ne: true } })
 
     if (!job){
       return res.status(404).json({message: "The Job was not found"})
@@ -1322,10 +1339,121 @@ export const getAvailableEmployeesForSite = async (
 //It should iterate thru the list of employees and set the current site to null as well as check if the supervisor is true then also set the assignedSite 
 //to null
 
+export const deleteSite = async (req, res) => {
+  try {
+    const { siteId } = req.params;
+
+    // Find site
+    const site = await siteModel.findById(siteId);
+    if (!site) {
+      return res.status(404).json({
+        message: "Site not found",
+      });
+    }
+
+    // Set site as soft-deleted
+    site.isDeleted = true;
+    site.isActive = false;
+    await site.save();
+
+    // Disassociate all employees associated with this site
+    await empModel.updateMany(
+      { currentSite: siteId },
+      {
+        $set: {
+          currentSite: null,
+          currentJob: null,
+        },
+      }
+    );
+
+    // Disassociate supervisors (set assignedSite to null in User model)
+    await userModel.updateMany(
+      { assignedSite: siteId },
+      {
+        $set: {
+          assignedSite: null,
+        },
+      }
+    );
+
+    // Soft-delete all jobs belonging to the site
+    await jobModel.updateMany(
+      { site: siteId },
+      {
+        $set: {
+          isDeleted: true,
+          isActive: false,
+          employees: [],
+        },
+      }
+    );
+
+    return res.status(200).json({
+      message: "Site and its associated jobs soft-deleted successfully",
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
+
+export const deleteJob = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+
+    // Find job
+    const job = await jobModel.findById(jobId);
+    if (!job) {
+      return res.status(404).json({
+        message: "Job not found",
+      });
+    }
+
+    // Soft-delete job
+    job.isDeleted = true;
+    job.isActive = false;
+    job.employees = [];
+    await job.save();
+
+    // Disassociate all employees assigned to this job
+    await empModel.updateMany(
+      { currentJob: jobId },
+      {
+        $set: {
+          currentJob: null,
+        },
+      }
+    );
+
+    // Remove job from the site's jobs array
+    if (job.site) {
+      await siteModel.findByIdAndUpdate(job.site, {
+        $pull: {
+          jobs: jobId,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      message: "Job soft-deleted successfully",
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
+
 const siteController = {
     getSites,
     getSite,
     createSite,
+    deleteSite,
+    deleteJob,
     assignEmployee,
     assignSupervisor,
     removeSupervisor,

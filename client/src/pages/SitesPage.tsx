@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
-import { MapPin, Search } from "lucide-react"
+import { MapPin, Search, Trash2 } from "lucide-react"
 
 import { api } from "@/lib/api"
 
@@ -10,6 +10,15 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 import toast from "react-hot-toast"
 
@@ -20,6 +29,7 @@ type Site = {
   siteName: string
   locationDetails: string
   isActive: boolean
+  isPermanent?: boolean
 }
 
 export default function SitesPage() {
@@ -28,6 +38,10 @@ export default function SitesPage() {
 
   const [search, setSearch] = useState("")
   const [activeOnly, setActiveOnly] = useState(false)
+
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [siteToDelete, setSiteToDelete] = useState<Site | null>(null)
+  const [deletingSite, setDeletingSite] = useState(false)
 
   const fetchSites = async () => {
     try {
@@ -40,13 +54,35 @@ export default function SitesPage() {
         },
       })
 
-      setSites(response.data || [])
+      const fetchedSites = response.data || []
+      const sortedSites = [...fetchedSites].sort((a, b) => {
+        const aPerm = a.isPermanent ? 1 : 0
+        const bPerm = b.isPermanent ? 1 : 0
+        return bPerm - aPerm
+      })
+      setSites(sortedSites)
     } catch (error: any) {
       toast.error(
         error?.response?.data?.message || "Failed to fetch sites"
       )
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleDeleteSite = async () => {
+    if (!siteToDelete) return
+    try {
+      setDeletingSite(true)
+      await api.delete(`/api/site/${siteToDelete._id}`)
+      toast.success("Site soft-deleted successfully")
+      setConfirmDeleteOpen(false)
+      setSiteToDelete(null)
+      fetchSites()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to delete site")
+    } finally {
+      setDeletingSite(false)
     }
   }
 
@@ -126,7 +162,7 @@ export default function SitesPage() {
                 <Card className="group rounded-2xl border bg-card p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md">
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <div className="flex items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-3">
                         <h2 className="text-2xl font-semibold transition-colors group-hover:text-primary">
                           {site.siteName}
                         </h2>
@@ -140,6 +176,12 @@ export default function SitesPage() {
                         >
                           {site.isActive ? "Active" : "Inactive"}
                         </div>
+
+                        {site.isPermanent && (
+                          <div className="rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+                            Permanent Home Site
+                          </div>
+                        )}
                       </div>
 
                       <div className="mt-4 flex items-start gap-2 text-muted-foreground">
@@ -150,6 +192,23 @@ export default function SitesPage() {
                         </p>
                       </div>
                     </div>
+
+                    <div className="flex items-center gap-2 self-center">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setSiteToDelete(site)
+                          setConfirmDeleteOpen(true)
+                        }}
+                        className="rounded-xl"
+                      >
+                        <Trash2 className="mr-1 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </div>
                   </div>
                 </Card>
               </Link>
@@ -157,6 +216,53 @@ export default function SitesPage() {
           )}
         </div>
       </div>
+
+      {/* Delete Warning Dialog */}
+      <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-destructive flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Site?
+            </DialogTitle>
+            <DialogDescription className="pt-2 text-base">
+              Are you sure you want to delete <strong>{siteToDelete?.siteName}</strong>?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="my-4 rounded-xl border bg-destructive/5 border-destructive/10 p-4 text-sm text-destructive space-y-2">
+            <p className="font-semibold">This action is permanent for the active roster:</p>
+            <ul className="list-disc pl-4 space-y-1">
+              <li>All associated jobs will be soft-deleted.</li>
+              <li>All assigned employees will have their site/job assignments cleared.</li>
+              <li>Any assigned supervisor will have their site assignment cleared.</li>
+              {siteToDelete?.isPermanent && (
+                <li className="font-bold underline text-red-600">WARNING: This is a Permanent Home Site!</li>
+              )}
+            </ul>
+          </div>
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              disabled={deletingSite}
+              onClick={() => {
+                setConfirmDeleteOpen(false)
+                setSiteToDelete(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingSite}
+              onClick={handleDeleteSite}
+            >
+              {deletingSite ? "Deleting..." : "Confirm Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

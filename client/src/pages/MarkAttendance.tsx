@@ -15,6 +15,7 @@ type Site = {
   siteName: string
   locationDetails: string
   isActive: boolean
+  isPermanent?: boolean
 }
 
 type SiteAttendanceStatus = {
@@ -51,9 +52,14 @@ function MarkAttendance() {
       })
 
       const fetchedSites = response.data || []
-      setSites(fetchedSites)
+      const sortedSites = [...fetchedSites].sort((a, b) => {
+        const aPerm = a.isPermanent ? 1 : 0
+        const bPerm = b.isPermanent ? 1 : 0
+        return bPerm - aPerm
+      })
+      setSites(sortedSites)
 
-      const statusPromises = fetchedSites.map(async (site: Site) => {
+      const statusPromises = sortedSites.map(async (site: Site) => {
         const res = await api.post(
           `/api/site/${site._id}/check-pending`,
           {
@@ -175,8 +181,13 @@ function MarkAttendance() {
                   <CardContent className="space-y-5 p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
-                        <h2 className="text-lg font-semibold">
+                        <h2 className="text-lg font-semibold flex flex-wrap items-center gap-2">
                           {site.siteName}
+                          {site.isPermanent && (
+                            <Badge className="bg-primary/10 text-primary border-primary/20 hover:bg-primary/20 text-[10px] font-medium h-4 py-0 px-1.5">
+                              Permanent
+                            </Badge>
+                          )}
                         </h2>
 
                         <div className="flex items-center gap-1 text-sm text-muted-foreground">

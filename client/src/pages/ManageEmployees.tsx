@@ -1,6 +1,6 @@
 // pages/ManageEmployees.tsx
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useMemo } from "react"
 import { Link, useParams } from "react-router-dom"
 
 import {
@@ -25,6 +25,15 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 interface Employee {
   _id: string
@@ -34,6 +43,7 @@ interface Employee {
   monthlySalary: number
   currentSite: string | null
   currentJob : string | null
+  user?: any
 }
 
 interface EmployeesResponse {
@@ -73,6 +83,14 @@ function ManageEmployees() {
     useState<Employee[]>([])
 
   const [loading, setLoading] = useState(false)
+
+  // Supervisor toggle filters
+  const [showSupervisorsOnlyCurrent, setShowSupervisorsOnlyCurrent] = useState(false)
+  const [showSupervisorsOnlyAvailable, setShowSupervisorsOnlyAvailable] = useState(false)
+
+  // Remove confirmation modal state
+  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
+  const [employeeToRemove, setEmployeeToRemove] = useState<Employee | null>(null)
 
   async function fetchSite() {
     try {
@@ -181,7 +199,25 @@ function ManageEmployees() {
   useEffect(() => {
     fetchAvailableEmployees()
   }, [filters2])
-  
+
+  // Filtered lists computed via useMemo
+  const filteredEmployees = useMemo(() => {
+    return employees.filter((emp) => {
+      if (showSupervisorsOnlyCurrent && !emp.user) {
+        return false
+      }
+      return true
+    })
+  }, [employees, showSupervisorsOnlyCurrent])
+
+  const filteredAvailableEmployees = useMemo(() => {
+    return availableEmployees.filter((emp) => {
+      if (showSupervisorsOnlyAvailable && !emp.user) {
+        return false
+      }
+      return true
+    })
+  }, [availableEmployees, showSupervisorsOnlyAvailable])
 
   return (
     <div className="min-h-screen bg-muted/30 p-6">
@@ -211,46 +247,53 @@ function ManageEmployees() {
             Current Employees
           </h2>
 
-          <div className="grid grid-cols-1 md: grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <Input
-            placeholder="Search by name"
-            value={filters.name}
-            onChange={(e) =>
-              setFilters({
-                ...filters,
-                name: e.target.value,
-              })
-            }
+              placeholder="Search by name"
+              value={filters.name}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  name: e.target.value,
+                })
+              }
             />
 
             <Input
-            placeholder="Employee ID"
-            value={filters.employeeId}
-            onChange={(e) =>
-              setFilters({
-                ...filters,
-                employeeId: e.target.value,
-              })
-            }
-          />
+              placeholder="Employee ID"
+              value={filters.employeeId}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  employeeId: e.target.value,
+                })
+              }
+            />
 
-          <Input
-            placeholder="Job Title"
-            value={filters.jobTitle}
-            onChange={(e) =>
-              setFilters({
-                ...filters,
-                jobTitle: e.target.value,
-              })
-            }
-          />
+            <Input
+              placeholder="Job Title"
+              value={filters.jobTitle}
+              onChange={(e) =>
+                setFilters({
+                  ...filters,
+                  jobTitle: e.target.value,
+                })
+              }
+            />
 
+            <Button
+              variant={showSupervisorsOnlyCurrent ? "default" : "outline"}
+              onClick={() => setShowSupervisorsOnlyCurrent(prev => !prev)}
+              className="w-full h-8"
+            >
+              {showSupervisorsOnlyCurrent ? "Supervisors Only" : "All Employees"}
+            </Button>
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[400px] overflow-y-auto">
+            <div className="h-[320px] overflow-y-auto">
               <Table>
-                <TableHeader className="sticky top-0 bg-background">
+                <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -272,24 +315,31 @@ function ManageEmployees() {
                         Loading employees...
                       </TableCell>
                     </TableRow>
-                  ) : employees.length === 0 ? (
+                  ) : filteredEmployees.length === 0 ? (
                     <TableRow>
                       <TableCell
                         colSpan={5}
                         className="h-24 text-center text-muted-foreground"
                       >
-                        No employees assigned
+                        {employees.length === 0 ? "No employees assigned" : "No supervisors assigned"}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    employees.map((employee, index) => (
+                    filteredEmployees.map((employee, index) => (
                       <TableRow key={employee._id}>
                         <TableCell>
                           {index + 1}
                         </TableCell>
 
                         <TableCell className="font-medium">
-                          {employee.name}
+                          <div className="flex items-center gap-2">
+                            <span>{employee.name}</span>
+                            {employee.user && (
+                              <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                Supervisor
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
 
                         <TableCell>
@@ -304,11 +354,10 @@ function ManageEmployees() {
                           <Button
                             variant="destructive"
                             size="sm"
-                            onClick={() =>
-                              removeEmployee(
-                                employee._id
-                              )
-                            }
+                            onClick={() => {
+                              setEmployeeToRemove(employee)
+                              setConfirmRemoveOpen(true)
+                            }}
                           >
                             <Minus className="mr-2 h-4 w-4" />
                             Remove
@@ -330,46 +379,53 @@ function ManageEmployees() {
             Available Employees
           </h2>
 
-          <div className="grid grid-cols-1 md: grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <Input
-            placeholder="Search by name"
-            value={filters2.name}
-            onChange={(e) =>
-              setFilters2({
-                ...filters2,
-                name: e.target.value,
-              })
-            }
+              placeholder="Search by name"
+              value={filters2.name}
+              onChange={(e) =>
+                setFilters2({
+                  ...filters2,
+                  name: e.target.value,
+                })
+              }
             />
 
             <Input
-            placeholder="Employee ID"
-            value={filters2.employeeId}
-            onChange={(e) =>
-              setFilters2({
-                ...filters2,
-                employeeId: e.target.value,
-              })
-            }
-          />
+              placeholder="Employee ID"
+              value={filters2.employeeId}
+              onChange={(e) =>
+                setFilters2({
+                  ...filters2,
+                  employeeId: e.target.value,
+                })
+              }
+            />
 
-          <Input
-            placeholder="Job Title"
-            value={filters2.jobTitle}
-            onChange={(e) =>
-              setFilters2({
-                ...filters2,
-                jobTitle: e.target.value,
-              })
-            }
-          />
+            <Input
+              placeholder="Job Title"
+              value={filters2.jobTitle}
+              onChange={(e) =>
+                setFilters2({
+                  ...filters2,
+                  jobTitle: e.target.value,
+                })
+              }
+            />
 
+            <Button
+              variant={showSupervisorsOnlyAvailable ? "default" : "outline"}
+              onClick={() => setShowSupervisorsOnlyAvailable(prev => !prev)}
+              className="w-full h-8"
+            >
+              {showSupervisorsOnlyAvailable ? "Supervisors Only" : "All Employees"}
+            </Button>
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[500px] overflow-y-auto">
+            <div className="h-[320px] overflow-y-auto">
               <Table>
-                <TableHeader className="sticky top-0 bg-background">
+                <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -382,17 +438,17 @@ function ManageEmployees() {
                 </TableHeader>
 
                 <TableBody>
-                  {availableEmployees.length === 0 ? (
+                  {filteredAvailableEmployees.length === 0 ? (
                     <TableRow>
                       <TableCell
                         colSpan={5}
                         className="h-24 text-center text-muted-foreground"
                       >
-                        No available employees
+                        {availableEmployees.length === 0 ? "No available employees" : "No available supervisors"}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    availableEmployees.map(
+                    filteredAvailableEmployees.map(
                       (employee, index) => (
                         <TableRow key={employee._id}>
                           <TableCell>
@@ -400,7 +456,14 @@ function ManageEmployees() {
                           </TableCell>
 
                           <TableCell className="font-medium">
-                            {employee.name}
+                            <div className="flex items-center gap-2">
+                              <span>{employee.name}</span>
+                              {employee.user && (
+                                <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                  Supervisor
+                                </Badge>
+                              )}
+                            </div>
                           </TableCell>
 
                           <TableCell>
@@ -434,8 +497,73 @@ function ManageEmployees() {
           </div>
         </Card>
       </div>
+
+      {/* Remove Confirmation Dialog */}
+      <Dialog open={confirmRemoveOpen} onOpenChange={setConfirmRemoveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">Remove Employee?</DialogTitle>
+            <DialogDescription className="pt-2 text-base">
+              Are you sure you want to remove the following employee from <strong>{site?.siteName}</strong>?
+            </DialogDescription>
+          </DialogHeader>
+
+          {employeeToRemove && (
+            <div className="my-4 rounded-xl border bg-muted/30 p-4 space-y-2 text-sm">
+              <div className="flex justify-between border-b pb-1.5">
+                <span className="text-muted-foreground">Name:</span>
+                <span className="font-semibold text-foreground">{employeeToRemove.name}</span>
+              </div>
+              <div className="flex justify-between border-b pb-1.5">
+                <span className="text-muted-foreground">Employee ID:</span>
+                <span className="font-mono text-foreground">{employeeToRemove.employeeId}</span>
+              </div>
+              <div className="flex justify-between border-b pb-1.5">
+                <span className="text-muted-foreground">Job Title:</span>
+                <span className="text-foreground">{employeeToRemove.jobTitle}</span>
+              </div>
+              <div className="flex justify-between items-center pt-0.5">
+                <span className="text-muted-foreground">Role:</span>
+                <span>
+                  {employeeToRemove.user ? (
+                    <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                      Supervisor
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">Standard Employee</span>
+                  )}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmRemoveOpen(false)
+                setEmployeeToRemove(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (employeeToRemove) {
+                  removeEmployee(employeeToRemove._id)
+                }
+                setConfirmRemoveOpen(false)
+                setEmployeeToRemove(null)
+              }}
+            >
+              Confirm Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
-export default ManageEmployees
+export default ManageEmployees

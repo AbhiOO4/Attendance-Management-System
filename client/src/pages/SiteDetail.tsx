@@ -5,6 +5,7 @@ import {
   Plus,
   MapPin,
   ArrowLeft,
+  Trash2,
 } from "lucide-react"
 
 import {
@@ -14,12 +15,15 @@ import {
   CalendarDays,
 } from "lucide-react"
 
+import toast from "react-hot-toast"
+
 import { useNavigate } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 
 import {
   Table,
@@ -49,6 +53,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
+  user?: string | null
 }
 
 interface Filters {
@@ -73,6 +78,7 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: string[]
+  isPermanent?: boolean
 }
 
 interface Job {
@@ -140,6 +146,15 @@ function SiteDetail() {
   })
 
   const [reactivating, setReactivating] = useState(false)
+
+  // Delete Site states
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [deletingSite, setDeletingSite] = useState(false)
+
+  // Delete Job states
+  const [confirmDeleteJobOpen, setConfirmDeleteJobOpen] = useState(false)
+  const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
+  const [deletingJob, setDeletingJob] = useState(false)
 
   const isSiteActive = site?.isActive
 
@@ -376,6 +391,36 @@ function SiteDetail() {
     }
   }
 
+  async function handleDeleteSite() {
+    try {
+      setDeletingSite(true)
+      await api.delete(`/api/site/${id}`)
+      toast.success("Site soft-deleted successfully")
+      setConfirmDeleteOpen(false)
+      navigate("/site")
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to delete site")
+    } finally {
+      setDeletingSite(false)
+    }
+  }
+
+  async function handleDeleteJob() {
+    if (!jobToDelete) return
+    try {
+      setDeletingJob(true)
+      await api.delete(`/api/site/job/${jobToDelete._id}`)
+      toast.success("Job soft-deleted successfully")
+      setConfirmDeleteJobOpen(false)
+      setJobToDelete(null)
+      fetchJobs()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to delete job")
+    } finally {
+      setDeletingJob(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-muted/30 p-6">
 
@@ -396,7 +441,7 @@ function SiteDetail() {
         <Card className="rounded-3xl border bg-card p-8 shadow-sm">
           <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
             <div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <h1 className="text-4xl font-bold tracking-tight">
                   {site?.siteName || "Site"}
                 </h1>
@@ -411,6 +456,12 @@ function SiteDetail() {
                     ? "Active"
                     : "Inactive"}
                 </div>
+
+                {site?.isPermanent && (
+                  <Badge className="bg-primary/10 text-primary border-primary/20 hover:bg-primary/20 font-medium">
+                    Permanent Home Site
+                  </Badge>
+                )}
               </div>
 
               <div className="mt-2 flex items-center gap-2 text-muted-foreground">
@@ -418,128 +469,166 @@ function SiteDetail() {
                 <p>{site?.locationDetails}</p>
               </div>
 
-                <div className="mt-6 grid gap-4 md:grid-cols-3">
-
-                  <div className="rounded-2xl bg-muted/50 p-4">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Clock3 className="h-4 w-4" />
-
-                      <span className="text-sm">
-                        Total Man Hours
-                      </span>
+                {site?.isPermanent ? (
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    <div className="rounded-2xl bg-primary/5 border border-primary/10 p-5 flex items-center gap-4">
+                      <div className="p-3 rounded-xl bg-primary/10 text-primary">
+                        <Users className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Currently Assigned Employees</div>
+                        <p className="mt-1 text-3xl font-bold text-foreground">
+                          {loadingEmployees ? "--" : employees.length}
+                        </p>
+                      </div>
                     </div>
 
-                    <p className="mt-2 text-2xl font-bold">
-                      {loadingSiteStats
-                        ? "--"
-                        : siteStats?.totalManHours ?? 0}
-                    </p>
+                    <div className="rounded-2xl bg-muted/50 border border-border p-5 flex items-center gap-4">
+                      <div className="p-3 rounded-xl bg-muted text-muted-foreground">
+                        <Briefcase className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Jobs</div>
+                        <p className="mt-1 text-3xl font-bold text-foreground">
+                          {loadingJobs ? "--" : jobs.length}
+                        </p>
+                      </div>
+                    </div>
                   </div>
+                ) : (
+                  <div className="mt-6 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl bg-muted/50 p-4">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Clock3 className="h-4 w-4" />
 
-                  <div className="rounded-2xl bg-muted/50 p-4">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Users className="h-4 w-4" />
+                        <span className="text-sm">
+                          Total Man Hours
+                        </span>
+                      </div>
 
-                      <span className="text-sm">
-                        Total Man Days
-                      </span>
+                      <p className="mt-2 text-2xl font-bold">
+                        {loadingSiteStats
+                          ? "--"
+                          : siteStats?.totalManHours ?? 0}
+                      </p>
                     </div>
 
-                    <p className="mt-2 text-2xl font-bold">
-                      {loadingSiteStats
-                        ? "--"
-                        : siteStats?.totalManDays ?? 0}
-                    </p>
-                  </div>
+                    <div className="rounded-2xl bg-muted/50 p-4">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Users className="h-4 w-4" />
 
-                  <div className="rounded-2xl bg-muted/50 p-4">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <CalendarDays className="h-4 w-4" />
+                        <span className="text-sm">
+                          Total Man Days
+                        </span>
+                      </div>
 
-                      <span className="text-sm">
-                        Calendar Days
-                      </span>
+                      <p className="mt-2 text-2xl font-bold">
+                        {loadingSiteStats
+                          ? "--"
+                          : siteStats?.totalManDays ?? 0}
+                      </p>
                     </div>
 
-                    <p className="mt-2 text-2xl font-bold">
-                      {loadingSiteStats
-                        ? "--"
-                        : siteStats?.totalCalendarDays ?? 0}
-                    </p>
-                  </div>
+                    <div className="rounded-2xl bg-muted/50 p-4">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <CalendarDays className="h-4 w-4" />
 
-                </div>
+                        <span className="text-sm">
+                          Calendar Days
+                        </span>
+                      </div>
+
+                      <p className="mt-2 text-2xl font-bold">
+                        {loadingSiteStats
+                          ? "--"
+                          : siteStats?.totalCalendarDays ?? 0}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
-            {isSiteActive ? (
-              <Dialog
-                open={deactivateOpen}
-                onOpenChange={setDeactivateOpen}
-              >
-                <DialogTrigger asChild>
-                  <Button
-                    variant="destructive"
-                    className="rounded-xl"
-                  >
-                    Deactivate Site
-                  </Button>
-                </DialogTrigger>
-
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle className="text-2xl">
-                      Deactivate Site?
-                    </DialogTitle>
-
-                    <DialogDescription className="pt-3 text-base leading-relaxed">
-                      All employees and supervisors
-                      associated with this site will be
-                      removed from the site upon
-                      deactivation.
-
-                      <br />
-                      <br />
-
-                      Jobs under this site will also
-                      become inactive.
-                    </DialogDescription>
-                  </DialogHeader>
-
-                  <DialogFooter className="mt-4 flex-col gap-3 sm:flex-row">
-                    <Button
-                      variant="outline"
-                      onClick={() =>
-                        setDeactivateOpen(false)
-                      }
-                    >
-                      Cancel
-                    </Button>
-
+          <div className="flex flex-wrap items-center gap-2">
+            {!site?.isPermanent && (
+              isSiteActive ? (
+                <Dialog
+                  open={deactivateOpen}
+                  onOpenChange={setDeactivateOpen}
+                >
+                  <DialogTrigger asChild>
                     <Button
                       variant="destructive"
-                      disabled={deactivating}
-                      onClick={deactivateSite}
+                      className="rounded-xl"
                     >
-                      {deactivating
-                        ? "Deactivating..."
-                        : "Deactivate Site"}
+                      Deactivate Site
                     </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
-            ) : (
-              <Button
-                className="rounded-xl"
-                disabled={reactivating}
-                onClick={reactivateSite}
-              >
-                {reactivating
-                  ? "Reactivating..."
-                  : "Re-Activate Site"}
-              </Button>
+                  </DialogTrigger>
+
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle className="text-2xl">
+                        Deactivate Site?
+                      </DialogTitle>
+
+                      <DialogDescription className="pt-3 text-base leading-relaxed">
+                        All employees and supervisors
+                        associated with this site will be
+                        removed from the site upon
+                        deactivation.
+
+                        <br />
+                        <br />
+
+                        Jobs under this site will also
+                        become inactive.
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    <DialogFooter className="mt-4 flex-col gap-3 sm:flex-row">
+                      <Button
+                        variant="outline"
+                        onClick={() =>
+                          setDeactivateOpen(false)
+                        }
+                      >
+                        Cancel
+                      </Button>
+
+                      <Button
+                        variant="destructive"
+                        disabled={deactivating}
+                        onClick={deactivateSite}
+                      >
+                        {deactivating
+                          ? "Deactivating..."
+                          : "Deactivate Site"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              ) : (
+                <Button
+                  className="rounded-xl"
+                  disabled={reactivating}
+                  onClick={reactivateSite}
+                >
+                  {reactivating
+                    ? "Reactivating..."
+                    : "Re-Activate Site"}
+                </Button>
+              )
             )}
+            <Button
+              variant="destructive"
+              className="rounded-xl"
+              onClick={() => setConfirmDeleteOpen(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete Site
+            </Button>
           </div>
-        </Card>
+        </div>
+      </Card>
 
         {/* Supervisors Section */}
 
@@ -551,11 +640,11 @@ function SiteDetail() {
 
             {isSiteActive ? (
               <Link
-                to={`/site/${id}/manage-supervisors`}
+                to={`/site/${id}/manage-employees`}
               >
                 <Button className="rounded-xl">
                   <Plus className="mr-2 h-4 w-4" />
-                  Manage Supervisors
+                  Manage Employees
                 </Button>
               </Link>
             ) : (
@@ -564,7 +653,7 @@ function SiteDetail() {
                 className="rounded-xl"
               >
                 <Plus className="mr-2 h-4 w-4" />
-                Manage Supervisors
+                Manage Employees
               </Button>
             )}
           </div>
@@ -752,7 +841,14 @@ function SiteDetail() {
                         </TableCell>
 
                         <TableCell className="font-medium">
-                          {employee.name}
+                          <div className="flex items-center gap-2">
+                            <span>{employee.name}</span>
+                            {employee.user && (
+                              <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                Supervisor
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
 
                         <TableCell>
@@ -935,7 +1031,21 @@ function SiteDetail() {
                       </p>
                     </div>
 
-                    <Briefcase className="h-6 w-6 text-muted-foreground" />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="destructive"
+                        size="icon-xs"
+                        className="rounded-lg h-7 w-7 p-0 flex items-center justify-center"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setJobToDelete(job)
+                          setConfirmDeleteJobOpen(true)
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                      <Briefcase className="h-6 w-6 text-muted-foreground" />
+                    </div>
                   </div>
 
                   <div className="space-y-4">
@@ -1003,6 +1113,93 @@ function SiteDetail() {
           )}
         </Card>
       </div>
+
+      {/* Delete Site Dialog */}
+      <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-destructive flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Site?
+            </DialogTitle>
+            <DialogDescription className="pt-2 text-base">
+              Are you sure you want to delete <strong>{site?.siteName}</strong>?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="my-4 rounded-xl border bg-destructive/5 border-destructive/10 p-4 text-sm text-destructive space-y-2">
+            <p className="font-semibold">This action is permanent for the active roster:</p>
+            <ul className="list-disc pl-4 space-y-1">
+              <li>All associated jobs will be soft-deleted.</li>
+              <li>All assigned employees will have their site/job assignments cleared.</li>
+              <li>Any assigned supervisor will have their site assignment cleared.</li>
+              {site?.isPermanent && (
+                <li className="font-bold underline text-red-600">WARNING: This is a Permanent Home Site!</li>
+              )}
+            </ul>
+          </div>
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              disabled={deletingSite}
+              onClick={() => setConfirmDeleteOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingSite}
+              onClick={handleDeleteSite}
+            >
+              {deletingSite ? "Deleting..." : "Confirm Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Job Dialog */}
+      <Dialog open={confirmDeleteJobOpen} onOpenChange={setConfirmDeleteJobOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-destructive flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Job?
+            </DialogTitle>
+            <DialogDescription className="pt-2 text-base">
+              Are you sure you want to delete job <strong>{jobToDelete?.name}</strong> ({jobToDelete?.jobCode})?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="my-4 rounded-xl border bg-destructive/5 border-destructive/10 p-4 text-sm text-destructive space-y-2">
+            <p className="font-semibold">This action is permanent for the active roster:</p>
+            <ul className="list-disc pl-4 space-y-1">
+              <li>All employees assigned to this job will have their job assignments cleared (set to null).</li>
+              <li>The job will be removed from the site's jobs array.</li>
+            </ul>
+          </div>
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              disabled={deletingJob}
+              onClick={() => {
+                setConfirmDeleteJobOpen(false)
+                setJobToDelete(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingJob}
+              onClick={handleDeleteJob}
+            >
+              {deletingJob ? "Deleting..." : "Confirm Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

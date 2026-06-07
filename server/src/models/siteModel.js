@@ -20,6 +20,14 @@ const siteSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  isPermanent: {
+    type: Boolean,
+    default: false
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

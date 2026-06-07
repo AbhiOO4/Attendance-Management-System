@@ -15,6 +15,7 @@ app.use(
 )
 
 import connectDB from './config/db.js'
+import Site from './models/siteModel.js'
 
 app.use(express.json()); // Essential to parse JSON payloads
 
@@ -39,7 +40,30 @@ app.use('/api/config', configRoutes)
 
 
 
-connectDB().then(() => {
+const initializePermanentSite = async () => {
+  try {
+    const siteName = "Workshop Phase 7";
+    const existing = await Site.findOne({ siteName: { $regex: new RegExp(`^${siteName}$`, 'i') } });
+    if (!existing) {
+      await Site.create({
+        siteName,
+        locationDetails: "Main Office & Workshop (Permanent Site)",
+        isPermanent: true,
+        isActive: true,
+      });
+      console.log(`Permanent site '${siteName}' created.`);
+    } else if (!existing.isPermanent) {
+      existing.isPermanent = true;
+      await existing.save();
+      console.log(`Site '${siteName}' updated to permanent.`);
+    }
+  } catch (error) {
+    console.error("Failed to initialize permanent site:", error);
+  }
+};
+
+connectDB().then(async () => {
+    await initializePermanentSite();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })

@@ -39,6 +39,10 @@ router.patch("/deactivate/:siteId", siteController.deactivateSite)//
 
 router.patch("/reactivate/:siteId",siteController.reactivateSite)//
 
+router.delete("/:siteId", siteController.deleteSite)
+
+router.delete("/job/:jobId", siteController.deleteJob)
+
 //Job routes
 
 router.post('/:siteId/add-job', siteController.addJob)//

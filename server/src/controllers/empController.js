@@ -54,7 +54,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user"
       )
       .populate("currentJob", "name") // 👈 add this
       .sort({ name: 1 });

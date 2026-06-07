@@ -190,7 +190,7 @@ export const monthlyReport = async (req, res) => {
       0
     ).getDate();
 
-    const WORKING_DAYS_PER_MONTH = 26; // TODO: Make configurable from WorkSchedule
+    const SALARY_DIVISOR = 26;
 
     const [employees, attendances, workConfig] =
       await Promise.all([
@@ -211,6 +211,28 @@ export const monthlyReport = async (req, res) => {
         success: false,
         message: "Work schedule configuration not found",
       });
+    }
+
+    // Calculate expected working days dynamically for this month
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1; // 1-indexed
+    const currentDay = today.getDate();
+
+    let lastDayToCount = daysInMonth;
+    if (yearNum === currentYear && monthNum === currentMonth) {
+      lastDayToCount = currentDay;
+    }
+
+    const weeklyHolidays = workConfig.weeklyHolidays || [];
+    let expectedWorkingDays = 0;
+
+    for (let d = 1; d <= lastDayToCount; d++) {
+      const date = new Date(yearNum, monthNum - 1, d);
+      const dayName = date.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+      if (!weeklyHolidays.includes(dayName)) {
+        expectedWorkingDays++;
+      }
     }
 
     const attendanceMap = new Map();
@@ -281,7 +303,7 @@ export const monthlyReport = async (req, res) => {
 
         const dailySalary =
           employee.monthlySalary /
-          WORKING_DAYS_PER_MONTH;
+          SALARY_DIVISOR;
 
         const normalPay =
           payableDays * dailySalary;
@@ -293,13 +315,9 @@ export const monthlyReport = async (req, res) => {
         const salary =
           normalPay + overtimePay;
 
-        const attendancePercentage =
-          Math.min(
-            (payableDays /
-              WORKING_DAYS_PER_MONTH) *
-              100,
-            100
-          );
+        const attendancePercentage = expectedWorkingDays > 0
+          ? Math.min((payableDays / expectedWorkingDays) * 100, 100)
+          : 0;
 
         return {
           employeeName: employee.name,
@@ -483,6 +501,7 @@ export const getSummary = async (req, res) => {
     const activeSites =
       await siteModel.find({
         isActive: true,
+        isDeleted: { $ne: true }
       })
         .select("siteName")
         .lean();
@@ -641,445 +660,7 @@ export const toggleHolidayStatus = async (req, res) => {
       message: "Failed to update holiday status",
     })
   }
-} //
-
-
-//submit
-export const bulkSubmitAttendance = async (req, res) => {
-  try {
-    const {
-      siteId,
-      date,
-      isHoliday = false,
-      attendance,
-    } = req.body;
-
-    // VALIDATION
-    if (
-      !siteId ||
-      !date ||
-      !attendance ||
-      !Array.isArray(attendance) ||
-      attendance.length === 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "siteId, date and attendance array are required",
-      });
-    }
-
-    const markedBy = req.user?.id;
-
-    // NORMALIZE DATE
-    const attendanceDate =
-      new Date(date);
-
-    attendanceDate.setUTCHours(
-      0,
-      0,
-      0,
-      0
-    );
-
-    // CHECK LOCK
-    const existingLock =
-      await AttendanceLock.findOne({
-        siteId,
-        date: attendanceDate,
-        isLocked: true,
-      });
-
-    if (existingLock) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Attendance already submitted and locked for this site/date",
-      });
-    }
-
-    // GET WORK CONFIG
-    const workConfig =
-      await workModel.findOne();
-
-    if (!workConfig) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Work schedule configuration not found",
-      });
-    }
-
-    const {fullDayHours, halfDayHours, overtimeThreshold} = workConfig;
-
-    const processedRecords = [];
-
-    // PROCESS EACH EMPLOYEE
-    for (const entry of attendance) {
-      const {
-        employeeId,
-        jobId,
-        checkIn,
-        checkOut,
-      } = entry;
-
-      // VALIDATE REQUIRED FIELDS
-      if (!employeeId) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "employeeId is required",
-        });
-      }
-
-
-
-      const hasCheckIn = !!checkIn;
-      const hasCheckOut = !!checkOut;
-
-      // CHECKOUT WITHOUT CHECKIN
-      if (!hasCheckIn && hasCheckOut) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Check-out cannot exist without check-in",
-        });
-      }
-
-      let workedHours = 0;
-
-      // ONLY VALIDATE IF BOTH EXIST
-      if (hasCheckIn && hasCheckOut) {
-        const newCheckIn =
-          new Date(checkIn);
-
-        const newCheckOut =
-          new Date(checkOut);
-
-        if (
-          isNaN(newCheckIn.getTime()) ||
-          isNaN(newCheckOut.getTime())
-        ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid checkIn/checkOut date",
-          });
-        }
-
-        workedHours =
-          (newCheckOut.getTime() -
-            newCheckIn.getTime()) /
-          (1000 * 60 * 60);
-
-        if (workedHours < 0) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "checkOut must be after checkIn",
-          });
-        }
-
-        if (workedHours > 24) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Shift duration cannot exceed 24 hours",
-          });
-        }
-      }
-      // SESSION OBJECT
-      const sessionData = {
-        siteId,
-        jobId,
-        checkIn,
-        checkOut,
-        workedHours,
-        markedBy,
-      };
-
-      // FIND EXISTING ATTENDANCE
-      let attendanceDoc =
-        await Attendance.findOne({
-          employee: employeeId,
-          date: attendanceDate,
-        }).populate("sessions.siteId", "siteName");
-
-      // CREATE NEW ATTENDANCE
-      if (!attendanceDoc) {
-        // CALCULATE STATUS
-        let status = "absent";
-
-        if (
-          workedHours >=
-          fullDayHours
-        ) {
-          status = "fullday";
-        } else if (
-          workedHours >=
-          halfDayHours
-        ) {
-          status = "halfday";
-        }
-
-        // CALCULATE OT
-        let overtimeHours = 0;
-
-        if (
-          workedHours >
-          overtimeThreshold
-        ) {
-          overtimeHours =
-            workedHours -
-            overtimeThreshold;
-        }
-
-        attendanceDoc =
-          await Attendance.create({
-            employee: employeeId,
-
-            siteId,
-            jobId,
-
-            markedBy,
-
-            date: attendanceDate,
-
-            status,
-
-            isHoliday,
-
-            totalWorkHours:
-              workedHours,
-
-            overtimeHours,
-
-            sessions: [sessionData],
-          });
-
-        processedRecords.push(
-          attendanceDoc
-        );
-
-        continue;
-      }
-
-      // FIND EXISTING SESSION FOR SAME SITE
-      const existingSessionIndex =
-        attendanceDoc.sessions.findIndex(
-          (session) =>
-            session.siteId._id.toString() ===
-            siteId.toString()
-        );
-
-      // CHECK OVERLAPS
-      const overlappingSession =
-        attendanceDoc.sessions.find(
-          (session, index) => {
-
-            // SKIP CURRENT SESSION WHEN UPDATING
-            if (
-              index ===
-              existingSessionIndex
-            ) {
-              return false;
-            }
-
-            // IGNORE INVALID SESSIONS
-            if (
-              !session.checkIn ||
-              !session.checkOut
-            ) {
-              return false;
-            }
-
-            const existingCheckIn =
-              new Date(
-                session.checkIn
-              );
-
-            const existingCheckOut =
-              new Date(
-                session.checkOut
-              );
-
-            if (!hasCheckIn || !hasCheckOut) {
-              return false;
-            }
-
-            return (
-              newCheckIn < existingCheckOut && newCheckOut > existingCheckIn
-            );
-          }
-        );
-
-      // OVERLAP FOUND
-      if (overlappingSession) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Attendance session overlaps with existing session",
-
-          overlap: {
-            employeeId,
-
-            siteName:
-              overlappingSession.siteId.siteName,
-
-            checkIn:
-              overlappingSession.checkIn,
-
-            checkOut:
-              overlappingSession.checkOut,
-          },
-        });
-      }
-
-      // UPDATE EXISTING SESSION
-      if (
-        existingSessionIndex !== -1
-      ) {
-        attendanceDoc.sessions[
-          existingSessionIndex
-        ] = {
-          ...attendanceDoc.sessions[
-            existingSessionIndex
-          ].toObject(),
-
-          ...sessionData,
-        };
-      }
-
-      // ADD NEW SESSION
-      else {
-        attendanceDoc.sessions.push(
-          sessionData
-        );
-      }
-
-      // SORT SESSIONS BY CHECK-IN
-      attendanceDoc.sessions.sort(
-        (a, b) =>
-          new Date(a.checkIn) -
-          new Date(b.checkIn)
-      );
-
-      // RECALCULATE TOTAL HOURS
-      const totalWorkHours =
-        attendanceDoc.sessions.reduce(
-          (acc, session) => {
-            return (
-              acc +
-              (session.workedHours ||
-                0)
-            );
-          },
-          0
-        );
-
-      // RECALCULATE STATUS
-      let status = "absent";
-
-      if (
-        totalWorkHours >=
-        fullDayHours
-      ) {
-        status = "fullday";
-      } else if (
-        totalWorkHours >=
-        halfDayHours
-      ) {
-        status = "halfday";
-      }
-
-      // RECALCULATE OT
-      let overtimeHours = 0;
-
-      if (
-        totalWorkHours >
-        overtimeThreshold
-      ) {
-        overtimeHours =
-          totalWorkHours -
-          overtimeThreshold;
-      }
-
-      // UPDATE DOC
-      attendanceDoc.totalWorkHours =
-        totalWorkHours;
-
-      attendanceDoc.status =
-        status;
-
-      attendanceDoc.overtimeHours =
-        overtimeHours;
-
-      attendanceDoc.isHoliday =
-        isHoliday;
-
-      attendanceDoc.siteId =
-        siteId;
-
-      attendanceDoc.jobId =
-        jobId;
-
-      attendanceDoc.markedBy =
-        markedBy;
-
-      await attendanceDoc.save();
-
-      processedRecords.push(
-        attendanceDoc
-      );
-    }
-
-    // CREATE LOCK
-    await AttendanceLock.create({
-      siteId,
-      date: attendanceDate,
-
-      isLocked: true,
-
-      lockedBy: markedBy,
-
-      lockedAt: new Date(),
-    });
-
-    return res.status(201).json({
-      success: true,
-
-      message:
-        "Attendance submitted successfully",
-
-      recordsProcessed:
-        processedRecords.length,
-
-      data: processedRecords,
-    });
-
-  } catch (error) {
-    console.error(error);
-
-    // DUPLICATE KEY ERROR
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Duplicate attendance detected",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-
-      message:
-        "Failed to submit attendance",
-
-      error: error.message,
-    });
-  }
-}; //
+} 
 
 
 // pst req to /api/attendance/submit
@@ -3030,7 +2611,6 @@ const attendanceController = {
   updateAttendance,
   toggleHolidayStatus,
 
-  bulkSubmitAttendance,
   getSiteAttendance,
   bulkEditAttendance,
   getAttendanceRecords,

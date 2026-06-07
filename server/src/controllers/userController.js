@@ -35,21 +35,6 @@ export function logout(req, res) {
     res.status(200).json({success: true, message: "Logged out successfully"})
 }
 
-
-export async function checkAuth(req, res){
-    try{
-        const id = req.user._id
-        const user = await userModel.findById(id).select("-password")
-        if (!user){
-            return res.status(400).json({success: false, message: "User not found"})
-        }
-        res.status(200).json({success: true, user})
-    }catch(error){
-        res.status(400).json({success: false, message: error.message})
-    }
-}
-
-
 export async function updateUser(req, res) {
   try {
     const { userId } = req.params;

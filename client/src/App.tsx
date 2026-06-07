@@ -10,7 +10,6 @@ import Login from "./pages/Login"
 
 import SitesPage from "./pages/SitesPage"
 import SiteDetail from "./pages/SiteDetail"
-import ManageSupervisors from "./pages/ManageSupervisors"
 import ManageEmployees from "./pages/ManageEmployees"
 
 import MarkAttendance from "./pages/MarkAttendance"
@@ -144,15 +143,6 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["admin"]}>
               <SiteDetail />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="site/:id/manage-supervisors"
-          element={
-            <ProtectedRoute allowedRoles={["admin"]}>
-              <ManageSupervisors />
             </ProtectedRoute>
           }
         />

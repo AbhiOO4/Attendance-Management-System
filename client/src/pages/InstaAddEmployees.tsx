@@ -44,7 +44,9 @@ import {
 import {
     Loader2,
     UserPlus,
-    ArrowLeft
+    ArrowLeft,
+    MapPin,
+    Briefcase
 } from "lucide-react"
 
 import {
@@ -587,104 +589,105 @@ function InstaAddEmployees() {
                     setConfirmOpen
                 }
             >
-                <DialogContent>
-
-                    <DialogHeader>
-                        <DialogTitle>
+                <DialogContent className="sm:max-w-[460px] rounded-2xl overflow-hidden p-0 border border-border bg-card shadow-2xl">
+                    <DialogHeader className="px-6 pt-6 pb-4 bg-muted/30 border-b border-border/40">
+                        <DialogTitle className="text-xl font-bold flex items-center gap-2 text-foreground">
+                            <UserPlus className="h-5 w-5 text-primary" />
                             Confirm Employee Add
                         </DialogTitle>
                     </DialogHeader>
 
-                    <div className="space-y-2">
-                        <strong>Select Job:</strong>
+                    <div className="p-6 space-y-6">
+                        {/* Employee Profile Card */}
+                        {selectedEmployee && (
+                            <div className="relative rounded-xl border border-border bg-card p-4 shadow-sm flex items-start gap-4 transition-all duration-200 hover:border-primary/20">
+                                <div className="h-12 w-12 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-lg shrink-0">
+                                    {selectedEmployee.name
+                                        ? selectedEmployee.name.split(' ').filter(Boolean).map(n => n[0]).join('').substring(0, 2).toUpperCase()
+                                        : "EE"}
+                                </div>
+                                <div className="space-y-2.5 min-w-0 flex-1">
+                                    <div>
+                                        <h3 className="font-bold text-foreground leading-tight text-base flex flex-wrap items-center gap-2">
+                                            {selectedEmployee.name}
+                                            {selectedEmployee.user && (
+                                                <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                                    Supervisor
+                                                </Badge>
+                                            )}
+                                        </h3>
+                                        <p className="text-xs text-muted-foreground mt-0.5">{selectedEmployee.jobTitle}</p>
+                                    </div>
 
-                        <Select
-                            value={selectedJob ?? "none"}
-                            onValueChange={(value) =>
-                                setSelectedJob(value === "none" ? null : value)
-                            }
-                        >
-                            <SelectTrigger>
-                                <SelectValue placeholder="Select job (optional)" />
-                            </SelectTrigger>
+                                    <div className="grid grid-cols-2 gap-3 pt-2 text-xs border-t border-border/60">
+                                        <div className="space-y-0.5">
+                                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Employee ID</div>
+                                            <div className="font-mono font-medium text-foreground">{selectedEmployee.employeeId}</div>
+                                        </div>
+                                        <div className="space-y-0.5">
+                                            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Current Site</div>
+                                            <div className="font-medium text-foreground truncate flex items-center gap-1">
+                                                <MapPin className="h-3.5 w-3.5 text-muted-foreground/60 shrink-0" />
+                                                <span className="truncate">{selectedEmployee.currentSite?.siteName || "Unassigned"}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
-                            <SelectContent>
-                                <SelectItem value="none">
-                                    Don't assign job
-                                </SelectItem>
+                        {/* Job Assignment Selector */}
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Briefcase className="h-4 w-4 text-muted-foreground" />
+                                <label className="text-sm font-semibold text-foreground">Assign Job Role</label>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Select a job from site <strong>{site?.siteName}</strong> to assign to this employee.
+                            </p>
 
-                                {site?.jobs?.map((job) => (
-                                    <SelectItem key={job._id} value={job._id}>
-                                        {job.name}
+                            <Select
+                                value={selectedJob ?? "none"}
+                                onValueChange={(value) =>
+                                    setSelectedJob(value === "none" ? null : value)
+                                }
+                            >
+                                <SelectTrigger className="w-full bg-background border-input shadow-sm hover:border-accent mt-1">
+                                    <SelectValue placeholder="Select job (optional)" />
+                                </SelectTrigger>
+
+                                <SelectContent>
+                                    <SelectItem value="none">
+                                        Don't assign job
                                     </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+
+                                    {site?.jobs?.map((job) => (
+                                        <SelectItem key={job._id} value={job._id}>
+                                            {job.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </div>
 
-                    {selectedEmployee && (
-                        <div className="space-y-3">
-
-                            <div>
-                                <strong>
-                                    Name:
-                                </strong>{" "}
-                                {
-                                    selectedEmployee.name
-                                }
-                            </div>
-
-                            <div>
-                                <strong>
-                                    Employee ID:
-                                </strong>{" "}
-                                {
-                                    selectedEmployee.employeeId
-                                }
-                            </div>
-
-                            <div>
-                                <strong>
-                                    Current Site:
-                                </strong>{" "}
-                                {selectedEmployee
-                                    .currentSite
-                                    ?.siteName ||
-                                    "Unassigned"}
-                            </div>
-
-                            {selectedEmployee.user && (
-                                <Badge>
-                                    Supervisor
-                                </Badge>
-                            )}
-
-                        </div>
-                    )}
-
-                    <DialogFooter>
-
+                    <DialogFooter className="px-6 py-4 bg-muted/30 border-t border-border/40 flex sm:justify-end gap-2">
                         <Button
                             variant="outline"
-                            onClick={() =>
-                                setConfirmOpen(
-                                    false
-                                )
-                            }
+                            onClick={() => setConfirmOpen(false)}
+                            className="w-full sm:w-auto"
                         >
                             Cancel
                         </Button>
 
                         <Button
-                            onClick={
-                                confirmAdd
-                            }
+                            onClick={confirmAdd}
+                            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
                         >
-                            Confirm
+                            <UserPlus className="h-4 w-4" />
+                            Confirm Add
                         </Button>
-
                     </DialogFooter>
-
                 </DialogContent>
             </Dialog>
 
