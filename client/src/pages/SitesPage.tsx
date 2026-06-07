@@ -194,20 +194,22 @@ export default function SitesPage() {
                     </div>
 
                     <div className="flex items-center gap-2 self-center">
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setSiteToDelete(site)
-                          setConfirmDeleteOpen(true)
-                        }}
-                        className="rounded-xl"
-                      >
-                        <Trash2 className="mr-1 h-4 w-4" />
-                        Delete
-                      </Button>
+                      {!site.isPermanent && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setSiteToDelete(site)
+                            setConfirmDeleteOpen(true)
+                          }}
+                          className="rounded-xl"
+                        >
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Delete
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </Card>

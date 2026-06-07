@@ -94,6 +94,10 @@ function ManageJobEmployees() {
 
   const [deactivateOpen, setDeactivateOpen] =  useState(false)
 
+  // Remove confirmation modal state
+  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false)
+  const [employeeToRemove, setEmployeeToRemove] = useState<Employee | null>(null)
+
   const isJobActive = job?.isActive
 
   async function fetchJob() {
@@ -435,9 +439,8 @@ function ManageJobEmployees() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[400px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background">
+            <Table wrapperClassName="h-[320px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>
                       Sl No
@@ -523,11 +526,10 @@ function ManageJobEmployees() {
                               disabled={
                                 !isJobActive
                               }
-                              onClick={() =>
-                                removeEmployee(
-                                  employee._id
-                                )
-                              }
+                              onClick={() => {
+                                setEmployeeToRemove(employee)
+                                setConfirmRemoveOpen(true)
+                              }}
                             >
                               <Minus className="mr-2 h-4 w-4" />
                               Remove
@@ -539,7 +541,6 @@ function ManageJobEmployees() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
         </Card>
 
@@ -601,9 +602,8 @@ function ManageJobEmployees() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[500px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background">
+            <Table wrapperClassName="h-[320px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>
                       Sl No
@@ -694,7 +694,6 @@ function ManageJobEmployees() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
 
           {/* Pagination */}
@@ -733,6 +732,59 @@ function ManageJobEmployees() {
           </div>
         </Card>
       </div>
+
+      {/* Remove Employee Confirmation Dialog */}
+      <Dialog open={confirmRemoveOpen} onOpenChange={setConfirmRemoveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">Remove Employee from Job?</DialogTitle>
+            <DialogDescription className="pt-2 text-base">
+              Are you sure you want to remove this employee from the job <strong>{job?.name}</strong>?
+            </DialogDescription>
+          </DialogHeader>
+
+          {employeeToRemove && (
+            <div className="my-4 rounded-xl border bg-muted/30 p-4 space-y-2 text-sm">
+              <div className="flex justify-between border-b pb-1.5">
+                <span className="text-muted-foreground">Name:</span>
+                <span className="font-semibold text-foreground">{employeeToRemove.name}</span>
+              </div>
+              <div className="flex justify-between border-b pb-1.5">
+                <span className="text-muted-foreground">Employee ID:</span>
+                <span className="font-mono text-foreground">{employeeToRemove.employeeId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Job Title:</span>
+                <span className="text-foreground">{employeeToRemove.jobTitle}</span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmRemoveOpen(false)
+                setEmployeeToRemove(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (employeeToRemove) {
+                  removeEmployee(employeeToRemove._id)
+                }
+                setConfirmRemoveOpen(false)
+                setEmployeeToRemove(null)
+              }}
+            >
+              Confirm Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

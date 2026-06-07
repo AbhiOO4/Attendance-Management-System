@@ -17,7 +17,7 @@ import {
 
 import toast from "react-hot-toast"
 
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useLocation } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import { Card } from "@/components/ui/card"
@@ -125,6 +125,7 @@ function SiteDetail() {
   //jobs
 
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [jobs, setJobs] = useState<Job[]>([])
 
@@ -427,7 +428,13 @@ function SiteDetail() {
       <div className="mx-auto max-w-7xl space-y-8">
 
         <div
-          onClick={() => navigate(-1)}
+          onClick={() => {
+            if (location.state?.from === "dashboard") {
+              navigate(-1)
+            } else {
+              navigate("/site")
+            }
+          }}
           className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground cursor-pointer"
         >
           <Button variant="outline" size="icon">
@@ -618,14 +625,16 @@ function SiteDetail() {
                 </Button>
               )
             )}
-            <Button
-              variant="destructive"
-              className="rounded-xl"
-              onClick={() => setConfirmDeleteOpen(true)}
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete Site
-            </Button>
+            {!site?.isPermanent && (
+              <Button
+                variant="destructive"
+                className="rounded-xl"
+                onClick={() => setConfirmDeleteOpen(true)}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Site
+              </Button>
+            )}
           </div>
         </div>
       </Card>
@@ -688,9 +697,8 @@ function SiteDetail() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[350px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background">
+            <Table wrapperClassName="h-[350px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -741,7 +749,6 @@ function SiteDetail() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
         </Card>
 
@@ -803,9 +810,8 @@ function SiteDetail() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="max-h-[500px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background">
+            <Table wrapperClassName="h-[400px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -863,7 +869,6 @@ function SiteDetail() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
         </Card>
 

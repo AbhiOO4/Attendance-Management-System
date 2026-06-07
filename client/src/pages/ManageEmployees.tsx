@@ -291,9 +291,8 @@ function ManageEmployees() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="h-[320px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background z-10">
+            <Table wrapperClassName="h-[320px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -368,7 +367,6 @@ function ManageEmployees() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
         </Card>
 
@@ -423,9 +421,8 @@ function ManageEmployees() {
           </div>
 
           <div className="overflow-hidden rounded-2xl border">
-            <div className="h-[320px] overflow-y-auto">
-              <Table>
-                <TableHeader className="sticky top-0 bg-background z-10">
+            <Table wrapperClassName="h-[320px] overflow-y-auto">
+              <TableHeader className="sticky top-0 bg-background z-10">
                   <TableRow>
                     <TableHead>Sl No</TableHead>
                     <TableHead>Name</TableHead>
@@ -493,7 +490,6 @@ function ManageEmployees() {
                   )}
                 </TableBody>
               </Table>
-            </div>
           </div>
         </Card>
       </div>

@@ -484,8 +484,7 @@ function MonthlyReport() {
         </div>
 
         <Card className="p-6">
-          <div className="h-[650px] overflow-auto rounded-xl border">
-            <Table>
+          <Table wrapperClassName="h-[650px] overflow-auto rounded-xl border">
               <TableHeader className="sticky top-0 bg-background z-10">
                 <TableRow>
                   <TableHead>Sl</TableHead>
@@ -614,7 +613,6 @@ function MonthlyReport() {
                 )}
               </TableBody>
             </Table>
-          </div>
         </Card>
       </div>
     </div>
