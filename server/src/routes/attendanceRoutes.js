@@ -5,45 +5,41 @@ import attendanceController from '../controllers/attendanceController.js'
 
 const router = express.Router()
 
-
-//Admin
-
 //prefix : /api/attendance
 
 router.use(verifyToken)
+
+// --- Specific routes FIRST (must come before /:attendanceId wildcard) ---
 
 router.post('/submit', attendanceController.siteFirstSubmitAttendance)
 
 router.get('/dashboard', attendanceController.getSummary)
 
-router.get("/:attendanceId",attendanceController.getAttendanceById)
-
 router.get('/reports/daily', attendanceController.getSiteAttendance)
+
+router.get('/reports/monthly/:month/:year', attendanceController.monthlyReport)
+
+router.get('/employee/:employeeId', attendanceController.getEmployeeAttendanceByMonth)
+
+// Backfill
+router.get('/missing', attendanceController.getMissingEmployees)
+
+router.post('/backfill', attendanceController.backfillAttendance)
+
+// GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
+router.get('/', attendanceController.getAttendanceRecords)
 
 router.patch('/bulk-update', attendanceController.bulkEditAttendance)
 
 router.patch('/unlock', attendanceController.unlockAttendance)
 
-router.get('/reports/monthly/:month/:year', attendanceController.monthlyReport)
-
-//prefix /api/attendance
-
-
 router.patch('/update/set-holiday', attendanceController.toggleHolidayStatus)
 
 router.patch('/update/:attendanceId', attendanceController.updateAttendance)
 
-router.post("/:attendanceId/sessions",attendanceController.addSessionToAttendance)
+router.post('/:attendanceId/sessions', attendanceController.addSessionToAttendance)
 
-//GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
-router.get('/', attendanceController.getAttendanceRecords)
-
-router.get('/employee/:employeeId', attendanceController.getEmployeeAttendanceByMonth)
-
-
-
-// router.get('/worker/:workerId', Attendance.getWorkerAttendance)
-
-
+// --- Wildcard route LAST ---
+router.get('/:attendanceId', attendanceController.getAttendanceById)
 
 export default router

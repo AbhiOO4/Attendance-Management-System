@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/table"
 
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
 
 import {
   Dialog,
@@ -46,6 +47,7 @@ interface Employee {
   monthlySalary: number
   currentSite: string | null
   currentJob: string | null
+  user?: any
 }
 
 interface EmployeesResponse {
@@ -502,9 +504,16 @@ function ManageJobEmployees() {
                           </TableCell>
 
                           <TableCell className="font-medium">
-                            {
-                              employee.name
-                            }
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-2">
+                                <span>{employee.name}</span>
+                                {employee.user && (
+                                  <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                    Supervisor
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
                           </TableCell>
 
                           <TableCell>
@@ -655,9 +664,16 @@ function ManageJobEmployees() {
                           </TableCell>
 
                           <TableCell className="font-medium">
-                            {
-                              employee.name
-                            }
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-2">
+                                <span>{employee.name}</span>
+                                {employee.user && (
+                                  <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                    Supervisor
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
                           </TableCell>
 
                           <TableCell>
@@ -753,9 +769,21 @@ function ManageJobEmployees() {
                 <span className="text-muted-foreground">Employee ID:</span>
                 <span className="font-mono text-foreground">{employeeToRemove.employeeId}</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between border-b pb-1.5">
                 <span className="text-muted-foreground">Job Title:</span>
                 <span className="text-foreground">{employeeToRemove.jobTitle}</span>
+              </div>
+              <div className="flex justify-between items-center pt-0.5">
+                <span className="text-muted-foreground">Role:</span>
+                <span>
+                  {employeeToRemove.user ? (
+                    <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                      Supervisor
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">Standard Employee</span>
+                  )}
+                </span>
               </div>
             </div>
           )}

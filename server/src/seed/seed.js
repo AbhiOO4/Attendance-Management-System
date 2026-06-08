@@ -296,7 +296,7 @@ const jobtitles = [
 ];
 
 // await jobTitleModel.insertMany(jobtitles);
-await employeeModel.insertMany(employees);
+// await employeeModel.insertMany(employees);
 
 
 async function createAdmin (name, email, password) {
@@ -305,4 +305,6 @@ async function createAdmin (name, email, password) {
 }
 
 // seeWorkSchedule()
-// createAdmin('Abhi', 'abhinavsree243@gmail.com', "abhi@123", )
+createAdmin('Sheikha', 'Sheikha.ngdp@hotmail.com', "adminngdp@2026", )
+createAdmin('Halimafazari', 'halimafazari.ngdp@gmail.com', "adminngdp@2026", )
+createAdmin('Lamyakhalfan', 'lamyakhalfan.ngdp@gmail.com', "adminngdp@2026", )

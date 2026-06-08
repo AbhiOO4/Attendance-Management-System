@@ -776,11 +776,38 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           job,
           checkIn,
           checkOut,
-          isNightShift: sessionIsNight = false,
         } = session
 
         const finalSiteId = sessionSiteId || siteId
         const cutoffHour = workConfig.nightShiftCutoffHour || 7
+
+        let sessionIsNight = false;
+        if (checkIn) {
+          const [inH, inM] = checkIn.split(":").map(Number);
+          if (inH >= 0 && inH < cutoffHour) {
+            sessionIsNight = true;
+          }
+          if (checkOut) {
+            const [outH, outM] = checkOut.split(":").map(Number);
+            if ((outH * 60 + outM) < (inH * 60 + inM)) {
+              sessionIsNight = true;
+            }
+          }
+        }
+
+        // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
+        if (checkIn && checkOut) {
+          const [inH] = checkIn.split(":").map(Number);
+          const [outH] = checkOut.split(":").map(Number);
+          if (inH >= 0 && inH < cutoffHour) {
+            if (outH >= cutoffHour) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
+              });
+            }
+          }
+        }
 
         // Night shift time checks: AM times must be before cutoff
         if (sessionIsNight) {
@@ -1717,6 +1744,8 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
+      const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+
       // Validate sessions first
       for (const session of sessions) {
         if (!session.checkIn && session.checkOut) {
@@ -1725,8 +1754,46 @@ export const updateAttendance = async (req, res) => {
             message: "Check-out cannot exist without check-in",
           });
         }
-        if (session.isNightShift) {
-          const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+
+        // Determine if night shift automatically
+        let sessionIsNight = false;
+        if (session.checkIn) {
+          const inDate = new Date(session.checkIn);
+          const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
+          const inH = localInTime.getUTCHours();
+          if (inH >= 0 && inH < cutoffHour) {
+            sessionIsNight = true;
+          }
+          if (session.checkOut) {
+            const outDate = new Date(session.checkOut);
+            if (outDate < inDate) {
+              sessionIsNight = true;
+            }
+          }
+        }
+
+        // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
+        if (session.checkIn && session.checkOut) {
+          const inDate = new Date(session.checkIn);
+          const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
+          const inH = localInTime.getUTCHours();
+
+          const outDate = new Date(session.checkOut);
+          const localOutTime = new Date(outDate.getTime() - offsetVal * 60 * 1000);
+          const outH = localOutTime.getUTCHours();
+
+          if (inH >= 0 && inH < cutoffHour) {
+            if (outH >= cutoffHour) {
+              return res.status(400).json({
+                success: false,
+                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
+              });
+            }
+          }
+        }
+
+        // Night shift time checks: AM times must be before cutoff
+        if (sessionIsNight) {
           if (session.checkIn) {
             const inDate = new Date(session.checkIn);
             const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
@@ -1767,28 +1834,36 @@ export const updateAttendance = async (req, res) => {
           }
 
           let workedHours = 0;
+          let sessionIsNight = false;
 
-          if (
-            session.checkIn &&
-            session.checkOut
-          ) {
+          if (session.checkIn) {
+            const inDate = new Date(session.checkIn);
+            const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
+            const inH = localInTime.getUTCHours();
+            if (inH >= 0 && inH < cutoffHour) {
+              sessionIsNight = true;
+            }
+
             const checkIn = new Date(
               session.checkIn
             );
 
-            const checkOut = new Date(
-              session.checkOut
-            );
+            if (session.checkOut) {
+              const checkOut = new Date(
+                session.checkOut
+              );
 
-            // Handle cross-midnight: if checkOut is on the next day
-            if (checkOut < checkIn) {
-              checkOut.setDate(checkOut.getDate() + 1);
+              // Handle cross-midnight: if checkOut is on the next day
+              if (checkOut < checkIn) {
+                checkOut.setDate(checkOut.getDate() + 1);
+                sessionIsNight = true;
+              }
+
+              workedHours =
+                (checkOut.getTime() -
+                  checkIn.getTime()) /
+                (1000 * 60 * 60);
             }
-
-            workedHours =
-              (checkOut.getTime() -
-                checkIn.getTime()) /
-              (1000 * 60 * 60);
           }
 
           return {
@@ -1802,8 +1877,7 @@ export const updateAttendance = async (req, res) => {
             workedHours: Number(
               workedHours.toFixed(2)
             ),
-            isNightShift:
-              session.isNightShift || false,
+            isNightShift: sessionIsNight,
             markedBy:
               session.markedBy ||
               attendance.markedBy,
@@ -1887,12 +1961,19 @@ export const updateAttendance = async (req, res) => {
           currentEnd > nextStart;
 
         if (hasOverlap) {
+          let conflicting = next;
+          if (siteId && current.siteId.toString() !== siteId.toString()) {
+            conflicting = current;
+          }
+
+          const site = await Site.findById(conflicting.siteId).select("siteName");
+
           return res.status(400).json({
             success: false,
-            message:
-              "Attendance sessions overlap",
+            message: "Attendance sessions overlap",
 
             overlap: {
+              employeeId: attendance.employee,
               firstIndex: i,
               secondIndex: i + 1,
 
@@ -1900,20 +1981,24 @@ export const updateAttendance = async (req, res) => {
                 _id: current._id,
                 siteId: current.siteId,
                 jobId: current.jobId,
-                checkIn:
-                  current.checkIn,
-                checkOut:
-                  current.checkOut,
+                checkIn: current.checkIn,
+                checkOut: current.checkOut,
               },
 
               sessionB: {
                 _id: next._id,
                 siteId: next.siteId,
                 jobId: next.jobId,
-                checkIn:
-                  next.checkIn,
-                checkOut:
-                  next.checkOut,
+                checkIn: next.checkIn,
+                checkOut: next.checkOut,
+              },
+
+              conflictingSession: {
+                siteId: conflicting.siteId,
+                siteName: site ? (site.siteName || "Unknown Site") : "Unknown Site",
+                jobId: conflicting.jobId,
+                checkIn: conflicting.checkIn,
+                checkOut: conflicting.checkOut,
               },
             },
           });
@@ -2602,6 +2687,324 @@ export const addSessionToAttendance = async (
 
 
 
+// --- BACKFILL ---
+
+// GET /api/attendance/missing?date=&name=&employeeId=&jobTitle=&page=&limit=
+export const getMissingEmployees = async (req, res) => {
+  try {
+    let { date, name, employeeId, jobTitle, page = 1, limit = 10 } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'date is required' });
+    }
+
+    page = Math.max(Number(page) || 1, 1);
+    limit = Math.min(Number(limit) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    // Date range for the selected day
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Get employee IDs that already have a record for this date
+    const existingRecords = await Attendance.find({
+      date: { $gte: startDate, $lte: endDate },
+    }).select('employee').lean();
+
+    const recordedEmployeeIds = existingRecords.map((r) => r.employee.toString());
+
+    // Build employee filter
+    let employeeFilter = { isActive: true };
+
+    if (recordedEmployeeIds.length > 0) {
+      employeeFilter._id = { $nin: recordedEmployeeIds.map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+
+    if (name) {
+      employeeFilter.name = { $regex: name, $options: 'i' };
+    }
+    if (employeeId) {
+      employeeFilter.employeeId = { $regex: employeeId, $options: 'i' };
+    }
+    if (jobTitle) {
+      employeeFilter.jobTitle = { $regex: jobTitle, $options: 'i' };
+    }
+
+    const totalEmployees = await Employee.countDocuments(employeeFilter);
+    const totalPages = Math.ceil(totalEmployees / limit);
+
+    const employees = await Employee.find(
+      employeeFilter,
+      '_id name employeeId jobTitle currentSite currentJob'
+    )
+      .populate('currentSite', 'siteName')
+      .populate('currentJob', 'name')
+      .sort({ name: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      pagination: { currentPage: page, totalPages, totalEmployees, limit },
+      data: employees,
+    });
+  } catch (error) {
+    console.error('getMissingEmployees error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch missing employees' });
+  }
+};
+
+// POST /api/attendance/backfill
+// Body: { employeeMongoId, date, sessions: [{siteId, jobId, checkIn, checkOut, isNightShift}] }
+export const backfillAttendance = async (req, res) => {
+  try {
+    const { employeeMongoId, date, sessions = [] } = req.body;
+    const markedBy = req.user?.id;
+    const timezoneOffset = req.headers['x-timezone-offset'];
+
+    if (!employeeMongoId || !date) {
+      return res.status(400).json({ success: false, message: 'employeeMongoId and date are required' });
+    }
+
+    // Verify employee exists
+    const employee = await Employee.findById(employeeMongoId).lean();
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Check if a record already exists for this employee on this date
+    const existing = await Attendance.findOne({ employee: employeeMongoId, date: attendanceDate });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Attendance record already exists for this employee on this date' });
+    }
+
+    const workConfig = await workModel.findOne({ type: 'default' });
+    if (!workConfig) {
+      return res.status(404).json({ success: false, message: 'Work schedule configuration not found' });
+    }
+
+    const { fullDayHours, halfDayHours, overtimeThreshold, nightShiftCutoffHour: cutoffHour = 7 } = workConfig;
+
+    // Validate and build sessions
+    if (!Array.isArray(sessions)) {
+      return res.status(400).json({ success: false, message: 'sessions must be an array' });
+    }
+
+    const builtSessions = [];
+
+    for (const session of sessions) {
+      const { siteId: sessionSiteId, jobId, checkIn, checkOut } = session;
+
+      if (!sessionSiteId) {
+        return res.status(400).json({ success: false, message: 'Every session must have a site selected' });
+      }
+
+      if (!checkIn && checkOut) {
+        return res.status(400).json({ success: false, message: 'Check-out cannot exist without check-in' });
+      }
+
+      let sessionIsNight = false;
+      if (checkIn) {
+        const [inH, inM] = checkIn.split(':').map(Number);
+        if (inH >= 0 && inH < cutoffHour) {
+          sessionIsNight = true;
+        }
+        if (checkOut) {
+          const [outH, outM] = checkOut.split(':').map(Number);
+          if ((outH * 60 + outM) < (inH * 60 + inM)) {
+            sessionIsNight = true;
+          }
+        }
+      }
+
+      // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
+      if (checkIn && checkOut) {
+        const [inH] = checkIn.split(':').map(Number);
+        const [outH] = checkOut.split(':').map(Number);
+        if (inH >= 0 && inH < cutoffHour) {
+          if (outH >= cutoffHour) {
+            return res.status(400).json({
+              success: false,
+              message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
+            });
+          }
+        }
+      }
+
+      // Night shift cutoff validation
+      if (sessionIsNight) {
+        if (checkIn) {
+          const [inH] = checkIn.split(':').map(Number);
+          if (inH >= cutoffHour && inH < 12) {
+            return res.status(400).json({ success: false, message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.` });
+          }
+        }
+        if (checkOut) {
+          const [outH] = checkOut.split(':').map(Number);
+          if (outH >= cutoffHour && outH < 12) {
+            return res.status(400).json({ success: false, message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.` });
+          }
+        }
+      }
+
+      let workedHours = 0;
+      const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour, timezoneOffset };
+
+      const checkInDate = checkIn ? combineDateAndTime(date, checkIn, cutoffOpts) : null;
+      const checkOutDate = checkOut ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...cutoffOpts }) : null;
+
+      if (checkInDate && checkOutDate) {
+        workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
+        if (workedHours < 0 || workedHours > 24) {
+          return res.status(400).json({ success: false, message: 'Invalid shift duration' });
+        }
+      }
+
+      builtSessions.push({
+        siteId: sessionSiteId,
+        jobId: jobId || null,
+        checkIn: checkInDate,
+        checkOut: checkOutDate,
+        workedHours: Number(workedHours.toFixed(2)),
+        markedBy,
+        isNightShift: sessionIsNight,
+      });
+    }
+
+    // Sort sessions by checkIn
+    builtSessions.sort((a, b) => {
+      if (!a.checkIn && !b.checkIn) return 0;
+      if (!a.checkIn) return 1;
+      if (!b.checkIn) return -1;
+      return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime();
+    });
+
+    // Overlap check
+    const validSessions = builtSessions.filter((s) => s.checkIn);
+    for (let i = 0; i < validSessions.length - 1; i++) {
+      const a = validSessions[i];
+      const b = validSessions[i + 1];
+      const aStart = new Date(a.checkIn);
+      const aEnd = a.checkOut ? new Date(a.checkOut) : aStart;
+      const bStart = new Date(b.checkIn);
+      const bEnd = b.checkOut ? new Date(b.checkOut) : bStart;
+
+      if (aStart < bEnd && aEnd > bStart) {
+        const site = await Site.findById(b.siteId).select("siteName");
+
+        return res.status(400).json({
+          success: false,
+          message: 'Attendance sessions overlap',
+          overlap: {
+            employeeId: employeeMongoId,
+            firstIndex: i,
+            secondIndex: i + 1,
+            sessionA: { checkIn: a.checkIn, checkOut: a.checkOut },
+            sessionB: { checkIn: b.checkIn, checkOut: b.checkOut },
+            conflictingSession: {
+              siteId: b.siteId,
+              siteName: site ? (site.siteName || "Unknown Site") : "Unknown Site",
+              jobId: b.jobId,
+              checkIn: b.checkIn,
+              checkOut: b.checkOut,
+            }
+          },
+        });
+      }
+    }
+
+    // Totals
+    const totalWorkHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
+    let status = 'absent';
+    if (totalWorkHours >= fullDayHours) status = 'fullday';
+    else if (totalWorkHours >= halfDayHours) status = 'halfday';
+
+    let overtimeHours = 0;
+    if (totalWorkHours > overtimeThreshold) {
+      overtimeHours = Number((totalWorkHours - overtimeThreshold).toFixed(2));
+    }
+
+    const hasCrossedMidnight = detectCrossedMidnight(builtSessions, timezoneOffset);
+
+    // Default siteId = first session's site (if any), else employee's current site
+    const primarySiteId = builtSessions.length > 0 ? builtSessions[0].siteId : (employee.currentSite || null);
+
+    if (!primarySiteId) {
+      return res.status(400).json({ success: false, message: 'Could not determine a site for this record. Add at least one session with a site.' });
+    }
+
+    const newAttendance = new Attendance({
+      employee: employeeMongoId,
+      date: attendanceDate,
+      siteId: primarySiteId,
+      jobId: builtSessions.length > 0 ? (builtSessions[0].jobId || null) : null,
+      markedBy,
+      isHoliday: false,
+      status,
+      totalWorkHours,
+      overtimeHours,
+      shiftType: hasCrossedMidnight ? 'night' : 'day',
+      crossedMidnight: hasCrossedMidnight,
+      sessions: builtSessions,
+    });
+
+    await newAttendance.save();
+
+    // Populate for response
+    const populated = await Attendance.findById(newAttendance._id)
+      .populate('employee', 'name employeeId jobTitle')
+      .populate('siteId', 'siteName')
+      .populate('jobId', 'name')
+      .populate('sessions.siteId', 'siteName')
+      .populate('sessions.jobId', 'name')
+      .lean();
+
+    const record = populated;
+    const formatted = {
+      attendanceId: record._id,
+      employee: record.employee?._id,
+      name: record.employee?.name || '',
+      employeeId: record.employee?.employeeId || '',
+      jobTitle: record.employee?.jobTitle || '',
+      siteId: record.siteId?._id,
+      siteName: record.siteId?.siteName || '',
+      jobId: record.jobId?._id || null,
+      jobName: record.jobId?.name || '',
+      date: record.date,
+      status: record.status,
+      isHoliday: record.isHoliday,
+      totalWorkHours: record.totalWorkHours,
+      overtimeHours: record.overtimeHours,
+      shiftType: record.shiftType,
+      crossedMidnight: record.crossedMidnight,
+      sessions: record.sessions.map((session) => ({
+        _id: session._id,
+        siteId: session.siteId?._id,
+        siteName: session.siteId?.siteName || '',
+        jobId: session.jobId?._id || null,
+        jobName: session.jobId?.name || '',
+        checkIn: session.checkIn,
+        checkOut: session.checkOut,
+        workedHours: session.workedHours,
+        isNightShift: session.isNightShift || false,
+        markedBy: session.markedBy,
+      })),
+    };
+
+    return res.status(201).json({ success: true, message: 'Attendance record created successfully', attendance: formatted });
+  } catch (error) {
+    console.error('backfillAttendance error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to create attendance record', error: error.message });
+  }
+};
+
+
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
@@ -2617,7 +3020,9 @@ const attendanceController = {
   getEmployeeAttendanceByMonth,
   siteFirstSubmitAttendance,
   getAttendanceById,
-  addSessionToAttendance
+  addSessionToAttendance,
+  getMissingEmployees,
+  backfillAttendance,
 
 };
 

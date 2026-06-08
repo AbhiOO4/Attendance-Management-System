@@ -48,6 +48,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
+  currentJob: { _id: string; name: string } | null
 }
 
 
@@ -149,7 +150,7 @@ function Employees() {
     fetchEmployees()
   }, [filters])
 
-  const addEmployee = async ( newEmployee: Omit<Employee, "_id"> ) => {
+  const addEmployee = async ( newEmployee: Omit<Employee, "_id" | "currentJob"> ) => {
     try{
 
       if (newEmployee.currentSite === " "){
@@ -332,18 +333,22 @@ function Employees() {
                   </TableCell>
 
                   <TableCell>
-                    {employee.currentSite
-                      ? siteMap[
-                          employee.currentSite
-                        ]
-                      : "Not Assigned"}
+                    <div className="flex flex-col gap-0.5">
+                      <span>{employee.currentSite ? siteMap[employee.currentSite] : "Not Assigned"}</span>
+                      {employee.currentJob && (
+                        <span className="text-xs text-muted-foreground">{employee.currentJob.name}</span>
+                      )}
+                    </div>
                   </TableCell>
 
                   <TableCell className="flex justify-end gap-2">
                     {/* EDIT */}
 
                     <EditEmployee
-                      employee={employee}
+                      employee={{
+                        ...employee,
+                        currentJob: employee.currentJob?._id ?? null,
+                      }}
                       onSave={editEmployee}
                       sites={sites}
                     />

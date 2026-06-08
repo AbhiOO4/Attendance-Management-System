@@ -6,6 +6,7 @@ import {
   MapPin,
   ArrowLeft,
   Trash2,
+  Loader2,
 } from "lucide-react"
 
 import {
@@ -34,6 +35,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+
 // add these imports
 
 import {
@@ -53,6 +62,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
+  currentJob: { _id: string; name: string } | string | null
   user?: string | null
 }
 
@@ -159,6 +169,9 @@ function SiteDetail() {
 
   const isSiteActive = site?.isActive
 
+  // inline job-change state
+  const [updatingJobFor, setUpdatingJobFor] = useState<string | null>(null)
+
   const [siteStats, setSiteStats] =
     useState<SiteStats | null>(null)
 
@@ -188,7 +201,7 @@ function SiteDetail() {
       setLoadingJobs(true)
 
       const res = await api.get(
-        `/api/site/${id}/jobs`
+        `/api/site/${id}/Jobs`
       )
 
       setJobs(res.data)
@@ -198,6 +211,29 @@ function SiteDetail() {
       setJobs([])
     } finally {
       setLoadingJobs(false)
+    }
+  }
+
+  async function updateEmployeeJob(employee: Employee, newJobId: string | null) {
+    try {
+      setUpdatingJobFor(employee._id)
+      const currentSiteId = typeof employee.currentSite === "object" && employee.currentSite !== null
+        ? (employee.currentSite as any)._id
+        : employee.currentSite
+      await api.put(`/api/employees/${employee._id}`, {
+        name: employee.name,
+        employeeId: employee.employeeId,
+        jobTitle: employee.jobTitle,
+        monthlySalary: employee.monthlySalary,
+        currentSite: currentSiteId || null,
+        currentJob: newJobId,
+      })
+      toast.success("Job updated")
+      fetchEmployees()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to update job")
+    } finally {
+      setUpdatingJobFor(null)
     }
   }
 
@@ -817,6 +853,7 @@ function SiteDetail() {
                     <TableHead>Name</TableHead>
                     <TableHead>Employee ID</TableHead>
                     <TableHead>Job Title</TableHead>
+                    <TableHead>Current Job</TableHead>
                   </TableRow>
                 </TableHeader>
 
@@ -824,7 +861,7 @@ function SiteDetail() {
                   {loadingEmployees ? (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
+                        colSpan={5}
                         className="h-24 text-center"
                       >
                         Loading employees...
@@ -833,7 +870,7 @@ function SiteDetail() {
                   ) : employees.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
+                        colSpan={5}
                         className="h-24 text-center text-muted-foreground"
                       >
                         No employees found
@@ -863,6 +900,38 @@ function SiteDetail() {
 
                         <TableCell>
                           {employee.jobTitle}
+                        </TableCell>
+
+                        <TableCell className="min-w-[160px]">
+                          {updatingJobFor === employee._id ? (
+                            <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Updating...
+                            </div>
+                          ) : (
+                            <Select
+                              value={
+                                typeof employee.currentJob === "object" && employee.currentJob !== null
+                                  ? employee.currentJob._id
+                                  : employee.currentJob ?? "none"
+                              }
+                              onValueChange={(val) =>
+                                updateEmployeeJob(employee, val === "none" ? null : val)
+                              }
+                            >
+                              <SelectTrigger className="h-8 text-sm w-full">
+                                <SelectValue placeholder="No Job" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">— Not Assigned —</SelectItem>
+                                {jobs.map((job) => (
+                                  <SelectItem key={job._id} value={job._id}>
+                                    {job.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))

@@ -455,7 +455,7 @@ function MonthlyReport() {
             </p>
 
             <p className="text-2xl font-bold">
-              ₹
+              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
               {totals.normalPay.toLocaleString()}
             </p>
           </Card>
@@ -466,7 +466,7 @@ function MonthlyReport() {
             </p>
 
             <p className="text-2xl font-bold">
-              ₹
+              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
               {totals.overtimePay.toLocaleString()}
             </p>
           </Card>
@@ -477,7 +477,7 @@ function MonthlyReport() {
             </p>
 
             <p className="text-2xl font-bold">
-              ₹
+              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
               {totals.salary.toLocaleString()}
             </p>
           </Card>
@@ -594,17 +594,14 @@ function MonthlyReport() {
                         </TableCell>
 
                         <TableCell>
-                          ₹
                           {employee.normalPay.toLocaleString()}
                         </TableCell>
 
                         <TableCell>
-                          ₹
                           {employee.overtimePay.toLocaleString()}
                         </TableCell>
 
                         <TableCell className="font-semibold">
-                          ₹
                           {employee.salary.toLocaleString()}
                         </TableCell>
                       </TableRow>

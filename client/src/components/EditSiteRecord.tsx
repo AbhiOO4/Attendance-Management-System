@@ -288,63 +288,64 @@ const [sessionToDelete, setSessionToDelete] =
   index: number,
   field: keyof AttendanceSession | "isNightShift",
   value: any
-) => {
+ ) => {
   const updated = [...sessions]
 
   if (field === "isNightShift") {
-    const isNight = !!value
-    if (isNight) {
-      const checkInTime = toTimeValue(updated[index].checkIn)
-      const checkOutTime = toTimeValue(updated[index].checkOut)
-      if (checkInTime && !isValidNightShiftTime(checkInTime, config.nightShiftCutoffHour)) {
+    return
+  }
+
+  if (field === "checkIn" || field === "checkOut") {
+    const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
+    const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
+
+    // 1. RULE: checkout time cannot be >= cutoffHour if checkin was before cutoffHour
+    if (checkInVal && checkOutVal) {
+      const [inH] = checkInVal.split(":").map(Number)
+      const [outH] = checkOutVal.split(":").map(Number)
+      if (inH >= 0 && inH < config.nightShiftCutoffHour && outH >= config.nightShiftCutoffHour) {
+        toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) if checked in before ${config.nightShiftCutoffHour}:00 AM.`)
+        return
+      }
+    }
+
+    // 2. Auto-detect night shift
+    let nextIsNight = false
+    if (checkInVal) {
+      const inRange = isCheckInInToggleRange(checkInVal, config.nightShiftCutoffHour)
+      if (inRange) {
+        nextIsNight = true
+      }
+      if (checkOutVal && isCrossMidnight(checkInVal, checkOutVal, false)) {
+        nextIsNight = true
+      }
+    }
+
+    // 3. Night shift cutoff validation
+    if (nextIsNight) {
+      if (checkInVal && !isValidNightShiftTime(checkInVal, config.nightShiftCutoffHour)) {
         toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
         return
       }
-      if (checkOutTime && !isValidNightShiftTime(checkOutTime, config.nightShiftCutoffHour)) {
+      if (checkOutVal && !isValidNightShiftTime(checkOutVal, config.nightShiftCutoffHour)) {
         toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
         return
       }
     }
 
-    updated[index].isNightShift = isNight
+    updated[index].isNightShift = nextIsNight
 
-    const checkInTime = toTimeValue(updated[index].checkIn)
-    const checkOutTime = toTimeValue(updated[index].checkOut)
-    
-    updated[index].checkIn = checkInTime ? combineDateAndTime(checkInTime, undefined, isNight) : null
-    updated[index].checkOut = checkOutTime ? combineDateAndTime(checkOutTime, checkInTime, isNight) : null
-    updated[index].workedHours = calculateWorkedHours(updated[index].checkIn, updated[index].checkOut)
+    // Combine date and time
+    updated[index].checkIn = checkInVal ? combineDateAndTime(checkInVal, undefined, nextIsNight) : null
+    updated[index].checkOut = checkOutVal ? combineDateAndTime(checkOutVal, checkInVal, nextIsNight) : null
+    updated[index].workedHours = calculateWorkedHours(
+      updated[index].checkIn,
+      updated[index].checkOut
+    )
   } else {
-    let finalValue = value
-
-    if (field === "checkIn" || field === "checkOut") {
-      let isNight = !!updated[index].isNightShift
-      if (field === "checkIn") {
-        const inRange = isCheckInInToggleRange(value, config.nightShiftCutoffHour)
-        if (!inRange) {
-          isNight = false
-          updated[index].isNightShift = false
-        }
-      }
-      if (isNight && value && !isValidNightShiftTime(value, config.nightShiftCutoffHour)) {
-        toast.error(`${field === "checkIn" ? "Check-in" : "Check-out"} time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-      }
-      const referenceCheckIn = field === "checkOut"
-        ? toTimeValue(updated[index].checkIn)
-        : undefined
-      finalValue = combineDateAndTime(value, referenceCheckIn, isNight)
-    }
-
     updated[index] = {
       ...updated[index],
-      [field as any]: finalValue,
-    }
-
-    if (field === "checkIn" || field === "checkOut") {
-      updated[index].workedHours = calculateWorkedHours(
-        updated[index].checkIn,
-        updated[index].checkOut
-      )
+      [field as any]: value,
     }
 
     if (field === "siteId") {
@@ -811,37 +812,12 @@ const toTimeValue = (
                         </p>
 
                         <div className="flex items-center gap-2 h-11">
-                          {toTimeValue(session.checkIn) && isCheckInInToggleRange(toTimeValue(session.checkIn), config.nightShiftCutoffHour) ? (
-                            <Button
-                              type="button"
-                              disabled={!isEditable}
-                              size="sm"
-                              variant={session.isNightShift ? "default" : "outline"}
-                              onClick={() =>
-                                updateSessionField(
-                                  index,
-                                  "isNightShift",
-                                  !session.isNightShift
-                                )
-                              }
-                              className={`text-xs h-9 px-3 ${
-                                session.isNightShift
-                                  ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              {session.isNightShift ? "🌙 Night" : "☀️ Day"}
-                            </Button>
+                          {(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? (
+                            <span className="inline-flex items-center gap-1.5 text-indigo-600 font-medium text-sm">
+                              🌙 Night
+                            </span>
                           ) : (
-                            <Button
-                              type="button"
-                              disabled
-                              size="sm"
-                              variant={(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "default" : "outline"}
-                              className={`text-xs h-9 px-3 cursor-not-allowed opacity-60 ${(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "bg-indigo-600 text-white" : "text-muted-foreground bg-muted"}`}
-                            >
-                              {(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? "🌙 Night" : "☀️ Day"}
-                            </Button>
+                            <span className="text-muted-foreground text-sm font-medium">☀️ Day</span>
                           )}
                         </div>
                       </div>

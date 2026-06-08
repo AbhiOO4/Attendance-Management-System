@@ -33,6 +33,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
+  currentJob: string | null
 }
 
 type UpdateInfo = {
@@ -40,12 +41,18 @@ type UpdateInfo = {
   employeeId: string
   jobTitle: string
   currentSite: string | null
+  currentJob: string | null
   monthlySalary: number
 }
 
 interface Site {
   _id: string
   siteName: string
+}
+
+interface SiteJob {
+  _id: string
+  name: string
 }
 
 type JobTitle = {
@@ -65,6 +72,8 @@ function EditEmployee({employee, onSave, sites }: Props) {
   const [open, setOpen] = useState(false)
 
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
+  const [siteJobs, setSiteJobs] = useState<SiteJob[]>([])
+  const [loadingJobs, setLoadingJobs] = useState(false)
 
   const [formData, setFormData] =
     useState<UpdateInfo>({
@@ -72,6 +81,7 @@ function EditEmployee({employee, onSave, sites }: Props) {
       employeeId: employee.employeeId,
       jobTitle: employee.jobTitle,
       currentSite: employee.currentSite,
+      currentJob: employee.currentJob,
       monthlySalary: employee.monthlySalary,
     })
 
@@ -80,11 +90,26 @@ function EditEmployee({employee, onSave, sites }: Props) {
       const res = await api.get<JobTitle[]>(
         "/api/employees/jobTitles"
       )
-
       setJobTitles(res.data)
-
     } catch (error) {
       console.log(error)
+    }
+  }
+
+  const fetchSiteJobs = async (siteId: string) => {
+    if (!siteId || siteId.trim() === " " || siteId === "none") {
+      setSiteJobs([])
+      return
+    }
+    try {
+      setLoadingJobs(true)
+      const res = await api.get<SiteJob[]>(`/api/site/${siteId}/Jobs`)
+      setSiteJobs(res.data || [])
+    } catch (error) {
+      console.log(error)
+      setSiteJobs([])
+    } finally {
+      setLoadingJobs(false)
     }
   }
 
@@ -115,6 +140,19 @@ function EditEmployee({employee, onSave, sites }: Props) {
   useEffect(() => {
     if (open) {
       fetchTitles()
+      // Pre-load jobs for the current site
+      if (formData.currentSite && formData.currentSite.trim() !== " ") {
+        fetchSiteJobs(formData.currentSite)
+      }
+      // Sync formData with latest employee prop when reopening
+      setFormData({
+        name: employee.name,
+        employeeId: employee.employeeId,
+        jobTitle: employee.jobTitle,
+        currentSite: employee.currentSite,
+        currentJob: employee.currentJob,
+        monthlySalary: employee.monthlySalary,
+      })
     }
   }, [open])
 
@@ -170,10 +208,17 @@ function EditEmployee({employee, onSave, sites }: Props) {
 
            <Select
             value={formData.currentSite == null ? " ": formData.currentSite}
-            onValueChange={(value) => setFormData({
-              ...formData,
-              currentSite: value
-            })}
+            onValueChange={(value) => {
+              const newSite = value === " " ? null : value
+              setFormData({
+                ...formData,
+                currentSite: newSite,
+                // reset job when site changes
+                currentJob: null,
+              })
+              if (newSite) fetchSiteJobs(newSite)
+              else setSiteJobs([])
+            }}
           >
             <SelectTrigger>
               <SelectValue placeholder="Assign Site" />
@@ -194,6 +239,32 @@ function EditEmployee({employee, onSave, sites }: Props) {
               ))}
             </SelectContent>
           </Select>
+
+          {/* Job selector — only shown when a site is selected */}
+          {formData.currentSite && formData.currentSite.trim() !== " " && (
+            <Select
+              value={formData.currentJob ?? "none"}
+              onValueChange={(value) =>
+                setFormData({
+                  ...formData,
+                  currentJob: value === "none" ? null : value,
+                })
+              }
+              disabled={loadingJobs}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={loadingJobs ? "Loading jobs..." : "Assign Job (optional)"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Not Assigned</SelectItem>
+                {siteJobs.map((job) => (
+                  <SelectItem key={job._id} value={job._id}>
+                    {job.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
 
 
           <Input

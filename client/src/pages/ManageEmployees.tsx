@@ -42,7 +42,7 @@ interface Employee {
   jobTitle: string
   monthlySalary: number
   currentSite: string | null
-  currentJob : string | null
+  currentJob: { _id: string; name: string } | string | null
   user?: any
 }
 
@@ -331,12 +331,19 @@ function ManageEmployees() {
                         </TableCell>
 
                         <TableCell className="font-medium">
-                          <div className="flex items-center gap-2">
-                            <span>{employee.name}</span>
-                            {employee.user && (
-                              <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
-                                Supervisor
-                              </Badge>
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-2">
+                              <span>{employee.name}</span>
+                              {employee.user && (
+                                <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
+                                  Supervisor
+                                </Badge>
+                              )}
+                            </div>
+                            {employee.currentJob && (
+                              <span className="text-xs text-muted-foreground">
+                                {typeof employee.currentJob === 'object' ? employee.currentJob.name : ''}
+                              </span>
                             )}
                           </div>
                         </TableCell>

@@ -172,7 +172,7 @@ export const addSupervisor = async (req, res) => {
 export const editEmployee = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, currentSite, employeeId } = req.body;
+    const { name, currentSite, currentJob, employeeId } = req.body;
 
     const existingEmployee = await empModel.findById(id);
 
@@ -185,23 +185,45 @@ export const editEmployee = async (req, res) => {
     const prevSite = existingEmployee.currentSite?.toString() || null;
     const newSite = currentSite || null;
 
-    // If site changed OR site removed
+    const prevJob = existingEmployee.currentJob?.toString() || null;
+    // If site cleared, job must also be null; otherwise use what was sent
+    const newJob = !newSite ? null : (currentJob || null);
+
+    // ----------------------------------------
+    // SITE CHANGED → pull from old job, apply new job if provided
+    // ----------------------------------------
     if (prevSite !== newSite) {
-
-      // Remove employee from previous job employees array
-      if (existingEmployee.currentJob) {
-        await jobModel.findByIdAndUpdate(
-          existingEmployee.currentJob,
-          {
-            $pull: {
-              employees: existingEmployee._id,
-            },
-          }
-        );
+      // Remove from old job
+      if (prevJob) {
+        await jobModel.findByIdAndUpdate(prevJob, {
+          $pull: { employees: existingEmployee._id },
+        });
       }
-
-      // Clear currentJob
-      req.body.currentJob = null;
+      // Add to new job if one was sent alongside the new site
+      if (newJob) {
+        await jobModel.findByIdAndUpdate(newJob, {
+          $addToSet: { employees: existingEmployee._id },
+        });
+      }
+      req.body.currentJob = newJob; // null if no job sent, or the new job id
+    }
+    // ----------------------------------------
+    // SITE SAME, JOB CHANGED
+    // ----------------------------------------
+    else if (prevJob !== newJob) {
+      // Remove from old job
+      if (prevJob) {
+        await jobModel.findByIdAndUpdate(prevJob, {
+          $pull: { employees: existingEmployee._id },
+        });
+      }
+      // Add to new job
+      if (newJob) {
+        await jobModel.findByIdAndUpdate(newJob, {
+          $addToSet: { employees: existingEmployee._id },
+        });
+      }
+      req.body.currentJob = newJob;
     }
 
     const employee = await empModel.findByIdAndUpdate(
@@ -235,6 +257,7 @@ export const editEmployee = async (req, res) => {
     });
   }
 };
+
 
 // DELETE /api/employees/:id
 export const deleteEmployee = async (req, res) => {
