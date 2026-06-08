@@ -596,20 +596,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false })
   }
 
-  const toggleInlineEditNightShift = () => {
-    const nextVal = !inlineEdit.isNightShift
-    if (nextVal) {
-      if (inlineEdit.checkIn && !isValidNightShiftTime(inlineEdit.checkIn, cutoffHour)) {
-        toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-        return
-      }
-      if (inlineEdit.checkOut && !isValidNightShiftTime(inlineEdit.checkOut, cutoffHour)) {
-        toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-        return
-      }
-    }
-    setInlineEdit(prev => ({ ...prev, isNightShift: nextVal }))
-  }
+
 
   const saveInlineEdit = async (
     record: AttendanceRecord
