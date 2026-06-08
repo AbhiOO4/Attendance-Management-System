@@ -43,6 +43,7 @@ interface ReportEmployee {
   employeeName: string
   employeeId: string
   jobTitle: string
+  isActive?: boolean
 
   fullDays: number
   halfDays: number
@@ -117,7 +118,7 @@ function MonthlyReport() {
   }, [month, year])
 
   const filteredReports = useMemo(() => {
-    return reports.filter((employee) => {
+    const filtered = reports.filter((employee) => {
       const matchesName =
         employee.employeeName
           .toLowerCase()
@@ -145,6 +146,14 @@ function MonthlyReport() {
         matchesJobTitle
       )
     })
+
+    return [...filtered].sort((a, b) => {
+      const aActive = a.isActive !== false;
+      const bActive = b.isActive !== false;
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+      return a.employeeName.localeCompare(b.employeeName);
+    });
   }, [
     reports,
     name,
@@ -214,7 +223,7 @@ function MonthlyReport() {
           "Sl No": index + 1,
 
           "Employee Name":
-            employee.employeeName,
+            employee.employeeName + (employee.isActive === false ? " (Inactive)" : ""),
 
           "Employee ID":
             employee.employeeId,
@@ -533,15 +542,23 @@ function MonthlyReport() {
                         key={
                           employee.employeeId
                         }
+                        className={employee.isActive === false ? "opacity-60 bg-muted/20 hover:bg-muted/30" : ""}
                       >
                         <TableCell>
                           {index + 1}
                         </TableCell>
 
                         <TableCell>
-                          {
-                            employee.employeeName
-                          }
+                          <div className="flex flex-col gap-0.5">
+                            <span className={employee.isActive === false ? "text-muted-foreground line-through decoration-1" : ""}>
+                              {employee.employeeName}
+                            </span>
+                            {employee.isActive === false && (
+                              <span className="text-[10px] text-destructive font-medium uppercase tracking-wide">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
                         </TableCell>
 
                         <TableCell>

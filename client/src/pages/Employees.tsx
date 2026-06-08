@@ -40,6 +40,7 @@ import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
 import axios from "axios"
 import { Link } from "react-router-dom"
+import { Badge } from "@/components/ui/badge"
 
 interface Employee {
   _id: string
@@ -99,6 +100,7 @@ function Employees() {
 
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const [totalEmployees, setTotalEmployees] = useState(0)
 
   async function fetchEmployees() {
     try {
@@ -114,6 +116,8 @@ function Employees() {
       setCurrentPage(res.data.currentPage)
 
       setTotalPages(res.data.totalPages)
+
+      setTotalEmployees(res.data.totalEmployees)
     } catch (error) {
       console.log(error)
       setEmployees([])
@@ -202,11 +206,16 @@ function Employees() {
 
   return (
     <div className="p-6 space-y-6">
-      <h1 className="text-4xl font-bold">
-        Employees
-      </h1>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-4xl font-bold">
+            Employees
+          </h1>
+          <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20 text-sm font-semibold px-3 py-1 mt-1">
+            Total: {totalEmployees}
+          </Badge>
+        </div>
 
-      <div className="flex justify-end">
         <AddEmployee onAdd={addEmployee} sites={sites} />
       </div>
 
@@ -291,6 +300,7 @@ function Employees() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-16">Sl No</TableHead>
               <TableHead>Name</TableHead>
 
               <TableHead>
@@ -315,8 +325,12 @@ function Employees() {
 
           <TableBody>
             {employees.length > 0 ? (
-              employees.map((employee) => (
+              employees.map((employee, index) => (
                 <TableRow key={employee._id}>
+                  <TableCell className="font-medium text-muted-foreground">
+                    {(currentPage - 1) * filters.limit + index + 1}
+                  </TableCell>
+
                   <TableCell>
                     <Link to={`/employees/${employee._id}`}>{employee.name}</Link>
                   </TableCell>
@@ -398,7 +412,7 @@ function Employees() {
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={7}
                   className="text-center py-6"
                 >
                   No employees found

@@ -1,6 +1,6 @@
 import express from 'express'
 import userModel from '../models/userModel.js'
-import { getMe, getUsers, login, logout, updateUser } from '../controllers/userController.js'
+import { getMe, getUsers, login, logout, updateUser, addAdmin } from '../controllers/userController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles } from '../middlewares/rbac.js'
 
@@ -19,6 +19,8 @@ router.post('/logout', logout)
 router.use(verifyToken)
 
 router.patch('/update/:userId',authorizeRoles('admin'), updateUser )
+
+router.post('/admin', authorizeRoles('admin'), addAdmin)
 
 router.get('/',authorizeRoles('admin'), getUsers)
 

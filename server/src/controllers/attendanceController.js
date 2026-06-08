@@ -323,6 +323,7 @@ export const monthlyReport = async (req, res) => {
           employeeName: employee.name,
           employeeId: employee.employeeId,
           jobTitle: employee.jobTitle,
+          isActive: employee.isActive !== false,
 
           fullDays,
           halfDays,
@@ -355,11 +356,13 @@ export const monthlyReport = async (req, res) => {
       }
     );
 
-    report.sort((a, b) =>
-      a.employeeName.localeCompare(
-        b.employeeName
-      )
-    );
+    report.sort((a, b) => {
+      const aActive = a.isActive !== false;
+      const bActive = b.isActive !== false;
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+      return a.employeeName.localeCompare(b.employeeName);
+    });
 
     return res.status(200).json({
       success: true,

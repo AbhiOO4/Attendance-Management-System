@@ -49,12 +49,12 @@ export async function updateUser(req, res) {
       });
     }
 
-    const employee = await empModel.findOne({employeeId: user.employeeId})
+    const employee = user.employeeId ? await empModel.findOne({employeeId: user.employeeId}) : null;
 
-    if (!employee){
+    if (user.role === 'supervisor' && !employee){
       return res.status(404).json({
         success: false,
-        message: "Employe not found",
+        message: "Employee not found",
       });
     }
 
@@ -69,14 +69,16 @@ export async function updateUser(req, res) {
       updateData.password = hashedPassword;
     }
 
-    if (assignedSite){
-      updateData.assignedSite = assignedSite
-      employee.currentSite = assignedSite
+    if (assignedSite && employee){
+      updateData.assignedSite = assignedSite;
+      employee.currentSite = assignedSite;
     }
 
     const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true});
 
-    await employee.save()
+    if (employee) {
+      await employee.save();
+    }
 
     res.status(200).json({
       success: true,
@@ -105,7 +107,7 @@ export async function updateUser(req, res) {
 export async function getUsers(req, res) {
     try
     {
-        const users = await userModel.find({role: "supervisor"})
+        const users = await userModel.find({})
         res.status(200).json(users)
     }
     catch (error) {
@@ -116,6 +118,60 @@ export async function getUsers(req, res) {
         });
     }
 }
+
+export const addAdmin = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Name, email and password are required",
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters long",
+      });
+    }
+
+    const existingUser = await userModel.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "The email already exists",
+      });
+    }
+
+    const admin = new userModel({
+      name,
+      email,
+      password,
+      role: "admin",
+    });
+
+    await admin.save();
+
+    res.status(201).json({
+      success: true,
+      message: "Admin created successfully",
+      user: {
+        _id: admin._id,
+        name: admin.name,
+        email: admin.email,
+        role: admin.role,
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
 
 export const getMe = async (req, res) => {
   try {
