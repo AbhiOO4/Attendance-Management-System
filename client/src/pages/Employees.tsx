@@ -39,7 +39,7 @@ import {
 import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
 import axios from "axios"
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 
 interface Employee {
@@ -84,6 +84,7 @@ type UpdateInfo = {
 
 
 function Employees() {
+  const navigate = useNavigate()
   const [filters, setFilters] = useState<Filters>({
     name: "",
     employeeId: "",
@@ -326,7 +327,11 @@ function Employees() {
           <TableBody>
             {employees.length > 0 ? (
               employees.map((employee, index) => (
-                <TableRow key={employee._id}>
+                <TableRow 
+                  key={employee._id}
+                  className="cursor-pointer hover:bg-muted/50 transition-colors"
+                  onClick={() => navigate(`/employees/${employee._id}`)}
+                >
                   <TableCell className="font-medium text-muted-foreground">
                     {(currentPage - 1) * filters.limit + index + 1}
                   </TableCell>
@@ -356,7 +361,7 @@ function Employees() {
                     </div>
                   </TableCell>
 
-                  <TableCell className="flex justify-end gap-2">
+                  <TableCell className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                     {/* EDIT */}
 
                     <EditEmployee
