@@ -41,13 +41,14 @@ function MarkAttendance() {
     day: "numeric",
   })
 
-  const fetchSites = async () => {
+  const fetchSites = async (targetDate: string = today) => {
     try {
       setLoading(true)
 
       const response = await api.get("/api/site", {
         params: {
           isActive: true,
+          date: targetDate,
         },
       })
 
@@ -59,26 +60,9 @@ function MarkAttendance() {
       })
       setSites(sortedSites)
 
-      const statusPromises = sortedSites.map(async (site: Site) => {
-        const res = await api.post(
-          `/api/site/${site._id}/check-pending`,
-          {
-            date: today,
-          }
-        )
-
-        return {
-          siteId: site._id,
-          taken: res.data.status,
-        }
-      })
-
-      const results = await Promise.all(statusPromises)
-
       const statusMap: SiteAttendanceStatus = {}
-
-      results.forEach((item) => {
-        statusMap[item.siteId] = item.taken
+      sortedSites.forEach((site: any) => {
+        statusMap[site._id] = site.taken || false
       })
 
       setAttendanceStatus(statusMap)
@@ -94,16 +78,20 @@ function MarkAttendance() {
 
   useEffect(() => {
     const init = async () => {
+      let currentCutoff = cutoffHour
       // Fetch night shift cutoff config
       try {
         const configRes = await api.get("/api/config")
         if (configRes.data?.data?.nightShiftCutoffHour !== undefined) {
-          setCutoffHour(configRes.data.data.nightShiftCutoffHour)
+          currentCutoff = configRes.data.data.nightShiftCutoffHour
+          setCutoffHour(currentCutoff)
         }
       } catch (err) {
         console.error("Failed to fetch config:", err)
       }
-      fetchSites()
+      
+      const targetDate = getLogicalShiftDate(currentCutoff)
+      fetchSites(targetDate)
     }
     init()
   }, [])

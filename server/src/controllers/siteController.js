@@ -12,7 +12,7 @@ import { json } from 'express'
 
 export const getSites = async (req, res) => {
     try{
-        const { siteName, isActive } = req.query
+        const { siteName, isActive, date } = req.query
         let filter  = { isDeleted: { $ne: true } }
         if (siteName) {
             filter.siteName = { $regex: `^${siteName}`, $options: "i" };
@@ -22,8 +22,48 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        
         const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent").sort({isActive: -1}).populate("jobs", "name")
+        
+        if (date) {
+            const parsedDate = new Date(date)
+            parsedDate.setUTCHours(0, 0, 0, 0)
+
+            // Fetch all attendance records for this date
+            const records = await attendanceModel.find({ date: parsedDate }).lean()
+
+            const sitesWithStatus = sites.map(site => {
+                const siteIdStr = site._id.toString()
+                let hasAtLeastOneComplete = false
+                let hasIncomplete = false
+
+                for (const record of records) {
+                    if (record.sessions && record.sessions.length > 0) {
+                        for (const session of record.sessions) {
+                            if (session.siteId && session.siteId.toString() === siteIdStr) {
+                                if (session.checkIn) {
+                                    if (session.checkOut) {
+                                        hasAtLeastOneComplete = true
+                                    } else {
+                                        hasIncomplete = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const taken = hasAtLeastOneComplete && !hasIncomplete
+                
+                const siteObj = site.toObject ? site.toObject() : site
+                return {
+                    ...siteObj,
+                    taken
+                }
+            })
+
+            return res.status(200).json(sitesWithStatus)
+        }
+
         res.status(200).json(sites)
     }catch(error){  
         res.status(500).json({message: "Internal server error"})
