@@ -122,11 +122,11 @@ export default function SidebarLayout() {
 
         <div className="flex flex-col flex-1">
           {/* Logo */}
-          <div className="flex justify-center py-6 px-4 border-b">
+          <div className="flex justify-center py-6 px-4 md:py-8 border-b">
             <img
               src={logo}
               alt="NGDP Logo"
-              className="h-16 w-auto object-contain md:h-20"
+              className="w-auto object-contain h-24 md:h-32 lg:h-40 transition-all duration-300"
             />
           </div>
 
