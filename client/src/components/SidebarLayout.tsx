@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
 import { Moon, Sun } from "lucide-react"
 import { useTheme } from "next-themes"
-import logo from '../assets/ngdp logo.avif'
+import logo from '../assets/ngdp logo.png'
 
 import {
   Dialog,
