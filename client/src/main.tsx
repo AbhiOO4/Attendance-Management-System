@@ -6,6 +6,11 @@ import { BrowserRouter } from 'react-router-dom'
 import {Toaster} from 'react-hot-toast'
 import { AuthProvider } from './context/AuthContext.tsx'
 import { ThemeProvider } from "next-themes"
+import { registerSW } from 'virtual:pwa-register'
+
+// Register Service Worker for PWA
+registerSW({ immediate: true })
+
 
 
 createRoot(document.getElementById('root')!).render(

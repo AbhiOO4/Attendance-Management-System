@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import toast from "react-hot-toast"
 import { useAuth } from "@/context/AuthContext"
-import logo from "../assets/ngdp logo.avif"
 
 function Login() {
   const navigate = useNavigate()
@@ -50,11 +49,11 @@ function Login() {
     <div className="min-h-screen flex items-center justify-center bg-black px-4">
       <Card className="w-full max-w-md border shadow-2xl backdrop-blur-sm">
         <CardHeader className="space-y-5 pb-2">
-          <div className="flex justify-center">
+          <div className="flex justify-center w-full">
             <img
-              src={logo}
+              src="/ngdp logo.png"
               alt="NGDP Logo"
-              className="h-20 sm:h-24 md:h-28 w-auto object-contain"
+              className="mx-auto h-20 sm:h-24 md:h-28 w-auto object-contain"
             />
           </div>
 

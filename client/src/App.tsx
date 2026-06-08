@@ -1,4 +1,4 @@
-import { Route, Routes, Navigate } from "react-router-dom"
+import { Route, Routes } from "react-router-dom"
 
 import { useAuth } from "@/context/AuthContext"
 
@@ -7,6 +7,7 @@ import Employees from "./pages/Employees"
 import Supervisor from "./pages/Supervisor"
 import AddSupervisor from "./pages/AddSupervisor"
 import Login from "./pages/Login"
+import LandingPage from "./pages/LandingPage"
 
 import SitesPage from "./pages/SitesPage"
 import SiteDetail from "./pages/SiteDetail"
@@ -42,6 +43,15 @@ function App() {
   return (
     <Routes>
       {/* PUBLIC */}
+      {/* PUBLIC */}
+      <Route
+        path="/"
+        element={
+          <PublicRoute>
+            <LandingPage />
+          </PublicRoute>
+        }
+      />
       <Route
         path="/login"
         element={
@@ -52,19 +62,12 @@ function App() {
       />
       {/* PROTECTED LAYOUT */}
       <Route
-        path="/"
         element={
           <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
             <SidebarLayout />
           </ProtectedRoute>
         }
       >
-        {/* DASHBOARD */}
-
-        <Route
-          index
-          element={<Navigate to="/dashboard" replace />}
-        />
 
         <Route path="dashboard"
           element={

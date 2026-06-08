@@ -153,8 +153,22 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
 const [deleteDialogOpen, setDeleteDialogOpen] =
   useState(false)
 
-const [sessionToDelete, setSessionToDelete] =
-  useState<number | null>(null)
+  const [sessionToDelete, setSessionToDelete] =
+    useState<number | null>(null)
+
+  // Sync sessions edits to local storage
+  useEffect(() => {
+    if (open && attendanceId && sessions && sessions.length > 0) {
+      localStorage.setItem(`sessions_draft_${attendanceId}`, JSON.stringify(sessions))
+    }
+  }, [sessions, open, attendanceId])
+
+  const handleManualClose = () => {
+    if (attendanceId) {
+      localStorage.removeItem(`sessions_draft_${attendanceId}`)
+    }
+    onClose()
+  }
 
   // --------------------------------------------------
   // INITIALIZE
@@ -170,9 +184,15 @@ const [sessionToDelete, setSessionToDelete] =
 
       setRecord(attendance)
 
-      setSessions(
-        attendance.sessions || []
-      )
+      const cached = localStorage.getItem(`sessions_draft_${attendanceId}`)
+      if (cached) {
+        setSessions(JSON.parse(cached))
+        toast("Restored unsaved session changes.", { icon: "📝" })
+      } else {
+        setSessions(
+          attendance.sessions || []
+        )
+      }
     } catch (error) {
       console.log(error)
 
@@ -481,7 +501,8 @@ const addSession = async () => {
       ),
     }
 
-    onUpdated(updatedRecord)
+      localStorage.removeItem(`sessions_draft_${record.attendanceId}`)
+      onUpdated(updatedRecord)
 
       toast.success(
         "Attendance updated successfully"
@@ -587,7 +608,7 @@ const toTimeValue = (
   return (
     <Dialog
       open={open}
-      onOpenChange={onClose}
+      onOpenChange={handleManualClose}
     >
       <DialogContent className="!w-[92vw] !max-w-[1000px] h-[92vh] overflow-hidden p-0 flex flex-col rounded-2xl">
 
@@ -890,7 +911,7 @@ const toTimeValue = (
         <div className="border-t bg-background px-8 py-5 flex justify-end gap-3">
           <Button
             variant="outline"
-            onClick={onClose}
+            onClick={handleManualClose}
           >
             Cancel
           </Button>

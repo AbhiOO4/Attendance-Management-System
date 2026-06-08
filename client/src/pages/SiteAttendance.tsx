@@ -255,6 +255,13 @@ function SiteAttendance() {
 
 const initializeAttendanceFromEmployees = async (siteData: Site) => {
     try {
+      const cached = localStorage.getItem(`attendance_draft_${id}_${today}`)
+      if (cached) {
+        setDraftAttendance(JSON.parse(cached))
+        setIsDirty(true)
+        return
+      }
+
       const res =
         await api.get<EmployeesResponse>(
           "/api/employees",
@@ -430,6 +437,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
           res.data.message ||
           "Attendance submitted successfully"
         )
+
+        localStorage.removeItem(`attendance_draft_${id}_${today}`)
+        localStorage.removeItem(`active_inline_edit_row_${id}`)
+        localStorage.removeItem(`active_inline_edit_data_${id}`)
 
         setAttendanceExists(true)
 
@@ -806,6 +817,38 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
       )
     }
   }, [isDirty])
+
+  // Sync draft attendance to local storage
+  useEffect(() => {
+    if (isDirty && draftAttendance && draftAttendance.length > 0 && id) {
+      localStorage.setItem(`attendance_draft_${id}_${today}`, JSON.stringify(draftAttendance))
+    }
+  }, [draftAttendance, isDirty, id, today])
+
+  // Sync inline edits to local storage
+  useEffect(() => {
+    if (id) {
+      if (editingRowId) {
+        localStorage.setItem(`active_inline_edit_row_${id}`, editingRowId)
+        localStorage.setItem(`active_inline_edit_data_${id}`, JSON.stringify(inlineEdit))
+      } else {
+        localStorage.removeItem(`active_inline_edit_row_${id}`)
+        localStorage.removeItem(`active_inline_edit_data_${id}`)
+      }
+    }
+  }, [editingRowId, inlineEdit, id])
+
+  // Restore inline edits from local storage
+  useEffect(() => {
+    if (id) {
+      const cachedRowId = localStorage.getItem(`active_inline_edit_row_${id}`)
+      const cachedData = localStorage.getItem(`active_inline_edit_data_${id}`)
+      if (cachedRowId && cachedData) {
+        setEditingRowId(cachedRowId)
+        setInlineEdit(JSON.parse(cachedData))
+      }
+    }
+  }, [id])
 
   useEffect(() => {
     if (!isDirty) return
@@ -1738,6 +1781,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         onLeave={() => {
           setShowLeaveDialog(false)
           setIsDirty(false)
+
+          localStorage.removeItem(`attendance_draft_${id}_${today}`)
+          localStorage.removeItem(`active_inline_edit_row_${id}`)
+          localStorage.removeItem(`active_inline_edit_data_${id}`)
 
           if (pendingPath === "BACK") {
             window.history.go(-2)
