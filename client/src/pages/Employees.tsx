@@ -158,6 +158,7 @@ function Employees() {
       } 
       await api.post('/api/employees', newEmployee)
       toast.success("Employee added successfully")
+      fetchEmployees()
     }catch(error){
       console.log(error)
       if (axios.isAxiosError(error)) {
