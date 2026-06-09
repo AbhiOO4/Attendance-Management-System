@@ -62,6 +62,7 @@ interface DashboardResponse {
 function DashBoard() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const isSupervisor = user?.role === "supervisor"
   const today = new Date()
     .toISOString()
     .split("T")[0]
@@ -328,9 +329,9 @@ function DashBoard() {
                     <TableRow
                       key={site.siteId}
                       onClick={() =>
-                        navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
+                        !isSupervisor && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
                       }
-                      className="cursor-pointer transition duration-200 hover:bg-muted/40 border-b border-muted/20"
+                      className={isSupervisor ? "border-b border-muted/20" : "cursor-pointer transition duration-200 hover:bg-muted/40 border-b border-muted/20"}
                     >
                       <TableCell className="py-3.5 font-medium">
                         <div className="flex items-center">
@@ -392,9 +393,11 @@ function DashBoard() {
                 <Card
                   key={site.siteId}
                   onClick={() =>
-                    navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
+                    !isSupervisor && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
                   }
-                  className="group cursor-pointer rounded-2xl border border-muted/30 p-5 transition-all duration-300 hover:shadow-md hover:border-primary/20 bg-card"
+                  className={isSupervisor 
+                    ? "rounded-2xl border border-muted/30 p-5 bg-card" 
+                    : "group cursor-pointer rounded-2xl border border-muted/30 p-5 transition-all duration-300 hover:shadow-md hover:border-primary/20 bg-card"}
                 >
                   <div className="flex items-center justify-between border-b border-muted/10 pb-3">
                     <div className="flex items-center gap-2.5">
