@@ -303,12 +303,12 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
     const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
     const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-    // 1. RULE: checkout time cannot be >= cutoffHour if checkin was before cutoffHour
+    // 1. RULE: checkout time cannot be > cutoffHour if checkin was before cutoffHour
     if (checkInVal && checkOutVal) {
       const [inH] = checkInVal.split(":").map(Number)
-      const [outH] = checkOutVal.split(":").map(Number)
-      if (inH >= 0 && inH < config.nightShiftCutoffHour && outH >= config.nightShiftCutoffHour) {
-        toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) if checked in before ${config.nightShiftCutoffHour}:00 AM.`)
+      const [outH, outM] = checkOutVal.split(":").map(Number)
+      if (inH >= 0 && inH < config.nightShiftCutoffHour && outH * 60 + outM > config.nightShiftCutoffHour * 60) {
+        toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) if checked in before ${config.nightShiftCutoffHour}:00 AM.`)
         return
       }
     }
@@ -332,9 +332,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
         return
       }
       if (checkOutVal) {
-        const [outH] = checkOutVal.split(":").map(Number)
-        if (outH >= config.nightShiftCutoffHour) {
-          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+        const [outH, outM] = checkOutVal.split(":").map(Number)
+        if (outH * 60 + outM > config.nightShiftCutoffHour * 60) {
+          toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
           return
         }
       }
@@ -444,9 +444,9 @@ const addSession = async () => {
           return
         }
         if (outTime) {
-          const [outH] = outTime.split(":").map(Number)
-          if (outH >= config.nightShiftCutoffHour) {
-            toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+          const [outH, outM] = outTime.split(":").map(Number)
+          if (outH * 60 + outM > config.nightShiftCutoffHour * 60) {
+            toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
             return
           }
         }

@@ -798,24 +798,24 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           }
         }
 
-        // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
+        // RULE: checkOut time cannot be > cutoffHour if checkIn was before cutoffHour
         if (checkIn && checkOut) {
           const [inH, inM] = checkIn.split(":").map(Number);
           const [outH, outM] = checkOut.split(":").map(Number);
           if (inH >= 0 && inH < cutoffHour) {
-            if (outH >= cutoffHour) {
+            if (outH * 60 + outM > cutoffHour * 60) {
               return res.status(400).json({
                 success: false,
-                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
+                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
               });
             }
           }
           const inMin = inH * 60 + inM;
           const outMin = outH * 60 + outM;
-          if (outMin < inMin && outH >= cutoffHour) {
+          if (outMin < inMin && outMin > cutoffHour * 60) {
             return res.status(400).json({
               success: false,
-              message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
             });
           }
         }
@@ -823,11 +823,11 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         // Night shift time checks: AM times must be before cutoff
         if (sessionIsNight) {
           if (checkOut) {
-            const [outH] = checkOut.split(":").map(Number);
-            if (outH >= cutoffHour && outH < 12) {
+            const [outH, outM] = checkOut.split(":").map(Number);
+            if (outH * 60 + outM > cutoffHour * 60 && outH < 12) {
               return res.status(400).json({
                 success: false,
-                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
               });
             }
           }
@@ -1783,7 +1783,7 @@ export const updateAttendance = async (req, res) => {
           }
         }
 
-        // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
+        // RULE: checkOut time cannot be > cutoffHour if checkIn was before cutoffHour
         if (session.checkIn && session.checkOut) {
           const inDate = new Date(session.checkIn);
           const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
@@ -1796,19 +1796,19 @@ export const updateAttendance = async (req, res) => {
           const outM = localOutTime.getUTCMinutes();
 
           if (inH >= 0 && inH < cutoffHour) {
-            if (outH >= cutoffHour) {
+            if (outH * 60 + outM > cutoffHour * 60) {
               return res.status(400).json({
                 success: false,
-                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
+                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
               });
             }
           }
           const inMin = inH * 60 + inM;
           const outMin = outH * 60 + outM;
-          if (outMin < inMin && outH >= cutoffHour) {
+          if (outMin < inMin && outMin > cutoffHour * 60) {
             return res.status(400).json({
               success: false,
-              message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+              message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
             });
           }
         }
@@ -1830,10 +1830,11 @@ export const updateAttendance = async (req, res) => {
             const outDate = new Date(session.checkOut);
             const localOutTime = new Date(outDate.getTime() - offsetVal * 60 * 1000);
             const outH = localOutTime.getUTCHours();
-            if (outH >= cutoffHour && outH < 12) {
+            const outM = localOutTime.getUTCMinutes();
+            if (outH * 60 + outM > cutoffHour * 60 && outH < 12) {
               return res.status(400).json({
                 success: false,
-                message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
+                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
               });
             }
           }
