@@ -173,6 +173,17 @@ function ManageJobEmployees() {
 
       toast.success("Employee assigned")
 
+      // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
+      if (job?.site) {
+        Object.keys(localStorage).forEach((key) => {
+          if (key.startsWith(`attendance_draft_${job.site}_`)) {
+            localStorage.removeItem(key)
+          }
+        })
+        localStorage.removeItem(`active_inline_edit_row_${job.site}`)
+        localStorage.removeItem(`active_inline_edit_data_${job.site}`)
+      }
+
       fetchEmployees()
       fetchAvailableEmployees()
     } catch (error: any) {
@@ -197,6 +208,17 @@ function ManageJobEmployees() {
       )
 
       toast.success("Employee removed")
+
+      // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
+      if (job?.site) {
+        Object.keys(localStorage).forEach((key) => {
+          if (key.startsWith(`attendance_draft_${job.site}_`)) {
+            localStorage.removeItem(key)
+          }
+        })
+        localStorage.removeItem(`active_inline_edit_row_${job.site}`)
+        localStorage.removeItem(`active_inline_edit_data_${job.site}`)
+      }
 
       fetchEmployees()
       fetchAvailableEmployees()

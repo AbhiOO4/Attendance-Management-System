@@ -994,7 +994,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
               <Button
                 variant="default"
                 onClick={() =>
-                  navigate(`/attendance/${id}/insta-add`)
+                  handleSafeNavigation(`/attendance/${id}/insta-add`)
                 }
               >
                 <UserPlus className="h-4 w-4 mr-2" />

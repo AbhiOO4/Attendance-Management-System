@@ -247,6 +247,18 @@ function InstaAddEmployees() {
         try {
             await api.post(`/api/site/${siteId}/insta-add-employee`, { empId: employeeId, currentJob: jobId })
             toast.success("Employee Added successfully")
+            
+            // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
+            if (siteId) {
+                Object.keys(localStorage).forEach((key) => {
+                    if (key.startsWith(`attendance_draft_${siteId}_`)) {
+                        localStorage.removeItem(key)
+                    }
+                })
+                localStorage.removeItem(`active_inline_edit_row_${siteId}`)
+                localStorage.removeItem(`active_inline_edit_data_${siteId}`)
+            }
+
             setEmployees((prev) =>
                 prev.filter((emp) => emp._id !== employeeId)
             )
