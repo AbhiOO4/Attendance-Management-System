@@ -156,17 +156,7 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
   const [sessionToDelete, setSessionToDelete] =
     useState<number | null>(null)
 
-  // Sync sessions edits to local storage
-  useEffect(() => {
-    if (open && attendanceId && sessions && sessions.length > 0) {
-      localStorage.setItem(`sessions_draft_${attendanceId}`, JSON.stringify(sessions))
-    }
-  }, [sessions, open, attendanceId])
-
   const handleManualClose = () => {
-    if (attendanceId) {
-      localStorage.removeItem(`sessions_draft_${attendanceId}`)
-    }
     onClose()
   }
 
@@ -184,15 +174,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
 
       setRecord(attendance)
 
-      const cached = localStorage.getItem(`sessions_draft_${attendanceId}`)
-      if (cached) {
-        setSessions(JSON.parse(cached))
-        toast("Restored unsaved session changes.", { icon: "📝" })
-      } else {
-        setSessions(
-          attendance.sessions || []
-        )
-      }
+      setSessions(
+        attendance.sessions || []
+      )
     } catch (error) {
       console.log(error)
 
@@ -347,9 +331,12 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
         toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
         return
       }
-      if (checkOutVal && !isValidNightShiftTime(checkOutVal, config.nightShiftCutoffHour)) {
-        toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-        return
+      if (checkOutVal) {
+        const [outH] = checkOutVal.split(":").map(Number)
+        if (outH >= config.nightShiftCutoffHour) {
+          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+          return
+        }
       }
     }
 
@@ -456,9 +443,12 @@ const addSession = async () => {
           toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
           return
         }
-        if (outTime && !isValidNightShiftTime(outTime, config.nightShiftCutoffHour)) {
-          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-          return
+        if (outTime) {
+          const [outH] = outTime.split(":").map(Number)
+          if (outH >= config.nightShiftCutoffHour) {
+            toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+            return
+          }
         }
       }
     }
@@ -501,7 +491,6 @@ const addSession = async () => {
       ),
     }
 
-      localStorage.removeItem(`sessions_draft_${record.attendanceId}`)
       onUpdated(updatedRecord)
 
       toast.success(

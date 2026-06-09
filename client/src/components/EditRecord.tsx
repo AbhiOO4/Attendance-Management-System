@@ -340,9 +340,12 @@ const [sessionToDelete, setSessionToDelete] =
         toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
         return
       }
-      if (checkOutVal && !isValidNightShiftTime(checkOutVal, config.nightShiftCutoffHour)) {
-        toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-        return
+      if (checkOutVal) {
+        const [outH] = checkOutVal.split(":").map(Number)
+        if (outH >= config.nightShiftCutoffHour) {
+          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+          return
+        }
       }
     }
 
@@ -443,9 +446,12 @@ const [sessionToDelete, setSessionToDelete] =
           toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
           return
         }
-        if (outTime && !isValidNightShiftTime(outTime, config.nightShiftCutoffHour)) {
-          toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-          return
+        if (outTime) {
+          const [outH] = outTime.split(":").map(Number)
+          if (outH >= config.nightShiftCutoffHour) {
+            toast.error(`Check-out time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
+            return
+          }
         }
       }
     }

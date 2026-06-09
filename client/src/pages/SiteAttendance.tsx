@@ -624,9 +624,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
         return
       }
-      if (checkOut && !isValidNightShiftTime(checkOut, cutoffHour)) {
-        toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-        return
+      if (checkOut) {
+        const [outH] = checkOut.split(":").map(Number)
+        if (outH >= cutoffHour) {
+          toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+          return
+        }
       }
     }
 
@@ -712,14 +715,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
         // Rule check: checkout time cannot be >= cutoffHour if checkin was before cutoffHour
         if (session.checkIn && session.checkOut) {
-          const [inH] = session.checkIn.split(":").map(Number)
-          const [outH] = session.checkOut.split(":").map(Number)
+          const [inH, inM] = session.checkIn.split(":").map(Number)
+          const [outH, outM] = session.checkOut.split(":").map(Number)
           if (inH >= 0 && inH < cutoffHour && outH >= cutoffHour) {
             toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
             if (field === "checkOut") {
               session.checkOut = ""
             } else {
               session.checkIn = ""
+            }
+          } else {
+            const inMin = inH * 60 + inM
+            const outMin = outH * 60 + outM
+            if (outMin < inMin && outH >= cutoffHour) {
+              toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
+              if (field === "checkOut") {
+                session.checkOut = ""
+              } else {
+                session.checkIn = ""
+              }
             }
           }
         }
@@ -1148,10 +1162,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 onChange={(e) => {
                                   const val = e.target.value
                                   if (val && inlineEdit.checkOut) {
-                                    const [inH] = val.split(":").map(Number)
-                                    const [outH] = inlineEdit.checkOut.split(":").map(Number)
+                                    const [inH, inM] = val.split(":").map(Number)
+                                    const [outH, outM] = inlineEdit.checkOut.split(":").map(Number)
                                     if (inH >= 0 && inH < cutoffHour && outH >= cutoffHour) {
                                       toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
+                                      return
+                                    }
+                                    const inMin = inH * 60 + inM
+                                    const outMin = outH * 60 + outM
+                                    if (outMin < inMin && outH >= cutoffHour) {
+                                      toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
                                       return
                                     }
                                   }
@@ -1176,10 +1196,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 onChange={(e) => {
                                   const val = e.target.value
                                   if (inlineEdit.checkIn && val) {
-                                    const [inH] = inlineEdit.checkIn.split(":").map(Number)
-                                    const [outH] = val.split(":").map(Number)
+                                    const [inH, inM] = inlineEdit.checkIn.split(":").map(Number)
+                                    const [outH, outM] = val.split(":").map(Number)
                                     if (inH >= 0 && inH < cutoffHour && outH >= cutoffHour) {
                                       toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
+                                      return
+                                    }
+                                    const inMin = inH * 60 + inM
+                                    const outMin = outH * 60 + outM
+                                    if (outMin < inMin && outH >= cutoffHour) {
+                                      toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
                                       return
                                     }
                                   }
@@ -1373,10 +1399,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                     onChange={(e) => {
                                       const val = e.target.value
                                       if (val && inlineEdit.checkOut) {
-                                        const [inH] = val.split(":").map(Number)
-                                        const [outH] = inlineEdit.checkOut.split(":").map(Number)
+                                        const [inH, inM] = val.split(":").map(Number)
+                                        const [outH, outM] = inlineEdit.checkOut.split(":").map(Number)
                                         if (inH >= 0 && inH < cutoffHour && outH >= cutoffHour) {
                                           toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
+                                          return
+                                        }
+                                        const inMin = inH * 60 + inM
+                                        const outMin = outH * 60 + outM
+                                        if (outMin < inMin && outH >= cutoffHour) {
+                                          toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
                                           return
                                         }
                                       }
@@ -1408,10 +1440,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                     onChange={(e) => {
                                       const val = e.target.value
                                       if (inlineEdit.checkIn && val) {
-                                        const [inH] = inlineEdit.checkIn.split(":").map(Number)
-                                        const [outH] = val.split(":").map(Number)
+                                        const [inH, inM] = inlineEdit.checkIn.split(":").map(Number)
+                                        const [outH, outM] = val.split(":").map(Number)
                                         if (inH >= 0 && inH < cutoffHour && outH >= cutoffHour) {
                                           toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
+                                          return
+                                        }
+                                        const inMin = inH * 60 + inM
+                                        const outMin = outH * 60 + outM
+                                        if (outMin < inMin && outH >= cutoffHour) {
+                                          toast.error(`Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
                                           return
                                         }
                                       }
