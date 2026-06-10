@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
 import empModel from "../models/empModel.js";
 import siteModel from "../models/siteModel.js";
+import mongoose from "mongoose";
 
 export const login = async (req, res) => {
     try{
@@ -36,22 +37,28 @@ export function logout(req, res) {
 }
 
 export async function updateUser(req, res) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { userId } = req.params;
     const { email, password, assignedSite } = req.body;
 
-    const user = await userModel.findById(userId);
+    const user = await userModel.findById(userId).session(session);
 
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: "User not found",
       });
     }
 
-    const employee = user.employeeId ? await empModel.findOne({employeeId: user.employeeId}) : null;
+    const employee = user.employeeId ? await empModel.findOne({employeeId: user.employeeId}).session(session) : null;
 
     if (user.role === 'supervisor' && !employee){
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: "Employee not found",
@@ -74,11 +81,14 @@ export async function updateUser(req, res) {
       employee.currentSite = assignedSite;
     }
 
-    const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true});
+    const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true, session});
 
     if (employee) {
-      await employee.save();
+      await employee.save({ session });
     }
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(200).json({
       success: true,
@@ -87,6 +97,8 @@ export async function updateUser(req, res) {
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
 
     if (error.code === 11000) {
       return res.status(409).json({

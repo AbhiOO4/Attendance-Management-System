@@ -668,51 +668,54 @@ export const toggleHolidayStatus = async (req, res) => {
 
 // pst req to /api/attendance/submit
 export const siteFirstSubmitAttendance = async (req, res) => {
+  const {
+    siteId,
+    date,
+    isHoliday = false,
+    attendance,
+  } = req.body
+
+  const markedBy = req.user?.id
+  const timezoneOffset = req.headers['x-timezone-offset']
+
+  // -----------------------------
+  // VALIDATION (outside transaction)
+  // -----------------------------
+  if (!siteId || !date || !Array.isArray(attendance) || attendance.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "siteId, date and attendance are required",
+    })
+  }
+
+  const attendanceDate = new Date(date)
+  attendanceDate.setUTCHours(0, 0, 0, 0)
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    // console.log(req.body)
-    const {
-      siteId,
-      date,
-      isHoliday = false,
-      attendance,
-    } = req.body
-
-    const markedBy = req.user?.id
-    const timezoneOffset = req.headers['x-timezone-offset']
-
-    // -----------------------------
-    // VALIDATION
-    // -----------------------------
-    if (!siteId || !date || !Array.isArray(attendance) || attendance.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "siteId, date and attendance are required",
-      })
-    }
-
-    const attendanceDate = new Date(date)
-    attendanceDate.setUTCHours(0, 0, 0, 0)
+    const throwValidationError = (status, message, extra = {}) => {
+      const err = new Error(message);
+      err.status = status;
+      err.extra = extra;
+      throw err;
+    };
 
     // LOCK CHECK (site-first guarantee)
     const existingLock = await AttendanceLock.findOne({
       siteId,
       date: attendanceDate,
       isLocked: true,
-    })
+    }).session(session)
 
     if (existingLock) {
-      return res.status(400).json({
-        success: false,
-        message: "Attendance already submitted and locked for this site/date",
-      })
+      throwValidationError(400, "Attendance already submitted and locked for this site/date");
     }
 
-    const workConfig = await workModel.findOne()
+    const workConfig = await workModel.findOne().session(session)
     if (!workConfig) {
-      return res.status(404).json({
-        success: false,
-        message: "Work configuration not found",
-      })
+      throwValidationError(404, "Work configuration not found");
     }
 
     const {
@@ -737,23 +740,17 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       const empId = employee?._id 
 
       if (!empId) {
-        return res.status(400).json({
-          success: false,
-          message: "employee is required",
-        })
+        throwValidationError(400, "employee is required");
       }
 
       if (!Array.isArray(sessions)) {
-        return res.status(400).json({
-          success: false,
-          message: "sessions must be an array",
-        })
+        throwValidationError(400, "sessions must be an array");
       }
 
       let attendanceDoc = await Attendance.findOne({
         employee: empId,
         date: attendanceDate,
-      })
+      }).session(session)
 
       if (!attendanceDoc) {
         attendanceDoc = new Attendance({
@@ -773,13 +770,13 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       const updatedSessions = []
 
-      for (const session of sessions) {
+      for (const sessionObj of sessions) {
         const {
           siteId: sessionSiteId,
           job,
           checkIn,
           checkOut,
-        } = session
+        } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
         const cutoffHour = workConfig.nightShiftCutoffHour || 7
@@ -804,19 +801,13 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           const [outH, outM] = checkOut.split(":").map(Number);
           if (inH >= 0 && inH < cutoffHour) {
             if (outH * 60 + outM > cutoffHour * 60) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
-              });
+              throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`);
             }
           }
           const inMin = inH * 60 + inM;
           const outMin = outH * 60 + outM;
           if (outMin < inMin && outMin > cutoffHour * 60) {
-            return res.status(400).json({
-              success: false,
-              message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-            });
+            throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
           }
         }
 
@@ -825,29 +816,20 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           if (checkOut) {
             const [outH, outM] = checkOut.split(":").map(Number);
             if (outH * 60 + outM > cutoffHour * 60 && outH < 12) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-              });
+              throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
             }
           }
           if (checkIn) {
             const [inH] = checkIn.split(":").map(Number);
             if (inH >= cutoffHour && inH < 12) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-              });
+              throwValidationError(400, `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
             }
           }
         }
 
         // RULE: checkOut without checkIn NOT allowed
         if (!checkIn && checkOut) {
-          return res.status(400).json({
-            success: false,
-            message: "checkOut cannot exist without checkIn",
-          })
+          throwValidationError(400, "checkOut cannot exist without checkIn");
         }
 
         let workedHours = 0
@@ -861,10 +843,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             isNaN(inTime.getTime()) ||
             isNaN(outTime.getTime())
           ) {
-            return res.status(400).json({
-              success: false,
-              message: "Invalid checkIn/checkOut",
-            })
+            throwValidationError(400, "Invalid checkIn/checkOut");
           }
 
           workedHours =
@@ -872,10 +851,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             (1000 * 60 * 60)
 
           if (workedHours < 0 || workedHours > 24) {
-            return res.status(400).json({
-              success: false,
-              message: "Invalid shift duration",
-            })
+            throwValidationError(400, "Invalid shift duration");
           }
         }
 
@@ -972,22 +948,15 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             conflicting = a;
           }
           const site = await Site.findById(conflicting.siteId)
-            .select("siteName")
+            .select("siteName").session(session)
 
           if (!site) {
-            return res.status(404).json({
-              success: false,
-              message: "Site not found",
-            })
+            throwValidationError(404, "Site not found");
           }
 
-          return res.status(400).json({
-            success: false,
-            message: "Attendance sessions overlap",
-
+          throwValidationError(400, "Attendance sessions overlap", {
             overlap: {
               employeeId: empId,
-
               conflictingSession: {
                 siteId: conflicting.siteId,
                 siteName: site.siteName || "Unknown Site",
@@ -996,7 +965,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
                 checkOut: conflicting.checkOut,
               },
             },
-          })
+          });
         }
       }
 
@@ -1042,7 +1011,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.jobId = jobId || null
       attendanceDoc.markedBy = markedBy
 
-      await attendanceDoc.save()
+      await attendanceDoc.save({ session })
 
       processedRecords.push(attendanceDoc)
     }
@@ -1050,13 +1019,16 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     // -----------------------------
     // CREATE LOCK
     // -----------------------------
-    await AttendanceLock.create({
+    await AttendanceLock.create([{
       siteId,
       date: attendanceDate,
       isLocked: true,
       lockedBy: markedBy,
       lockedAt: new Date(),
-    })
+    }], { session })
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(201).json({
       success: true,
@@ -1066,12 +1038,15 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     })
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error(error)
 
-    return res.status(500).json({
+    return res.status(error.status || 500).json({
       success: false,
-      message: "Failed to submit attendance",
+      message: error.message || "Failed to submit attendance",
       error: error.message,
+      ...(error.extra || {}),
     })
   }
 }//
@@ -1467,69 +1442,60 @@ export const bulkEditAttendance = async (
   req,
   res
 ) => {
+  const {
+    siteId,
+    date,
+    isHoliday = false,
+    attendance,
+  } = req.body;
+
+  // VALIDATION (outside transaction)
+  if (
+    !siteId ||
+    !date ||
+    !attendance ||
+    !Array.isArray(attendance) ||
+    attendance.length === 0
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "siteId, date and attendance array are required",
+    });
+  }
+
+  const markedBy = req.user?.id;
+
+  // NORMALIZE DATE
+  const attendanceDate = new Date(date);
+  attendanceDate.setUTCHours(0, 0, 0, 0);
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const {
-      siteId,
-      date,
-      isHoliday = false,
-      attendance,
-    } = req.body;
-
-    // VALIDATION
-    if (
-      !siteId ||
-      !date ||
-      !attendance ||
-      !Array.isArray(attendance) ||
-      attendance.length === 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "siteId, date and attendance array are required",
-      });
-    }
-
-    const markedBy = req.user?.id;
-
-    // NORMALIZE DATE
-    const attendanceDate =
-      new Date(date);
-
-    attendanceDate.setUTCHours(
-      0,
-      0,
-      0,
-      0
-    );
+    const throwValidationError = (status, message, extra = {}) => {
+      const err = new Error(message);
+      err.status = status;
+      err.extra = extra;
+      throw err;
+    };
 
     // CHECK LOCK
-    // EDIT ONLY ALLOWED IF UNLOCKED
-    const existingLock =
-      await AttendanceLock.findOne({
-        siteId,
-        date: attendanceDate,
-        isLocked: true,
-      });
+    const existingLock = await AttendanceLock.findOne({
+      siteId,
+      date: attendanceDate,
+      isLocked: true,
+    }).session(session);
 
     if (existingLock) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Attendance is locked. Unlock before editing.",
-      });
+      throwValidationError(400, "Attendance is locked. Unlock before editing.");
     }
 
     // GET WORK CONFIG
-    const workConfig =
-      await workModel.findOne();
+    const workConfig = await workModel.findOne().session(session);
 
     if (!workConfig) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Work schedule configuration not found",
-      });
+      throwValidationError(404, "Work schedule configuration not found");
     }
 
     const {
@@ -1550,11 +1516,10 @@ export const bulkEditAttendance = async (
       } = entry;
 
       // FIND ATTENDANCE DOC
-      const attendanceDoc =
-        await Attendance.findOne({
-          employee: employeeId,
-          date: attendanceDate,
-        });
+      const attendanceDoc = await Attendance.findOne({
+        employee: employeeId,
+        date: attendanceDate,
+      }).session(session);
 
       // MUST EXIST DURING EDIT
       if (!attendanceDoc) {
@@ -1565,13 +1530,8 @@ export const bulkEditAttendance = async (
       let workedHours = 0;
 
       if (checkIn && checkOut) {
-        const diffMs =
-          new Date(checkOut) -
-          new Date(checkIn);
-
-        workedHours =
-          diffMs /
-          (1000 * 60 * 60);
+        const diffMs = new Date(checkOut) - new Date(checkIn);
+        workedHours = diffMs / (1000 * 60 * 60);
 
         if (workedHours < 0) {
           continue;
@@ -1589,94 +1549,52 @@ export const bulkEditAttendance = async (
       };
 
       // FIND EXISTING SITE SESSION
-      const existingSessionIndex =
-        attendanceDoc.sessions.findIndex(
-          (session) =>
-            session.siteId.toString() ===
-            siteId.toString()
-        );
+      const existingSessionIndex = attendanceDoc.sessions.findIndex(
+        (sessionObj) => sessionObj.siteId.toString() === siteId.toString()
+      );
 
       // UPDATE EXISTING SESSION
-      if (
-        existingSessionIndex !== -1
-      ) {
-        attendanceDoc.sessions[
-          existingSessionIndex
-        ] = {
-          ...attendanceDoc.sessions[
-            existingSessionIndex
-          ].toObject(),
-
+      if (existingSessionIndex !== -1) {
+        attendanceDoc.sessions[existingSessionIndex] = {
+          ...attendanceDoc.sessions[existingSessionIndex].toObject(),
           ...updatedSession,
         };
-      }
-
-      // IF SESSION DOESN'T EXIST,
-      // ADD IT
-      else {
-        attendanceDoc.sessions.push(
-          updatedSession
-        );
+      } else {
+        // IF SESSION DOESN'T EXIST, ADD IT
+        attendanceDoc.sessions.push(updatedSession);
       }
 
       // RECALCULATE TOTAL HOURS
-      const totalWorkHours =
-        attendanceDoc.sessions.reduce(
-          (acc, session) => {
-            return (
-              acc +
-              (session.workedHours ||
-                0)
-            );
-          },
-          0
-        );
+      const totalWorkHours = attendanceDoc.sessions.reduce(
+        (acc, sessionObj) => acc + (sessionObj.workedHours || 0),
+        0
+      );
 
       // RECALCULATE STATUS
       let status = "absent";
 
-      if (
-        totalWorkHours >=
-        fullDayHours
-      ) {
+      if (totalWorkHours >= fullDayHours) {
         status = "fullday";
-      } else if (
-        totalWorkHours >=
-        halfDayHours
-      ) {
+      } else if (totalWorkHours >= halfDayHours) {
         status = "halfday";
       }
 
       // RECALCULATE OT
       let overtimeHours = 0;
 
-      if (
-        totalWorkHours >
-        overtimeThreshold
-      ) {
-        overtimeHours =
-          totalWorkHours -
-          overtimeThreshold;
+      if (totalWorkHours > overtimeThreshold) {
+        overtimeHours = totalWorkHours - overtimeThreshold;
       }
 
       // UPDATE DOC
-      attendanceDoc.totalWorkHours =
-        totalWorkHours;
+      attendanceDoc.totalWorkHours = totalWorkHours;
+      attendanceDoc.status = status;
+      attendanceDoc.overtimeHours = overtimeHours;
+      attendanceDoc.isHoliday = isHoliday;
 
-      attendanceDoc.status =
-        status;
+      await attendanceDoc.save({ session });
 
-      attendanceDoc.overtimeHours =
-        overtimeHours;
-
-      attendanceDoc.isHoliday =
-        isHoliday;
-
-      await attendanceDoc.save();
-
-      processedRecords.push(
-        attendanceDoc
-      );
+      processedRecords.push(attendanceDoc);
     }
 
     // LOCK AFTER EDIT
@@ -1687,40 +1605,37 @@ export const bulkEditAttendance = async (
       },
       {
         isLocked: true,
-
         lockedBy: markedBy,
-
         lockedAt: new Date(),
-
         unlockedBy: null,
-
         unlockedAt: null,
       },
       {
         new: true,
+        session,
       }
     );
+
+    await session.commitTransaction();
+    session.endSession();
+
     return res.status(200).json({
       success: true,
-
-      message:
-        "Attendance edited successfully",
-
-      recordsProcessed:
-        processedRecords.length,
-
+      message: "Attendance edited successfully",
+      recordsProcessed: processedRecords.length,
       data: processedRecords,
     });
+
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error(error);
 
-    return res.status(500).json({
+    return res.status(error.status || 500).json({
       success: false,
-
-      message:
-        "Failed to edit attendance",
-
+      message: error.message || "Failed to edit attendance",
       error: error.message,
+      ...(error.extra || {}),
     });
   }
 };//

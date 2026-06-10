@@ -115,25 +115,39 @@ export const createSite = async (req , res) => {
 //Req: Supervisors id, employee id, siteId
 //Res: status 200 supervisor details
 export const  assignSupervisor = async (req , res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
     try {
         const { _id } = req.body
         const { siteId } = req.params
-        const employee = await empModel.findById(_id)
+        const employee = await empModel.findById(_id).session(session)
 
         if (!employee){
+            await session.abortTransaction();
+            session.endSession();
             return res.status(404).json({message: "Employee Doesnt exist"})
         }
 
-        const supervisor = await userModel.findOne({ _id: employee.user })
+        const supervisor = await userModel.findOne({ _id: employee.user }).session(session)
+        if (!supervisor) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({message: "Supervisor User Doesn't exist"})
+        }
 
         supervisor.assignedSite = siteId
         
         employee.currentSite = siteId
-        await supervisor.save()
-        await employee.save()
+        await supervisor.save({ session })
+        await employee.save({ session })
+
+        await session.commitTransaction();
+        session.endSession();
         res.status(200).json(supervisor)
     }
     catch (error) {
+        await session.abortTransaction();
+        session.endSession();
         res.status(500).json({message: "Internal server error"})
         console.log(error)
     }
@@ -143,10 +157,14 @@ export const  assignSupervisor = async (req , res) => {
 //Req: takes in the object id of the employee who is a supervisor
 //Res: status code 200
 export const removeSupervisor = async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
     try{
         const {_id} = req.body
-        const employee = await empModel.findById(_id)
+        const employee = await empModel.findById(_id).session(session)
         if (!employee){
+            await session.abortTransaction();
+            session.endSession();
             return res.status(400).json({message: "Employee doent exist"})
         }
         if (employee.currentJob) {
@@ -154,20 +172,27 @@ export const removeSupervisor = async (req, res) => {
                 $pull: {
                     employees: employee._id,
                 },
-            });
+            }, { session });
         }
         employee.currentSite = null
         employee.currentJob = null
-        const supervisor = await userModel.findOne({_id: employee.user})
+        const supervisor = await userModel.findOne({_id: employee.user}).session(session)
         if (!supervisor){
+            await session.abortTransaction();
+            session.endSession();
             return res.status(400).json({message: "Employee is not a supervisor"})
         }
         supervisor.assignedSite = null
-        await supervisor.save()
-        await employee.save()
+        await supervisor.save({ session })
+        await employee.save({ session })
+
+        await session.commitTransaction();
+        session.endSession();
         res.status(200).json(supervisor)
     }
     catch(error){
+        await session.abortTransaction();
+        session.endSession();
         console.log(error)
         res.status(500).json({message: "Internal server error"})
     }
@@ -192,12 +217,16 @@ export const assignEmployee = async (req , res) => {
 }
 
 export const removeEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { _id } = req.body;
 
-    const employee = await empModel.findById(_id);
+    const employee = await empModel.findById(_id).session(session);
 
     if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Employee doesn't exist",
       });
@@ -209,18 +238,23 @@ export const removeEmployee = async (req, res) => {
         $pull: {
           employees: employee._id,
         },
-      });
+      }, { session });
     }
 
     // Clear employee assignments
     employee.currentSite = null;
     employee.currentJob = null;
 
-    const saved = await employee.save();
+    const saved = await employee.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(200).json(saved);
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     res.status(500).json({
@@ -249,29 +283,37 @@ export const checkPending = async (req, res) => {
 }
 
 export const addJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { siteId } = req.params;
     const { name, jobCode } = req.body;
 
     // Create job
-    const newJob = await jobModel.create({
+    const newJobs = await jobModel.create([{
       name,
       jobCode,
       site: siteId,
-    });
+    }], { session });
+    const newJob = newJobs[0];
 
     // Push job id into site's jobs array
     await siteModel.findByIdAndUpdate(siteId, {
       $push: {
         jobs: newJob._id,
       },
-    });
+    }, { session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(201).json({
       message: "New Job Created",
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     if (error.code === 11000) {
       return res.status(409).json({
         message: "Conflict: Job Code already exists in the system.",
@@ -463,23 +505,29 @@ export const getSiteJobs = async (req,res) => {
 
 
 export const addEmployeeToJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { jobId } = req.params;
     const { empId } = req.body;
 
     // Check employee exists
-    const employee = await empModel.findById(empId);
+    const employee = await empModel.findById(empId).session(session);
 
     if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Employee was not found",
       });
     }
 
     // Check job exists
-    const job = await jobModel.findById(jobId);
+    const job = await jobModel.findById(jobId).session(session);
 
     if (!job) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Job was not found",
       });
@@ -490,6 +538,8 @@ export const addEmployeeToJob = async (req, res) => {
       !employee.currentSite ||
       employee.currentSite.toString() !== job.site.toString()
     ) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         message: "Employee is not associated with this site's job",
       });
@@ -503,14 +553,19 @@ export const addEmployeeToJob = async (req, res) => {
       job.employees.push(empId);
     }
 
-    await employee.save();
-    await job.save();
+    await employee.save({ session });
+    await job.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(200).json({
       message: "Employee added to job successfully",
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     res.status(500).json({
@@ -520,23 +575,29 @@ export const addEmployeeToJob = async (req, res) => {
 };
 
 export const removeEmployeeFromJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { jobId } = req.params;
     const { empId } = req.body;
 
     // Check employee exists
-    const employee = await empModel.findById(empId);
+    const employee = await empModel.findById(empId).session(session);
 
     if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Employee not found",
       });
     }
 
     // Check job exists
-    const job = await jobModel.findById(jobId);
+    const job = await jobModel.findById(jobId).session(session);
 
     if (!job) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Job not found",
       });
@@ -547,6 +608,8 @@ export const removeEmployeeFromJob = async (req, res) => {
       !employee.currentJob ||
       employee.currentJob.toString() !== jobId
     ) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         message: "Employee is not assigned to this job",
       });
@@ -558,14 +621,19 @@ export const removeEmployeeFromJob = async (req, res) => {
     // Clear employee currentJob
     employee.currentJob = null;
 
-    await employee.save();
-    await job.save();
+    await employee.save({ session });
+    await job.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: "Employee removed from job successfully",
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     return res.status(500).json({
@@ -735,26 +803,32 @@ export const siteManHoursAndDays = async (req,res) => {
 };
 
 export const deactivateSite = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { siteId } = req.params;
 
     // Find site
-    const site = await siteModel.findById(siteId);
+    const site = await siteModel.findById(siteId).session(session);
 
     if (!site) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Site not found",
       });
     }
 
     if (site.isPermanent) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         message: "Cannot deactivate a permanent site",
       });
     }
 
     // Get all jobs associated with this site
-    const jobs = await jobModel.find({ site: siteId });
+    const jobs = await jobModel.find({ site: siteId }).session(session);
 
     const jobIds = jobs.map((job) => job._id);
 
@@ -769,7 +843,8 @@ export const deactivateSite = async (req, res) => {
           currentSite: null,
           currentJob: null,
         },
-      }
+      },
+      { session }
     );
 
     
@@ -783,7 +858,8 @@ export const deactivateSite = async (req, res) => {
           employees: [],
           isActive: false,
         },
-      }
+      },
+      { session }
     );
 
     
@@ -792,7 +868,10 @@ export const deactivateSite = async (req, res) => {
 
     site.isActive = false;
 
-    await site.save();
+    await site.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: "Site deactivated successfully",
@@ -800,6 +879,8 @@ export const deactivateSite = async (req, res) => {
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     return res.status(500).json({
@@ -809,19 +890,25 @@ export const deactivateSite = async (req, res) => {
 };
 
 export const reactivateSite = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { siteId } = req.params;
 
     // Find site
-    const site = await siteModel.findById(siteId);
+    const site = await siteModel.findById(siteId).session(session);
 
     if (!site) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Site not found",
       });
     }
 
     if (site.isPermanent) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         message: "Cannot reactivate a permanent site",
       });
@@ -834,13 +921,17 @@ export const reactivateSite = async (req, res) => {
         $set: {
           isActive: true,
         },
-      }
+      },
+      { session }
     );
 
     // Reactivate site
     site.isActive = true;
 
-    await site.save();
+    await site.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: "Site reactivated successfully",
@@ -848,6 +939,8 @@ export const reactivateSite = async (req, res) => {
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     return res.status(500).json({
@@ -973,12 +1066,16 @@ export const getJob = async (req, res) => {
 }
 
 export const changeJobStatus = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { jobId } = req.params;
 
-    const job = await jobModel.findById(jobId);
+    const job = await jobModel.findById(jobId).session(session);
 
     if (!job) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Job not found",
       });
@@ -996,7 +1093,8 @@ export const changeJobStatus = async (req, res) => {
           $set: {
             currentJob: null,
           },
-        }
+        },
+        { session }
       );
 
       // Optional cleanup
@@ -1004,7 +1102,10 @@ export const changeJobStatus = async (req, res) => {
 
       job.isActive = false;
 
-      await job.save();
+      await job.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
 
       return res.status(200).json({
         message:
@@ -1015,7 +1116,10 @@ export const changeJobStatus = async (req, res) => {
     // If currently inactive -> reactivate
     job.isActive = true;
 
-    await job.save();
+    await job.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message:
@@ -1023,6 +1127,8 @@ export const changeJobStatus = async (req, res) => {
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
 
     return res.status(500).json({
@@ -1032,6 +1138,8 @@ export const changeJobStatus = async (req, res) => {
 };
 
 export const instaAddEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { siteId } = req.params
     const { empId, currentJob } = req.body
@@ -1039,24 +1147,30 @@ export const instaAddEmployee = async (req, res) => {
     const markedBy = req.user?.id
 
     if (!siteId || !empId) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: "siteId and empId are required",
       })
     }
 
-    const employee = await empModel.findById(empId)
+    const employee = await empModel.findById(empId).session(session)
 
     if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: "Employee not found",
       })
     }
 
-    const site = await siteModel.findById(siteId)
+    const site = await siteModel.findById(siteId).session(session)
 
     if (!site) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: "Site not found",
@@ -1068,6 +1182,8 @@ export const instaAddEmployee = async (req, res) => {
       employee.currentSite &&
       employee.currentSite.toString() === siteId.toString()
     ) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: "Employee is already assigned to this site",
@@ -1082,7 +1198,7 @@ export const instaAddEmployee = async (req, res) => {
         siteId,
         date: today,
         isLocked: true,
-      })
+      }).session(session)
 
     const oldJobId = employee.currentJob
 
@@ -1093,7 +1209,7 @@ export const instaAddEmployee = async (req, res) => {
       employee.currentSite = siteId
       employee.currentJob = currentJob
 
-      await employee.save()
+      await employee.save({ session })
 
       if (oldJobId) {
         await jobModel.findByIdAndUpdate(
@@ -1102,9 +1218,13 @@ export const instaAddEmployee = async (req, res) => {
             $pull: {
               employees: employee._id,
             },
-          }
+          },
+          { session }
         )
       }
+
+      await session.commitTransaction();
+      session.endSession();
 
       return res.status(200).json({
         success: true,
@@ -1120,7 +1240,7 @@ export const instaAddEmployee = async (req, res) => {
     let attendance = await attendanceModel.findOne({
       employee: empId,
       date: today,
-    })
+    }).session(session)
 
     if (attendance) {
       const alreadyHasSession =
@@ -1140,28 +1260,19 @@ export const instaAddEmployee = async (req, res) => {
           markedBy,
         })
 
-        await attendance.save()
+        await attendance.save({ session })
       }
     } else {
-      attendance = await attendanceModel.create({
+      const newAttendances = await attendanceModel.create([{
         employee: empId,
-
         siteId,
-
         jobId: currentJob,
-
         markedBy,
-
         date: today,
-
         status: "absent",
-
         isHoliday: false,
-
         totalWorkHours: 0,
-
         overtimeHours: 0,
-
         sessions: [
           {
             siteId,
@@ -1172,7 +1283,8 @@ export const instaAddEmployee = async (req, res) => {
             markedBy,
           },
         ],
-      })
+      }], { session })
+      attendance = newAttendances[0]
     }
 
     // ----------------------------------
@@ -1182,7 +1294,7 @@ export const instaAddEmployee = async (req, res) => {
     employee.currentSite = siteId
     employee.currentJob = currentJob
 
-    await employee.save()
+    await employee.save({ session })
 
     if (oldJobId) {
       await jobModel.findByIdAndUpdate(
@@ -1191,9 +1303,13 @@ export const instaAddEmployee = async (req, res) => {
           $pull: {
             employees: employee._id,
           },
-        }
+        },
+        { session }
       )
     }
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -1201,6 +1317,8 @@ export const instaAddEmployee = async (req, res) => {
       attendance,
     })
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error(error)
 
     return res.status(500).json({
@@ -1396,12 +1514,16 @@ export const getAvailableEmployeesForSite = async (
 //to null
 
 export const deleteSite = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { siteId } = req.params;
 
     // Find site
-    const site = await siteModel.findById(siteId);
+    const site = await siteModel.findById(siteId).session(session);
     if (!site) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Site not found",
       });
@@ -1410,7 +1532,7 @@ export const deleteSite = async (req, res) => {
     // Set site as soft-deleted
     site.isDeleted = true;
     site.isActive = false;
-    await site.save();
+    await site.save({ session });
 
     // Disassociate all employees associated with this site
     await empModel.updateMany(
@@ -1420,7 +1542,8 @@ export const deleteSite = async (req, res) => {
           currentSite: null,
           currentJob: null,
         },
-      }
+      },
+      { session }
     );
 
     // Disassociate supervisors (set assignedSite to null in User model)
@@ -1430,7 +1553,8 @@ export const deleteSite = async (req, res) => {
         $set: {
           assignedSite: null,
         },
-      }
+      },
+      { session }
     );
 
     // Soft-delete all jobs belonging to the site
@@ -1442,13 +1566,19 @@ export const deleteSite = async (req, res) => {
           isActive: false,
           employees: [],
         },
-      }
+      },
+      { session }
     );
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: "Site and its associated jobs soft-deleted successfully",
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
     return res.status(500).json({
       message: "Internal Server Error",
@@ -1457,12 +1587,16 @@ export const deleteSite = async (req, res) => {
 };
 
 export const deleteJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { jobId } = req.params;
 
     // Find job
-    const job = await jobModel.findById(jobId);
+    const job = await jobModel.findById(jobId).session(session);
     if (!job) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         message: "Job not found",
       });
@@ -1472,7 +1606,7 @@ export const deleteJob = async (req, res) => {
     job.isDeleted = true;
     job.isActive = false;
     job.employees = [];
-    await job.save();
+    await job.save({ session });
 
     // Disassociate all employees assigned to this job
     await empModel.updateMany(
@@ -1481,7 +1615,8 @@ export const deleteJob = async (req, res) => {
         $set: {
           currentJob: null,
         },
-      }
+      },
+      { session }
     );
 
     // Remove job from the site's jobs array
@@ -1490,13 +1625,18 @@ export const deleteJob = async (req, res) => {
         $pull: {
           jobs: jobId,
         },
-      });
+      }, { session });
     }
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: "Job soft-deleted successfully",
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error);
     return res.status(500).json({
       message: "Internal Server Error",
