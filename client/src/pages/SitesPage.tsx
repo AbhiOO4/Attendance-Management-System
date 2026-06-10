@@ -30,6 +30,7 @@ type Site = {
   locationDetails: string
   isActive: boolean
   isPermanent?: boolean
+  isCompleted?: boolean
 }
 
 export default function SitesPage() {
@@ -43,9 +44,11 @@ export default function SitesPage() {
   const [siteToDelete, setSiteToDelete] = useState<Site | null>(null)
   const [deletingSite, setDeletingSite] = useState(false)
 
-  const fetchSites = async () => {
+  const fetchSites = async (showLoading = false) => {
     try {
-      setLoading(true)
+      if (showLoading || sites.length === 0) {
+        setLoading(true)
+      }
 
       const response = await api.get("/api/site", {
         params: {
@@ -56,6 +59,11 @@ export default function SitesPage() {
 
       const fetchedSites = response.data || []
       const sortedSites = [...fetchedSites].sort((a, b) => {
+        const aComp = a.isCompleted ? 1 : 0
+        const bComp = b.isCompleted ? 1 : 0
+        if (aComp !== bComp) {
+          return aComp - bComp // incomplete (0) first, completed (1) last
+        }
         const aPerm = a.isPermanent ? 1 : 0
         const bPerm = b.isPermanent ? 1 : 0
         return bPerm - aPerm
@@ -78,7 +86,7 @@ export default function SitesPage() {
       toast.success("Site soft-deleted successfully")
       setConfirmDeleteOpen(false)
       setSiteToDelete(null)
-      fetchSites()
+      fetchSites(true)
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Failed to delete site")
     } finally {
@@ -88,7 +96,7 @@ export default function SitesPage() {
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      fetchSites()
+      fetchSites(true)
     }, 400)
 
     return () => clearTimeout(timeout)
@@ -177,6 +185,16 @@ export default function SitesPage() {
                           {site.isActive ? "Active" : "Inactive"}
                         </div>
 
+                        <div
+                          className={`rounded-full px-3 py-1 text-xs font-medium ${
+                            site.isCompleted
+                              ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                          }`}
+                        >
+                          {site.isCompleted ? "Completed" : "In Progress"}
+                        </div>
+
                         {site.isPermanent && (
                           <div className="rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20">
                             Permanent Home Site
@@ -194,6 +212,32 @@ export default function SitesPage() {
                     </div>
 
                     <div className="flex items-center gap-2 self-center">
+                      {site.isActive && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async (e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            try {
+                              const updatedStatus = !site.isCompleted
+                              await api.patch(`/api/site/${site._id}`, { isCompleted: updatedStatus })
+                              toast.success(`Site marked as ${updatedStatus ? 'completed' : 'incomplete'}`)
+                              fetchSites(false)
+                            } catch (error: any) {
+                              toast.error(error?.response?.data?.message || "Failed to update site status")
+                            }
+                          }}
+                          className={`rounded-xl border transition-all ${
+                            site.isCompleted
+                              ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
+                              : "hover:bg-accent border-muted-foreground/20 text-muted-foreground"
+                          }`}
+                        >
+                          {site.isCompleted ? "Reopen Site" : "Complete Site"}
+                        </Button>
+                      )}
+
                       {!site.isPermanent && (
                         <Button
                           variant="destructive"

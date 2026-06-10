@@ -50,6 +50,7 @@ interface Employee {
   monthlySalary: number
   currentSite: string | null
   currentJob: { _id: string; name: string } | null
+  user?: string | null
 }
 
 
@@ -337,7 +338,14 @@ function Employees() {
                   </TableCell>
 
                   <TableCell>
-                    <Link to={`/employees/${employee._id}`}>{employee.name}</Link>
+                    <div className="flex items-center gap-2">
+                      <Link to={`/employees/${employee._id}`} className="hover:underline">{employee.name}</Link>
+                      {employee.user && (
+                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                          Supervisor
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
 
                   <TableCell>

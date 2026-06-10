@@ -943,13 +943,16 @@ export const siteFirstSubmitAttendance = async (req, res) => {
 
       const validSessions = mergedSessions
         .filter((s) => s.checkIn)
-        .map((s) => ({
-          ...s,
-          _start: new Date(s.checkIn),
-          _end: s.checkOut
-            ? new Date(s.checkOut)
-            : new Date(s.checkIn),
-        }))
+        .map((s) => {
+          const plain = typeof s.toObject === "function" ? s.toObject() : s;
+          return {
+            ...plain,
+            _start: new Date(plain.checkIn),
+            _end: plain.checkOut
+              ? new Date(plain.checkOut)
+              : new Date(plain.checkIn),
+          };
+        })
 
       for (
         let i = 0;
@@ -962,10 +965,13 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         const hasOverlap =
           a._start < b._end &&
           a._end > b._start
-        
 
         if (hasOverlap) {
-          const site = await Site.findById(b.siteId)
+          let conflicting = b;
+          if (siteId && a.siteId && a.siteId.toString() !== siteId.toString()) {
+            conflicting = a;
+          }
+          const site = await Site.findById(conflicting.siteId)
             .select("siteName")
 
           if (!site) {
@@ -983,11 +989,11 @@ export const siteFirstSubmitAttendance = async (req, res) => {
               employeeId: empId,
 
               conflictingSession: {
-                siteId: b.siteId,
+                siteId: conflicting.siteId,
                 siteName: site.siteName || "Unknown Site",
-                jobId: b.jobId,
-                checkIn: b.checkIn,
-                checkOut: b.checkOut,
+                jobId: conflicting.jobId,
+                checkIn: conflicting.checkIn,
+                checkOut: conflicting.checkOut,
               },
             },
           })
@@ -1159,6 +1165,8 @@ export const getSiteAttendance = async (req, res) => {
           employeeId: "$employee.employeeId",
 
           jobTitle: "$employee.jobTitle",
+
+          user: "$employee.user",
 
           status: "$status",
 

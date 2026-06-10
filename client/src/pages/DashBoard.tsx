@@ -78,6 +78,8 @@ function DashBoard() {
       null
     )
 
+  const activeSites = dashboard?.sites.filter((site) => site.manHoursToday > 0) || []
+
   async function fetchDashboard() {
     try {
       setLoading(true)
@@ -318,14 +320,14 @@ function DashBoard() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ) : !dashboard || dashboard.sites.length === 0 ? (
+                ) : !dashboard || activeSites.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={5} className="h-24 text-center text-muted-foreground font-medium">
-                      No attendance data found for the selected date
+                      No active site activity found for the selected date
                     </TableCell>
                   </TableRow>
                 ) : (
-                  dashboard.sites.map((site, index) => (
+                  activeSites.map((site, index) => (
                     <TableRow
                       key={site.siteId}
                       onClick={() =>
@@ -384,12 +386,12 @@ function DashBoard() {
                   <span className="h-2 w-2 rounded-full bg-primary animate-bounce" />
                 </div>
               </Card>
-            ) : !dashboard || dashboard.sites.length === 0 ? (
+            ) : !dashboard || activeSites.length === 0 ? (
               <Card className="p-4 text-center text-muted-foreground">
-                No attendance data found for selected date
+                No active site activity found for selected date
               </Card>
             ) : (
-              dashboard.sites.map((site, index) => (
+              activeSites.map((site, index) => (
                 <Card
                   key={site.siteId}
                   onClick={() =>

@@ -67,8 +67,7 @@ router.patch('/job/:jobId/status', siteController.changeJobStatus)
 
 router.post('/:siteId/insta-add-employee', siteController.instaAddEmployee)
 
-
-
-
+router.patch('/:siteId', siteController.updateSite)
+router.patch('/job/:jobId/toggle-completed', siteController.toggleJobCompleted)
 
 export default router

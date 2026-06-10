@@ -89,6 +89,7 @@ interface Site {
   isActive: boolean
   jobs: string[]
   isPermanent?: boolean
+  isCompleted?: boolean
 }
 
 interface Job {
@@ -100,6 +101,7 @@ interface Job {
   totalManDays: number,
   totalCalendarDays: number,
   isActive: boolean
+  isCompleted?: boolean
 }
 
 interface SiteStats {
@@ -167,6 +169,11 @@ function SiteDetail() {
   const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
   const [deletingJob, setDeletingJob] = useState(false)
 
+  // Edit Location state
+  const [isEditingLocation, setIsEditingLocation] = useState(false)
+  const [editedLocationDetails, setEditedLocationDetails] = useState("")
+  const [savingLocation, setSavingLocation] = useState(false)
+
   const isSiteActive = site?.isActive
 
   // inline job-change state
@@ -196,9 +203,11 @@ function SiteDetail() {
     }
   }
 
-  async function fetchJobs() {
+  async function fetchJobs(showLoading = false) {
     try {
-      setLoadingJobs(true)
+      if (showLoading || jobs.length === 0) {
+        setLoadingJobs(true)
+      }
 
       const res = await api.get(
         `/api/site/${id}/Jobs`
@@ -348,7 +357,7 @@ function SiteDetail() {
 
       setJobDialogOpen(false)
 
-      fetchJobs()
+      fetchJobs(true)
     } catch (error: any) {
       console.log(error)
 
@@ -372,7 +381,7 @@ function SiteDetail() {
 
   useEffect(() => {
     if (id) {
-      fetchJobs()
+      fetchJobs(true)
     }
   }, [id])
 
@@ -428,6 +437,23 @@ function SiteDetail() {
     }
   }
 
+  async function handleSaveLocation() {
+    if (!site) return
+    try {
+      setSavingLocation(true)
+      await api.patch(`/api/site/${site._id}`, {
+        locationDetails: editedLocationDetails.trim()
+      })
+      toast.success("Location details updated successfully")
+      setIsEditingLocation(false)
+      fetchSite()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to update location details")
+    } finally {
+      setSavingLocation(false)
+    }
+  }
+
   async function handleDeleteSite() {
     try {
       setDeletingSite(true)
@@ -450,7 +476,7 @@ function SiteDetail() {
       toast.success("Job soft-deleted successfully")
       setConfirmDeleteJobOpen(false)
       setJobToDelete(null)
-      fetchJobs()
+      fetchJobs(true)
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Failed to delete job")
     } finally {
@@ -499,6 +525,12 @@ function SiteDetail() {
                     ? "Active"
                     : "Inactive"}
                 </div>
+
+                {site?.isCompleted && (
+                  <div className="rounded-full px-3 py-1 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                    Completed
+                  </div>
+                )}
 
                 {site?.isPermanent && (
                   <Badge className="bg-primary/10 text-primary border-primary/20 hover:bg-primary/20 font-medium">
@@ -592,6 +624,45 @@ function SiteDetail() {
               </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {isSiteActive && (
+              <>
+                <Button
+                  variant="outline"
+                  className="rounded-xl border border-muted-foreground/30"
+                  onClick={() => {
+                    if (site) {
+                      setEditedLocationDetails(site.locationDetails)
+                      setIsEditingLocation(true)
+                    }
+                  }}
+                >
+                  Edit Location
+                </Button>
+
+                <Button
+                  variant="outline"
+                  className={`rounded-xl border transition-all ${
+                    site?.isCompleted
+                      ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
+                      : "hover:bg-accent border-muted-foreground/20 text-muted-foreground"
+                  }`}
+                  onClick={async () => {
+                    if (!site) return
+                    try {
+                      const updatedStatus = !site.isCompleted
+                      await api.patch(`/api/site/${site._id}`, { isCompleted: updatedStatus })
+                      toast.success(`Site marked as ${updatedStatus ? 'completed' : 'incomplete'}`)
+                      fetchSite()
+                    } catch (error: any) {
+                      toast.error(error?.response?.data?.message || "Failed to update site status")
+                    }
+                  }}
+                >
+                  {site?.isCompleted ? "Reopen Site" : "Complete Site"}
+                </Button>
+              </>
+            )}
+
             {!site?.isPermanent && (
               isSiteActive ? (
                 <Dialog
@@ -1098,6 +1169,12 @@ function SiteDetail() {
                             ? "Active"
                             : "Inactive"}
                         </div>
+
+                        {job.isCompleted && (
+                          <div className="rounded-full px-2 py-1 text-[10px] font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                            Completed
+                          </div>
+                        )}
                       </div>
 
                       <p className="mt-1 text-sm text-muted-foreground">
@@ -1106,6 +1183,30 @@ function SiteDetail() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      {isSiteActive && job.isActive && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={`rounded-lg h-7 px-2 text-xs font-medium border transition-all ${
+                            job.isCompleted
+                              ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
+                              : "hover:bg-accent border-muted-foreground/20 text-muted-foreground"
+                          }`}
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            try {
+                              await api.patch(`/api/site/job/${job._id}/toggle-completed`)
+                              toast.success(`Job marked as ${!job.isCompleted ? 'completed' : 'incomplete'}`)
+                              fetchJobs(false)
+                            } catch (error: any) {
+                              toast.error(error?.response?.data?.message || "Failed to update job status")
+                            }
+                          }}
+                        >
+                          {job.isCompleted ? "Reopen" : "Complete"}
+                        </Button>
+                      )}
+
                       <Button
                         variant="destructive"
                         size="icon-xs"
@@ -1270,6 +1371,47 @@ function SiteDetail() {
               onClick={handleDeleteJob}
             >
               {deletingJob ? "Deleting..." : "Confirm Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Site Location Dialog */}
+      <Dialog open={isEditingLocation} onOpenChange={setIsEditingLocation}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">
+              Edit Location Details
+            </DialogTitle>
+            <DialogDescription>
+              Update the location details for this site.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Location Details</label>
+              <Input
+                placeholder="Enter location details"
+                value={editedLocationDetails}
+                onChange={(e) => setEditedLocationDetails(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              disabled={savingLocation}
+              onClick={() => setIsEditingLocation(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={savingLocation}
+              onClick={handleSaveLocation}
+            >
+              {savingLocation ? "Saving..." : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

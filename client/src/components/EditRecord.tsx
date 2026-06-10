@@ -854,12 +854,12 @@ const toTimeValue = (
           </Button>
 
           {overlapInfo && (
-            <div className="rounded-xl border border-red-500 bg-red-50 p-4">
-              <h4 className="font-semibold text-red-700">
+            <div className="rounded-xl border border-red-500 bg-red-50 p-4 dark:bg-red-950/20 dark:border-red-800/30">
+              <h4 className="font-semibold text-red-700 dark:text-red-200">
                 Session Overlap Detected
               </h4>
 
-              <div className="mt-3 text-sm text-red-700 space-y-2">
+              <div className="mt-3 text-sm text-red-700 dark:text-red-300 space-y-2">
                 <div>
                   <strong>
                     Session{" "}

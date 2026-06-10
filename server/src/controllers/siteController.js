@@ -22,7 +22,7 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent").sort({isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -59,6 +59,15 @@ export const getSites = async (req, res) => {
                     ...siteObj,
                     taken
                 }
+            })
+
+            sitesWithStatus.sort((a, b) => {
+                const aComp = a.isCompleted ? 1 : 0
+                const bComp = b.isCompleted ? 1 : 0
+                if (aComp !== bComp) return aComp - bComp
+                const aAct = a.isActive ? 1 : 0
+                const bAct = b.isActive ? 1 : 0
+                return bAct - aAct
             })
 
             return res.status(200).json(sitesWithStatus)
@@ -1245,6 +1254,13 @@ export const getAvailableEmployeesForSite = async (
             },
           ],
         },
+        {
+          $or: [
+            { user: null },
+            { user: { $exists: false } },
+            { currentSite: null },
+          ],
+        },
       ],
     }
 
@@ -1488,6 +1504,43 @@ export const deleteJob = async (req, res) => {
   }
 };
 
+export const updateSite = async (req, res) => {
+  try {
+    const { siteId } = req.params;
+    const { locationDetails, isCompleted } = req.body;
+
+    const site = await siteModel.findById(siteId);
+    if (!site) {
+      return res.status(404).json({ message: "Site not found" });
+    }
+
+    if (locationDetails !== undefined) site.locationDetails = locationDetails;
+    if (isCompleted !== undefined) site.isCompleted = isCompleted;
+
+    await site.save();
+    return res.status(200).json(site);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const toggleJobCompleted = async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const job = await jobModel.findById(jobId);
+    if (!job) {
+      return res.status(404).json({ message: "Job not found" });
+    }
+    job.isCompleted = !job.isCompleted;
+    await job.save();
+    return res.status(200).json(job);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 const siteController = {
     getSites,
     getSite,
@@ -1512,7 +1565,9 @@ const siteController = {
     getJob,
     changeJobStatus,
     instaAddEmployee,
-    getAvailableEmployeesForSite
+    getAvailableEmployeesForSite,
+    updateSite,
+    toggleJobCompleted
 }
 
 export default siteController;

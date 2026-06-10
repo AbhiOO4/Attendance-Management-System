@@ -46,6 +46,7 @@ interface Employee {
   monthlySalary: number
   currentSite: string | null
   currentJob: Job | null
+  user: string | null
 }
 
 interface EmployeesResponse {
@@ -101,6 +102,8 @@ export interface AttendanceRecord {
   date: string
 
   sessions: AttendanceSession[]
+
+  user?: string | null
 }
 
 interface FetchedAttendance {
@@ -121,7 +124,8 @@ interface DraftSession {
 interface DraftAttendanceRecord {
   employee: {
     _id: string,
-    name: string
+    name: string,
+    user?: string | null
   }, //refering to the employee models object id
   employeeId: string,
   jobTitle: string,
@@ -275,6 +279,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
           employee: {
             _id: emp._id,
             name: emp.name,
+            user: emp.user || null,
           },
 
           employeeId: emp.employeeId,
@@ -1129,13 +1134,20 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   const complete = isRecordComplete(record)
 
                   return (
-                    <Card key={record.attendanceId}>
+                    <Card key={record.attendanceId} className={isOverlapRow(record.employee) ? "border-red-500" : ""}>
                       <CardContent className="pt-4 space-y-3">
 
                         <div>
-                          <p className="font-medium">
-                            {record.name}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium">
+                              {record.name}
+                            </p>
+                            {record.user && (
+                              <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                Supervisor
+                              </Badge>
+                            )}
+                          </div>
 
                           <p className="text-sm text-muted-foreground">
                             {record.employeeId} • {record.jobTitle}
@@ -1146,7 +1158,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                           <span className="font-medium">
                             Hours:
                           </span>{" "}
-                          {getSiteWorkedHours(record)}
+                          {isEditing
+                            ? calculateHours(
+                                inlineEdit.checkIn,
+                                inlineEdit.checkOut,
+                                inlineEdit.isNightShift
+                              )
+                            : getSiteWorkedHours(record)}
                         </div>
 
                         {isEditing ? (
@@ -1323,7 +1341,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                           </>
                         )}
                         {isOverlapRow(record.employee) && (
-                          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700">
+                          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
                             <div className="font-medium">
                               Conflicts with existing session
                             </div>
@@ -1375,13 +1393,20 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             const isLastSession = sessionIndex === sessions.length - 1
                             return (
                               <Fragment key={`${record.attendanceId}-${sessionIndex}`}>
-                                <TableRow>
+                                <TableRow className={isOverlapRow(record.employee) ? "bg-red-50 dark:bg-red-950/20 border-red-500" : ""}>
                               {sessionIndex === 0 && (
                                 <TableCell rowSpan={sessions.length}>
                                   <div className="space-y-1">
-                                    <p className="font-medium">
-                                      {record.name}
-                                    </p>
+                                    <div className="flex items-center gap-2">
+                                      <p className="font-medium">
+                                        {record.name}
+                                      </p>
+                                      {record.user && (
+                                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                          Supervisor
+                                        </Badge>
+                                      )}
+                                    </div>
 
                                     <p className="text-sm text-muted-foreground">
                                       {record.employeeId} • {record.jobTitle}
@@ -1488,7 +1513,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               {/* HOURS */}
                               {sessionIndex === 0 && (
                                 <TableCell rowSpan={sessions.length}>
-                                  {getSiteWorkedHours(record)}
+                                  {isEditing
+                                    ? calculateHours(
+                                        inlineEdit.checkIn,
+                                        inlineEdit.checkOut,
+                                        inlineEdit.isNightShift
+                                      )
+                                    : getSiteWorkedHours(record)}
                                 </TableCell>
                               )}
 
@@ -1549,12 +1580,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               )}
                             </TableRow>
                                 {isLastSession && isOverlapRow(record.employee) && (
-                                  <TableRow>
+                                  <TableRow className="border-red-500/30">
                                     <TableCell
                                       colSpan={6}
-                                      className="bg-red-50"
+                                      className="bg-red-50 dark:bg-red-950/20"
                                     >
-                                      <div className="space-y-1 text-sm text-red-700">
+                                      <div className="space-y-1 text-sm text-red-700 dark:text-red-200">
                                         <div className="font-medium">
                                           Conflicts with existing session
                                         </div>
@@ -1600,9 +1631,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                           <CardContent className="space-y-4 pt-4">
 
                             <div>
-                              <p className="font-medium">
-                                {record.employee.name}
-                              </p>
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium">
+                                  {record.employee.name}
+                                </p>
+                                {record.employee.user && (
+                                  <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                    Supervisor
+                                  </Badge>
+                                )}
+                              </div>
 
                               <p className="text-sm text-muted-foreground">
                                 {record.employeeId} • {record.jobTitle}
@@ -1647,7 +1685,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             </div>
 
                             {isOverlapRow(record.employee._id) && (
-                              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700">
+                              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
                                 <div className="font-medium">
                                   Conflicts with existing session
                                 </div>
@@ -1694,15 +1732,22 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 isOverlapRow(
                                   record.employee._id
                                 )
-                                  ? "bg-red-50 border-red-500"
+                                  ? "bg-red-50 dark:bg-red-950/20 border-red-500"
                                   : ""
                               }
                             >
                               <TableCell>
                                 <div className="space-y-1">
-                                  <p className="font-medium">
-                                    {record.employee.name}
-                                  </p>
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-medium">
+                                      {record.employee.name}
+                                    </p>
+                                    {record.employee.user && (
+                                      <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                        Supervisor
+                                      </Badge>
+                                    )}
+                                  </div>
 
                                   <p className="text-sm text-muted-foreground">
                                     {record.employeeId} • {record.jobTitle}
@@ -1761,12 +1806,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               </TableCell>
                             </TableRow>
                             {isOverlapRow(record.employee._id) && (
-                              <TableRow>
+                              <TableRow className="border-red-500/30">
                                 <TableCell
                                   colSpan={6}
-                                  className="bg-red-50"
+                                  className="bg-red-50 dark:bg-red-950/20"
                                 >
-                                  <div className="space-y-1 text-sm text-red-700">
+                                  <div className="space-y-1 text-sm text-red-700 dark:text-red-200">
                                     <div className="font-medium">
                                       Conflicts with existing session
                                     </div>

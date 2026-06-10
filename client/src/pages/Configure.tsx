@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { X } from "lucide-react";
+import { X, Loader2 } from "lucide-react";
 
 import {
   AlertDialog,
@@ -107,6 +107,13 @@ export default function Configure() {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [filter, setFilter] = useState(getCurrentMonthYear());
 
+  // Loader states
+  const [updatingSchedule, setUpdatingSchedule] = useState(false);
+  const [addingJobTitle, setAddingJobTitle] = useState(false);
+  const [deletingJobTitle, setDeletingJobTitle] = useState<string | null>(null);
+  const [addingHoliday, setAddingHoliday] = useState(false);
+  const [deletingHoliday, setDeletingHoliday] = useState<string | null>(null);
+
   const fetchJobTitles = async () => {
     try{
       const res = await api.get('/api/employees/jobTitles')
@@ -142,6 +149,7 @@ export default function Configure() {
   // ---------------- UPDATE ----------------
   const updateSchedule = async () => {
     try {
+      setUpdatingSchedule(true);
       await api.patch("/api/config/update", {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
@@ -155,11 +163,14 @@ export default function Configure() {
       toast.success("Work schedule updated successfully");
     } catch (err) {
       toast.error("Failed to update work schedule");
+    } finally {
+      setUpdatingSchedule(false);
     }
   };
 
   const addHoliday = async () => {
     try {
+      setAddingHoliday(true);
       await api.post("/api/config/custom-holidays", holidayForm);
 
       setHolidayForm({ date: "", reason: "" });
@@ -168,11 +179,14 @@ export default function Configure() {
       toast.success("Holiday added successfully");
     } catch (err) {
       toast.error("Failed to add holiday");
+    } finally {
+      setAddingHoliday(false);
     }
   };
 
   const deleteHoliday = async (id: string) => {
     try {
+      setDeletingHoliday(id);
       await api.delete(`/api/config/custom-holidays/${id}`);
 
       fetchHolidays();
@@ -180,6 +194,8 @@ export default function Configure() {
       toast.success("Holiday deleted successfully");
     } catch (err) {
       toast.error("Failed to delete holiday");
+    } finally {
+      setDeletingHoliday(null);
     }
   };
 
@@ -211,6 +227,7 @@ export default function Configure() {
         return toast.error("Enter a job title");
       }
 
+      setAddingJobTitle(true);
       await api.post("/api/employees/jobTitles", {
         title: formattedTitle,
       });
@@ -236,11 +253,14 @@ export default function Configure() {
           ? error.response.data.message
           : "Failed to add job title";
       toast.error(message);
+    } finally {
+      setAddingJobTitle(false);
     }
   };
 
   const deleteJobTitle = async (id: string) => {
     try {
+      setDeletingJobTitle(id);
       await api.delete(`/api/employees/jobTitles/${id}`);
 
       toast.success("Job title deleted");
@@ -251,6 +271,8 @@ export default function Configure() {
         error?.response?.data?.message ||
         "Failed to delete job title"
       );
+    } finally {
+      setDeletingJobTitle(null);
     }
   };
 
@@ -497,9 +519,11 @@ export default function Configure() {
             <div className="flex justify-end border-t pt-6">
               <Button
                 onClick={updateSchedule}
+                disabled={updatingSchedule}
                 className="min-w-[160px]"
               >
-                Save Changes
+                {updatingSchedule && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {updatingSchedule ? "Saving..." : "Save Changes"}
               </Button>
             </div>
           </CardContent>
@@ -525,8 +549,8 @@ export default function Configure() {
                 }
               />
 
-              <Button onClick={addJobTitle}>
-                Add
+              <Button onClick={addJobTitle} disabled={addingJobTitle}>
+                {addingJobTitle ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>
             </div>
 
@@ -582,8 +606,9 @@ export default function Configure() {
                                 onClick={() =>
                                   deleteJobTitle(job._id)
                                 }
+                                disabled={deletingJobTitle === job._id}
                               >
-                                Delete
+                                {deletingJobTitle === job._id ? "Deleting..." : "Delete"}
                               </AlertDialogAction>
                             </AlertDialogFooter>
                           </AlertDialogContent>
@@ -646,9 +671,11 @@ export default function Configure() {
               <div className="flex items-end">
                 <Button
                   onClick={addHoliday}
-                  className="w-full md:w-auto"
+                  disabled={addingHoliday}
+                  className="w-full md:w-auto min-w-[120px]"
                 >
-                  Add Holiday
+                  {addingHoliday && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {addingHoliday ? "Adding..." : "Add Holiday"}
                 </Button>
               </div>
             </div>
@@ -765,11 +792,17 @@ export default function Configure() {
                         <Button
                           variant="destructive"
                           size="sm"
+                          disabled={deletingHoliday === h._id}
                           onClick={() =>
                             deleteHoliday(h._id)
                           }
+                          className="min-w-[70px]"
                         >
-                          Delete
+                          {deletingHoliday === h._id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            "Delete"
+                          )}
                         </Button>
                       </TableCell>
                     </TableRow>

@@ -142,6 +142,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
   const [saving, setSaving] =
     useState(false)
 
+  const [addingSession, setAddingSession] =
+    useState(false)
+
   const [config, setConfig] =
     useState({
       fullDayHours: 8,
@@ -367,7 +370,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
 
 const addSession = async () => {
   try {
-    if (!record) return
+    if (!record || addingSession) return
+
+    setAddingSession(true)
 
     const payload = {
       session: {
@@ -395,6 +400,8 @@ const addSession = async () => {
     toast.error(
       "Failed to create session"
     )
+  } finally {
+    setAddingSession(false)
   }
 }
 
@@ -868,10 +875,15 @@ const toTimeValue = (
           <Button
             variant="outline"
             onClick={addSession}
+            disabled={addingSession}
             className="w-full border-dashed h-11"
           >
-            <Plus className="mr-2 h-4 w-4" />
-            Add New Session
+            {addingSession ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="mr-2 h-4 w-4" />
+            )}
+            {addingSession ? "Adding Session..." : "Add New Session"}
           </Button>
 
           
