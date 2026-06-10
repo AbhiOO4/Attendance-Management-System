@@ -401,14 +401,20 @@ const addSession = async () => {
   const removeSession = (
     index: number
   ) => {
-    const updated = [...sessions]
+    const sessionToRemove = sessions[index];
+    if (!sessionToRemove) return;
 
-    if (sessions.length == 1){
-      return toast.error("Cannot delete!, Sessions can't be empty")
+    // Filter sessions to only the ones belonging to the current site
+    const currentSiteSessions = sessions.filter(
+      (s) => String(s.siteId) === String(site._id)
+    );
+
+    if (String(sessionToRemove.siteId) === String(site._id) && currentSiteSessions.length <= 1) {
+      return toast.error("Cannot delete the only session for this site. You can leave its times blank instead.");
     }
 
+    const updated = [...sessions]
     updated.splice(index, 1)
-
     setSessions(updated)
   }
 
@@ -692,6 +698,13 @@ const toTimeValue = (
                         variant="destructive"
                         size="icon"
                         onClick={() => {
+                          const currentSiteSessions = sessions.filter(
+                            (s) => String(s.siteId) === String(site._id)
+                          )
+                          if (currentSiteSessions.length <= 1) {
+                            toast.error("Cannot delete the only session for this site. You can leave its times blank instead.")
+                            return
+                          }
                           setSessionToDelete(
                             index
                           )

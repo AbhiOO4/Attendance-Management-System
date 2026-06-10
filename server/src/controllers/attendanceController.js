@@ -1913,6 +1913,20 @@ export const updateAttendance = async (req, res) => {
         const siteSessions = processedSessions.filter(
           (session) => session.siteId.toString() === siteId.toString()
         );
+
+        // Find existing sessions for this site
+        const existingSiteSessions = attendance.sessions.filter(
+          (session) => session.siteId.toString() === siteId.toString()
+        );
+
+        // Prevent deleting the only session for this site
+        if (existingSiteSessions.length > 0 && siteSessions.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot delete the only session for this site. You can leave its times blank instead.",
+          });
+        }
+
         // Preserve all sessions that belong to other sites
         const preservedSessions = attendance.sessions.filter(
           (session) => session.siteId.toString() !== siteId.toString()
