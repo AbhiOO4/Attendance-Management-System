@@ -9,7 +9,33 @@ import { ThemeProvider } from "next-themes"
 import { registerSW } from 'virtual:pwa-register'
 
 // Register Service Worker for PWA
-registerSW({ immediate: true })
+registerSW({
+  immediate: true,
+  onRegisteredSW(swUrl, r) {
+    if (r) {
+      // Check for service worker updates every 5 minutes
+      setInterval(async () => {
+        if (!(!r.installing && navigator)) return
+        if ('connection' in navigator && !navigator.onLine) return
+
+        try {
+          const resp = await fetch(swUrl, {
+            cache: 'no-store',
+            headers: {
+              'cache': 'no-store',
+              'cache-control': 'no-cache',
+            },
+          })
+          if (resp?.status === 200) {
+            await r.update()
+          }
+        } catch (err) {
+          console.error('Failed to check for service worker update:', err)
+        }
+      }, 5 * 60 * 1000) // 5 minutes
+    }
+  }
+})
 
 
 
