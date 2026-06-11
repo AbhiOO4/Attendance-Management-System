@@ -54,6 +54,7 @@ function AddEmployee({ onAdd, sites }: Props) {
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
 
   const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0,})
+  const [salaryInput, setSalaryInput] = useState("")
 
   const fetchTitles = async () => {
     try {
@@ -82,12 +83,16 @@ function AddEmployee({ onAdd, sites }: Props) {
       return
     }
 
-    if (formData.monthlySalary <= 0) {
+    const salary = parseFloat(salaryInput)
+    if (isNaN(salary) || salary <= 0) {
       toast.error("Monthly salary must be greater than 0")
       return
     }
 
-    await onAdd(formData)
+    await onAdd({
+      ...formData,
+      monthlySalary: salary,
+    })
 
     setFormData({
       name: "",
@@ -96,6 +101,7 @@ function AddEmployee({ onAdd, sites }: Props) {
       currentSite: " ",
       monthlySalary: 0,
     })
+    setSalaryInput("")
 
     setOpen(false)
   }
@@ -186,16 +192,11 @@ function AddEmployee({ onAdd, sites }: Props) {
 
 
           <Input
+            type="number"
+            step="any"
             placeholder="Monthly Salary"
-            value={formData.monthlySalary || ""}
-            onChange={(e) =>
-              setFormData({
-                ...formData,
-                monthlySalary: Number(
-                  e.target.value
-                ),
-              })
-            }
+            value={salaryInput}
+            onChange={(e) => setSalaryInput(e.target.value)}
           />
 
           <Button
