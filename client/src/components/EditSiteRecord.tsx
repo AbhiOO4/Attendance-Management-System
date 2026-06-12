@@ -39,6 +39,7 @@ import {
   Plus,
   Save,
   Trash2,
+  X,
 } from "lucide-react"
 
 import { api } from "@/lib/api"
@@ -159,8 +160,47 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
   const [sessionToDelete, setSessionToDelete] =
     useState<number | null>(null)
 
+  const [initialSessions, setInitialSessions] = useState<AttendanceSession[]>([])
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+
+  const isSameDateStr = (d1?: string | null, d2?: string | null) => {
+    if (!d1 && !d2) return true
+    if (!d1 || !d2) return false
+    const t1 = new Date(d1).getTime()
+    const t2 = new Date(d2).getTime()
+    return t1 === t2
+  }
+
+  const areSessionsEqual = (s1: AttendanceSession[], s2: AttendanceSession[]) => {
+    if (s1.length !== s2.length) return false
+    for (let i = 0; i < s1.length; i++) {
+      const a = s1[i]
+      const b = s2[i]
+      if (a.siteId !== b.siteId) return false
+      if ((a.jobId || null) !== (b.jobId || null)) return false
+      if (!isSameDateStr(a.checkIn, b.checkIn)) return false
+      if (!isSameDateStr(a.checkOut, b.checkOut)) return false
+    }
+    return true
+  }
+
+  const isDirty = !areSessionsEqual(sessions, initialSessions)
+
   const handleManualClose = () => {
+    if (isDirty) {
+      setShowDiscardConfirm(true)
+    } else {
+      onClose()
+    }
+  }
+
+  const handleConfirmDiscard = () => {
+    setShowDiscardConfirm(false)
     onClose()
+  }
+
+  const handleCancelDiscard = () => {
+    setShowDiscardConfirm(false)
   }
 
   // --------------------------------------------------
@@ -177,9 +217,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
 
       setRecord(attendance)
 
-      setSessions(
-        attendance.sessions || []
-      )
+      const cloned = JSON.parse(JSON.stringify(attendance.sessions || []))
+      setSessions(cloned)
+      setInitialSessions(JSON.parse(JSON.stringify(attendance.sessions || [])))
     } catch (error) {
       console.log(error)
 
@@ -194,6 +234,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
     setOverlapSessionIds([])
     if (open && attendanceId) {
       fetchAttendanceRecord()
+    } else {
+      setSessions([])
+      setInitialSessions([])
     }
   }, [open, attendanceId])
 
@@ -982,6 +1025,44 @@ const toTimeValue = (
             >
               Delete
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={showDiscardConfirm}
+        onOpenChange={setShowDiscardConfirm}
+      >
+        <AlertDialogContent>
+          <button
+            onClick={handleCancelDiscard}
+            className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground"
+          >
+            <X className="h-4 w-4" />
+            <span className="sr-only">Close</span>
+          </button>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Unsaved Changes
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes. Are you sure you want to discard them?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleConfirmDiscard}
+            >
+              Discard Changes
+            </Button>
+            <Button
+              onClick={async () => {
+                setShowDiscardConfirm(false)
+                await updateARecord()
+              }}
+            >
+              Save Changes
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

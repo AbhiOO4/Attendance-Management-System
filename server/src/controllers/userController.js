@@ -213,3 +213,67 @@ export const getMe = async (req, res) => {
     })
   }
 }
+
+export const demoLogin = async (req, res) => {
+  try {
+    const { token } = req.body;
+    const configuredToken = process.env.DEMO_LOGIN_TOKEN;
+    if (!configuredToken) {
+      return res.status(500).json({
+        success: false,
+        message: "Demo login is not configured on the server."
+      });
+    }
+
+    if (token !== configuredToken) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid demo token."
+      });
+    }
+
+    const email = process.env.DEMO_USER_EMAIL;
+    const password = process.env.DEMO_USER_PASSWORD;
+    const name = process.env.DEMO_USER_NAME || "Guest User";
+    const role = process.env.DEMO_USER_ROLE || "admin";
+
+    if (!email || !password) {
+      return res.status(500).json({
+        success: false,
+        message: "Demo guest credentials are not configured on the server."
+      });
+    }
+
+    let user = await userModel.findOne({ email }).select("+password");
+    if (!user) {
+      // Create guest user if it doesn't exist
+      user = new userModel({
+        name,
+        email,
+        password,
+        role
+      });
+      await user.save();
+    }
+
+    // Generate token and set cookie
+    generateTokenAndSetCookie(res, user);
+
+    return res.status(200).json({
+      message: "Demo login success",
+      success: true,
+      user: {
+        _id: user._id,
+        name: user.name,
+        role: user.role,
+        assignedSite: user.assignedSite ? String(user.assignedSite) : null
+      }
+    });
+  } catch (error) {
+    console.error("Demo login error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to login with demo session."
+    });
+  }
+};

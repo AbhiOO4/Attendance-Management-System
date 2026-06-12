@@ -1,6 +1,6 @@
 import express from 'express'
 import userModel from '../models/userModel.js'
-import { getMe, getUsers, login, logout, updateUser, addAdmin } from '../controllers/userController.js'
+import { getMe, getUsers, login, logout, updateUser, addAdmin, demoLogin } from '../controllers/userController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles } from '../middlewares/rbac.js'
 
@@ -13,6 +13,8 @@ router.get("/me", verifyToken, getMe)
 
 //login
 router.post('/login', login)
+
+router.post('/demo-login', demoLogin)
 
 router.post('/logout', logout)
 

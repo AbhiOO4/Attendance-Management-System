@@ -8,6 +8,7 @@ import Supervisor from "./pages/Supervisor"
 import AddSupervisor from "./pages/AddSupervisor"
 import Login from "./pages/Login"
 import LandingPage from "./pages/LandingPage"
+import DemoLogin from "./pages/DemoLogin"
 
 import SitesPage from "./pages/SitesPage"
 import SiteDetail from "./pages/SiteDetail"
@@ -57,6 +58,14 @@ function App() {
         element={
           <PublicRoute>
             <Login />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/demo-login"
+        element={
+          <PublicRoute>
+            <DemoLogin />
           </PublicRoute>
         }
       />
