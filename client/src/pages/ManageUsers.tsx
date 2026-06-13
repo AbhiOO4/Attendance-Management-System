@@ -445,6 +445,8 @@ function ManageUsers() {
               placeholder="Enter Delete Password"
               value={deletePassword}
               onChange={(e) => setDeletePassword(e.target.value)}
+              autoComplete="new-password"
+              name="main-admin-delete-password"
               className="w-full bg-background"
             />
           </div>

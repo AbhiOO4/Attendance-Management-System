@@ -524,6 +524,8 @@ function Supervisor() {
                             type="password"
                             placeholder="Enter Delete Password"
                             onChange={(e) => setDeletePassword(e.target.value)}
+                            autoComplete="new-password"
+                            name="main-admin-delete-password"
                             className="w-full bg-background"
                           />
                         </div>
