@@ -167,52 +167,54 @@ export default function SitesPage() {
                 key={site._id}
                 className="block"
               >
-                <Card className="group rounded-2xl border bg-card p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <h2 className="text-2xl font-semibold transition-colors group-hover:text-primary">
-                          {site.siteName}
-                        </h2>
+                <Card className="group relative rounded-2xl border bg-card p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md">
+                  {/* Top section: info + badges */}
+                  <div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h2 className="text-2xl font-semibold transition-colors group-hover:text-primary">
+                        {site.siteName}
+                      </h2>
 
-                        <div
-                          className={`rounded-full px-3 py-1 text-xs font-medium ${
-                            site.isActive
-                              ? "bg-green-100 text-green-700"
-                              : "bg-red-100 text-red-700"
-                          }`}
-                        >
-                          {site.isActive ? "Active" : "Inactive"}
-                        </div>
-
-                        <div
-                          className={`rounded-full px-3 py-1 text-xs font-medium ${
-                            site.isCompleted
-                              ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
-                              : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                          }`}
-                        >
-                          {site.isCompleted ? "Completed" : "In Progress"}
-                        </div>
-
-                        {site.isPermanent && (
-                          <div className="rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20">
-                            Permanent Home Site
-                          </div>
-                        )}
+                      <div
+                        className={`rounded-full px-3 py-1 text-xs font-medium ${
+                          site.isActive
+                            ? "bg-green-100 text-green-700"
+                            : "bg-red-100 text-red-700"
+                        }`}
+                      >
+                        {site.isActive ? "Active" : "Inactive"}
                       </div>
 
-                      <div className="mt-4 flex items-start gap-2 text-muted-foreground">
-                        <MapPin className="mt-1 h-4 w-4 shrink-0" />
-
-                        <p className="text-base leading-relaxed">
-                          {site.locationDetails}
-                        </p>
+                      <div
+                        className={`rounded-full px-3 py-1 text-xs font-medium ${
+                          site.isCompleted
+                            ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+                            : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                        }`}
+                      >
+                        {site.isCompleted ? "Completed" : "In Progress"}
                       </div>
+
+                      {site.isPermanent && (
+                        <div className="rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+                          Permanent Home Site
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-2 self-center">
-                      {site.isActive && (
+                    <div className="mt-4 flex items-start gap-2 text-muted-foreground">
+                      <MapPin className="mt-1 h-4 w-4 shrink-0" />
+
+                      <p className="text-base leading-relaxed">
+                        {site.locationDetails}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Action buttons – stacked below content on mobile, inline on desktop */}
+                  {(site.isActive || !site.isPermanent) && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4 md:mt-0 md:border-0 md:pt-0 md:justify-end md:absolute md:right-6 md:top-1/2 md:-translate-y-1/2">
+                      {site.isActive && !site.isPermanent && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -223,12 +225,17 @@ export default function SitesPage() {
                               const updatedStatus = !site.isCompleted
                               await api.patch(`/api/site/${site._id}`, { isCompleted: updatedStatus })
                               toast.success(`Site marked as ${updatedStatus ? 'completed' : 'incomplete'}`)
-                              fetchSites(false)
+                              // Update local state only – don't re-fetch so the card stays in place
+                              setSites((prev) =>
+                                prev.map((s) =>
+                                  s._id === site._id ? { ...s, isCompleted: updatedStatus } : s
+                                )
+                              )
                             } catch (error: any) {
                               toast.error(error?.response?.data?.message || "Failed to update site status")
                             }
                           }}
-                          className={`rounded-xl border transition-all ${
+                          className={`rounded-xl border transition-all min-h-[44px] min-w-[44px] ${
                             site.isCompleted
                               ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
                               : "hover:bg-accent border-muted-foreground/20 text-muted-foreground"
@@ -248,14 +255,14 @@ export default function SitesPage() {
                             setSiteToDelete(site)
                             setConfirmDeleteOpen(true)
                           }}
-                          className="rounded-xl"
+                          className="rounded-xl min-h-[44px] min-w-[44px]"
                         >
                           <Trash2 className="mr-1 h-4 w-4" />
                           Delete
                         </Button>
                       )}
                     </div>
-                  </div>
+                  )}
                 </Card>
               </Link>
             ))

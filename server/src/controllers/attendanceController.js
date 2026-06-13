@@ -6,6 +6,10 @@ import mongoose from 'mongoose';
 import workModel from '../models/workModel.js';
 import Site from '../models/siteModel.js';
 import siteModel from '../models/siteModel.js';
+import { escapeRegExp } from '../utils/escapeRegExp.js';
+import userModel from '../models/userModel.js';
+import Job from '../models/jobModel.js';
+
 
 // --- NIGHT SHIFT HELPERS ---
 
@@ -1248,21 +1252,21 @@ export const getAttendanceRecords = async (req, res) => {
 
     if (name) {
       employeeFilter.name = {
-        $regex: name,
+        $regex: escapeRegExp(name),
         $options: "i",
       };
     }
 
     if (employeeId) {
       employeeFilter.employeeId = {
-        $regex: employeeId,
+        $regex: escapeRegExp(employeeId),
         $options: "i",
       };
     }
 
     if (jobTitle) {
       employeeFilter.jobTitle = {
-        $regex: jobTitle,
+        $regex: escapeRegExp(jobTitle),
         $options: "i",
       };
     }
@@ -1285,7 +1289,10 @@ export const getAttendanceRecords = async (req, res) => {
     // -----------------------------
     // Site filter
     // -----------------------------
-    if (site) {
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      attendanceFilter.siteId = user?.assignedSite || null;
+    } else if (site) {
       attendanceFilter.siteId = site
     }
 
@@ -1663,6 +1670,16 @@ export const updateAttendance = async (req, res) => {
         success: false,
         message: "Attendance record not found",
       });
+    }
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== attendance.siteId.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden: Access denied to this attendance record",
+        });
+      }
     }
 
     const workConfig = await workModel.findOne({
@@ -2162,6 +2179,14 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
     const { employeeId } =
       req.params;
 
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      const employee = await Employee.findById(employeeId);
+      if (!user || !employee || !user.assignedSite || employee.currentSite?.toString() !== user.assignedSite.toString()) {
+        return res.status(403).json({ success: false, message: "Forbidden: Employee is not assigned to your site" });
+      }
+    }
+
     const { month, year } =
       req.query;
 
@@ -2344,6 +2369,14 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 export const getAttendanceById = async (req, res) => {
   try {
     const { attendanceId } = req.params
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      const record = await Attendance.findById(attendanceId);
+      if (!record || !user || !user.assignedSite || record.siteId.toString() !== user.assignedSite.toString()) {
+        return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
+      }
+    }
 
     if (
       !mongoose.Types.ObjectId.isValid(
@@ -2608,6 +2641,13 @@ export const addSessionToAttendance = async (
       })
     }
 
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== attendance.siteId.toString()) {
+        return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
+      }
+    }
+
     attendance.sessions.push({
       siteId: session.siteId,
       jobId:
@@ -2677,18 +2717,30 @@ export const getMissingEmployees = async (req, res) => {
     // Build employee filter
     let employeeFilter = { isActive: true };
 
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      if (!user || !user.assignedSite) {
+        return res.status(200).json({
+          success: true,
+          pagination: { currentPage: page, totalPages: 0, totalEmployees: 0, limit },
+          data: [],
+        });
+      }
+      employeeFilter.currentSite = user.assignedSite;
+    }
+
     if (recordedEmployeeIds.length > 0) {
       employeeFilter._id = { $nin: recordedEmployeeIds.map((id) => new mongoose.Types.ObjectId(id)) };
     }
 
     if (name) {
-      employeeFilter.name = { $regex: name, $options: 'i' };
+      employeeFilter.name = { $regex: escapeRegExp(name), $options: 'i' };
     }
     if (employeeId) {
-      employeeFilter.employeeId = { $regex: employeeId, $options: 'i' };
+      employeeFilter.employeeId = { $regex: escapeRegExp(employeeId), $options: 'i' };
     }
     if (jobTitle) {
-      employeeFilter.jobTitle = { $regex: jobTitle, $options: 'i' };
+      employeeFilter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: 'i' };
     }
 
     const totalEmployees = await Employee.countDocuments(employeeFilter);
@@ -2964,6 +3016,95 @@ export const backfillAttendance = async (req, res) => {
 };
 
 
+const getActiveSitesOverview = async (req, res) => {
+  try {
+    const { tab = 'inprogress', skip = 0, limit = 5 } = req.query;
+    const parsedSkip = parseInt(skip) || 0;
+    const parsedLimit = parseInt(limit) || 5;
+
+    // Always return both counts for the tab badges
+    const inProgressCount = await Site.countDocuments({ isActive: true, isCompleted: false, isDeleted: false });
+    const completedCount = await Site.countDocuments({ isCompleted: true, isDeleted: false });
+
+    let sites;
+    let hasMore = false;
+
+    if (tab === 'completed') {
+      // Completed sites, sorted by updatedAt desc, paginated
+      sites = await Site.find({ isCompleted: true, isDeleted: false })
+        .sort({ updatedAt: -1 })
+        .skip(parsedSkip)
+        .limit(parsedLimit + 1) // fetch one extra to check hasMore
+        .lean();
+      
+      if (sites.length > parsedLimit) {
+        hasMore = true;
+        sites = sites.slice(0, parsedLimit);
+      }
+    } else {
+      // In-progress: active + incomplete
+      sites = await Site.find({ isActive: true, isCompleted: false, isDeleted: false })
+        .lean();
+    }
+
+    // For each site, aggregate attendance metrics and get jobs
+    const enrichedSites = await Promise.all(sites.map(async (site) => {
+      const siteIdStr = site._id.toString();
+
+      // Get attendance records with sessions for this site
+      const records = await Attendance.find({ 'sessions.siteId': site._id }).lean();
+
+      let totalManHours = 0;
+      let totalManDays = 0;
+      const calendarDays = new Set();
+
+      for (const record of records) {
+        const day = new Date(record.date).toISOString().split('T')[0];
+        let workedOnSite = false;
+
+        for (const session of record.sessions) {
+          if (session.siteId?.toString() !== siteIdStr) continue;
+          totalManHours += session.workedHours || 0;
+          workedOnSite = true;
+        }
+
+        if (workedOnSite) {
+          totalManDays += 1;
+          calendarDays.add(day);
+        }
+      }
+
+      // Get jobs for this site (non-deleted only)
+      const jobs = await Job.find({ site: site._id, isDeleted: false })
+        .select('_id name isCompleted isActive')
+        .lean();
+
+      return {
+        siteId: site._id,
+        siteName: site.siteName,
+        locationDetails: site.locationDetails || '',
+        isPermanent: site.isPermanent || false,
+        totalManHours: Number(totalManHours.toFixed(2)),
+        totalManDays,
+        totalCalendarDays: calendarDays.size,
+        jobs,
+      };
+    }));
+
+    return res.status(200).json({
+      success: true,
+      inProgressCount,
+      completedCount,
+      sites: enrichedSites,
+      hasMore,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
+
+
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
@@ -2982,6 +3123,7 @@ const attendanceController = {
   addSessionToAttendance,
   getMissingEmployees,
   backfillAttendance,
+  getActiveSitesOverview,
 
 };
 

@@ -3,6 +3,7 @@ import jobModel from '../models/jobModel.js';
 import jobTitleModel from '../models/jobTitleModel.js';
 import userModel from '../models/userModel.js'
 import mongoose from 'mongoose'
+import { escapeRegExp } from '../utils/escapeRegExp.js'
 
 //Admin
 
@@ -40,16 +41,16 @@ export const getAllEmployees = async (req, res) => {
     }
 
     if (jobTitle) {
-      filter.jobTitle = { $regex: jobTitle, $options: "i" };
+      filter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: "i" };
     }
 
     if (name) {
-      filter.name = { $regex: `^${name}`, $options: "i" };
+      filter.name = { $regex: `^${escapeRegExp(name)}`, $options: "i" };
     }
 
     if (employeeId) {
       filter.employeeId = {
-        $regex: `^${employeeId}`,
+        $regex: `^${escapeRegExp(employeeId)}`,
         $options: "i",
       };
     }
@@ -383,21 +384,21 @@ export const getSupervisors = async (req, res) => {
 
     if (jobTitle) {
       filter.jobTitle = {
-        $regex: jobTitle,
+        $regex: escapeRegExp(jobTitle),
         $options: "i"
       };
     }
 
     if (name) {
       filter.name = {
-        $regex: `^${name}`,
+        $regex: `^${escapeRegExp(name)}`,
         $options: "i"
       };
     }
 
     if (employeeId) {
       filter.employeeId = {
-        $regex: `^${employeeId}`,
+        $regex: `^${escapeRegExp(employeeId)}`,
         $options: "i"
       };
     }
@@ -435,6 +436,17 @@ export const getSupervisors = async (req, res) => {
 
 export const deleteSupervisor = async (req, res) => {
   const { id } = req.params
+  const deletePassword = req.body.deletePassword || req.headers['x-delete-password'] || req.query.deletePassword;
+
+  const configPassword = process.env.MAIN_ADMIN_DELETE_PASSWORD;
+  if (!configPassword) {
+    return res.status(500).json({ message: "Main admin delete password is not configured on the server." });
+  }
+
+  if (deletePassword !== configPassword) {
+    return res.status(403).json({ message: "Invalid delete password." });
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
   try {

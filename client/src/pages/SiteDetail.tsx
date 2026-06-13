@@ -639,6 +639,7 @@ function SiteDetail() {
                   Edit Location
                 </Button>
 
+                {!site?.isPermanent && (
                 <Button
                   variant="outline"
                   className={`rounded-xl border transition-all ${
@@ -660,6 +661,7 @@ function SiteDetail() {
                 >
                   {site?.isCompleted ? "Reopen Site" : "Complete Site"}
                 </Button>
+                )}
               </>
             )}
 

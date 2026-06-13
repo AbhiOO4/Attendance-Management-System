@@ -6,6 +6,7 @@ import jobModel from '../models/jobModel.js'
 import attendanceModel from '../models/attendanceModel.js'
 import mongoose from 'mongoose'
 import { json } from 'express'
+import { escapeRegExp } from '../utils/escapeRegExp.js'
 
 
 //Admin
@@ -15,7 +16,7 @@ export const getSites = async (req, res) => {
         const { siteName, isActive, date } = req.query
         let filter  = { isDeleted: { $ne: true } }
         if (siteName) {
-            filter.siteName = { $regex: `^${siteName}`, $options: "i" };
+            filter.siteName = { $regex: `^${escapeRegExp(siteName)}`, $options: "i" };
         }
 
         if (isActive === "true"){
@@ -978,21 +979,21 @@ export const getUnassignedSiteEmployees = async (req, res) => {
     // Optional filters
     if (name) {
       filter.name = {
-        $regex: name,
+        $regex: escapeRegExp(name),
         $options: "i",
       };
     }
 
     if (employeeId) {
       filter.employeeId = {
-        $regex: employeeId,
+        $regex: escapeRegExp(employeeId),
         $options: "i",
       };
     }
 
     if (jobTitle) {
       filter.jobTitle = {
-        $regex: jobTitle,
+        $regex: escapeRegExp(jobTitle),
         $options: "i",
       };
     }
@@ -1079,6 +1080,15 @@ export const changeJobStatus = async (req, res) => {
       return res.status(404).json({
         message: "Job not found",
       });
+    }
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id).session(session);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== job.site.toString()) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(403).json({ message: "Forbidden: Job is not on your assigned site" });
+      }
     }
 
     // If currently active -> deactivate
@@ -1389,7 +1399,7 @@ export const getAvailableEmployeesForSite = async (
     if (name.trim()) {
       query.$and.push({
         name: {
-          $regex: name.trim(),
+          $regex: escapeRegExp(name.trim()),
           $options: "i",
         },
       })
@@ -1398,7 +1408,7 @@ export const getAvailableEmployeesForSite = async (
     if (employeeId.trim()) {
       query.$and.push({
         employeeId: {
-          $regex: employeeId.trim(),
+          $regex: escapeRegExp(employeeId.trim()),
           $options: "i",
         },
       })
@@ -1407,7 +1417,7 @@ export const getAvailableEmployeesForSite = async (
     if (jobTitle.trim()) {
       query.$and.push({
         jobTitle: {
-          $regex: jobTitle.trim(),
+          $regex: escapeRegExp(jobTitle.trim()),
           $options: "i",
         },
       })
@@ -1672,6 +1682,14 @@ export const toggleJobCompleted = async (req, res) => {
     if (!job) {
       return res.status(404).json({ message: "Job not found" });
     }
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== job.site.toString()) {
+        return res.status(403).json({ message: "Forbidden: Job is not on your assigned site" });
+      }
+    }
+
     job.isCompleted = !job.isCompleted;
     await job.save();
     return res.status(200).json(job);

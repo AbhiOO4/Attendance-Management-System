@@ -2,9 +2,9 @@ import express from 'express'
 
 import empController from '../controllers/empController.js'
 
-import { employeeValidation } from '../middlewares/validation.js'
+import { employeeValidation, supervisorValidation } from '../middlewares/validation.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
-import { authorizeRoles } from '../middlewares/rbac.js'
+import { authorizeRoles, requireSiteAccess } from '../middlewares/rbac.js'
 
 const router = express.Router()
 
@@ -36,7 +36,7 @@ router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.
 
 router.delete('/:id', authorizeRoles("admin"), empController.deleteEmployee)//
 
-router.post('/Supervisor', authorizeRoles("admin"), empController.addSupervisor)// 
+router.post('/Supervisor', authorizeRoles("admin"), supervisorValidation, empController.addSupervisor)// 
 
 router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSupervisor)
 
@@ -50,10 +50,10 @@ router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSu
 
 // GET /api/workers/by-site/:siteId
 
-router.get('/by-site/:siteId', empController.getEmployeeBySite) 
+router.get('/by-site/:siteId', authorizeRoles("admin", "supervisor"), requireSiteAccess, empController.getEmployeeBySite) 
 
 
 
 
 
-export default router
+export default router

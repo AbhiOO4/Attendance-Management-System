@@ -93,6 +93,7 @@ function Supervisor() {
   const [currentPage, setCurrentPage] = useState(1)
 
   const [totalPages, setTotalPages] = useState(1)
+  const [deletePassword, setDeletePassword] = useState("")
 
   const [, setSites] = useState<Site[]>([])
 
@@ -180,15 +181,18 @@ function Supervisor() {
   }, [supervisorFilters])
 
   // DELETE SUPERVISOR
-  async function handleDeleteSupervisor(id: string) {
+  async function handleDeleteSupervisor(id: string, deletePassword?: string) {
     try{
-      await api.delete(`/api/employees/Supervisor/${id}`)
+      await api.delete(`/api/employees/Supervisor/${id}`, {
+        data: { deletePassword }
+      })
       fetchSupervisors()
       fetchEmployees()
       toast.success("Supervisor Removed SuccessFully")
-    }catch(error){
+    }catch(error: any){
       console.log(error)
-      toast.error("Couldn't Remove Supervisor ")
+      const errorMsg = error?.response?.data?.message || "Couldn't Remove Supervisor "
+      toast.error(errorMsg)
     }
   }
 
@@ -510,21 +514,32 @@ function Supervisor() {
 
                           <AlertDialogDescription>
                             The supervisor's account will be deleted.
-                            Are you sure you want to continue?
+                            This action requires the Main Admin Delete Password.
                           </AlertDialogDescription>
 
                         </AlertDialogHeader>
 
+                        <div className="py-3">
+                          <Input
+                            type="password"
+                            placeholder="Enter Delete Password"
+                            onChange={(e) => setDeletePassword(e.target.value)}
+                            className="w-full bg-background"
+                          />
+                        </div>
+
                         <AlertDialogFooter>
 
-                          <AlertDialogCancel>
+                          <AlertDialogCancel onClick={() => setDeletePassword("")}>
                             Cancel
                           </AlertDialogCancel>
 
                           <AlertDialogAction
-                            onClick={() =>
-                              handleDeleteSupervisor(supervisor._id)
-                            }
+                            disabled={!deletePassword}
+                            onClick={() => {
+                              handleDeleteSupervisor(supervisor._id, deletePassword)
+                              setDeletePassword("")
+                            }}
                           >
                             Delete
                           </AlertDialogAction>

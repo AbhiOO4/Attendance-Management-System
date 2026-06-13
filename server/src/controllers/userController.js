@@ -277,3 +277,48 @@ export const demoLogin = async (req, res) => {
     });
   }
 };
+
+export async function deleteUser(req, res) {
+  const { userId } = req.params;
+  const deletePassword = req.body.deletePassword || req.headers['x-delete-password'] || req.query.deletePassword;
+
+  const configPassword = process.env.MAIN_ADMIN_DELETE_PASSWORD;
+  if (!configPassword) {
+    return res.status(500).json({ success: false, message: "Main admin delete password is not configured on the server." });
+  }
+
+  if (deletePassword !== configPassword) {
+    return res.status(403).json({ success: false, message: "Invalid delete password." });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const user = await userModel.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.role === "supervisor" && user.employeeId) {
+      const employee = await empModel.findOne({ employeeId: user.employeeId }).session(session);
+      if (employee) {
+        employee.user = null;
+        await employee.save({ session });
+      }
+    }
+
+    await userModel.findByIdAndDelete(userId, { session });
+
+    await session.commitTransaction();
+    session.endSession();
+    return res.status(200).json({ success: true, message: "User deleted successfully" });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("deleteUser error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+}
+

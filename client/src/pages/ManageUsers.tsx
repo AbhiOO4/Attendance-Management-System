@@ -1,11 +1,23 @@
 import { api } from "@/lib/api"
 import { useEffect, useMemo, useState } from "react"
+import toast from "react-hot-toast"
+import { useAuth } from "@/context/AuthContext"
 
 import EditUserModal from "@/components/EditUserModal.tsx"
 import AddAdminModal from "@/components/AddAdminModal.tsx"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   Table,
   TableBody,
@@ -23,7 +35,8 @@ import {
   ShieldAlert, 
   KeyRound,
   Mail,
-  User
+  User,
+  Trash2
 } from "lucide-react"
 
 interface User {
@@ -41,6 +54,7 @@ interface Site {
 }
 
 function ManageUsers() {
+  const { user: currentUser } = useAuth()
   const [users, setUsers] = useState<User[]>([])
   const [sites, setSites] = useState<Site[]>([])
   const [siteMap, setSiteMap] = useState<Record<string, string>>({})
@@ -48,6 +62,25 @@ function ManageUsers() {
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [open, setOpen] = useState(false)
   const [addAdminOpen, setAddAdminOpen] = useState(false)
+  
+  // New States to handle the Single lifted Delete Dialog safely
+  const [userToDelete, setUserToDelete] = useState<User | null>(null)
+  const [deletePassword, setDeletePassword] = useState("")
+
+  const handleDeleteUser = async (userId: string, deletePassword?: string) => {
+    try {
+      await api.delete(`/api/user/${userId}`, {
+        data: { deletePassword }
+      })
+      fetchUsers()
+      toast.success("User deleted successfully")
+      setUserToDelete(null) // Reset on success
+    } catch (error: any) {
+      console.error(error)
+      const errorMsg = error?.response?.data?.message || "Failed to delete user"
+      toast.error(errorMsg)
+    }
+  }
 
   const fetchUsers = async () => {
     try {
@@ -107,7 +140,6 @@ function ManageUsers() {
     })
   }, [admins, search])
 
-  // Statistics calculation
   const totalSupervisors = supervisors.length
   const assignedSupervisors = supervisors.filter((u) => u.assignedSite).length
   const unassignedSupervisors = supervisors.filter((u) => !u.assignedSite).length
@@ -261,18 +293,30 @@ function ManageUsers() {
                     </TableCell>
 
                     <TableCell className="text-right py-3.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setSelectedUser(user)
-                          setOpen(true)
-                        }}
-                        className="inline-flex items-center gap-1.5 hover:bg-primary hover:text-primary-foreground transition-all duration-200"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                        Edit
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setOpen(true)
+                          }}
+                          className="inline-flex items-center gap-1.5 hover:bg-primary hover:text-primary-foreground transition-all duration-200"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="inline-flex items-center gap-1.5"
+                          onClick={() => setUserToDelete(user)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -336,18 +380,32 @@ function ManageUsers() {
                     </TableCell>
 
                     <TableCell className="text-right py-3.5">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setSelectedUser(user)
-                          setOpen(true)
-                        }}
-                        className="inline-flex items-center gap-1.5 hover:bg-primary hover:text-primary-foreground transition-all duration-200"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                        Edit / Reset Password
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setOpen(true)
+                          }}
+                          className="inline-flex items-center gap-1.5 hover:bg-primary hover:text-primary-foreground transition-all duration-200"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit / Reset Password
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={currentUser?._id === user._id}
+                          className="inline-flex items-center gap-1.5"
+                          title={currentUser?._id === user._id ? "You cannot delete your own account" : ""}
+                          onClick={() => setUserToDelete(user)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -357,6 +415,7 @@ function ManageUsers() {
         </div>
       </div>
 
+      {/* Global Modals Modifiers */}
       <EditUserModal
         open={open}
         onClose={() => setOpen(false)}
@@ -370,6 +429,47 @@ function ManageUsers() {
         onClose={() => setAddAdminOpen(false)}
         onSuccess={fetchUsers}
       />
+
+      {/* Lifted Controlled Delete Confirmation Dialog */}
+      <AlertDialog open={!!userToDelete} onOpenChange={(isOpen) => !isOpen && setUserToDelete(null)}>
+        <AlertDialogContent className="text-left">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete User?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the account for <strong>{userToDelete?.name}</strong>. This action requires the Main Admin Delete Password.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-3">
+            <Input
+              type="password"
+              placeholder="Enter Delete Password"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              className="w-full bg-background"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => {
+              setUserToDelete(null)
+              setDeletePassword("")
+            }}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!deletePassword}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (userToDelete) {
+                  handleDeleteUser(userToDelete._id, deletePassword)
+                  setDeletePassword("")
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

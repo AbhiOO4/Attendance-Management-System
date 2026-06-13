@@ -977,8 +977,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
               </Button>
 
               <div>
-                <CardTitle>
-                  {site?.siteName}
+                <CardTitle className="flex items-center gap-2.5 flex-wrap">
+                  <span>{site?.siteName}</span>
+                  <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
+                    {attendanceExists 
+                      ? `${attendance.length} ${attendance.length === 1 ? 'record' : 'records'}` 
+                      : `${draftAttendance.length} ${draftAttendance.length === 1 ? 'employee' : 'employees'}`}
+                  </span>
                 </CardTitle>
 
                 <p className="text-sm text-muted-foreground mt-1">

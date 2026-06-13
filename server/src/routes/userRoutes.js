@@ -1,6 +1,6 @@
 import express from 'express'
 import userModel from '../models/userModel.js'
-import { getMe, getUsers, login, logout, updateUser, addAdmin, demoLogin } from '../controllers/userController.js'
+import { getMe, getUsers, login, logout, updateUser, addAdmin, demoLogin, deleteUser } from '../controllers/userController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles } from '../middlewares/rbac.js'
 
@@ -26,6 +26,6 @@ router.post('/admin', authorizeRoles('admin'), addAdmin)
 
 router.get('/',authorizeRoles('admin'), getUsers)
 
-
+router.delete('/:userId', authorizeRoles('admin'), deleteUser)
 
 export default router

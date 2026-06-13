@@ -1,7 +1,9 @@
 // pages/DashBoard.tsx
 
 import {
+  useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react"
 
@@ -15,6 +17,8 @@ import { Card } from "@/components/ui/card"
 
 import { Input } from "@/components/ui/input"
 
+import { Button } from "@/components/ui/button"
+
 import { useAuth } from "@/context/AuthContext"
 
 import {
@@ -22,6 +26,10 @@ import {
   Clock3,
   Building2,
   Percent,
+  Check,
+  Calendar,
+  ChevronDown,
+  Loader2,
 } from "lucide-react"
 
 import {
@@ -59,6 +67,32 @@ interface DashboardResponse {
   sites: SiteSummary[]
 }
 
+interface OverviewJob {
+  _id: string
+  name: string
+  isCompleted: boolean
+  isActive: boolean
+}
+
+interface OverviewSite {
+  siteId: string
+  siteName: string
+  locationDetails: string
+  isPermanent: boolean
+  totalManHours: number
+  totalManDays: number
+  totalCalendarDays: number
+  jobs: OverviewJob[]
+}
+
+interface OverviewResponse {
+  success: boolean
+  inProgressCount: number
+  completedCount: number
+  sites: OverviewSite[]
+  hasMore: boolean
+}
+
 function DashBoard() {
   const navigate = useNavigate()
   const { user } = useAuth()
@@ -79,6 +113,18 @@ function DashBoard() {
     )
 
   const activeSites = dashboard?.sites.filter((site) => site.manHoursToday > 0) || []
+
+  // --- Sites Overview state ---
+  const [overviewTab, setOverviewTab] = useState<"inprogress" | "completed">("inprogress")
+  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [inProgressSites, setInProgressSites] = useState<OverviewSite[]>([])
+  const [completedSites, setCompletedSites] = useState<OverviewSite[]>([])
+  const [inProgressCount, setInProgressCount] = useState(0)
+  const [completedCount, setCompletedCount] = useState(0)
+  const [completedHasMore, setCompletedHasMore] = useState(false)
+  const overviewRef = useRef<HTMLDivElement>(null)
+  const prevTabRef = useRef<"inprogress" | "completed" | null>(null)
 
   async function fetchDashboard() {
     try {
@@ -104,9 +150,56 @@ function DashBoard() {
     }
   }
 
+  const fetchOverview = useCallback(async (tab: "inprogress" | "completed", skip = 0, append = false) => {
+    try {
+      if (append) {
+        setLoadingMore(true)
+      } else {
+        setOverviewLoading(true)
+      }
+
+      const res = await api.get<OverviewResponse>("/api/attendance/dashboard/active-sites", {
+        params: { tab, skip, limit: 5 },
+      })
+
+      const data = res.data
+      setInProgressCount(data.inProgressCount)
+      setCompletedCount(data.completedCount)
+
+      if (tab === "inprogress") {
+        setInProgressSites(data.sites)
+      } else {
+        if (append) {
+          setCompletedSites((prev) => [...prev, ...data.sites])
+        } else {
+          setCompletedSites(data.sites)
+        }
+        setCompletedHasMore(data.hasMore)
+      }
+    } catch (error) {
+      console.log(error)
+    } finally {
+      setOverviewLoading(false)
+      setLoadingMore(false)
+    }
+  }, [])
+
   useEffect(() => {
     fetchDashboard()
   }, [date])
+
+  // Fetch overview on mount and when tab changes
+  useEffect(() => {
+    if (overviewTab === "completed") {
+      setCompletedSites([])
+    }
+    fetchOverview(overviewTab, 0, false)
+    // Scroll the section into view to prevent page jumping, but only on actual tab switches (not on initial mount or re-renders)
+    if (prevTabRef.current !== null && prevTabRef.current !== overviewTab) {
+      overviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }
+    prevTabRef.current = overviewTab
+  }, [overviewTab, fetchOverview])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-muted/10 to-muted/20 p-6">
@@ -445,6 +538,188 @@ function DashBoard() {
             )}
           </div>
         </Card>
+
+        {/* ─── Sites Overview (Tabbed) ─── */}
+        <div ref={overviewRef} className="scroll-mt-6">
+          <Card className="rounded-3xl border border-muted/30 bg-card shadow-sm overflow-hidden">
+            <div className="p-8 pb-0">
+              <h2 className="text-2xl font-bold tracking-tight text-foreground">
+                Sites Overview
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Cumulative metrics from attendance records across site lifecycles.
+              </p>
+            </div>
+
+            {/* Connected tab bar */}
+            <div className="px-8 pt-6">
+              <div className="flex items-center gap-0 border-b border-muted/30">
+                <button
+                  onClick={() => setOverviewTab("inprogress")}
+                  className={`relative inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-colors duration-200 ${overviewTab === "inprogress"
+                      ? "text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                    }`}
+                >
+                  In Progress
+                  <span className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${overviewTab === "inprogress"
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted/60 text-muted-foreground"
+                    }`}>
+                    {inProgressCount}
+                  </span>
+                  {overviewTab === "inprogress" && (
+                    <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary rounded-t-full" />
+                  )}
+                </button>
+
+                <button
+                  onClick={() => setOverviewTab("completed")}
+                  className={`relative inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-colors duration-200 ${overviewTab === "completed"
+                      ? "text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                    }`}
+                >
+                  Completed
+                  <span className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${overviewTab === "completed"
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted/60 text-muted-foreground"
+                    }`}>
+                    {completedCount}
+                  </span>
+                  {overviewTab === "completed" && (
+                    <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary rounded-t-full" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Tab content */}
+            <div className="p-8 pt-6">
+              {overviewLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                </div>
+              ) : (
+                <div className={overviewTab === "completed" ? "max-h-[540px] overflow-y-auto pr-1 scrollbar-thin" : ""}>
+                  {(overviewTab === "inprogress" ? inProgressSites : completedSites).length === 0 ? (
+                    <div className="rounded-2xl border bg-muted/20 py-16 text-center">
+                      <p className="text-muted-foreground font-medium">
+                        {overviewTab === "inprogress" ? "No active sites in progress" : "No completed sites found"}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {(overviewTab === "inprogress" ? inProgressSites : completedSites).map((site) => {
+                        const isAdmin = !isSupervisor
+                        return (
+                          <Card
+                            key={site.siteId}
+                            className={`group relative rounded-xl border bg-card p-3.5 transition-all duration-300 ${overviewTab === "completed" ? "border-muted/20 bg-muted/5" : "border-muted/30"
+                              } ${isAdmin ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md hover:border-primary/20" : ""
+                              }`}
+                            onClick={() => isAdmin && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })}
+                          >
+                            {/* Site name + permanent badge */}
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className={`text-sm font-bold text-foreground leading-snug ${isAdmin ? "transition-colors group-hover:text-primary" : ""
+                                }`}>
+                                {site.siteName}
+                              </h3>
+                              {site.isPermanent && (
+                                <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold text-primary border border-primary/20">
+                                  Permanent
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Stats row */}
+                            <div className="mt-3 grid grid-cols-3 gap-1.5">
+                              <div className="rounded-lg bg-violet-500/8 border border-violet-500/10 p-1.5 text-center">
+                                <div className="flex items-center justify-center gap-1 text-violet-600 dark:text-violet-400">
+                                  <Clock3 className="h-2.5 w-2.5" />
+                                  <span className="text-[9px] font-semibold uppercase tracking-wider">Hours</span>
+                                </div>
+                                <p className="mt-0.5 text-xs md:text-sm font-extrabold text-foreground">{site.totalManHours}</p>
+                              </div>
+
+                              <div className="rounded-lg bg-emerald-500/8 border border-emerald-500/10 p-1.5 text-center">
+                                <div className="flex items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400">
+                                  <Users className="h-2.5 w-2.5" />
+                                  <span className="text-[9px] font-semibold uppercase tracking-wider">Man Days</span>
+                                </div>
+                                <p className="mt-0.5 text-xs md:text-sm font-extrabold text-foreground">{site.totalManDays}</p>
+                              </div>
+
+                              <div className="rounded-lg bg-amber-500/8 border border-amber-500/10 p-1.5 text-center">
+                                <div className="flex items-center justify-center gap-1 text-amber-600 dark:text-amber-400">
+                                  <Calendar className="h-2.5 w-2.5" />
+                                  <span className="text-[9px] font-semibold uppercase tracking-wider">Days</span>
+                                </div>
+                                <p className="mt-0.5 text-xs md:text-sm font-extrabold text-foreground">{site.totalCalendarDays}</p>
+                              </div>
+                            </div>
+
+                            {/* Job status dots */}
+                            {site.jobs.length > 0 && (
+                              <div className="mt-3 border-t border-muted/20 pt-2 flex items-center justify-between">
+                                <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Jobs</span>
+                                <div className="flex flex-wrap items-center gap-1">
+                                  {site.jobs.map((job) => (
+                                    <span
+                                      key={job._id}
+                                      title={`${job.name} — ${job.isCompleted ? "Completed" : "In Progress"}`}
+                                      className={`inline-flex h-4 w-4 items-center justify-center rounded-full transition-transform hover:scale-125 cursor-default ${job.isCompleted
+                                          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                          : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                                        }`}
+                                    >
+                                      {job.isCompleted ? (
+                                        <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                                      ) : (
+                                        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                      )}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </Card>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* Load More buttons grouped safely within tab view container */}
+                  {overviewTab === "completed" && completedHasMore && (
+                    <div className="mt-4 flex justify-center">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={loadingMore}
+                        onClick={() => fetchOverview("completed", completedSites.length, true)}
+                        className="rounded-full px-6"
+                      >
+                        {loadingMore ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <ChevronDown className="mr-2 h-4 w-4" />
+                        )}
+                        {loadingMore ? "Loading..." : "Load More"}
+                      </Button>
+                    </div>
+                  )}
+
+                  {overviewTab === "completed" && !completedHasMore && completedSites.length > 0 && (
+                    <p className="mt-4 text-center text-xs text-muted-foreground">
+                      All completed sites loaded
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
 
       </div>
     </div>
