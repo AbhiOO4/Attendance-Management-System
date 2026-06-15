@@ -28,8 +28,13 @@ import Job from '../models/jobModel.js';
 function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7, timezoneOffset = null } = {}) {
   // If timezoneOffset is passed (e.g. "-330"), construct standard offset string like "+05:30"
   let offsetStr = "";
-  if (timezoneOffset !== null && timezoneOffset !== undefined) {
-    const offsetVal = parseInt(timezoneOffset, 10);
+  let targetOffset = timezoneOffset;
+  if (targetOffset === null || targetOffset === undefined) {
+    targetOffset = process.env.APP_TIMEZONE_OFFSET;
+  }
+
+  if (targetOffset !== null && targetOffset !== undefined && targetOffset !== "") {
+    const offsetVal = parseInt(targetOffset, 10);
     if (!isNaN(offsetVal)) {
       const sign = offsetVal <= 0 ? "+" : "-";
       const absMinutes = Math.abs(offsetVal);
@@ -37,7 +42,9 @@ function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNight
       const mins = String(absMinutes % 60).padStart(2, "0");
       offsetStr = `${sign}${hours}:${mins}`;
     }
-  } else {
+  }
+
+  if (!offsetStr) {
     // Default to Indian Standard Time offset (+05:30) if not specified to prevent UTC shift when hosted
     offsetStr = "+05:30";
   }
@@ -67,8 +74,16 @@ function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNight
  * Checks both the isNightShift flag and auto-detects cross-midnight.
  */
 function detectCrossedMidnight(sessions, timezoneOffset = null) {
-  // Parse timezone offset (default to -330 for IST (+05:30) if not specified or invalid)
-  let offsetVal = -330;
+  let fallbackOffset = -330;
+  if (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "") {
+    const parsedFallback = parseInt(process.env.APP_TIMEZONE_OFFSET, 10);
+    if (!isNaN(parsedFallback)) {
+      fallbackOffset = parsedFallback;
+    }
+  }
+
+  // Parse timezone offset
+  let offsetVal = fallbackOffset;
   if (timezoneOffset !== null && timezoneOffset !== undefined) {
     const parsed = parseInt(timezoneOffset, 10);
     if (!isNaN(parsed)) {

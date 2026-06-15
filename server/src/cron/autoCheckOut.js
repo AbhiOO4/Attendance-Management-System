@@ -3,36 +3,59 @@ import Site from '../models/siteModel.js';
 import Attendance from '../models/attendanceModel.js';
 import workModel from '../models/workModel.js';
 
-// IST offset: +05:30 = -330 minutes
-const IST_OFFSET = -330;
+/**
+ * Get the application's timezone offset in minutes from environment variables.
+ * Defaults to -330 (which represents Indian Standard Time, UTC+05:30).
+ */
+const getAppOffsetMinutes = () => {
+  const envVal = process.env.APP_TIMEZONE_OFFSET;
+  if (envVal !== undefined && envVal !== "") {
+    const parsed = parseInt(envVal, 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return -330;
+};
 
 /**
- * Get the current IST time as "HH:mm" string.
+ * Helper to convert offset in minutes to string (e.g. -330 -> "+05:30", -240 -> "+04:00")
  */
-function getCurrentISTTime() {
+function getOffsetString(offsetVal) {
+  const sign = offsetVal <= 0 ? "+" : "-";
+  const absMinutes = Math.abs(offsetVal);
+  const hours = String(Math.floor(absMinutes / 60)).padStart(2, "0");
+  const mins = String(absMinutes % 60).padStart(2, "0");
+  return `${sign}${hours}:${mins}`;
+}
+
+/**
+ * Get the current local time as "HH:mm" string.
+ */
+function getCurrentLocalTime() {
+  const offset = getAppOffsetMinutes();
   const now = new Date();
-  const istTime = new Date(now.getTime() - IST_OFFSET * 60 * 1000);
-  const hours = String(istTime.getUTCHours()).padStart(2, '0');
-  const minutes = String(istTime.getUTCMinutes()).padStart(2, '0');
+  const localTime = new Date(now.getTime() - offset * 60 * 1000);
+  const hours = String(localTime.getUTCHours()).padStart(2, '0');
+  const minutes = String(localTime.getUTCMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
 }
 
 /**
- * Get today's date in IST as "YYYY-MM-DD" string.
+ * Get today's date in local time as "YYYY-MM-DD" string.
  */
-function getTodayIST() {
+function getTodayLocal() {
+  const offset = getAppOffsetMinutes();
   const now = new Date();
-  const istTime = new Date(now.getTime() - IST_OFFSET * 60 * 1000);
-  return istTime.toISOString().split('T')[0];
+  const localTime = new Date(now.getTime() - offset * 60 * 1000);
+  return localTime.toISOString().split('T')[0];
 }
 
 /**
  * Combines a date string ("YYYY-MM-DD") and time string ("HH:mm")
- * into a Date object using IST offset.
- * Replicates the logic from attendanceController's combineDateAndTime.
+ * into a Date object using the local timezone offset.
  */
-function combineDateAndTimeIST(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7 } = {}) {
-  const offsetStr = "+05:30";
+function combineDateAndTimeLocal(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7 } = {}) {
+  const offset = getAppOffsetMinutes();
+  const offsetStr = getOffsetString(offset);
   const dt = new Date(`${dateStr}T${timeStr}:00${offsetStr}`);
   const [h] = timeStr.split(":").map(Number);
 
@@ -52,25 +75,26 @@ function combineDateAndTimeIST(dateStr, timeStr, { referenceCheckIn = null, isNi
 }
 
 /**
- * Extract HH:mm from a Date object in IST.
+ * Extract HH:mm from a Date object in local time.
  */
-function toISTTimeString(date) {
-  const istTime = new Date(date.getTime() - IST_OFFSET * 60 * 1000);
-  const hours = String(istTime.getUTCHours()).padStart(2, '0');
-  const minutes = String(istTime.getUTCMinutes()).padStart(2, '0');
+function toLocalTimeString(date) {
+  const offset = getAppOffsetMinutes();
+  const localTime = new Date(date.getTime() - offset * 60 * 1000);
+  const hours = String(localTime.getUTCHours()).padStart(2, '0');
+  const minutes = String(localTime.getUTCMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
 }
 
 /**
  * Run the auto check-out process.
- * Finds sites whose defaultCheckOut matches the current IST time,
+ * Finds sites whose defaultCheckOut matches the current local time,
  * then fills in checkOut for all submitted attendance sessions
  * that have checkIn but no checkOut for that site today.
  */
 async function runAutoCheckOut() {
   try {
-    const currentTime = getCurrentISTTime();
-    const todayStr = getTodayIST();
+    const currentTime = getCurrentLocalTime();
+    const todayStr = getTodayLocal();
 
     // Find all active sites whose defaultCheckOut matches current time
     const matchingSites = await Site.find({
@@ -114,11 +138,11 @@ async function runAutoCheckOut() {
               session.checkIn &&
               !session.checkOut
             ) {
-              // Get the checkIn time as HH:mm string in IST
-              const checkInTimeStr = toISTTimeString(session.checkIn);
+              // Get the checkIn time as HH:mm string in local time
+              const checkInTimeStr = toLocalTimeString(session.checkIn);
 
               // Build checkOut Date using the site's defaultCheckOut
-              const checkOutDate = combineDateAndTimeIST(
+              const checkOutDate = combineDateAndTimeLocal(
                 todayStr,
                 site.defaultCheckOut,
                 {
@@ -189,7 +213,7 @@ async function runAutoCheckOut() {
 
 /**
  * Start the auto check-out cron job.
- * Runs every minute to check if any site's defaultCheckOut matches current IST time.
+ * Runs every minute to check if any site's defaultCheckOut matches current local time.
  */
 export function startAutoCheckOutCron() {
   cron.schedule('* * * * *', runAutoCheckOut);
