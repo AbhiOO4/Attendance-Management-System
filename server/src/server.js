@@ -16,9 +16,9 @@ app.use(
 
 import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
+import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
 
 app.use(express.json()); // Essential to parse JSON payloads
-
 //Importing routes
 import empRoutes from '../src/routes/empRoutes.js'
 import userRoutes from '../src/routes/userRoutes.js'
@@ -64,6 +64,7 @@ const initializePermanentSite = async () => {
 
 connectDB().then(async () => {
     await initializePermanentSite();
+    startAutoCheckOutCron();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })

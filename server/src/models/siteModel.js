@@ -32,6 +32,16 @@ const siteSchema = new mongoose.Schema({
   isCompleted: {
     type: Boolean,
     default: false
+  },
+  defaultCheckIn: {
+    type: String,
+    trim: true,
+    default: ""
+  },
+  defaultCheckOut: {
+    type: String,
+    trim: true,
+    default: ""
   }
 }, {
   timestamps: true

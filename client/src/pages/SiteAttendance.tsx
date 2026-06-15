@@ -36,6 +36,7 @@ import {
   X,
   ArrowLeft,
   UserPlus,
+  Clock3,
 } from "lucide-react"
 
 interface Employee {
@@ -64,6 +65,8 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
+  defaultCheckIn?: string
+  defaultCheckOut?: string
 }
 
 export interface AttendanceSession {
@@ -207,6 +210,18 @@ function SiteAttendance() {
 
   const [rowSaving, setRowSaving] = useState(false)
 
+  const [isEditingDefaults, setIsEditingDefaults] = useState(false)
+  const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
+  const [editDefaultCheckOut, setEditDefaultCheckOut] = useState("")
+  const [savingDefaults, setSavingDefaults] = useState(false)
+
+  useEffect(() => {
+    if (site) {
+      setEditDefaultCheckIn(site.defaultCheckIn || "")
+      setEditDefaultCheckOut(site.defaultCheckOut || "")
+    }
+  }, [site])
+
   const openEditRecord = (
     record: AttendanceRecord
   ) => {
@@ -275,31 +290,38 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         )
 
       const mappedDraft =
-        res.data.employees.map((emp) => ({
-          employee: {
-            _id: emp._id,
-            name: emp.name,
-            user: emp.user || null,
-          },
-
-          employeeId: emp.employeeId,
-
-          jobTitle: emp.jobTitle,
-
-          jobId:
-            emp.currentJob?._id || null,
-
-          sessions: [
-            {
-              siteId: siteData._id,
-              job: emp.currentJob,
-              checkIn: "",
-              checkOut: "",
-              workedHours: 0,
-              isNightShift: false,
+        res.data.employees.map((emp) => {
+          const defaultIn = siteData.defaultCheckIn || ""
+          let isNightShift = false
+          if (defaultIn) {
+            isNightShift = isCheckInInToggleRange(defaultIn, cutoffHour)
+          }
+          return {
+            employee: {
+              _id: emp._id,
+              name: emp.name,
+              user: emp.user || null,
             },
-          ],
-        }))
+
+            employeeId: emp.employeeId,
+
+            jobTitle: emp.jobTitle,
+
+            jobId:
+              emp.currentJob?._id || null,
+
+            sessions: [
+              {
+                siteId: siteData._id,
+                job: emp.currentJob,
+                checkIn: defaultIn,
+                checkOut: "",
+                workedHours: 0,
+                isNightShift,
+              },
+            ],
+          }
+        })
 
       setDraftAttendance(mappedDraft)
     } catch (error) {
@@ -776,6 +798,65 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setIsDirty(true)
   }
 
+  const handleSaveDefaults = async () => {
+    if (!site) return
+    if (editDefaultCheckIn) {
+      const [inH] = editDefaultCheckIn.split(":").map(Number)
+      if (inH < cutoffHour) {
+        toast.error(`Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`)
+        return
+      }
+    }
+    try {
+      setSavingDefaults(true)
+      const res = await api.patch(`/api/site/${id}`, {
+        defaultCheckIn: editDefaultCheckIn,
+        defaultCheckOut: editDefaultCheckOut,
+      })
+
+      const updatedSite = res.data
+      toast.success("Default shift times updated successfully")
+
+      // Propagate default check-in to unsaved drafts if attendance does not exist yet
+      if (!attendanceExists && draftAttendance.length > 0) {
+        const oldCheckIn = site.defaultCheckIn || ""
+        const newCheckIn = editDefaultCheckIn
+
+        setDraftAttendance(prev =>
+          prev.map(record => ({
+            ...record,
+            sessions: record.sessions.map(session => {
+              if (session.checkIn === "" || session.checkIn === oldCheckIn) {
+                let isNightShift = session.isNightShift
+                if (newCheckIn) {
+                  isNightShift = isCheckInInToggleRange(newCheckIn, cutoffHour)
+                } else {
+                  isNightShift = false
+                }
+                const workedHours = calculateHours(newCheckIn, session.checkOut, isNightShift)
+                return {
+                  ...session,
+                  checkIn: newCheckIn,
+                  isNightShift,
+                  workedHours,
+                }
+              }
+              return session
+            })
+          }))
+        )
+        setIsDirty(true)
+      }
+
+      setSite(updatedSite)
+      setIsEditingDefaults(false)
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to update default shift times")
+    } finally {
+      setSavingDefaults(false)
+    }
+  }
+
   const filteredDraftAttendance = draftAttendance.filter((record) => {
       return (
         record.employee.name
@@ -1032,6 +1113,95 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
           </div>
         </CardHeader>
+      </Card>
+
+      {/* DEFAULT SHIFT TIMES CARD */}
+      <Card className="rounded-2xl border bg-card p-6 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-xl bg-primary/10 text-primary">
+              <Clock3 className="h-6 w-6" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-lg text-foreground">Default Shift Times</h3>
+              <p className="text-sm text-muted-foreground">Used for pre-filling and auto check-out</p>
+            </div>
+          </div>
+
+          {isEditingDefaults ? (
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-muted-foreground uppercase">In</label>
+                <Input
+                  type="time"
+                  value={editDefaultCheckIn}
+                  onChange={(e) => setEditDefaultCheckIn(e.target.value)}
+                  className="w-32 rounded-xl"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-muted-foreground uppercase">Out</label>
+                <Input
+                  type="time"
+                  value={editDefaultCheckOut}
+                  onChange={(e) => setEditDefaultCheckOut(e.target.value)}
+                  className="w-32 rounded-xl"
+                />
+              </div>
+              <div className="flex items-center gap-2 ml-2">
+                <Button
+                  size="sm"
+                  onClick={handleSaveDefaults}
+                  disabled={savingDefaults}
+                  className="rounded-xl flex items-center gap-1.5"
+                >
+                  {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditDefaultCheckIn(site?.defaultCheckIn || "")
+                    setEditDefaultCheckOut(site?.defaultCheckOut || "")
+                    setIsEditingDefaults(false)
+                  }}
+                  className="rounded-xl flex items-center gap-1.5"
+                >
+                  <X className="h-4 w-4" />
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-6">
+              <div className="flex gap-6">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default In</div>
+                  <p className="mt-1 font-bold text-foreground">
+                    {site?.defaultCheckIn ? site.defaultCheckIn : "--:--"}
+                  </p>
+                </div>
+                <div className="border-r border-border h-8 self-center"></div>
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default Out</div>
+                  <p className="mt-1 font-bold text-foreground">
+                    {site?.defaultCheckOut ? site.defaultCheckOut : "--:--"}
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setIsEditingDefaults(true)}
+                className="rounded-xl border border-muted-foreground/30 hover:bg-accent h-9 w-9"
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* NIGHT SHIFT BANNER */}

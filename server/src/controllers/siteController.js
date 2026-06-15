@@ -7,6 +7,7 @@ import attendanceModel from '../models/attendanceModel.js'
 import mongoose from 'mongoose'
 import { json } from 'express'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
+import workModel from '../models/workModel.js'
 
 
 //Admin
@@ -23,7 +24,7 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -1657,15 +1658,28 @@ export const deleteJob = async (req, res) => {
 export const updateSite = async (req, res) => {
   try {
     const { siteId } = req.params;
-    const { locationDetails, isCompleted } = req.body;
+    const { locationDetails, isCompleted, defaultCheckIn, defaultCheckOut } = req.body;
 
     const site = await siteModel.findById(siteId);
     if (!site) {
       return res.status(404).json({ message: "Site not found" });
     }
 
+    if (defaultCheckIn !== undefined && defaultCheckIn !== "") {
+      const [inH] = defaultCheckIn.split(":").map(Number);
+      const workConfig = await workModel.findOne();
+      const cutoffHour = workConfig ? workConfig.nightShiftCutoffHour : 7;
+      if (inH < cutoffHour) {
+        return res.status(400).json({
+          message: `Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`
+        });
+      }
+    }
+
     if (locationDetails !== undefined) site.locationDetails = locationDetails;
     if (isCompleted !== undefined) site.isCompleted = isCompleted;
+    if (defaultCheckIn !== undefined) site.defaultCheckIn = defaultCheckIn;
+    if (defaultCheckOut !== undefined) site.defaultCheckOut = defaultCheckOut;
 
     await site.save();
     return res.status(200).json(site);
