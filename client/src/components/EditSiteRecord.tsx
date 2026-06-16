@@ -775,8 +775,7 @@ const toTimeValue = (
 
                       <p className="text-sm text-muted-foreground">
                         Site:{" "}
-                        {session.siteName ||
-                          "Unknown Site"}
+                        {session.siteName || isEditable ? site.siteName : "Unknown Site"}
                       </p>
 
                       {hasOverlap && (
