@@ -40,6 +40,7 @@ import {
   Save,
   Trash2,
   X,
+  Undo,
 } from "lucide-react"
 
 import { api } from "@/lib/api"
@@ -160,6 +161,14 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
   const [sessionToDelete, setSessionToDelete] =
     useState<number | null>(null)
 
+  const [lastClearedSession, setLastClearedSession] = useState<{
+    index: number
+    checkIn: string | null
+    checkOut: string | null
+    workedHours: number
+    isNightShift: boolean
+  } | null>(null)
+
   const [initialSessions, setInitialSessions] = useState<AttendanceSession[]>([])
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -232,6 +241,7 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
   useEffect(() => {
     setOverlapInfo(null)
     setOverlapSessionIds([])
+    setLastClearedSession(null)
     if (open && attendanceId) {
       fetchAttendanceRecord()
     } else {
@@ -449,12 +459,37 @@ const addSession = async () => {
 }
 
   const clearModalSession = (index: number) => {
+    const session = sessions[index]
+    if (session) {
+      setLastClearedSession({
+        index,
+        checkIn: session.checkIn ?? null,
+        checkOut: session.checkOut ?? null,
+        workedHours: session.workedHours,
+        isNightShift: session.isNightShift ?? false,
+      })
+    }
+
     const updated = [...sessions]
     updated[index].checkIn = null
     updated[index].checkOut = null
     updated[index].workedHours = 0
     updated[index].isNightShift = false
     setSessions(updated)
+  }
+
+  const undoClearModalSession = () => {
+    if (!lastClearedSession) return
+    const index = lastClearedSession.index
+    const updated = [...sessions]
+    if (updated[index]) {
+      updated[index].checkIn = lastClearedSession.checkIn
+      updated[index].checkOut = lastClearedSession.checkOut
+      updated[index].workedHours = lastClearedSession.workedHours
+      updated[index].isNightShift = lastClearedSession.isNightShift
+      setSessions(updated)
+    }
+    setLastClearedSession(null)
   }
 
   const removeSession = (
@@ -753,15 +788,6 @@ const toTimeValue = (
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {isEditable && (session.checkIn || session.checkOut) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => clearModalSession(index)}
-                        >
-                          Clear
-                        </Button>
-                      )}
                       {isEditable && (
                         <Button
                           variant="destructive"
@@ -928,6 +954,29 @@ const toTimeValue = (
                         />
                       </div>
                     </div>
+                    {isEditable && (
+                      <div className="flex justify-end pt-4 border-t mt-4">
+                        {lastClearedSession && lastClearedSession.index === index && !session.checkIn && !session.checkOut ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex items-center gap-1.5"
+                            onClick={undoClearModalSession}
+                          >
+                            <Undo className="h-4 w-4" />
+                            Undo
+                          </Button>
+                        ) : (session.checkIn || session.checkOut) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => clearModalSession(index)}
+                          >
+                            Clear
+                          </Button>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 </div>
               )

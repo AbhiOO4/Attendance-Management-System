@@ -207,6 +207,13 @@ function SiteAttendance() {
     isNightShift: boolean
   } | null>(null)
 
+  const [lastClearedSaved, setLastClearedSaved] = useState<{
+    attendanceId: string
+    checkIn: string
+    checkOut: string
+    isNightShift: boolean
+  } | null>(null)
+
   const [site, setSite] = useState<Site | null>(null)
 
   const [loading, setLoading] = useState(true)
@@ -647,6 +654,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
     setEditingRowId(record.attendanceId)
     setOverlapError(null)
+    setLastClearedSaved(null)
 
     setInlineEdit({
       checkIn: toTimeValue(session?.checkIn),
@@ -660,6 +668,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setOverlapError(null)
 
     setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false })
+    setLastClearedSaved(null)
   }
 
 
@@ -892,6 +901,30 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     )
     setIsDirty(true)
     setLastCleared(null)
+  }
+
+  const clearInlineEdit = (record: AttendanceRecord) => {
+    setLastClearedSaved({
+      attendanceId: record.attendanceId,
+      checkIn: inlineEdit.checkIn,
+      checkOut: inlineEdit.checkOut,
+      isNightShift: inlineEdit.isNightShift,
+    })
+    setInlineEdit({
+      checkIn: "",
+      checkOut: "",
+      isNightShift: false,
+    })
+  }
+
+  const undoClearInlineEdit = () => {
+    if (!lastClearedSaved) return
+    setInlineEdit({
+      checkIn: lastClearedSaved.checkIn,
+      checkOut: lastClearedSaved.checkOut,
+      isNightShift: lastClearedSaved.isNightShift,
+    })
+    setLastClearedSaved(null)
   }
 
   const handleSaveDefaults = async () => {
@@ -1523,21 +1556,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             </div>
 
                             <div className="flex gap-2 flex-wrap">
-                              {(inlineEdit.checkIn || inlineEdit.checkOut) && (
+                              {lastClearedSaved && lastClearedSaved.attendanceId === record.attendanceId && !inlineEdit.checkIn && !inlineEdit.checkOut ? (
                                 <Button
                                   variant="outline"
-                                  onClick={() => {
-                                    setInlineEdit({
-                                      checkIn: "",
-                                      checkOut: "",
-                                      isNightShift: false,
-                                    })
-                                  }}
+                                  onClick={undoClearInlineEdit}
+                                  className="flex items-center gap-1.5"
+                                  disabled={rowSaving}
+                                >
+                                  <Undo className="h-4 w-4" />
+                                  Undo
+                                </Button>
+                              ) : (inlineEdit.checkIn || inlineEdit.checkOut) ? (
+                                <Button
+                                  variant="outline"
+                                  onClick={() => clearInlineEdit(record)}
                                   disabled={rowSaving}
                                 >
                                   Clear
                                 </Button>
-                              )}
+                              ) : null}
                               <Button
                                 onClick={() =>
                                   saveInlineEdit(record)
@@ -1820,22 +1857,27 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 <TableCell className="text-right" rowSpan={sessions.length}>
                                   {isEditing ? (
                                     <div className="flex justify-end gap-2 items-center">
-                                      {(inlineEdit.checkIn || inlineEdit.checkOut) && (
+                                      {lastClearedSaved && lastClearedSaved.attendanceId === record.attendanceId && !inlineEdit.checkIn && !inlineEdit.checkOut ? (
                                         <Button
                                           variant="outline"
                                           size="sm"
-                                          onClick={() => {
-                                            setInlineEdit({
-                                              checkIn: "",
-                                              checkOut: "",
-                                              isNightShift: false,
-                                            })
-                                          }}
+                                          onClick={undoClearInlineEdit}
+                                          className="inline-flex items-center gap-1.5"
+                                          disabled={rowSaving}
+                                        >
+                                          <Undo className="h-4 w-4" />
+                                          Undo
+                                        </Button>
+                                      ) : (inlineEdit.checkIn || inlineEdit.checkOut) ? (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => clearInlineEdit(record)}
                                           disabled={rowSaving}
                                         >
                                           Clear
                                         </Button>
-                                      )}
+                                      ) : null}
                                       <Button
                                         size="icon"
                                         variant="outline"
@@ -1996,24 +2038,28 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             </div>
 
                             {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="w-full mt-2 flex items-center justify-center gap-1.5"
-                                onClick={undoClearDraftSession}
-                              >
-                                <Undo className="h-4 w-4" />
-                                Undo
-                              </Button>
+                              <div className="flex justify-start">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="w-28 mt-2 flex items-center justify-center gap-1.5 px-3.5 h-8 text-xs font-medium"
+                                  onClick={undoClearDraftSession}
+                                >
+                                  <Undo className="h-4 w-4" />
+                                  Undo
+                                </Button>
+                              </div>
                             ) : isSessionNonEmpty(session) ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="w-full mt-2"
-                                onClick={() => clearDraftSession(record.employee._id, 0)}
-                              >
-                                Clear
-                              </Button>
+                              <div className="flex justify-start">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="w-28 mt-2 px-3.5 h-8 text-xs font-medium"
+                                  onClick={() => clearDraftSession(record.employee._id, 0)}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
                             ) : null}
 
                             {isOverlapRow(record.employee._id) && (
@@ -2146,15 +2192,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                     variant="outline"
                                     size="sm"
                                     onClick={undoClearDraftSession}
-                                    className="inline-flex items-center gap-1.5"
+                                    className="inline-flex items-center gap-1.5 px-3.5 h-8 text-xs font-medium"
                                   >
                                     <Undo className="h-4 w-4" />
-                                    
+                                    Undo
                                   </Button>
                                 ) : isSessionNonEmpty(session) ? (
                                   <Button
                                     variant="outline"
                                     size="sm"
+                                    className="px-3.5 h-8 text-xs font-medium"
                                     onClick={() => clearDraftSession(record.employee._id, 0)}
                                   >
                                     Clear
