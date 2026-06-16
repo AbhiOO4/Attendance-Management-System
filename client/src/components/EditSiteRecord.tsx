@@ -448,6 +448,15 @@ const addSession = async () => {
   }
 }
 
+  const clearModalSession = (index: number) => {
+    const updated = [...sessions]
+    updated[index].checkIn = null
+    updated[index].checkOut = null
+    updated[index].workedHours = 0
+    updated[index].isNightShift = false
+    setSessions(updated)
+  }
+
   const removeSession = (
     index: number
   ) => {
@@ -743,30 +752,41 @@ const toTimeValue = (
                         )}
                     </div>
 
-                    {isEditable && (
-                      <Button
-                        variant="destructive"
-                        size="icon"
-                        onClick={() => {
-                          const currentSiteSessions = sessions.filter(
-                            (s) => String(s.siteId) === String(site._id)
-                          )
-                          if (currentSiteSessions.length <= 1) {
-                            toast.error("Cannot delete the only session for this site. You can leave its times blank instead.")
-                            return
-                          }
-                          setSessionToDelete(
-                            index
-                          )
+                    <div className="flex items-center gap-2">
+                      {isEditable && (session.checkIn || session.checkOut) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => clearModalSession(index)}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                      {isEditable && (
+                        <Button
+                          variant="destructive"
+                          size="icon"
+                          onClick={() => {
+                            const currentSiteSessions = sessions.filter(
+                              (s) => String(s.siteId) === String(site._id)
+                            )
+                            if (currentSiteSessions.length <= 1) {
+                              toast.error("Cannot delete the only session for this site. You can leave its times blank instead.")
+                              return
+                            }
+                            setSessionToDelete(
+                              index
+                            )
 
-                          setDeleteDialogOpen(
-                            true
-                          )
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
+                            setDeleteDialogOpen(
+                              true
+                            )
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   {/* FORM */}

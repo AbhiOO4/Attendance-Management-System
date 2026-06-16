@@ -37,6 +37,7 @@ import {
   ArrowLeft,
   UserPlus,
   Clock3,
+  Undo,
 } from "lucide-react"
 
 interface Employee {
@@ -149,6 +150,26 @@ interface Filters {
   jobTitle: string
 }
 
+const isSessionNonEmpty = (session?: { checkIn?: string | null; checkOut?: string | null }) => {
+  return !!session?.checkIn || !!session?.checkOut
+}
+
+const isEmployeeAbsent = (
+  sessions: Array<{ siteId: string; checkIn?: string | null; checkOut?: string | null }>,
+  currentSiteId?: string
+) => {
+  if (!currentSiteId) return false
+  const siteSessions = sessions.filter(s => String(s.siteId) === String(currentSiteId))
+  return siteSessions.length === 0 || siteSessions.every(s => !s.checkIn && !s.checkOut)
+}
+
+const AbsentIndicator = () => (
+  <span className="relative flex h-2.5 w-2.5 shrink-0" title="Absent">
+    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
+  </span>
+)
+
 
 function SiteAttendance() {
   const {id} = useParams()
@@ -178,6 +199,13 @@ function SiteAttendance() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
   const [draftAttendance, setDraftAttendance] = useState<DraftAttendanceRecord[]>([])
+
+  const [lastCleared, setLastCleared] = useState<{
+    employeeId: string
+    checkIn: string
+    checkOut: string
+    isNightShift: boolean
+  } | null>(null)
 
   const [site, setSite] = useState<Site | null>(null)
 
@@ -798,6 +826,74 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setIsDirty(true)
   }
 
+  const clearDraftSession = (employeeId: string, sessionIndex: number) => {
+    const record = draftAttendance.find((r) => r.employee._id === employeeId)
+    const session = record?.sessions[sessionIndex]
+    if (record && session) {
+      setLastCleared({
+        employeeId,
+        checkIn: session.checkIn,
+        checkOut: session.checkOut,
+        isNightShift: session.isNightShift,
+      })
+    }
+
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== employeeId) {
+          return record
+        }
+
+        const sessions = [...record.sessions]
+        sessions[sessionIndex] = {
+          ...sessions[sessionIndex],
+          checkIn: "",
+          checkOut: "",
+          workedHours: 0,
+          isNightShift: false,
+        }
+
+        return {
+          ...record,
+          sessions,
+        }
+      })
+    )
+    setIsDirty(true)
+  }
+
+  const undoClearDraftSession = () => {
+    if (!lastCleared) return
+
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== lastCleared.employeeId) {
+          return record
+        }
+
+        const sessions = [...record.sessions]
+        sessions[0] = {
+          ...sessions[0],
+          checkIn: lastCleared.checkIn,
+          checkOut: lastCleared.checkOut,
+          isNightShift: lastCleared.isNightShift,
+          workedHours: calculateHours(
+            lastCleared.checkIn,
+            lastCleared.checkOut,
+            lastCleared.isNightShift
+          ),
+        }
+
+        return {
+          ...record,
+          sessions,
+        }
+      })
+    )
+    setIsDirty(true)
+    setLastCleared(null)
+  }
+
   const handleSaveDefaults = async () => {
     if (!site) return
     if (editDefaultCheckIn) {
@@ -1312,21 +1408,24 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                     <Card key={record.attendanceId} className={isOverlapRow(record.employee) ? "border-red-500" : ""}>
                       <CardContent className="pt-4 space-y-3">
 
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium">
-                              {record.name}
-                            </p>
-                            {record.user && (
-                              <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                Supervisor
-                              </Badge>
-                            )}
-                          </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">
+                                {record.name}
+                              </p>
+                              {record.user && (
+                                <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                  Supervisor
+                                </Badge>
+                              )}
+                            </div>
 
-                          <p className="text-sm text-muted-foreground">
-                            {record.employeeId} • {record.jobTitle}
-                          </p>
+                            <p className="text-sm text-muted-foreground">
+                              {record.employeeId} • {record.jobTitle}
+                            </p>
+                          </div>
+                          {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
                         </div>
 
                         <div>
@@ -1423,7 +1522,22 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               )}
                             </div>
 
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
+                              {(inlineEdit.checkIn || inlineEdit.checkOut) && (
+                                <Button
+                                  variant="outline"
+                                  onClick={() => {
+                                    setInlineEdit({
+                                      checkIn: "",
+                                      checkOut: "",
+                                      isNightShift: false,
+                                    })
+                                  }}
+                                  disabled={rowSaving}
+                                >
+                                  Clear
+                                </Button>
+                              )}
                               <Button
                                 onClick={() =>
                                   saveInlineEdit(record)
@@ -1571,21 +1685,24 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 <TableRow className={isOverlapRow(record.employee) ? "bg-red-50 dark:bg-red-950/20 border-red-500" : ""}>
                               {sessionIndex === 0 && (
                                 <TableCell rowSpan={sessions.length}>
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <p className="font-medium">
-                                        {record.name}
-                                      </p>
-                                      {record.user && (
-                                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                          Supervisor
-                                        </Badge>
-                                      )}
-                                    </div>
+                                  <div className="flex items-center justify-between gap-4">
+                                    <div className="space-y-1">
+                                      <div className="flex items-center gap-2">
+                                        <p className="font-medium">
+                                          {record.name}
+                                        </p>
+                                        {record.user && (
+                                          <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                            Supervisor
+                                          </Badge>
+                                        )}
+                                      </div>
 
-                                    <p className="text-sm text-muted-foreground">
-                                      {record.employeeId} • {record.jobTitle}
-                                    </p>
+                                      <p className="text-sm text-muted-foreground">
+                                        {record.employeeId} • {record.jobTitle}
+                                      </p>
+                                    </div>
+                                    {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
                                   </div>
                                 </TableCell>
                               )}
@@ -1702,7 +1819,23 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               {sessionIndex === 0 && (
                                 <TableCell className="text-right" rowSpan={sessions.length}>
                                   {isEditing ? (
-                                    <div className="flex justify-end gap-2">
+                                    <div className="flex justify-end gap-2 items-center">
+                                      {(inlineEdit.checkIn || inlineEdit.checkOut) && (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => {
+                                            setInlineEdit({
+                                              checkIn: "",
+                                              checkOut: "",
+                                              isNightShift: false,
+                                            })
+                                          }}
+                                          disabled={rowSaving}
+                                        >
+                                          Clear
+                                        </Button>
+                                      )}
                                       <Button
                                         size="icon"
                                         variant="outline"
@@ -1805,21 +1938,24 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                         >
                           <CardContent className="space-y-4 pt-4">
 
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <p className="font-medium">
-                                  {record.employee.name}
-                                </p>
-                                {record.employee.user && (
-                                  <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                    Supervisor
-                                  </Badge>
-                                )}
-                              </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <p className="font-medium">
+                                    {record.employee.name}
+                                  </p>
+                                  {record.employee.user && (
+                                    <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                      Supervisor
+                                    </Badge>
+                                  )}
+                                </div>
 
-                              <p className="text-sm text-muted-foreground">
-                                {record.employeeId} • {record.jobTitle}
-                              </p>
+                                <p className="text-sm text-muted-foreground">
+                                  {record.employeeId} • {record.jobTitle}
+                                </p>
+                              </div>
+                              {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
                             </div>
 
                             <Input
@@ -1859,6 +1995,27 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               )}
                             </div>
 
+                            {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full mt-2 flex items-center justify-center gap-1.5"
+                                onClick={undoClearDraftSession}
+                              >
+                                <Undo className="h-4 w-4" />
+                                Undo
+                              </Button>
+                            ) : isSessionNonEmpty(session) ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full mt-2"
+                                onClick={() => clearDraftSession(record.employee._id, 0)}
+                              >
+                                Clear
+                              </Button>
+                            ) : null}
+
                             {isOverlapRow(record.employee._id) && (
                               <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
                                 <div className="font-medium">
@@ -1889,6 +2046,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
                       <TableHead>Hours</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
 
@@ -1912,21 +2070,24 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               }
                             >
                               <TableCell>
-                                <div className="space-y-1">
-                                  <div className="flex items-center gap-2">
-                                    <p className="font-medium">
-                                      {record.employee.name}
-                                    </p>
-                                    {record.employee.user && (
-                                      <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                        Supervisor
-                                      </Badge>
-                                    )}
-                                  </div>
+                                <div className="flex items-center justify-between gap-4">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2">
+                                      <p className="font-medium">
+                                        {record.employee.name}
+                                      </p>
+                                      {record.employee.user && (
+                                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                                          Supervisor
+                                        </Badge>
+                                      )}
+                                    </div>
 
-                                  <p className="text-sm text-muted-foreground">
-                                    {record.employeeId} • {record.jobTitle}
-                                  </p>
+                                    <p className="text-sm text-muted-foreground">
+                                      {record.employeeId} • {record.jobTitle}
+                                    </p>
+                                  </div>
+                                  {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
                                 </div>
                               </TableCell>
 
@@ -1978,6 +2139,27 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 {
                                   session.workedHours
                                 }
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={undoClearDraftSession}
+                                    className="inline-flex items-center gap-1.5"
+                                  >
+                                    <Undo className="h-4 w-4" />
+                                    
+                                  </Button>
+                                ) : isSessionNonEmpty(session) ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => clearDraftSession(record.employee._id, 0)}
+                                  >
+                                    Clear
+                                  </Button>
+                                ) : null}
                               </TableCell>
                             </TableRow>
                             {isOverlapRow(record.employee._id) && (
