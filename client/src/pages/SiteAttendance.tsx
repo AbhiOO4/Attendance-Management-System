@@ -1317,6 +1317,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 size="sm"
                 onClick={() => setBulkAssignOpen(true)}
                 className="rounded-md flex items-center gap-1.5"
+                disabled={!attendanceExists}
+                title={!attendanceExists ? "Attendance records must be saved first before assigning night shifts" : undefined}
               >
                 <Moon className="h-4 w-4" />
                 Bulk Assign Night Shift
@@ -1721,44 +1723,48 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                           </div>
                         ) : (
                           <>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="space-y-1">
-                                <p className="text-sm font-medium">
-                                  Check In
-                                </p>
-
-                                {record.sessions.map(
-                                  (session) => (
-                                    <Input
-                                      key={session._id}
-                                      type="time"
-                                      readOnly
-                                      value={toTimeValue(
-                                        session.checkIn
-                                      )}
-                                    />
-                                  )
-                                )}
-                              </div>
-
-                              <div className="space-y-1">
-                                <p className="text-sm font-medium">
-                                  Check Out
-                                </p>
-
-                                {record.sessions.map(
-                                  (session) => (
-                                    <Input
-                                      key={session._id}
-                                      type="time"
-                                      readOnly
-                                      value={toTimeValue(
-                                        session.checkOut
-                                      )}
-                                    />
-                                  )
-                                )}
-                              </div>
+                            <div className="space-y-3">
+                              {record.sessions.map((session, idx) => (
+                                <div key={session._id || idx} className="space-y-2 border-t pt-2 first:border-t-0 first:pt-0">
+                                  {record.sessions.length > 1 && (
+                                    <p className="text-xs font-semibold text-muted-foreground">
+                                      Session #{idx + 1}
+                                    </p>
+                                  )}
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div className="space-y-1">
+                                      <p className="text-sm font-medium">
+                                        Check In
+                                      </p>
+                                      <Input
+                                        type="time"
+                                        readOnly
+                                        value={toTimeValue(session.checkIn)}
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <p className="text-sm font-medium">
+                                        Check Out
+                                      </p>
+                                      <Input
+                                        type="time"
+                                        readOnly
+                                        value={toTimeValue(session.checkOut)}
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="text-sm font-medium flex items-center gap-1.5 mt-1">
+                                    <span>Shift:</span>
+                                    {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? (
+                                      <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
+                                        🌙 Night
+                                      </span>
+                                    ) : (
+                                      <span className="text-muted-foreground">☀️ Day</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
 
                             {complete ? (
