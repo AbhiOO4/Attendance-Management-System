@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, Fragment } from "react"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
+import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
 import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isValidNightShiftTime, isCheckInInToggleRange } from "@/lib/dateUtils"
 
@@ -38,6 +39,7 @@ import {
   UserPlus,
   Clock3,
   Undo,
+  Moon,
 } from "lucide-react"
 
 interface Employee {
@@ -68,6 +70,8 @@ interface Site {
   jobs: Job[]
   defaultCheckIn?: string
   defaultCheckOut?: string
+  nightDefaultCheckIn?: string
+  nightDefaultCheckOut?: string
 }
 
 export interface AttendanceSession {
@@ -248,12 +252,18 @@ function SiteAttendance() {
   const [isEditingDefaults, setIsEditingDefaults] = useState(false)
   const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
   const [editDefaultCheckOut, setEditDefaultCheckOut] = useState("")
+  const [editNightDefaultCheckIn, setEditNightDefaultCheckIn] = useState("")
+  const [editNightDefaultCheckOut, setEditNightDefaultCheckOut] = useState("")
   const [savingDefaults, setSavingDefaults] = useState(false)
+
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
 
   useEffect(() => {
     if (site) {
       setEditDefaultCheckIn(site.defaultCheckIn || "")
       setEditDefaultCheckOut(site.defaultCheckOut || "")
+      setEditNightDefaultCheckIn(site.nightDefaultCheckIn || "")
+      setEditNightDefaultCheckOut(site.nightDefaultCheckOut || "")
     }
   }, [site])
 
@@ -929,6 +939,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
   const handleSaveDefaults = async () => {
     if (!site) return
+
+    const toMinutes = (t: string) => {
+      const [h, m] = t.split(":").map(Number)
+      return h * 60 + m
+    }
+
+    // --- DAY SHIFT VALIDATION ---
     if (editDefaultCheckIn) {
       const [inH] = editDefaultCheckIn.split(":").map(Number)
       if (inH < cutoffHour) {
@@ -936,11 +953,36 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         return
       }
     }
+    if (editDefaultCheckIn && editDefaultCheckOut) {
+      if (toMinutes(editDefaultCheckOut) <= toMinutes(editDefaultCheckIn)) {
+        toast.error("Day shift check-out must be after check-in (before midnight)")
+        return
+      }
+    }
+
+    // --- NIGHT SHIFT VALIDATION ---
+    if (editNightDefaultCheckIn) {
+      const inMin = toMinutes(editNightDefaultCheckIn)
+      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
+        toast.error(`Night shift check-in must be between ${cutoffHour}:00 and 23:59`)
+        return
+      }
+    }
+    if (editNightDefaultCheckOut) {
+      const outMin = toMinutes(editNightDefaultCheckOut)
+      if (outMin < 0 || outMin > cutoffHour * 60) {
+        toast.error(`Night shift check-out must be between 00:00 and ${cutoffHour}:00`)
+        return
+      }
+    }
+
     try {
       setSavingDefaults(true)
       const res = await api.patch(`/api/site/${id}`, {
         defaultCheckIn: editDefaultCheckIn,
         defaultCheckOut: editDefaultCheckOut,
+        nightDefaultCheckIn: editNightDefaultCheckIn,
+        nightDefaultCheckOut: editNightDefaultCheckOut,
       })
 
       const updatedSite = res.data
@@ -1246,43 +1288,102 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
       {/* DEFAULT SHIFT TIMES CARD */}
       <Card className="rounded-2xl border bg-card p-6 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-xl bg-primary/10 text-primary">
-              <Clock3 className="h-6 w-6" />
+        <div className="flex flex-col gap-4">
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-md bg-muted text-muted-foreground">
+                <Clock3 className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-lg text-foreground">Default Shift Times</h3>
+                <p className="text-sm text-muted-foreground">Day &amp; night defaults for pre-filling and auto check-in/out</p>
+              </div>
             </div>
-            <div>
-              <h3 className="font-semibold text-lg text-foreground">Default Shift Times</h3>
-              <p className="text-sm text-muted-foreground">Used for pre-filling and auto check-out</p>
+
+            <div className="flex items-center gap-2">
+              {!isEditingDefaults && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditingDefaults(true)}
+                  className="rounded-md border-muted-foreground/30 hover:bg-accent flex items-center gap-1.5"
+                >
+                  <Pencil className="h-4 w-4" />
+                  Edit
+                </Button>
+              )}
+              <Button
+                size="sm"
+                onClick={() => setBulkAssignOpen(true)}
+                className="rounded-md flex items-center gap-1.5"
+              >
+                <Moon className="h-4 w-4" />
+                Bulk Assign Night Shift
+              </Button>
             </div>
           </div>
 
           {isEditingDefaults ? (
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold text-muted-foreground uppercase">In</label>
-                <Input
-                  type="time"
-                  value={editDefaultCheckIn}
-                  onChange={(e) => setEditDefaultCheckIn(e.target.value)}
-                  className="w-32 rounded-xl"
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* DAY SHIFT */}
+              <div className="rounded-md border border-muted bg-muted/30 p-4 space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Day Shift</div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">In</label>
+                    <Input
+                      type="time"
+                      value={editDefaultCheckIn}
+                      onChange={(e) => setEditDefaultCheckIn(e.target.value)}
+                      className="w-32 rounded-md border-muted bg-background"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">Out</label>
+                    <Input
+                      type="time"
+                      value={editDefaultCheckOut}
+                      onChange={(e) => setEditDefaultCheckOut(e.target.value)}
+                      className="w-32 rounded-md border-muted bg-background"
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold text-muted-foreground uppercase">Out</label>
-                <Input
-                  type="time"
-                  value={editDefaultCheckOut}
-                  onChange={(e) => setEditDefaultCheckOut(e.target.value)}
-                  className="w-32 rounded-xl"
-                />
+
+              {/* NIGHT SHIFT */}
+              <div className="rounded-md border border-muted bg-muted/30 p-4 space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Night Shift</div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">In</label>
+                    <Input
+                      type="time"
+                      value={editNightDefaultCheckIn}
+                      onChange={(e) => setEditNightDefaultCheckIn(e.target.value)}
+                      className="w-32 rounded-md border-muted bg-background"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">Out</label>
+                    <Input
+                      type="time"
+                      value={editNightDefaultCheckOut}
+                      onChange={(e) => setEditNightDefaultCheckOut(e.target.value)}
+                      className="w-32 rounded-md border-muted bg-background"
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2 ml-2">
+
+              {/* ACTIONS */}
+              <div className="md:col-span-2 flex items-center gap-2">
                 <Button
                   size="sm"
                   onClick={handleSaveDefaults}
                   disabled={savingDefaults}
-                  className="rounded-xl flex items-center gap-1.5"
+                  className="rounded-md flex items-center gap-1.5"
                 >
                   {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   Save
@@ -1293,9 +1394,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   onClick={() => {
                     setEditDefaultCheckIn(site?.defaultCheckIn || "")
                     setEditDefaultCheckOut(site?.defaultCheckOut || "")
+                    setEditNightDefaultCheckIn(site?.nightDefaultCheckIn || "")
+                    setEditNightDefaultCheckOut(site?.nightDefaultCheckOut || "")
                     setIsEditingDefaults(false)
                   }}
-                  className="rounded-xl flex items-center gap-1.5"
+                  className="rounded-md flex items-center gap-1.5"
                 >
                   <X className="h-4 w-4" />
                   Cancel
@@ -1303,31 +1406,47 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
               </div>
             </div>
           ) : (
-            <div className="flex items-center gap-6">
-              <div className="flex gap-6">
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default In</div>
-                  <p className="mt-1 font-bold text-foreground">
-                    {site?.defaultCheckIn ? site.defaultCheckIn : "--:--"}
-                  </p>
-                </div>
-                <div className="border-r border-border h-8 self-center"></div>
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default Out</div>
-                  <p className="mt-1 font-bold text-foreground">
-                    {site?.defaultCheckOut ? site.defaultCheckOut : "--:--"}
-                  </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* DAY SHIFT (read) */}
+              <div className="rounded-md border border-muted bg-muted/30 p-4">
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Day Shift</div>
+                <div className="flex gap-6">
+                  <div>
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">In</div>
+                    <p className="mt-0.5 font-bold text-foreground">
+                      {site?.defaultCheckIn ? site.defaultCheckIn : "--:--"}
+                    </p>
+                  </div>
+                  <div className="border-r border-border h-8 self-center"></div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Out</div>
+                    <p className="mt-0.5 font-bold text-foreground">
+                      {site?.defaultCheckOut ? site.defaultCheckOut : "--:--"}
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => setIsEditingDefaults(true)}
-                className="rounded-xl border border-muted-foreground/30 hover:bg-accent h-9 w-9"
-              >
-                <Pencil className="h-4 w-4" />
-              </Button>
+              {/* NIGHT SHIFT (read) */}
+              <div className="rounded-md border border-muted bg-muted/30 p-4">
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Night Shift</div>
+                <div className="flex gap-6">
+                  <div>
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">In</div>
+                    <p className="mt-0.5 font-bold text-foreground">
+                      {site?.nightDefaultCheckIn ? site.nightDefaultCheckIn : "--:--"}
+                    </p>
+                  </div>
+                  <div className="border-r border-border h-8 self-center"></div>
+                  <div>
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Out</div>
+                    <p className="mt-0.5 font-bold text-foreground">
+                      {site?.nightDefaultCheckOut ? site.nightDefaultCheckOut : "--:--"}
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -2257,6 +2376,16 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         onUpdated={(updatedRecord) =>
           handleRecordUpdated(updatedRecord as AttendanceRecord)
         }
+      />
+
+      <BulkAssignNightShift
+        open={bulkAssignOpen}
+        onClose={() => setBulkAssignOpen(false)}
+        siteId={id ?? ""}
+        date={today}
+        onAssigned={() => {
+          fetchAttendance()
+        }}
       />
 
       <UnsavedChangesDialog

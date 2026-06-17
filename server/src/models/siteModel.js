@@ -42,6 +42,16 @@ const siteSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: ""
+  },
+  nightDefaultCheckIn: {
+    type: String,
+    trim: true,
+    default: ""
+  },
+  nightDefaultCheckOut: {
+    type: String,
+    trim: true,
+    default: ""
   }
 }, {
   timestamps: true

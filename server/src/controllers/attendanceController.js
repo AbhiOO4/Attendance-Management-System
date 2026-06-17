@@ -3120,6 +3120,252 @@ const getActiveSitesOverview = async (req, res) => {
 };
 
 
+// --- NIGHT SHIFT BULK ASSIGNMENT ---
+
+// GET /api/attendance/night-shift/candidates?siteId=&date=&showOnlyEmpty=true&name=&employeeId=&jobTitle=
+export const getNightShiftCandidates = async (req, res) => {
+  try {
+    const {
+      siteId,
+      date,
+      showOnlyEmpty = "true",
+      name,
+      employeeId,
+      jobTitle,
+    } = req.query;
+
+    if (!siteId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "siteId and date are required",
+      });
+    }
+
+    const onlyEmpty = showOnlyEmpty === "true" || showOnlyEmpty === true;
+
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // 1. Active employees assigned to this site
+    const empFilter = { isActive: true, currentSite: siteId };
+
+    if (name) empFilter.name = { $regex: escapeRegExp(name), $options: "i" };
+    if (employeeId) empFilter.employeeId = { $regex: escapeRegExp(employeeId), $options: "i" };
+    if (jobTitle) empFilter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: "i" };
+
+    const employees = await Employee.find(
+      empFilter,
+      "_id name employeeId jobTitle currentSite currentJob"
+    )
+      .populate("currentJob", "name")
+      .sort({ name: 1 })
+      .lean();
+
+    // 2. Existing attendance records for these employees on the date
+    const empIds = employees.map((e) => e._id);
+
+    const records = await Attendance.find({
+      date: attendanceDate,
+      employee: { $in: empIds },
+    }).lean();
+
+    const recordByEmp = new Map();
+    for (const rec of records) {
+      recordByEmp.set(rec.employee.toString(), rec);
+    }
+
+    const siteIdStr = siteId.toString();
+
+    // 3. Filter
+    const candidates = employees.filter((emp) => {
+      const rec = recordByEmp.get(emp._id.toString());
+
+      const siteSessions = rec
+        ? (rec.sessions || []).filter(
+            (s) => s.siteId && s.siteId.toString() === siteIdStr
+          )
+        : [];
+
+      // Exclude employees who already have a night shift session for this site/date
+      if (siteSessions.some((s) => s.isNightShift === true)) {
+        return false;
+      }
+
+      if (onlyEmpty) {
+        // No record, no session for this site, or only empty sessions for this site
+        if (!rec || siteSessions.length === 0) return true;
+        return siteSessions.every((s) => !s.checkIn && !s.checkOut);
+      }
+
+      // showOnlyEmpty = false → every other active employee (minus night-shift ones)
+      return true;
+    });
+
+    return res.status(200).json({
+      success: true,
+      total: candidates.length,
+      data: candidates,
+    });
+  } catch (error) {
+    console.error("getNightShiftCandidates error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch night shift candidates",
+    });
+  }
+};
+
+// POST /api/attendance/night-shift/assign
+// Body: { siteId, date, employeeIds: [string] }
+export const assignNightShift = async (req, res) => {
+  const { siteId, date, employeeIds } = req.body;
+  const markedBy = req.user?.id;
+  const timezoneOffset = req.headers["x-timezone-offset"];
+
+  if (
+    !siteId ||
+    !date ||
+    !Array.isArray(employeeIds) ||
+    employeeIds.length === 0
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "siteId, date and employeeIds are required",
+    });
+  }
+
+  const attendanceDate = new Date(date);
+  attendanceDate.setUTCHours(0, 0, 0, 0);
+
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const workConfig = await workModel.findOne().session(dbSession);
+
+    const fullDayHours = workConfig?.fullDayHours ?? 8;
+    const halfDayHours = workConfig?.halfDayHours ?? 4;
+    const overtimeThreshold = workConfig?.overtimeThreshold ?? 8;
+
+    let processedCount = 0;
+
+    for (const empId of employeeIds) {
+      let attendanceDoc = await Attendance.findOne({
+        employee: empId,
+        date: attendanceDate,
+      }).session(dbSession);
+
+      const nightSession = {
+        siteId,
+        jobId: null,
+        checkIn: null,
+        checkOut: null,
+        workedHours: 0,
+        markedBy,
+        isNightShift: true,
+      };
+
+      if (!attendanceDoc) {
+        // Case A: no record for the date → create one with a single night session
+        const emp = await Employee.findById(empId)
+          .select("currentSite currentJob")
+          .session(dbSession);
+
+        if (
+          emp?.currentJob &&
+          emp.currentSite?.toString() === siteId.toString()
+        ) {
+          nightSession.jobId = emp.currentJob;
+        }
+
+        attendanceDoc = new Attendance({
+          employee: empId,
+          date: attendanceDate,
+          siteId,
+          jobId: nightSession.jobId,
+          markedBy,
+          status: "absent",
+          sessions: [nightSession],
+        });
+      } else {
+        const siteSessions = attendanceDoc.sessions.filter(
+          (s) => s.siteId.toString() === siteId.toString()
+        );
+
+        // Idempotent: skip if a night shift already exists for this site
+        if (siteSessions.some((s) => s.isNightShift)) {
+          processedCount++;
+          continue;
+        }
+
+        const emptySiteSession = siteSessions.find(
+          (s) => !s.checkIn && !s.checkOut
+        );
+
+        if (emptySiteSession) {
+          // Case B: reuse an existing empty/absent session for this site
+          emptySiteSession.isNightShift = true;
+          emptySiteSession.markedBy = emptySiteSession.markedBy || markedBy;
+        } else {
+          // Case C: existing active sessions → push a new night session
+          if (siteSessions.length > 0 && siteSessions[0].jobId) {
+            nightSession.jobId = siteSessions[0].jobId;
+          }
+          attendanceDoc.sessions.push(nightSession);
+        }
+      }
+
+      // Recalculate totals
+      const totalWorkHours = attendanceDoc.sessions.reduce(
+        (sum, s) => sum + (s.workedHours || 0),
+        0
+      );
+
+      let status = "absent";
+      if (totalWorkHours >= fullDayHours) status = "fullday";
+      else if (totalWorkHours >= halfDayHours) status = "halfday";
+
+      attendanceDoc.totalWorkHours = totalWorkHours;
+      attendanceDoc.status = status;
+      attendanceDoc.overtimeHours =
+        totalWorkHours > overtimeThreshold
+          ? totalWorkHours - overtimeThreshold
+          : 0;
+
+      // Document-level night shift detection
+      const crossed = detectCrossedMidnight(
+        attendanceDoc.sessions,
+        timezoneOffset
+      );
+      attendanceDoc.crossedMidnight = crossed;
+      attendanceDoc.shiftType = crossed ? "night" : "day";
+      attendanceDoc.markedBy = attendanceDoc.markedBy || markedBy;
+
+      await attendanceDoc.save({ session: dbSession });
+      processedCount++;
+    }
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    return res.status(200).json({
+      success: true,
+      message: `Assigned night shift to ${processedCount} employee(s)`,
+      recordsProcessed: processedCount,
+    });
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    console.error("assignNightShift error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to assign night shift",
+    });
+  }
+};
+
+
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
@@ -3139,6 +3385,9 @@ const attendanceController = {
   getMissingEmployees,
   backfillAttendance,
   getActiveSitesOverview,
+
+  getNightShiftCandidates,
+  assignNightShift,
 
 };
 

@@ -24,7 +24,7 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -1658,20 +1658,85 @@ export const deleteJob = async (req, res) => {
 export const updateSite = async (req, res) => {
   try {
     const { siteId } = req.params;
-    const { locationDetails, isCompleted, defaultCheckIn, defaultCheckOut } = req.body;
+    const {
+      locationDetails,
+      isCompleted,
+      defaultCheckIn,
+      defaultCheckOut,
+      nightDefaultCheckIn,
+      nightDefaultCheckOut,
+    } = req.body;
 
     const site = await siteModel.findById(siteId);
     if (!site) {
       return res.status(404).json({ message: "Site not found" });
     }
 
+    const workConfig = await workModel.findOne();
+    const cutoffHour = workConfig ? (workConfig.nightShiftCutoffHour || 7) : 7;
+
+    const toMinutes = (t) => {
+      if (!t) return null;
+      const [h, m] = t.split(":").map(Number);
+      if (Number.isNaN(h) || Number.isNaN(m)) return null;
+      return h * 60 + m;
+    };
+
+    // --- DAY SHIFT VALIDATION ---
+    // Resolve the effective day times (incoming value overrides stored value)
+    const dayIn = defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn;
+    const dayOut = defaultCheckOut !== undefined ? defaultCheckOut : site.defaultCheckOut;
+
     if (defaultCheckIn !== undefined && defaultCheckIn !== "") {
-      const [inH] = defaultCheckIn.split(":").map(Number);
-      const workConfig = await workModel.findOne();
-      const cutoffHour = workConfig ? workConfig.nightShiftCutoffHour : 7;
-      if (inH < cutoffHour) {
+      const inMin = toMinutes(defaultCheckIn);
+      if (inMin === null) {
+        return res.status(400).json({ message: "Invalid day shift check-in time" });
+      }
+      // Day check-in cannot fall inside the night/AM window
+      if (inMin < cutoffHour * 60) {
         return res.status(400).json({
-          message: `Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`
+          message: `Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`,
+        });
+      }
+    }
+
+    if (dayIn && dayOut) {
+      const inMin = toMinutes(dayIn);
+      const outMin = toMinutes(dayOut);
+      if (inMin === null || outMin === null) {
+        return res.status(400).json({ message: "Invalid day shift times" });
+      }
+      // defaultCheckIn < defaultCheckOut and checkout stays before midnight (same calendar day)
+      if (outMin <= inMin) {
+        return res.status(400).json({
+          message: "Day shift check-out must be after check-in (before midnight)",
+        });
+      }
+    }
+
+    // --- NIGHT SHIFT VALIDATION ---
+    // nightDefaultCheckIn must be between cutoff (07:00) and 23:59
+    if (nightDefaultCheckIn !== undefined && nightDefaultCheckIn !== "") {
+      const inMin = toMinutes(nightDefaultCheckIn);
+      if (inMin === null) {
+        return res.status(400).json({ message: "Invalid night shift check-in time" });
+      }
+      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
+        return res.status(400).json({
+          message: `Night shift check-in must be between ${cutoffHour}:00 and 23:59`,
+        });
+      }
+    }
+
+    // nightDefaultCheckOut must be between 00:00 and cutoff (07:00)
+    if (nightDefaultCheckOut !== undefined && nightDefaultCheckOut !== "") {
+      const outMin = toMinutes(nightDefaultCheckOut);
+      if (outMin === null) {
+        return res.status(400).json({ message: "Invalid night shift check-out time" });
+      }
+      if (outMin < 0 || outMin > cutoffHour * 60) {
+        return res.status(400).json({
+          message: `Night shift check-out must be between 00:00 and ${cutoffHour}:00`,
         });
       }
     }
@@ -1680,6 +1745,8 @@ export const updateSite = async (req, res) => {
     if (isCompleted !== undefined) site.isCompleted = isCompleted;
     if (defaultCheckIn !== undefined) site.defaultCheckIn = defaultCheckIn;
     if (defaultCheckOut !== undefined) site.defaultCheckOut = defaultCheckOut;
+    if (nightDefaultCheckIn !== undefined) site.nightDefaultCheckIn = nightDefaultCheckIn;
+    if (nightDefaultCheckOut !== undefined) site.nightDefaultCheckOut = nightDefaultCheckOut;
 
     await site.save();
     return res.status(200).json(site);
