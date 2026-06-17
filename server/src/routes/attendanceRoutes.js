@@ -29,6 +29,11 @@ router.get('/missing', authorizeRoles("admin", "supervisor"), attendanceControll
 
 router.post('/backfill', authorizeRoles("admin"), attendanceController.backfillAttendance)
 
+// Night shift bulk assignment
+router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getNightShiftCandidates)
+
+router.post('/night-shift/assign', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.assignNightShift)
+
 // GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
 router.get('/', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceRecords)
 

@@ -7,9 +7,6 @@ import {
   ArrowLeft,
   Trash2,
   Loader2,
-  Pencil,
-  Save,
-  X,
 } from "lucide-react"
 
 import {
@@ -178,33 +175,6 @@ function SiteDetail() {
   const [isEditingLocation, setIsEditingLocation] = useState(false)
   const [editedLocationDetails, setEditedLocationDetails] = useState("")
   const [savingLocation, setSavingLocation] = useState(false)
-
-  const [isEditingDefaults, setIsEditingDefaults] = useState(false)
-  const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
-  const [editDefaultCheckOut, setEditDefaultCheckOut] = useState("")
-  const [savingDefaults, setSavingDefaults] = useState(false)
-  const [cutoffHour, setCutoffHour] = useState(7)
-
-  useEffect(() => {
-    if (site) {
-      setEditDefaultCheckIn(site.defaultCheckIn || "")
-      setEditDefaultCheckOut(site.defaultCheckOut || "")
-    }
-  }, [site])
-
-  useEffect(() => {
-    async function fetchConfig() {
-      try {
-        const res = await api.get("/api/config")
-        if (res.data?.data?.nightShiftCutoffHour !== undefined) {
-          setCutoffHour(res.data.data.nightShiftCutoffHour)
-        }
-      } catch (err) {
-        console.error("Failed to fetch config:", err)
-      }
-    }
-    fetchConfig()
-  }, [])
 
   const isSiteActive = site?.isActive
 
@@ -483,31 +453,6 @@ function SiteDetail() {
       toast.error(error?.response?.data?.message || "Failed to update location details")
     } finally {
       setSavingLocation(false)
-    }
-  }
-
-  async function handleSaveDefaults() {
-    if (!site) return
-    if (editDefaultCheckIn) {
-      const [inH] = editDefaultCheckIn.split(":").map(Number)
-      if (inH < cutoffHour) {
-        toast.error(`Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`)
-        return
-      }
-    }
-    try {
-      setSavingDefaults(true)
-      const res = await api.patch(`/api/site/${site._id}`, {
-        defaultCheckIn: editDefaultCheckIn,
-        defaultCheckOut: editDefaultCheckOut,
-      })
-      toast.success("Default shift times updated successfully")
-      setSite(res.data)
-      setIsEditingDefaults(false)
-    } catch (error: any) {
-      toast.error(error?.response?.data?.message || "Failed to update default shift times")
-    } finally {
-      setSavingDefaults(false)
     }
   }
 
@@ -802,97 +747,6 @@ function SiteDetail() {
               </Button>
             )}
           </div>
-        </div>
-      </Card>
-
-      {/* DEFAULT SHIFT TIMES CARD */}
-      <Card className="rounded-3xl border bg-card p-8 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-2xl bg-primary/10 text-primary">
-              <Clock3 className="h-6 w-6" />
-            </div>
-            <div>
-              <h3 className="font-bold text-2xl text-foreground">Default Shift Times</h3>
-              <p className="text-sm text-muted-foreground">Used for pre-filling and auto check-out</p>
-            </div>
-          </div>
-
-          {isEditingDefaults ? (
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold text-muted-foreground uppercase">In</label>
-                <Input
-                  type="time"
-                  value={editDefaultCheckIn}
-                  onChange={(e) => setEditDefaultCheckIn(e.target.value)}
-                  className="w-32 rounded-xl"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-semibold text-muted-foreground uppercase">Out</label>
-                <Input
-                  type="time"
-                  value={editDefaultCheckOut}
-                  onChange={(e) => setEditDefaultCheckOut(e.target.value)}
-                  className="w-32 rounded-xl"
-                />
-              </div>
-              <div className="flex items-center gap-2 ml-2">
-                <Button
-                  size="sm"
-                  onClick={handleSaveDefaults}
-                  disabled={savingDefaults}
-                  className="rounded-xl flex items-center gap-1.5"
-                >
-                  {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Save
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setEditDefaultCheckIn(site?.defaultCheckIn || "")
-                    setEditDefaultCheckOut(site?.defaultCheckOut || "")
-                    setIsEditingDefaults(false)
-                  }}
-                  className="rounded-xl flex items-center gap-1.5"
-                >
-                  <X className="h-4 w-4" />
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-6">
-              <div className="flex gap-6">
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default In</div>
-                  <p className="mt-1 font-bold text-foreground">
-                    {site?.defaultCheckIn ? site.defaultCheckIn : "--:--"}
-                  </p>
-                </div>
-                <div className="border-r border-border h-8 self-center"></div>
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Default Out</div>
-                  <p className="mt-1 font-bold text-foreground">
-                    {site?.defaultCheckOut ? site.defaultCheckOut : "--:--"}
-                  </p>
-                </div>
-              </div>
-
-              {isSiteActive && (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setIsEditingDefaults(true)}
-                  className="rounded-xl border border-muted-foreground/30 hover:bg-accent h-9 w-9"
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          )}
         </div>
       </Card>
 
