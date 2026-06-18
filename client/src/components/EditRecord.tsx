@@ -45,7 +45,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, isValidNightShiftTime, isCheckInInToggleRange } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimes } from "@/lib/dateUtils"
 
 // --------------------------------------------------
 // TYPES
@@ -143,6 +143,8 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
 
   const [sessions, setSessions] =
     useState<AttendanceSession[]>([])
+
+  const [sessionErrors, setSessionErrors] = useState<Record<number, string>>({})
 
   const [saving, setSaving] =
     useState(false)
@@ -361,41 +363,21 @@ const [sessionToDelete, setSessionToDelete] =
     const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
     const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-    // 1. RULE: checkout time cannot be > cutoffHour if checkin was before cutoffHour
-    if (checkInVal && checkOutVal) {
-      const [inH] = checkInVal.split(":").map(Number)
-      const [outH, outM] = checkOutVal.split(":").map(Number)
-      if (inH >= 0 && inH < config.nightShiftCutoffHour && outH * 60 + outM > config.nightShiftCutoffHour * 60) {
-        toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) if checked in before ${config.nightShiftCutoffHour}:00 AM.`)
-        return
-      }
-    }
-
-    // 2. Auto-detect night shift
+    // Auto-detect and preserve night shift
+    const prevIsNight = updated[index].isNightShift || false
     let nextIsNight = false
     if (checkInVal) {
-      const inRange = isCheckInInToggleRange(checkInVal, config.nightShiftCutoffHour)
-      if (inRange) {
-        nextIsNight = true
+      const [inH] = checkInVal.split(":").map(Number)
+      const isDayOnlyCheckIn = inH >= config.nightShiftCutoffHour && inH < 12 // 7 AM to 12 PM
+      if (prevIsNight) {
+        nextIsNight = !isDayOnlyCheckIn
+      } else {
+        const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
+        const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
+        nextIsNight = inRange || crossesMidnight
       }
-      if (checkOutVal && isCrossMidnight(checkInVal, checkOutVal, false)) {
-        nextIsNight = true
-      }
-    }
-
-    // 3. Night shift cutoff validation
-    if (nextIsNight) {
-      if (checkInVal && !isValidNightShiftTime(checkInVal, config.nightShiftCutoffHour)) {
-        toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-        return
-      }
-      if (checkOutVal) {
-        const [outH, outM] = checkOutVal.split(":").map(Number)
-        if (outH * 60 + outM > config.nightShiftCutoffHour * 60) {
-          toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-          return
-        }
-      }
+    } else {
+      nextIsNight = prevIsNight
     }
 
     updated[index].isNightShift = nextIsNight
@@ -417,6 +399,12 @@ const [sessionToDelete, setSessionToDelete] =
       updated[index].jobId = null
     }
   }
+
+  setSessionErrors((prev) => {
+    const next = { ...prev }
+    delete next[index]
+    return next
+  })
 
   setOverlapInfo(null)
   setOverlapIndexes([])
@@ -471,39 +459,24 @@ const [sessionToDelete, setSessionToDelete] =
       return
     }
 
-    // -------------------------
-    // CHECK-IN / CHECK-OUT VALIDATION
-    // -------------------------
+    // Validate times using helper
+    let hasError = false
+    const errors: Record<number, string> = {}
+    sessions.forEach((session, index) => {
+      const inTime = toTimeValue(session.checkIn)
+      const outTime = toTimeValue(session.checkOut)
+      const err = validateSessionTimes(inTime, outTime, session.isNightShift, config.nightShiftCutoffHour)
+      if (err) {
+        errors[index] = err
+        hasError = true
+      }
+    })
 
-    const hasCheckoutWithoutCheckin =
-      sessions.some((session) => {
-        return !session.checkIn && !!session.checkOut
-      })
-
-    if (hasCheckoutWithoutCheckin) {
-      toast.error("Check-out cannot exist without check-in")
+    if (hasError) {
+      setSessionErrors(errors)
       return
     }
-
-
-    // Validate night shift times
-    for (const session of sessions) {
-      if (session.isNightShift) {
-        const inTime = toTimeValue(session.checkIn)
-        const outTime = toTimeValue(session.checkOut)
-        if (inTime && !isValidNightShiftTime(inTime, config.nightShiftCutoffHour)) {
-          toast.error(`Check-in time must be before the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-          return
-        }
-        if (outTime) {
-          const [outH, outM] = outTime.split(":").map(Number)
-          if (outH * 60 + outM > config.nightShiftCutoffHour * 60) {
-            toast.error(`Check-out time must be before or equal to the cutoff hour (${config.nightShiftCutoffHour}:00 AM) for night shifts.`)
-            return
-          }
-        }
-      }
-    }
+    setSessionErrors({})
 
     // Sort sessions chronologically by checkIn datetime. Empty checkIns go last.
     const sortedSessions = [...sessions].sort((a, b) => {
@@ -889,6 +862,12 @@ const toTimeValue = (
                         </div>
 
                       </div>
+
+                      {sessionErrors[index] && (
+                        <div className="text-red-500 text-sm font-medium mt-2">
+                          {sessionErrors[index]}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )

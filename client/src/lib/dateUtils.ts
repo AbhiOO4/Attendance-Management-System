@@ -151,3 +151,69 @@ export function isCheckInInToggleRange(checkIn: string | null, cutoffHour: numbe
   return h >= 0 && h < cutoffHour;
 }
 
+export function validateSessionTimes(
+  checkIn: string | null | undefined,
+  checkOut: string | null | undefined,
+  isNightShift: boolean = false,
+  cutoffHour: number = 7
+): string | null {
+  // 1. RULE: Check-out without check-in is NOT allowed
+  if (!checkIn && checkOut) {
+    return "Check-out time cannot be entered without a check-in time.";
+  }
+
+  // If check-in is present but no check-out, it's valid (representing an active shift)
+  if (checkIn && !checkOut) {
+    return null;
+  }
+
+  // If both are empty, it's valid (representing no shift)
+  if (!checkIn && !checkOut) {
+    return null;
+  }
+
+  const [inH, inM] = checkIn!.split(":").map(Number);
+  const [outH, outM] = checkOut!.split(":").map(Number);
+  const inMin = inH * 60 + inM;
+  const outMin = outH * 60 + outM;
+  const cutoffMin = cutoffHour * 60;
+
+  // 2. RULE (New - Early Morning Check-in):
+  // If check-in is between 12:00 AM and cutoffHour (00:00 - 07:00)
+  if (inH >= 0 && inH < cutoffHour) {
+    const isOutInCutoffRange = (outMin >= 0) && (outMin <= cutoffMin);
+    if (!isOutInCutoffRange || inMin >= outMin) {
+      return `For early morning shifts starting between 12:00 AM and ${cutoffHour}:00 AM, the check-out time must be between 12:00 AM and ${cutoffHour}:00 AM, and must be after the check-in time.`;
+    }
+    return null;
+  }
+
+  // Detect if shift crosses midnight (check-out time < check-in time)
+  const crossesMidnight = outMin < inMin;
+
+  // 3. RULE (Corrected - Through Midnight Shift):
+  // If check-out is between 12:00 AM and cutoffHour (00:00 - 07:00) and shift crosses midnight
+  if (crossesMidnight && (outMin >= 0 && outMin <= cutoffMin)) {
+    if (inH < 12) {
+      return `For night shifts crossing midnight and ending before ${cutoffHour}:00 AM, the check-in time must be 12:00 PM (noon) or later.`;
+    }
+  }
+
+  // 4. RULE (Existing - Night Shift Check-in):
+  if (isNightShift || crossesMidnight) {
+    if (inH >= cutoffHour && inH < 12) {
+      return `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
+    }
+  }
+
+  // 5. RULE (Existing - Night Shift Check-out):
+  if (isNightShift || crossesMidnight) {
+    if (outMin > cutoffMin && outH < 12) {
+      return `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
+    }
+  }
+
+  return null;
+}
+
+

@@ -69,6 +69,76 @@ function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNight
   return dt;
 }
 
+function toLocalTimeString(dateVal, offsetVal) {
+  if (!dateVal) return null;
+  const dateObj = new Date(dateVal);
+  if (isNaN(dateObj.getTime())) return null;
+  const localTime = new Date(dateObj.getTime() - offsetVal * 60 * 1000);
+  const h = String(localTime.getUTCHours()).padStart(2, '0');
+  const m = String(localTime.getUTCMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+function validateSessionTimes(checkIn, checkOut, isNightShift = false, cutoffHour = 7) {
+  // 1. RULE: Check-out without check-in is NOT allowed
+  if (!checkIn && checkOut) {
+    return "Check-out cannot exist without check-in";
+  }
+
+  // If check-in is present but no check-out, it's valid (representing an active shift)
+  if (checkIn && !checkOut) {
+    return null;
+  }
+
+  // If both are empty, it's valid (representing no shift)
+  if (!checkIn && !checkOut) {
+    return null;
+  }
+
+  const [inH, inM] = checkIn.split(":").map(Number);
+  const [outH, outM] = checkOut.split(":").map(Number);
+  const inMin = inH * 60 + inM;
+  const outMin = outH * 60 + outM;
+  const cutoffMin = cutoffHour * 60;
+
+  // 2. RULE (New - Early Morning Check-in):
+  // If check-in is between 12:00 AM and cutoffHour (00:00 - 07:00)
+  if (inH >= 0 && inH < cutoffHour) {
+    const isOutInCutoffRange = (outMin >= 0) && (outMin <= cutoffMin);
+    if (!isOutInCutoffRange || inMin >= outMin) {
+      return `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`;
+    }
+    return null;
+  }
+
+  // Detect if shift crosses midnight (check-out time < check-in time)
+  const crossesMidnight = outMin < inMin;
+
+  // 3. RULE (Corrected - Through Midnight Shift):
+  // If check-out is between 12:00 AM and cutoffHour (00:00 - 07:00) and shift crosses midnight
+  if (crossesMidnight && (outMin >= 0 && outMin <= cutoffMin)) {
+    if (inH < 12) {
+      return `For night shifts crossing midnight and ending before ${cutoffHour}:00 AM, the check-in time must be 12:00 PM (noon) or later.`;
+    }
+  }
+
+  // 4. RULE (Existing - Night Shift Check-in):
+  if (isNightShift || crossesMidnight) {
+    if (inH >= cutoffHour && inH < 12) {
+      return `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
+    }
+  }
+
+  // 5. RULE (Existing - Night Shift Check-out):
+  if (isNightShift || crossesMidnight) {
+    if (outMin > cutoffMin && outH < 12) {
+      return `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Determines if any session in the array is a night shift.
  * Checks both the isNightShift flag and auto-detects cross-midnight.
@@ -814,41 +884,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           }
         }
 
-        // RULE: checkOut time cannot be > cutoffHour if checkIn was before cutoffHour
-        if (checkIn && checkOut) {
-          const [inH, inM] = checkIn.split(":").map(Number);
-          const [outH, outM] = checkOut.split(":").map(Number);
-          if (inH >= 0 && inH < cutoffHour) {
-            if (outH * 60 + outM > cutoffHour * 60) {
-              throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`);
-            }
-          }
-          const inMin = inH * 60 + inM;
-          const outMin = outH * 60 + outM;
-          if (outMin < inMin && outMin > cutoffHour * 60) {
-            throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
-          }
-        }
-
-        // Night shift time checks: AM times must be before cutoff
-        if (sessionIsNight) {
-          if (checkOut) {
-            const [outH, outM] = checkOut.split(":").map(Number);
-            if (outH * 60 + outM > cutoffHour * 60 && outH < 12) {
-              throwValidationError(400, `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
-            }
-          }
-          if (checkIn) {
-            const [inH] = checkIn.split(":").map(Number);
-            if (inH >= cutoffHour && inH < 12) {
-              throwValidationError(400, `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`);
-            }
-          }
-        }
-
-        // RULE: checkOut without checkIn NOT allowed
-        if (!checkIn && checkOut) {
-          throwValidationError(400, "checkOut cannot exist without checkIn");
+        const boundsError = validateSessionTimes(checkIn, checkOut, sessionIsNight, cutoffHour);
+        if (boundsError) {
+          throwValidationError(400, boundsError);
         }
 
         let workedHours = 0
@@ -1714,13 +1752,6 @@ export const updateAttendance = async (req, res) => {
 
       // Validate sessions first
       for (const session of sessions) {
-        if (!session.checkIn && session.checkOut) {
-          return res.status(400).json({
-            success: false,
-            message: "Check-out cannot exist without check-in",
-          });
-        }
-
         // Determine if night shift automatically
         let sessionIsNight = false;
         if (session.checkIn) {
@@ -1738,61 +1769,14 @@ export const updateAttendance = async (req, res) => {
           }
         }
 
-        // RULE: checkOut time cannot be > cutoffHour if checkIn was before cutoffHour
-        if (session.checkIn && session.checkOut) {
-          const inDate = new Date(session.checkIn);
-          const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
-          const inH = localInTime.getUTCHours();
-          const inM = localInTime.getUTCMinutes();
-
-          const outDate = new Date(session.checkOut);
-          const localOutTime = new Date(outDate.getTime() - offsetVal * 60 * 1000);
-          const outH = localOutTime.getUTCHours();
-          const outM = localOutTime.getUTCMinutes();
-
-          if (inH >= 0 && inH < cutoffHour) {
-            if (outH * 60 + outM > cutoffHour * 60) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
-              });
-            }
-          }
-          const inMin = inH * 60 + inM;
-          const outMin = outH * 60 + outM;
-          if (outMin < inMin && outMin > cutoffHour * 60) {
-            return res.status(400).json({
-              success: false,
-              message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-            });
-          }
-        }
-
-        // Night shift time checks: AM times must be before cutoff
-        if (sessionIsNight) {
-          if (session.checkIn) {
-            const inDate = new Date(session.checkIn);
-            const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
-            const inH = localInTime.getUTCHours();
-            if (inH >= cutoffHour && inH < 12) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-              });
-            }
-          }
-          if (session.checkOut) {
-            const outDate = new Date(session.checkOut);
-            const localOutTime = new Date(outDate.getTime() - offsetVal * 60 * 1000);
-            const outH = localOutTime.getUTCHours();
-            const outM = localOutTime.getUTCMinutes();
-            if (outH * 60 + outM > cutoffHour * 60 && outH < 12) {
-              return res.status(400).json({
-                success: false,
-                message: `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`,
-              });
-            }
-          }
+        const inStr = toLocalTimeString(session.checkIn, offsetVal);
+        const outStr = toLocalTimeString(session.checkOut, offsetVal);
+        const boundsError = validateSessionTimes(inStr, outStr, sessionIsNight, cutoffHour);
+        if (boundsError) {
+          return res.status(400).json({
+            success: false,
+            message: boundsError,
+          });
         }
       }
 
@@ -2831,10 +2815,6 @@ export const backfillAttendance = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Every session must have a site selected' });
       }
 
-      if (!checkIn && checkOut) {
-        return res.status(400).json({ success: false, message: 'Check-out cannot exist without check-in' });
-      }
-
       let sessionIsNight = false;
       if (checkIn) {
         const [inH, inM] = checkIn.split(':').map(Number);
@@ -2849,34 +2829,9 @@ export const backfillAttendance = async (req, res) => {
         }
       }
 
-      // RULE: checkOut time cannot be >= cutoffHour if checkIn was before cutoffHour
-      if (checkIn && checkOut) {
-        const [inH] = checkIn.split(':').map(Number);
-        const [outH] = checkOut.split(':').map(Number);
-        if (inH >= 0 && inH < cutoffHour) {
-          if (outH >= cutoffHour) {
-            return res.status(400).json({
-              success: false,
-              message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`,
-            });
-          }
-        }
-      }
-
-      // Night shift cutoff validation
-      if (sessionIsNight) {
-        if (checkIn) {
-          const [inH] = checkIn.split(':').map(Number);
-          if (inH >= cutoffHour && inH < 12) {
-            return res.status(400).json({ success: false, message: `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.` });
-          }
-        }
-        if (checkOut) {
-          const [outH] = checkOut.split(':').map(Number);
-          if (outH >= cutoffHour && outH < 12) {
-            return res.status(400).json({ success: false, message: `Check-out time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.` });
-          }
-        }
+      const boundsError = validateSessionTimes(checkIn, checkOut, sessionIsNight, cutoffHour);
+      if (boundsError) {
+        return res.status(400).json({ success: false, message: boundsError });
       }
 
       let workedHours = 0;
@@ -2922,7 +2877,12 @@ export const backfillAttendance = async (req, res) => {
       const bEnd = b.checkOut ? new Date(b.checkOut) : bStart;
 
       if (aStart < bEnd && aEnd > bStart) {
-        const site = await Site.findById(b.siteId).select("siteName");
+        const siteId = req.query.siteId || req.body.siteId;
+        let conflicting = b;
+        if (siteId && a.siteId && a.siteId.toString() !== siteId.toString()) {
+          conflicting = a;
+        }
+        const site = await Site.findById(conflicting.siteId).select("siteName");
 
         return res.status(400).json({
           success: false,
@@ -2934,11 +2894,11 @@ export const backfillAttendance = async (req, res) => {
             sessionA: { checkIn: a.checkIn, checkOut: a.checkOut },
             sessionB: { checkIn: b.checkIn, checkOut: b.checkOut },
             conflictingSession: {
-              siteId: b.siteId,
+              siteId: conflicting.siteId,
               siteName: site ? (site.siteName || "Unknown Site") : "Unknown Site",
-              jobId: b.jobId,
-              checkIn: b.checkIn,
-              checkOut: b.checkOut,
+              jobId: conflicting.jobId,
+              checkIn: conflicting.checkIn,
+              checkOut: conflicting.checkOut,
             }
           },
         });

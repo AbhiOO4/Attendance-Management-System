@@ -5,7 +5,7 @@ import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
-import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isValidNightShiftTime, isCheckInInToggleRange } from "@/lib/dateUtils"
+import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isCheckInInToggleRange, validateSessionTimes } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -246,6 +246,7 @@ function SiteAttendance() {
       checkOut: "",
       isNightShift: false,
     })
+  const [inlineEditError, setInlineEditError] = useState<string | null>(null)
 
   const [rowSaving, setRowSaving] = useState(false)
 
@@ -665,6 +666,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setEditingRowId(record.attendanceId)
     setOverlapError(null)
     setLastClearedSaved(null)
+    setInlineEditError(null)
 
     setInlineEdit({
       checkIn: toTimeValue(session?.checkIn),
@@ -676,6 +678,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   const cancelInlineEdit = () => {
     setEditingRowId(null)
     setOverlapError(null)
+    setInlineEditError(null)
 
     setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false })
     setLastClearedSaved(null)
@@ -688,24 +691,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   ) => {
     const { checkIn, checkOut, isNightShift } = inlineEdit
 
-    if (!checkIn && checkOut) {
-      toast.error("Check-out cannot exist without check-in")
-      return
+    const validationError = validateSessionTimes(checkIn, checkOut, isNightShift, cutoffHour);
+    if (validationError) {
+      setInlineEditError(validationError);
+      return;
     }
+    setInlineEditError(null);
 
-    if (isNightShift) {
-      if (checkIn && !isValidNightShiftTime(checkIn, cutoffHour)) {
-        toast.error(`Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-        return
-      }
-      if (checkOut) {
-        const [outH, outM] = checkOut.split(":").map(Number)
-        if (outH * 60 + outM > cutoffHour * 60) {
-          toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-          return
-        }
-      }
-    }
 
     try {
       setRowSaving(true)
@@ -812,15 +804,20 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
           }
         }
 
+        const prevIsNight = sessions[sessionIndex].isNightShift || false
         let nextIsNightShift = false
         if (session.checkIn) {
-          const inRange = isCheckInInToggleRange(session.checkIn, cutoffHour)
-          if (inRange) {
-            nextIsNightShift = true
+          const [inH] = session.checkIn.split(":").map(Number)
+          const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+          if (prevIsNight) {
+            nextIsNightShift = !isDayOnlyCheckIn
+          } else {
+            const inRange = inH >= 0 && inH < cutoffHour
+            const crossesMidnight = session.checkOut ? isCrossMidnight(session.checkIn, session.checkOut, false) : false
+            nextIsNightShift = inRange || crossesMidnight
           }
-          if (session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, false)) {
-            nextIsNightShift = true
-          }
+        } else {
+          nextIsNightShift = prevIsNight
         }
 
         sessions[sessionIndex] = {
@@ -998,11 +995,20 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
             ...record,
             sessions: record.sessions.map(session => {
               if (session.checkIn === "" || session.checkIn === oldCheckIn) {
-                let isNightShift = session.isNightShift
+                const prevIsNight = session.isNightShift || false
+                let isNightShift = false
                 if (newCheckIn) {
-                  isNightShift = isCheckInInToggleRange(newCheckIn, cutoffHour)
+                  const [inH] = newCheckIn.split(":").map(Number)
+                  const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+                  if (prevIsNight) {
+                    isNightShift = !isDayOnlyCheckIn
+                  } else {
+                    const inRange = inH >= 0 && inH < cutoffHour
+                    const crossesMidnight = session.checkOut ? isCrossMidnight(newCheckIn, session.checkOut, false) : false
+                    isNightShift = inRange || crossesMidnight
+                  }
                 } else {
-                  isNightShift = false
+                  isNightShift = prevIsNight
                 }
                 const workedHours = calculateHours(newCheckIn, session.checkOut, isNightShift)
                 return {
@@ -1605,27 +1611,27 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               <Input
                                 type="time"
                                 value={inlineEdit.checkIn}
-                                onChange={(e) => {
+                               onChange={(e) => {
                                   const val = e.target.value
-                                  if (val && inlineEdit.checkOut) {
-                                    const [inH, inM] = val.split(":").map(Number)
-                                    const [outH, outM] = inlineEdit.checkOut.split(":").map(Number)
-                                    if (inH >= 0 && inH < cutoffHour && outH * 60 + outM > cutoffHour * 60) {
-                                      toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
-                                      return
+                                  const prevIsNight = inlineEdit.isNightShift || false
+                                  let isNight = false
+                                  if (val) {
+                                    const [inH] = val.split(":").map(Number)
+                                    const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+                                    if (prevIsNight) {
+                                      isNight = !isDayOnlyCheckIn
+                                    } else {
+                                      const inRange = inH >= 0 && inH < cutoffHour
+                                      const crossesMidnight = inlineEdit.checkOut ? isCrossMidnight(val, inlineEdit.checkOut, false) : false
+                                      isNight = inRange || crossesMidnight
                                     }
-                                    const inMin = inH * 60 + inM
-                                    const outMin = outH * 60 + outM
-                                    if (outMin < inMin && outMin > cutoffHour * 60) {
-                                      toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-                                      return
-                                    }
+                                  } else {
+                                    isNight = prevIsNight
                                   }
-                                  const isNight = (val && isCheckInInToggleRange(val, cutoffHour)) || (val && inlineEdit.checkOut && isCrossMidnight(val, inlineEdit.checkOut, false))
                                   setInlineEdit((prev) => ({
                                     ...prev,
                                     checkIn: val,
-                                    isNightShift: !!isNight,
+                                    isNightShift: isNight,
                                   }))
                                 }}
                               />
@@ -1641,25 +1647,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 value={inlineEdit.checkOut}
                                 onChange={(e) => {
                                   const val = e.target.value
-                                  if (inlineEdit.checkIn && val) {
-                                    const [inH, inM] = inlineEdit.checkIn.split(":").map(Number)
-                                    const [outH, outM] = val.split(":").map(Number)
-                                    if (inH >= 0 && inH < cutoffHour && outH * 60 + outM > cutoffHour * 60) {
-                                      toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
-                                      return
+                                  const prevIsNight = inlineEdit.isNightShift || false
+                                  let isNight = false
+                                  if (inlineEdit.checkIn) {
+                                    const [inH] = inlineEdit.checkIn.split(":").map(Number)
+                                    const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+                                    if (prevIsNight) {
+                                      isNight = !isDayOnlyCheckIn
+                                    } else {
+                                      const inRange = inH >= 0 && inH < cutoffHour
+                                      const crossesMidnight = val ? isCrossMidnight(inlineEdit.checkIn, val, false) : false
+                                      isNight = inRange || crossesMidnight
                                     }
-                                    const inMin = inH * 60 + inM
-                                    const outMin = outH * 60 + outM
-                                    if (outMin < inMin && outMin > cutoffHour * 60) {
-                                      toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-                                      return
-                                    }
+                                  } else {
+                                    isNight = prevIsNight
                                   }
-                                  const isNight = (inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour)) || (inlineEdit.checkIn && val && isCrossMidnight(inlineEdit.checkIn, val, false))
                                   setInlineEdit((prev) => ({
                                     ...prev,
                                     checkOut: val,
-                                    isNightShift: !!isNight,
+                                    isNightShift: isNight,
                                   }))
                                 }}
                               />
@@ -1675,6 +1681,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 <span className="text-muted-foreground">☀️ Day</span>
                               )}
                             </div>
+
+                            {inlineEditError && (
+                              <div className="text-red-500 text-xs mt-1 font-medium max-w-xs">
+                                {inlineEditError}
+                              </div>
+                            )}
 
                             <div className="flex gap-2 flex-wrap">
                               {lastClearedSaved && lastClearedSaved.attendanceId === record.attendanceId && !inlineEdit.checkIn && !inlineEdit.checkOut ? (
@@ -1877,20 +1889,6 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                     value={inlineEdit.checkIn}
                                     onChange={(e) => {
                                       const val = e.target.value
-                                      if (val && inlineEdit.checkOut) {
-                                        const [inH, inM] = val.split(":").map(Number)
-                                        const [outH, outM] = inlineEdit.checkOut.split(":").map(Number)
-                                        if (inH >= 0 && inH < cutoffHour && outH * 60 + outM > cutoffHour * 60) {
-                                          toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
-                                          return
-                                        }
-                                        const inMin = inH * 60 + inM
-                                        const outMin = outH * 60 + outM
-                                        if (outMin < inMin && outMin > cutoffHour * 60) {
-                                          toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-                                          return
-                                        }
-                                      }
                                       const isNight = (val && isCheckInInToggleRange(val, cutoffHour)) || (val && inlineEdit.checkOut && isCrossMidnight(val, inlineEdit.checkOut, false))
                                       setInlineEdit((prev) => ({
                                         ...prev,
@@ -1913,33 +1911,26 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                               {/* CHECK OUT */}
                               <TableCell>
                                 {isEditing ? (
-                                  <Input
-                                    type="time"
-                                    value={inlineEdit.checkOut}
-                                    onChange={(e) => {
-                                      const val = e.target.value
-                                      if (inlineEdit.checkIn && val) {
-                                        const [inH, inM] = inlineEdit.checkIn.split(":").map(Number)
-                                        const [outH, outM] = val.split(":").map(Number)
-                                        if (inH >= 0 && inH < cutoffHour && outH * 60 + outM > cutoffHour * 60) {
-                                          toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
-                                          return
-                                        }
-                                        const inMin = inH * 60 + inM
-                                        const outMin = outH * 60 + outM
-                                        if (outMin < inMin && outMin > cutoffHour * 60) {
-                                          toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-                                          return
-                                        }
-                                      }
-                                      const isNight = (inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour)) || (inlineEdit.checkIn && val && isCrossMidnight(inlineEdit.checkIn, val, false))
-                                      setInlineEdit((prev) => ({
-                                        ...prev,
-                                        checkOut: val,
-                                        isNightShift: !!isNight,
-                                      }))
-                                    }}
-                                  />
+                                  <div className="space-y-1">
+                                    <Input
+                                      type="time"
+                                      value={inlineEdit.checkOut}
+                                      onChange={(e) => {
+                                        const val = e.target.value
+                                        const isNight = (inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour)) || (inlineEdit.checkIn && val && isCrossMidnight(inlineEdit.checkIn, val, false))
+                                        setInlineEdit((prev) => ({
+                                          ...prev,
+                                          checkOut: val,
+                                          isNightShift: !!isNight,
+                                        }))
+                                      }}
+                                    />
+                                    {inlineEditError && (
+                                      <div className="text-red-500 text-xs mt-1 font-medium max-w-[180px] break-words">
+                                        {inlineEditError}
+                                      </div>
+                                    )}
+                                  </div>
                                 ) : (
                                   <Input
                                     type="time"
