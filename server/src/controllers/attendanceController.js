@@ -239,6 +239,81 @@ async function checkHolidayForDate(dateObj) {
   return false;
 }
 
+/**
+ * Automatically sets the check-out time of a previous session at a different site
+ * to the check-in time of the current session, if the previous session is check-in only.
+ */
+function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConfig = null) {
+  if (!Array.isArray(sessions) || sessions.length <= 1) return sessions;
+
+  // 1. Sort sessions chronologically by checkIn time. Empty check-ins go last.
+  const sorted = [...sessions].sort((a, b) => {
+    if (!a.checkIn && !b.checkIn) return 0;
+    if (!a.checkIn) return 1;
+    if (!b.checkIn) return -1;
+    return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime();
+  });
+
+  const cutoffHour = workConfig?.nightShiftCutoffHour || 7;
+  let offsetVal = -330; // default IST
+  if (timezoneOffset !== null && timezoneOffset !== undefined) {
+    const parsed = parseInt(timezoneOffset, 10);
+    if (!isNaN(parsed)) {
+      offsetVal = parsed;
+    }
+  }
+
+  // 2. Process sessions
+  for (let i = 0; i < sorted.length; i++) {
+    const current = sorted[i];
+    if (!current.checkIn) continue;
+
+    // Search backwards for the most recent session from a different site that is open
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = sorted[j];
+      if (!prev.checkIn) continue; // Skip empty check-ins
+
+      const diffSite = prev.siteId && current.siteId && prev.siteId.toString() !== current.siteId.toString();
+      const prevIsOpen = !prev.checkOut;
+
+      if (diffSite && prevIsOpen) {
+        // Set prev checkout to current checkin
+        prev.checkOut = current.checkIn;
+
+        // Recalculate worked hours
+        const inTime = new Date(prev.checkIn);
+        const outTime = new Date(prev.checkOut);
+        let workedHours = (outTime.getTime() - inTime.getTime()) / (1000 * 60 * 60);
+        if (workedHours < 0) workedHours = 0;
+        prev.workedHours = Number(workedHours.toFixed(2));
+
+        // Recalculate isNightShift for prev session
+        let sessionIsNight = prev.isNightShift || false;
+        const localInTime = new Date(inTime.getTime() - offsetVal * 60 * 1000);
+        const inH = localInTime.getUTCHours();
+        if (inH >= 0 && inH < cutoffHour) {
+          sessionIsNight = true;
+        }
+
+        const inStr = toLocalTimeString(prev.checkIn, offsetVal);
+        const outStr = toLocalTimeString(prev.checkOut, offsetVal);
+        if (inStr && outStr) {
+          const [prevInH, prevInM] = inStr.split(":").map(Number);
+          const [prevOutH, prevOutM] = outStr.split(":").map(Number);
+          if (prevOutH * 60 + prevOutM < prevInH * 60 + prevInM) {
+            sessionIsNight = true;
+          }
+        }
+        prev.isNightShift = sessionIsNight;
+
+        break; // Only close the most recent previous session
+      }
+    }
+  }
+
+  return sorted;
+}
+
 
 
 // --- ADMINS ---
@@ -1048,6 +1123,11 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       ]
 
       // -----------------------------
+      // AUTO CLOSE PREVIOUS SESSIONS
+      // -----------------------------
+      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, workConfig);
+
+      // -----------------------------
       // SORT ALL SESSIONS
       // -----------------------------
 
@@ -1606,6 +1686,8 @@ export const bulkEditAttendance = async (
     attendance,
   } = req.body;
 
+  const timezoneOffset = req.headers['x-timezone-offset'];
+
   // VALIDATION (outside transaction)
   if (
     !siteId ||
@@ -1721,6 +1803,12 @@ export const bulkEditAttendance = async (
         // IF SESSION DOESN'T EXIST, ADD IT
         attendanceDoc.sessions.push(updatedSession);
       }
+
+      // -----------------------------
+      // AUTO CLOSE PREVIOUS SESSIONS
+      // -----------------------------
+      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, workConfig);
+      attendanceDoc.sessions = closedSessions;
 
       // RECALCULATE TOTAL HOURS
       const totalWorkHours = attendanceDoc.sessions.reduce(
@@ -1972,6 +2060,11 @@ export const updateAttendance = async (req, res) => {
       } else {
         combinedSessions = processedSessions;
       }
+
+      // -----------------------------
+      // AUTO CLOSE PREVIOUS SESSIONS
+      // -----------------------------
+      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, workConfig);
 
       // -----------------------------
       // Sort by checkIn
