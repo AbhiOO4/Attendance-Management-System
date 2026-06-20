@@ -9,6 +9,7 @@ import siteModel from '../models/siteModel.js';
 import { escapeRegExp } from '../utils/escapeRegExp.js';
 import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
+import customHolidayModel from '../models/holidayModel.js';
 
 
 // --- NIGHT SHIFT HELPERS ---
@@ -200,6 +201,44 @@ function detectCrossedMidnight(sessions, timezoneOffset = null) {
     return outMinutes < inMinutes;
   });
 }
+
+/**
+ * Resolves whether a given date is a holiday (either custom public holiday or weekly holiday).
+ */
+async function checkHolidayForDate(dateObj) {
+  const targetDate = new Date(dateObj);
+  targetDate.setUTCHours(0, 0, 0, 0);
+
+  const startOfDay = new Date(targetDate);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(targetDate);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  // 1. Check CustomHoliday
+  const customHoliday = await customHolidayModel.findOne({
+    date: {
+      $gte: startOfDay,
+      $lte: endOfDay,
+    },
+  });
+
+  if (customHoliday) {
+    return true;
+  }
+
+  // 2. Check WorkSchedule / weeklyHolidays
+  const workConfig = await workModel.findOne({ type: "default" });
+  if (workConfig) {
+    const weeklyHolidays = workConfig.weeklyHolidays || [];
+    const dayName = targetDate.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase();
+    if (weeklyHolidays.includes(dayName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 
 
 // --- ADMINS ---
@@ -701,27 +740,79 @@ export const getSummary = async (req, res) => {
 
 
 export const toggleHolidayStatus = async (req, res) => {
+  const { date, isHoliday } = req.body
+
+  if (!date) {
+    return res.status(400).json({
+      message: "Date is required",
+    })
+  }
+
+  if (typeof isHoliday !== "boolean") {
+    return res.status(400).json({
+      message: "isHoliday must be a boolean",
+    })
+  }
+
+  // Create day range in UTC
+  const targetDate = new Date(date)
+  targetDate.setUTCHours(0, 0, 0, 0)
+
+  const startOfDay = new Date(targetDate)
+  startOfDay.setUTCHours(0, 0, 0, 0)
+
+  const endOfDay = new Date(targetDate)
+  endOfDay.setUTCHours(23, 59, 59, 999)
+
+  // Check weekly holiday safeguard if trying to remove holiday status
+  if (!isHoliday) {
+    try {
+      const workConfig = await workModel.findOne({ type: "default" })
+      if (workConfig) {
+        const weeklyHolidays = workConfig.weeklyHolidays || []
+        const dayName = targetDate.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase()
+        if (weeklyHolidays.includes(dayName)) {
+          return res.status(400).json({
+            success: false,
+            message: "Cannot remove weekly holidays",
+          })
+        }
+      }
+    } catch (error) {
+      console.log(error)
+      return res.status(500).json({
+        message: "Failed to update holiday status",
+      })
+    }
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { date, isHoliday } = req.body
+    // Update CustomHoliday collection
+    if (isHoliday) {
+      const existingHoliday = await customHolidayModel.findOne({
+        date: {
+          $gte: startOfDay,
+          $lte: endOfDay,
+        },
+      }).session(session)
 
-    if (!date) {
-      return res.status(400).json({
-        message: "Date is required",
-      })
+      if (!existingHoliday) {
+        await customHolidayModel.create([{
+          date: startOfDay,
+          reason: "Manual Holiday",
+        }], { session })
+      }
+    } else {
+      await customHolidayModel.deleteMany({
+        date: {
+          $gte: startOfDay,
+          $lte: endOfDay,
+        },
+      }).session(session)
     }
-
-    if (typeof isHoliday !== "boolean") {
-      return res.status(400).json({
-        message: "isHoliday must be a boolean",
-      })
-    }
-
-    // Create day range
-    const startOfDay = new Date(date)
-    startOfDay.setHours(0, 0, 0, 0)
-
-    const endOfDay = new Date(date)
-    endOfDay.setHours(23, 59, 59, 999)
 
     // Update all attendance records for that day
     const result = await Attendance.updateMany(
@@ -736,7 +827,10 @@ export const toggleHolidayStatus = async (req, res) => {
           isHoliday,
         },
       }
-    )
+    ).session(session)
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       message: isHoliday
@@ -746,6 +840,8 @@ export const toggleHolidayStatus = async (req, res) => {
       modifiedCount: result.modifiedCount,
     })
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.log(error)
 
     return res.status(500).json({
@@ -814,6 +910,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     } = workConfig
 
     const processedRecords = []
+    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
 
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
@@ -848,7 +945,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           siteId,
           jobId: jobId || null,
           markedBy,
-          isHoliday,
+          isHoliday: isHolidayResolved,
           status: "absent",
           sessions: [],
         })
@@ -1059,7 +1156,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.totalWorkHours = totalWorkHours
       attendanceDoc.status = status
       attendanceDoc.overtimeHours = overtimeHours
-      attendanceDoc.isHoliday = isHoliday
+      attendanceDoc.isHoliday = isHolidayResolved
       // Night shift detection
       const hasCrossedMidnight = detectCrossedMidnight(mergedSessions, timezoneOffset)
       attendanceDoc.crossedMidnight = hasCrossedMidnight
@@ -1565,6 +1662,7 @@ export const bulkEditAttendance = async (
     } = workConfig;
 
     const processedRecords = [];
+    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
 
     // PROCESS EACH EMPLOYEE
     for (const entry of attendance) {
@@ -1650,7 +1748,7 @@ export const bulkEditAttendance = async (
       attendanceDoc.totalWorkHours = totalWorkHours;
       attendanceDoc.status = status;
       attendanceDoc.overtimeHours = overtimeHours;
-      attendanceDoc.isHoliday = isHoliday;
+      attendanceDoc.isHoliday = isHolidayResolved;
 
       await attendanceDoc.save({ session });
 
@@ -1753,7 +1851,7 @@ export const updateAttendance = async (req, res) => {
       // Validate sessions first
       for (const session of sessions) {
         // Determine if night shift automatically
-        let sessionIsNight = false;
+        let sessionIsNight = session.isNightShift || false;
         if (session.checkIn) {
           const inDate = new Date(session.checkIn);
           const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
@@ -1795,7 +1893,7 @@ export const updateAttendance = async (req, res) => {
           }
 
           let workedHours = 0;
-          let sessionIsNight = false;
+          let sessionIsNight = session.isNightShift || false;
 
           if (session.checkIn) {
             const inDate = new Date(session.checkIn);
@@ -2647,6 +2745,18 @@ export const addSessionToAttendance = async (
       }
     }
 
+    // Check if there are any existing sessions for this site that are incomplete
+    const incompleteSession = attendance.sessions.find(
+      (s) => s.siteId.toString() === session.siteId.toString() && (!s.checkIn || !s.checkOut)
+    );
+
+    if (incompleteSession) {
+      return res.status(400).json({
+        success: false,
+        message: "Please complete check-in and check-out for the existing session at this site first.",
+      });
+    }
+
     attendance.sessions.push({
       siteId: session.siteId,
       jobId:
@@ -2925,13 +3035,15 @@ export const backfillAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Could not determine a site for this record. Add at least one session with a site.' });
     }
 
+    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
+
     const newAttendance = new Attendance({
       employee: employeeMongoId,
       date: attendanceDate,
       siteId: primarySiteId,
       jobId: builtSessions.length > 0 ? (builtSessions[0].jobId || null) : null,
       markedBy,
-      isHoliday: false,
+      isHoliday: isHolidayResolved,
       status,
       totalWorkHours,
       overtimeHours,
@@ -3146,15 +3258,21 @@ export const getNightShiftCandidates = async (req, res) => {
           )
         : [];
 
+      // Exclude employees who don't have at least one session at this site
+      if (siteSessions.length === 0) {
+        return false;
+      }
+
       // Exclude employees who already have a night shift session for this site/date
       if (siteSessions.some((s) => s.isNightShift === true)) {
         return false;
       }
 
       if (onlyEmpty) {
-        // No record, no session for this site, or only empty sessions for this site
-        if (!rec || siteSessions.length === 0) return true;
-        return siteSessions.every((s) => !s.checkIn && !s.checkOut);
+        // Has at least one session at this site that is empty or check-in-only (eligible for conversion)
+        return siteSessions.some(
+          (s) => (!s.checkIn && !s.checkOut) || (s.checkIn && !s.checkOut)
+        );
       }
 
       // showOnlyEmpty = false → every other active employee (minus night-shift ones)
@@ -3258,6 +3376,7 @@ export const assignNightShift = async (req, res) => {
           continue;
         }
 
+        // Try to find an empty session for this site first
         const emptySiteSession = siteSessions.find(
           (s) => !s.checkIn && !s.checkOut
         );
@@ -3267,11 +3386,25 @@ export const assignNightShift = async (req, res) => {
           emptySiteSession.isNightShift = true;
           emptySiteSession.markedBy = emptySiteSession.markedBy || markedBy;
         } else {
-          // Case C: existing active sessions → push a new night session
-          if (siteSessions.length > 0 && siteSessions[0].jobId) {
-            nightSession.jobId = siteSessions[0].jobId;
+          // Try to find an active session (check-in only, empty check-out) for this site
+          const activeSiteSession = siteSessions.find(
+            (s) => s.checkIn && !s.checkOut
+          );
+
+          if (activeSiteSession) {
+            // Case C: Convert check-in only session into an empty night shift session
+            activeSiteSession.checkIn = null;
+            activeSiteSession.checkOut = null;
+            activeSiteSession.workedHours = 0;
+            activeSiteSession.isNightShift = true;
+            activeSiteSession.markedBy = activeSiteSession.markedBy || markedBy;
+          } else {
+            // Case D: All sessions are completed → push a new night session
+            if (siteSessions.length > 0 && siteSessions[0].jobId) {
+              nightSession.jobId = siteSessions[0].jobId;
+            }
+            attendanceDoc.sessions.push(nightSession);
           }
-          attendanceDoc.sessions.push(nightSession);
         }
       }
 

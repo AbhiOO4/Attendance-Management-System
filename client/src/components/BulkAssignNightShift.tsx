@@ -157,12 +157,10 @@ function BulkAssignNightShift({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Moon className="h-5 w-5" />
-            Bulk Assign Night Shift
+            Assign Night Shift
           </DialogTitle>
           <DialogDescription>
-            Select employees to create empty night-shift sessions. The
-            auto check-in / check-out cron jobs fill the times using the
-            site's night defaults.
+            Select employees for night shift.
           </DialogDescription>
         </DialogHeader>
 
@@ -199,7 +197,7 @@ function BulkAssignNightShift({
               onCheckedChange={(c) => setShowOnlyEmpty(c === true)}
             />
             <Label htmlFor="onlyEmpty" className="text-sm">
-              Only employees without attendance
+              Only employees without completed attendance
             </Label>
           </div>
           <div className="text-sm text-muted-foreground">

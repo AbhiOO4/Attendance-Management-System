@@ -480,6 +480,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
 
       setAttendance(res.data.data)
 
+      // Also resolve and set the holidayReason
+      await checkHolidayStatus()
+
     } catch (error) {
       console.log(error)
     }
@@ -866,7 +869,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
           checkIn: "",
           checkOut: "",
           workedHours: 0,
-          isNightShift: false,
+          isNightShift: sessions[sessionIndex].isNightShift || false,
         }
 
         return {
@@ -920,7 +923,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setInlineEdit({
       checkIn: "",
       checkOut: "",
-      isNightShift: false,
+      isNightShift: inlineEdit.isNightShift || false,
     })
   }
 
@@ -1238,9 +1241,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 <CardTitle className="flex items-center gap-2.5 flex-wrap">
                   <span>{site?.siteName}</span>
                   <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
-                    {attendanceExists 
-                      ? `${attendance.length} ${attendance.length === 1 ? 'record' : 'records'}` 
-                      : `${draftAttendance.length} ${draftAttendance.length === 1 ? 'employee' : 'employees'}`}
+                    {attendanceExists ? (
+                      (() => {
+                        const totalPresent = attendance.filter(rec => 
+                          rec.sessions.some(s => s.checkIn)
+                        ).length;
+
+                        const dayPresent = attendance.filter(rec => 
+                          rec.sessions.some(s => s.checkIn && !s.isNightShift)
+                        ).length;
+
+                        const nightPresent = attendance.filter(rec => 
+                          rec.sessions.some(s => s.checkIn && s.isNightShift)
+                        ).length;
+
+                        return `${totalPresent} ${totalPresent === 1 ? 'Employee' : 'Employees'} Present (${dayPresent} Day • ${nightPresent} Night)`;
+                      })()
+                    ) : (
+                      `${draftAttendance.length} ${draftAttendance.length === 1 ? 'employee' : 'employees'}`
+                    )}
                   </span>
                 </CardTitle>
 
@@ -1327,7 +1346,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 title={!attendanceExists ? "Attendance records must be saved first before assigning night shifts" : undefined}
               >
                 <Moon className="h-4 w-4" />
-                Bulk Assign Night Shift
+                Assign Night Shift
               </Button>
             </div>
           </div>
@@ -1565,7 +1584,14 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                   const complete = isRecordComplete(record)
 
                   return (
-                    <Card key={record.attendanceId} className={isOverlapRow(record.employee) ? "border-red-500" : ""}>
+                    <Card
+                      key={record.attendanceId}
+                      className={
+                        (isOverlapRow(record.employee) || (isEditing && !!inlineEditError))
+                          ? "border-red-500 bg-red-50/50 dark:bg-red-950/10"
+                          : ""
+                      }
+                    >
                       <CardContent className="pt-4 space-y-3">
 
                         <div className="flex items-center justify-between gap-4">
@@ -1613,12 +1639,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 value={inlineEdit.checkIn}
                                onChange={(e) => {
                                   const val = e.target.value
-                                  const prevIsNight = inlineEdit.isNightShift || false
+                                  const originalIsNight = record.sessions[0]?.isNightShift || false
                                   let isNight = false
                                   if (val) {
                                     const [inH] = val.split(":").map(Number)
                                     const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                    if (prevIsNight) {
+                                    if (originalIsNight) {
                                       isNight = !isDayOnlyCheckIn
                                     } else {
                                       const inRange = inH >= 0 && inH < cutoffHour
@@ -1626,7 +1652,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       isNight = inRange || crossesMidnight
                                     }
                                   } else {
-                                    isNight = prevIsNight
+                                    isNight = originalIsNight
                                   }
                                   setInlineEdit((prev) => ({
                                     ...prev,
@@ -1647,12 +1673,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                 value={inlineEdit.checkOut}
                                 onChange={(e) => {
                                   const val = e.target.value
-                                  const prevIsNight = inlineEdit.isNightShift || false
+                                  const originalIsNight = record.sessions[0]?.isNightShift || false
                                   let isNight = false
                                   if (inlineEdit.checkIn) {
                                     const [inH] = inlineEdit.checkIn.split(":").map(Number)
                                     const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                    if (prevIsNight) {
+                                    if (originalIsNight) {
                                       isNight = !isDayOnlyCheckIn
                                     } else {
                                       const inRange = inH >= 0 && inH < cutoffHour
@@ -1660,7 +1686,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       isNight = inRange || crossesMidnight
                                     }
                                   } else {
-                                    isNight = prevIsNight
+                                    isNight = originalIsNight
                                   }
                                   setInlineEdit((prev) => ({
                                     ...prev,
@@ -1856,7 +1882,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                             const isLastSession = sessionIndex === sessions.length - 1
                             return (
                               <Fragment key={`${record.attendanceId}-${sessionIndex}`}>
-                                <TableRow className={isOverlapRow(record.employee) ? "bg-red-50 dark:bg-red-950/20 border-red-500" : ""}>
+                                <TableRow
+                                  className={
+                                    (isOverlapRow(record.employee) || (isEditing && !!inlineEditError))
+                                      ? "bg-red-50 dark:bg-red-950/20 border-red-500"
+                                      : ""
+                                  }
+                                >
                               {sessionIndex === 0 && (
                                 <TableCell rowSpan={sessions.length}>
                                   <div className="flex items-center justify-between gap-4">
@@ -1889,11 +1921,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                     value={inlineEdit.checkIn}
                                     onChange={(e) => {
                                       const val = e.target.value
-                                      const isNight = (val && isCheckInInToggleRange(val, cutoffHour)) || (val && inlineEdit.checkOut && isCrossMidnight(val, inlineEdit.checkOut, false))
+                                      const originalIsNight = record.sessions[0]?.isNightShift || false
+                                      let isNight = false
+                                      if (val) {
+                                        const [inH] = val.split(":").map(Number)
+                                        const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+                                        if (originalIsNight) {
+                                          isNight = !isDayOnlyCheckIn
+                                        } else {
+                                          const inRange = inH >= 0 && inH < cutoffHour
+                                          const crossesMidnight = inlineEdit.checkOut ? isCrossMidnight(val, inlineEdit.checkOut, false) : false
+                                          isNight = inRange || crossesMidnight
+                                        }
+                                      } else {
+                                        isNight = originalIsNight
+                                      }
                                       setInlineEdit((prev) => ({
                                         ...prev,
                                         checkIn: val,
-                                        isNightShift: !!isNight,
+                                        isNightShift: isNight,
                                       }))
                                     }}
                                   />
@@ -1917,11 +1963,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       value={inlineEdit.checkOut}
                                       onChange={(e) => {
                                         const val = e.target.value
-                                        const isNight = (inlineEdit.checkIn && isCheckInInToggleRange(inlineEdit.checkIn, cutoffHour)) || (inlineEdit.checkIn && val && isCrossMidnight(inlineEdit.checkIn, val, false))
+                                        const prevIsNight = inlineEdit.isNightShift || false
+                                        let isNight = false
+                                        if (inlineEdit.checkIn) {
+                                          const [inH] = inlineEdit.checkIn.split(":").map(Number)
+                                          const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
+                                          if (originalIsNight) {
+                                            isNight = !isDayOnlyCheckIn
+                                          } else {
+                                            const inRange = inH >= 0 && inH < cutoffHour
+                                            const crossesMidnight = val ? isCrossMidnight(inlineEdit.checkIn, val, false) : false
+                                            isNight = inRange || crossesMidnight
+                                          }
+                                        } else {
+                                          isNight = originalIsNight
+                                        }
                                         setInlineEdit((prev) => ({
                                           ...prev,
                                           checkOut: val,
-                                          isNightShift: !!isNight,
+                                          isNightShift: isNight,
                                         }))
                                       }}
                                     />

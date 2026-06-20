@@ -256,21 +256,12 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
       const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-      // Auto-detect and preserve night shift
-      const prevIsNight = updated[index].isNightShift || false
       let nextIsNight = false
       if (checkInVal) {
         const [inH] = checkInVal.split(":").map(Number)
-        const isDayOnlyCheckIn = inH >= config.nightShiftCutoffHour && inH < 12 // 7 AM to 12 PM
-        if (prevIsNight) {
-          nextIsNight = !isDayOnlyCheckIn
-        } else {
-          const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
-          const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
-          nextIsNight = inRange || crossesMidnight
-        }
-      } else {
-        nextIsNight = prevIsNight
+        const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
+        const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
+        nextIsNight = inRange || crossesMidnight
       }
 
       updated[index].isNightShift = nextIsNight
@@ -305,6 +296,12 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   }
 
   const addSession = () => {
+    // Prevent adding if there is any incomplete session in the list
+    const hasIncomplete = sessions.some((s) => !s.siteId || !s.checkIn || !s.checkOut)
+    if (hasIncomplete) {
+      toast.error("Please complete the existing sessions before adding a new one.")
+      return
+    }
     setSessions([
       ...sessions,
       { siteId: "", jobId: null, checkIn: null, checkOut: null, workedHours: 0 },
@@ -328,6 +325,55 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     const hasMissingSite = sessions.some((s) => !s.siteId)
     if (hasMissingSite) {
       toast.error("Every session must have a site selected")
+      return
+    }
+
+    // -------------------------
+    // SESSION COMPLETION VALIDATION
+    // -------------------------
+    const sessionsBySite: Record<string, typeof sessions> = {}
+    sessions.forEach((s) => {
+      if (s.siteId) {
+        if (!sessionsBySite[s.siteId]) {
+          sessionsBySite[s.siteId] = []
+        }
+        sessionsBySite[s.siteId].push(s)
+      }
+    })
+
+    let validationErrorMsg = ""
+    Object.keys(sessionsBySite).forEach((siteId) => {
+      const siteGroup = sessionsBySite[siteId]
+      
+      const sorted = [...siteGroup].sort((a, b) => {
+        if (!a.checkIn && !b.checkIn) return 0
+        if (!a.checkIn) return 1
+        if (!b.checkIn) return -1
+        return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
+      })
+
+      for (let i = 0; i < sorted.length; i++) {
+        const s = sorted[i]
+        const isLast = i === sorted.length - 1
+        const isEmpty = !s.checkIn && !s.checkOut
+        const isHalfFilled = s.checkIn && !s.checkOut
+
+        if (!isLast) {
+          if (isEmpty || isHalfFilled) {
+            validationErrorMsg = "All previous sessions at the same site must be fully completed (both check-in and check-out filled)."
+            break
+          }
+        } else {
+          if (sorted.length > 1 && isEmpty) {
+            validationErrorMsg = "Empty sessions are not allowed when multiple sessions exist for the same site."
+            break
+          }
+        }
+      }
+    })
+
+    if (validationErrorMsg) {
+      toast.error(validationErrorMsg)
       return
     }
 
@@ -458,7 +504,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                 <div
                   key={index}
                   className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${
-                    overlapIndexes.includes(index)
+                    (overlapIndexes.includes(index) || !!sessionErrors[index])
                       ? "border-red-500 bg-red-50 dark:bg-red-950/20"
                       : "border bg-background"
                   }`}

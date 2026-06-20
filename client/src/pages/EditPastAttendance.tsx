@@ -41,7 +41,7 @@ import {
   ChevronUp,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 
 import {
@@ -166,6 +166,7 @@ function EditPastAttendance() {
   useState<AttendanceRecord | null>(null)
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
+  const [isWeeklyHoliday, setIsWeeklyHoliday] = useState<boolean>(false)
 
   const [filters, setFilters] =
     useState<Filters>({
@@ -212,9 +213,20 @@ function EditPastAttendance() {
 
 
       // ---------------- WEEKLY HOLIDAY PRIORITY ----------------
-      if (weeklyHolidays.includes(date)) {
+      const [year, month, day] = date.split('-').map(Number)
+      const dateDay = new Date(year, month - 1, day)
+        .toLocaleDateString("en-US", {
+          weekday: "long",
+        })
+        .toLowerCase()
+
+      if (weeklyHolidays.includes(dateDay)) {
         setHolidayReason("Weekly Holiday")
+        setIsHoliday(true)
+        setIsWeeklyHoliday(true)
         return
+      } else {
+        setIsWeeklyHoliday(false)
       }
 
       // ---------------- CUSTOM HOLIDAY CHECK ----------------
@@ -229,8 +241,10 @@ function EditPastAttendance() {
 
       if (holidayRes.data.isHoliday) {
         setHolidayReason(holidayRes.data.reason)
+        setIsHoliday(true)
       } else {
         setHolidayReason("")
+        setIsHoliday(false)
       }
 
     } catch (error) {
@@ -538,17 +552,17 @@ function EditPastAttendance() {
                 </SelectContent>
               </Select>
 
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="holiday"
-                  checked={isHoliday}
-                  onCheckedChange={(checked) =>
-                    handleHolidayToggle(checked === true)
-                  }
-                />
+              {!isWeeklyHoliday && (
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    id="holiday"
+                    checked={isHoliday}
+                    onCheckedChange={handleHolidayToggle}
+                  />
 
-                <Label htmlFor="holiday">Holiday</Label>
-              </div>
+                  <Label htmlFor="holiday">Holiday</Label>
+                </div>
+              )}
 
               {isHoliday && (
                 <div className="pt-2">

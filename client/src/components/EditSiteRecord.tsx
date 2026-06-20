@@ -362,13 +362,14 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
     const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
     const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-    // Auto-detect and preserve night shift
-    const prevIsNight = updated[index].isNightShift || false
+    // Auto-detect and preserve night shift based on original session state, preventing keystroke pollution
+    const originalSession = record?.sessions?.find((s: any) => s._id === updated[index]._id)
+    const originalIsNight = originalSession?.isNightShift || false
     let nextIsNight = false
     if (checkInVal) {
       const [inH] = checkInVal.split(":").map(Number)
       const isDayOnlyCheckIn = inH >= config.nightShiftCutoffHour && inH < 12 // 7 AM to 12 PM
-      if (prevIsNight) {
+      if (originalIsNight) {
         nextIsNight = !isDayOnlyCheckIn
       } else {
         const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
@@ -376,7 +377,7 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
         nextIsNight = inRange || crossesMidnight
       }
     } else {
-      nextIsNight = prevIsNight
+      nextIsNight = originalIsNight
     }
 
     updated[index].isNightShift = nextIsNight
@@ -413,6 +414,13 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
 const addSession = async () => {
   try {
     if (!record || addingSession) return
+
+    // Check if there is any incomplete session in the current list
+    const hasIncomplete = sessions.some((s) => !s.checkIn || !s.checkOut)
+    if (hasIncomplete) {
+      toast.error("Please complete check-in and check-out for the existing session first.")
+      return
+    }
 
     setAddingSession(true)
 
@@ -463,7 +471,7 @@ const addSession = async () => {
     updated[index].checkIn = null
     updated[index].checkOut = null
     updated[index].workedHours = 0
-    updated[index].isNightShift = false
+    updated[index].isNightShift = session?.isNightShift ?? false
     setSessions(updated)
   }
 
@@ -726,10 +734,12 @@ const toTimeValue = (
                   String(session._id)
                 )
 
+              const hasError = !!sessionErrors[index]
+
               return (
                 <div
                   key={session._id || index}
-                  className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${hasOverlap
+                  className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${(hasOverlap || hasError)
                       ? "border-red-500 bg-red-50 dark:bg-red-950/20"
                       : isEditable
                         ? "border bg-background"
