@@ -1963,7 +1963,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                       value={inlineEdit.checkOut}
                                       onChange={(e) => {
                                         const val = e.target.value
-                                        const prevIsNight = inlineEdit.isNightShift || false
+                                        const originalIsNight = record.sessions[0]?.isNightShift || false
                                         let isNight = false
                                         if (inlineEdit.checkIn) {
                                           const [inH] = inlineEdit.checkIn.split(":").map(Number)
