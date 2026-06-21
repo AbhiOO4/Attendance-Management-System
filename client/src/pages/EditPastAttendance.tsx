@@ -41,6 +41,7 @@ import {
   ChevronUp,
 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
+import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 
@@ -54,7 +55,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-
+import { formatLocalTime12h } from "@/lib/dateUtils"
 
 // Add these updated interfaces
 
@@ -148,11 +149,9 @@ interface Filters {
 }
 
 function EditPastAttendance() {
-  const today = new Date()
+  const todayDateString = getCurrentTargetDateString()
 
-  const [date, setDate] = useState(today.toLocaleDateString("en-CA"))
-
-  const todayDateString = new Date().toLocaleDateString("en-CA")
+  const [date, setDate] = useState(todayDateString)
 
   const navigate = useNavigate()
 
@@ -706,33 +705,13 @@ function EditPastAttendance() {
 
                                 <TableCell>
                                   {session?.checkIn
-                                    ? new Date(
-                                      session.checkIn
-                                    ).toLocaleTimeString(
-                                      "en-IN",
-                                      {
-                                        hour:
-                                          "2-digit",
-                                        minute:
-                                          "2-digit",
-                                      }
-                                    )
+                                    ? formatLocalTime12h(session.checkIn)
                                     : "-"}
                                 </TableCell>
 
                                 <TableCell>
                                   {session?.checkOut
-                                    ? new Date(
-                                      session.checkOut
-                                    ).toLocaleTimeString(
-                                      "en-IN",
-                                      {
-                                        hour:
-                                          "2-digit",
-                                        minute:
-                                          "2-digit",
-                                      }
-                                    )
+                                    ? formatLocalTime12h(session.checkOut)
                                     : "-"}
                                 </TableCell>
 

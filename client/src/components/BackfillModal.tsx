@@ -42,7 +42,7 @@ import {
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 // --------------------------------------------------
 // TYPES
@@ -181,42 +181,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     return Number(hours.toFixed(2))
   }
 
-  const toTimeValue = (dateStr?: string | null) => {
-    if (!dateStr) return ""
-    const d = new Date(dateStr)
-    if (isNaN(d.getTime())) return ""
-    const hours = String(d.getHours()).padStart(2, "0")
-    const minutes = String(d.getMinutes()).padStart(2, "0")
-    return `${hours}:${minutes}`
-  }
 
-  const combineDateAndTime = (
-    time: string | null,
-    referenceCheckIn?: string,
-    isNightShift: boolean = false
-  ) => {
-    if (!date || !time) return null
-    const [hours, minutes] = time.split(":")
-    const d = new Date(date)
-    d.setHours(Number(hours))
-    d.setMinutes(Number(minutes))
-    d.setSeconds(0)
-    d.setMilliseconds(0)
-
-    if (isNightShift) {
-      if (Number(hours) < config.nightShiftCutoffHour) {
-        d.setDate(d.getDate() + 1)
-      }
-    } else if (referenceCheckIn) {
-      const [inH, inM] = referenceCheckIn.split(":").map(Number)
-      const inMin = inH * 60 + inM
-      const outMin = Number(hours) * 60 + Number(minutes)
-      if (outMin < inMin) {
-        d.setDate(d.getDate() + 1)
-      }
-    }
-    return d.toString()
-  }
 
   // --------------------------------------------------
   // DERIVED VALUES
@@ -267,8 +232,8 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       updated[index].isNightShift = nextIsNight
 
       // Combine date and time
-      updated[index].checkIn = checkInVal ? combineDateAndTime(checkInVal, undefined, nextIsNight) : null
-      updated[index].checkOut = checkOutVal ? combineDateAndTime(checkOutVal, checkInVal, nextIsNight) : null
+      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, nextIsNight, config.nightShiftCutoffHour) : null
+      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, nextIsNight, config.nightShiftCutoffHour) : null
       updated[index].workedHours = calculateWorkedHours(
         updated[index].checkIn,
         updated[index].checkOut
@@ -656,12 +621,12 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                   <br />
                   Check In:{" "}
                   {overlapInfo.sessionA.checkIn
-                    ? new Date(overlapInfo.sessionA.checkIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    ? formatLocalTime12h(overlapInfo.sessionA.checkIn)
                     : "-"}
                   <br />
                   Check Out:{" "}
                   {overlapInfo.sessionA.checkOut
-                    ? new Date(overlapInfo.sessionA.checkOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    ? formatLocalTime12h(overlapInfo.sessionA.checkOut)
                     : "-"}
                 </div>
                 <div>
@@ -669,12 +634,12 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                   <br />
                   Check In:{" "}
                   {overlapInfo.sessionB.checkIn
-                    ? new Date(overlapInfo.sessionB.checkIn).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    ? formatLocalTime12h(overlapInfo.sessionB.checkIn)
                     : "-"}
                   <br />
                   Check Out:{" "}
                   {overlapInfo.sessionB.checkOut
-                    ? new Date(overlapInfo.sessionB.checkOut).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    ? formatLocalTime12h(overlapInfo.sessionB.checkOut)
                     : "-"}
                 </div>
               </div>

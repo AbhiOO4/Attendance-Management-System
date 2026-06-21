@@ -5,7 +5,7 @@ import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
-import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, isCheckInInToggleRange, validateSessionTimes } from "@/lib/dateUtils"
+import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -179,23 +179,13 @@ const AbsentIndicator = () => (
 function SiteAttendance() {
   const {id} = useParams()
 
-  console.log("id", id)
-
   const navigate = useNavigate()
 
   const [cutoffHour, setCutoffHour] = useState(7)
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
-  const formattedDate = new Date().toLocaleDateString(
-    "en-IN",
-    {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    }
-  )
+  const formattedDate = formatCurrentDateLabel()
 
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
 
@@ -277,7 +267,6 @@ function SiteAttendance() {
   }
 
   const handleRecordUpdated = (updatedRecord: AttendanceRecord) => {
-    console.log(updatedRecord)
     setAttendance((prev) =>
       prev.map((record) =>
         record.attendanceId ===
@@ -392,8 +381,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   const formatConflictingTime = () => {
     if (!overlapError?.conflictingSession) return ""
     const { checkIn, checkOut } = overlapError.conflictingSession
-    const inStr = checkIn ? new Date(checkIn).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""
-    const outStr = checkOut ? new Date(checkOut).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "Present"
+    const inStr = checkIn ? formatLocalTime12h(checkIn) : ""
+    const outStr = checkOut ? formatLocalTime12h(checkOut) : "Present"
     return `${inStr} - ${outStr}`
   }
 
@@ -409,11 +398,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         configRes.data.data
           .weeklyHolidays || []
 
-      const todayDay = new Date()
-        .toLocaleDateString("en-US", {
-          weekday: "long",
-        })
-        .toLowerCase()
+      const todayDay = getCurrentTargetDayName()
 
       if (
         weeklyHolidays.includes(
@@ -611,56 +596,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     return !!session.checkIn && !!session.checkOut
   }
 
-  const toTimeValue = (
-    date?: string | null
-  ) => {
-    if (!date) return ""
 
-    const d = new Date(date)
-
-    if (isNaN(d.getTime())) return ""
-
-    const hours = String(d.getHours()).padStart(2, "0")
-
-    const minutes = String(d.getMinutes()).padStart(2, "0")
-
-    return `${hours}:${minutes}`
-  }
-
-  const combineDateAndTimeLocal = (
-    recordDate: string,
-    time: string | null,
-    referenceCheckIn?: string | null,
-    isNightShift: boolean = false
-  ): string | null => {
-    if (!recordDate || !time) return null
-
-    const [hours, minutes] = time.split(":")
-
-    const date = new Date(recordDate)
-
-    date.setHours(Number(hours))
-    date.setMinutes(Number(minutes))
-    date.setSeconds(0)
-    date.setMilliseconds(0)
-
-    if (isNightShift) {
-      // Night shift: AM times before cutoff → next day
-      if (Number(hours) < cutoffHour) {
-        date.setDate(date.getDate() + 1)
-      }
-    } else if (referenceCheckIn) {
-      // Auto cross-midnight detection
-      const [inH, inM] = referenceCheckIn.split(":").map(Number)
-      const inMin = inH * 60 + inM
-      const outMin = Number(hours) * 60 + Number(minutes)
-      if (outMin < inMin) {
-        date.setDate(date.getDate() + 1)
-      }
-    }
-
-    return date.toString()
-  }
 
    const startInlineEdit = (
     record: AttendanceRecord
@@ -719,13 +655,15 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
               record.date,
               checkIn || null,
               null,
-              isNightShift
+              isNightShift,
+              cutoffHour
             ),
             checkOut: combineDateAndTimeLocal(
               record.date,
               checkOut || null,
               checkIn || null,
-              isNightShift
+              isNightShift,
+              cutoffHour
             ),
             isNightShift,
           },

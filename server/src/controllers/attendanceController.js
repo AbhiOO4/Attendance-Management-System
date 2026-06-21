@@ -254,8 +254,15 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConf
     return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime();
   });
 
-  const cutoffHour = workConfig?.nightShiftCutoffHour || 7;
-  let offsetVal = -330; // default IST
+  let fallbackOffset = -330;
+  if (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "") {
+    const parsedFallback = parseInt(process.env.APP_TIMEZONE_OFFSET, 10);
+    if (!isNaN(parsedFallback)) {
+      fallbackOffset = parsedFallback;
+    }
+  }
+
+  let offsetVal = fallbackOffset;
   if (timezoneOffset !== null && timezoneOffset !== undefined) {
     const parsed = parseInt(timezoneOffset, 10);
     if (!isNaN(parsed)) {
@@ -936,7 +943,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
   } = req.body
 
   const markedBy = req.user?.id
-  const timezoneOffset = req.headers['x-timezone-offset']
+  const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+    ? process.env.APP_TIMEZONE_OFFSET
+    : req.headers['x-timezone-offset']
 
   // -----------------------------
   // VALIDATION (outside transaction)
@@ -1686,7 +1695,9 @@ export const bulkEditAttendance = async (
     attendance,
   } = req.body;
 
-  const timezoneOffset = req.headers['x-timezone-offset'];
+  const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+    ? process.env.APP_TIMEZONE_OFFSET
+    : req.headers['x-timezone-offset'];
 
   // VALIDATION (outside transaction)
   if (
@@ -1892,9 +1903,19 @@ export const updateAttendance = async (req, res) => {
     const { sessions, siteId: bodySiteId } = req.body;
     const { siteId: querySiteId } = req.query;
     const siteId = querySiteId || bodySiteId;
-    const timezoneOffset = req.headers['x-timezone-offset'];
+    const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+      ? process.env.APP_TIMEZONE_OFFSET
+      : req.headers['x-timezone-offset'];
 
-    let offsetVal = -330;
+    let fallbackOffset = -330;
+    if (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "") {
+      const parsedFallback = parseInt(process.env.APP_TIMEZONE_OFFSET, 10);
+      if (!isNaN(parsedFallback)) {
+        fallbackOffset = parsedFallback;
+      }
+    }
+
+    let offsetVal = fallbackOffset;
     if (timezoneOffset !== null && timezoneOffset !== undefined) {
       const parsed = parseInt(timezoneOffset, 10);
       if (!isNaN(parsed)) {
@@ -2976,7 +2997,9 @@ export const backfillAttendance = async (req, res) => {
   try {
     const { employeeMongoId, date, sessions = [] } = req.body;
     const markedBy = req.user?.id;
-    const timezoneOffset = req.headers['x-timezone-offset'];
+    const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+      ? process.env.APP_TIMEZONE_OFFSET
+      : req.headers['x-timezone-offset'];
 
     if (!employeeMongoId || !date) {
       return res.status(400).json({ success: false, message: 'employeeMongoId and date are required' });
@@ -3391,7 +3414,9 @@ export const getNightShiftCandidates = async (req, res) => {
 export const assignNightShift = async (req, res) => {
   const { siteId, date, employeeIds } = req.body;
   const markedBy = req.user?.id;
-  const timezoneOffset = req.headers["x-timezone-offset"];
+  const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+    ? process.env.APP_TIMEZONE_OFFSET
+    : req.headers["x-timezone-offset"];
 
   if (
     !siteId ||

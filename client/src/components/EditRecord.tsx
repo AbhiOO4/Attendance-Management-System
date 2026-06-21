@@ -45,7 +45,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 // --------------------------------------------------
 // TYPES
@@ -384,8 +384,8 @@ const [sessionToDelete, setSessionToDelete] =
     updated[index].isNightShift = nextIsNight
 
     // Combine date and time
-    updated[index].checkIn = checkInVal ? combineDateAndTime(checkInVal, undefined, nextIsNight) : null
-    updated[index].checkOut = checkOutVal ? combineDateAndTime(checkOutVal, checkInVal, nextIsNight) : null
+    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, config.nightShiftCutoffHour) : null
+    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, config.nightShiftCutoffHour) : null
     updated[index].workedHours = calculateWorkedHours(
       updated[index].checkIn,
       updated[index].checkOut
@@ -605,62 +605,7 @@ const [sessionToDelete, setSessionToDelete] =
   // UTIL
   // --------------------------------------------------
 
-const toTimeValue = (
-  date?: string | null
-) => {
-  if (!date) return ""
 
-  const d = new Date(date)
-
-  if (isNaN(d.getTime()))
-    return ""
-
-  const hours = String(
-    d.getHours()
-  ).padStart(2, "0")
-
-  const minutes = String(
-    d.getMinutes()
-  ).padStart(2, "0")
-
-  return `${hours}:${minutes}`
-}
-
-  const combineDateAndTime = (
-    time: string | null,
-    referenceCheckIn?: string,
-    isNightShift: boolean = false
-  ) => {
-    if (!record?.date || !time)
-      return null
-
-    const [hours, minutes] =
-      time.split(":")
-
-    const date = new Date(record.date)
-
-    date.setHours(Number(hours))
-    date.setMinutes(Number(minutes))
-    date.setSeconds(0)
-    date.setMilliseconds(0)
-
-    if (isNightShift) {
-      // Night shift: AM times before cutoff → next day
-      if (Number(hours) < config.nightShiftCutoffHour) {
-        date.setDate(date.getDate() + 1)
-      }
-    } else if (referenceCheckIn) {
-      // Cross-midnight detection
-      const [inH, inM] = referenceCheckIn.split(":").map(Number)
-      const inMin = inH * 60 + inM
-      const outMin = Number(hours) * 60 + Number(minutes)
-      if (outMin < inMin) {
-        date.setDate(date.getDate() + 1)
-      }
-    }
-
-    return date.toString()
-  }
 
   // --------------------------------------------------
   // RENDER
@@ -959,24 +904,14 @@ const toTimeValue = (
 
                   Check In:{" "}
                   {overlapInfo.sessionA.checkIn
-                    ? new Date(
-                      overlapInfo.sessionA.checkIn
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
+                    ? formatLocalTime12h(overlapInfo.sessionA.checkIn)
                     : "-"}
 
                   <br />
 
                   Check Out:{" "}
                   {overlapInfo.sessionA.checkOut
-                    ? new Date(
-                      overlapInfo.sessionA.checkOut
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
+                    ? formatLocalTime12h(overlapInfo.sessionA.checkOut)
                     : "-"}
                 </div>
 
@@ -990,24 +925,14 @@ const toTimeValue = (
 
                   Check In:{" "}
                   {overlapInfo.sessionB.checkIn
-                    ? new Date(
-                      overlapInfo.sessionB.checkIn
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
+                    ? formatLocalTime12h(overlapInfo.sessionB.checkIn)
                     : "-"}
 
                   <br />
 
                   Check Out:{" "}
                   {overlapInfo.sessionB.checkOut
-                    ? new Date(
-                      overlapInfo.sessionB.checkOut
-                    ).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
+                    ? formatLocalTime12h(overlapInfo.sessionB.checkOut)
                     : "-"}
                 </div>
               </div>

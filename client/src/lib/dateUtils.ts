@@ -3,17 +3,75 @@
  * Centralizes the "Logical Business Day" concept.
  */
 
+export const APP_OFFSET = (() => {
+  const envVal = import.meta.env.VITE_APP_TIMEZONE_OFFSET;
+  if (envVal !== undefined && envVal !== "") {
+    const parsed = parseInt(envVal, 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return -330; // Fallback to IST
+})();
+
+/**
+ * Helper to get a Date object representing the current time shifted to target timezone
+ * so that we can use UTC getters to read target local hours, date, etc.
+ */
+export function getCurrentTargetTime(): Date {
+  const now = new Date();
+  return new Date(now.getTime() - APP_OFFSET * 60 * 1000);
+}
+
+/**
+ * Returns today's calendar date (YYYY-MM-DD) in the app's configured timezone.
+ * Unlike getLogicalShiftDate, this does NOT apply the cutoff-hour rollback.
+ */
+export function getCurrentTargetDateString(): string {
+  const target = getCurrentTargetTime();
+  const y = target.getUTCFullYear();
+  const m = String(target.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(target.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Formats the current date (in the app's configured timezone) as a human-readable label.
+ * e.g., "Saturday, June 21, 2026"
+ */
+export function formatCurrentDateLabel(): string {
+  const dateStr = getCurrentTargetDateString();
+  const date = new Date(dateStr + "T12:00:00"); // noon to avoid timezone edge
+  return date.toLocaleDateString("en-IN", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+/**
+ * Returns the day-of-week name (lowercase) for the current date in the app's timezone.
+ * e.g., "saturday"
+ */
+export function getCurrentTargetDayName(): string {
+  const dateStr = getCurrentTargetDateString();
+  const date = new Date(dateStr + "T12:00:00"); // noon to avoid timezone edge
+  return date.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+}
+
 /**
  * Returns the "logical shift date" based on the cutoff hour.
  * If the current time is before the cutoff (e.g., 7 AM),
  * the portal still shows YESTERDAY's date.
  */
 export function getLogicalShiftDate(cutoffHour: number = 7): string {
-  const now = new Date();
-  if (now.getHours() < cutoffHour) {
-    now.setDate(now.getDate() - 1);
+  const target = getCurrentTargetTime();
+  if (target.getUTCHours() < cutoffHour) {
+    target.setUTCDate(target.getUTCDate() - 1);
   }
-  return now.toLocaleDateString("en-CA"); // "YYYY-MM-DD"
+  const y = target.getUTCFullYear();
+  const m = String(target.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(target.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`; // "YYYY-MM-DD"
 }
 
 /**
@@ -21,7 +79,7 @@ export function getLogicalShiftDate(cutoffHour: number = 7): string {
  * (after midnight but before cutoff), useful for UI labeling.
  */
 export function isInExtendedPeriod(cutoffHour: number = 7): boolean {
-  return new Date().getHours() < cutoffHour;
+  return getCurrentTargetTime().getUTCHours() < cutoffHour;
 }
 
 /**
@@ -90,7 +148,7 @@ export function formatLogicalDateLabel(dateStr: string): string {
 }
 
 /**
- * Combines a record date + HH:mm time string into a full Date string.
+ * Combines a record date + HH:mm time string into a full Date string using APP_OFFSET.
  * 
  * When isNightShift = true:
  *   Times < cutoffHour are placed on the next calendar day.
@@ -105,26 +163,66 @@ export function combineDateAndTime(
   cutoffHour: number = 7
 ): string | null {
   if (!time) return null;
-  const baseDate = new Date(recordDate);
-  const [hours, minutes] = time.split(":").map(Number);
-  baseDate.setHours(hours, minutes, 0, 0);
+
+  const sign = APP_OFFSET <= 0 ? "+" : "-";
+  const absMinutes = Math.abs(APP_OFFSET);
+  const hoursOffset = String(Math.floor(absMinutes / 60)).padStart(2, "0");
+  const minsOffset = String(absMinutes % 60).padStart(2, "0");
+  const offsetStr = `${sign}${hoursOffset}:${minsOffset}`;
+
+  const dateOnly = recordDate.includes("T") ? recordDate.split("T")[0] : recordDate;
+  const dt = new Date(`${dateOnly}T${time}:00${offsetStr}`);
+  const [hours] = time.split(":").map(Number);
 
   if (isNightShift) {
     // Night shift: AM times before cutoff → next day
     if (hours < cutoffHour) {
-      baseDate.setDate(baseDate.getDate() + 1);
+      dt.setDate(dt.getDate() + 1);
     }
   } else if (referenceCheckIn) {
     // Auto cross-midnight detection
     const [inH, inM] = referenceCheckIn.split(":").map(Number);
     const inMinutes = inH * 60 + inM;
-    const outMinutes = hours * 60 + minutes;
+    const outMinutes = hours * 60 + (parseInt(time.split(":")[1]) || 0);
     if (outMinutes < inMinutes) {
-      baseDate.setDate(baseDate.getDate() + 1);
+      dt.setDate(dt.getDate() + 1);
     }
   }
 
-  return baseDate.toISOString();
+  return dt.toISOString();
+}
+
+/**
+ * Formats a Date object or ISO string to HH:mm in the app's timezone.
+ */
+export function toLocalTimeString(dateVal?: string | Date | null): string {
+  if (!dateVal) return "";
+  const dateObj = new Date(dateVal);
+  if (isNaN(dateObj.getTime())) return "";
+
+  // Shift UTC time to target local time
+  const localTime = new Date(dateObj.getTime() - APP_OFFSET * 60 * 1000);
+  const hours = String(localTime.getUTCHours()).padStart(2, "0");
+  const minutes = String(localTime.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+/**
+ * Formats a Date object or ISO string to "hh:mm AM/PM" in the app's timezone.
+ */
+export function formatLocalTime12h(dateVal?: string | Date | null): string {
+  if (!dateVal) return "";
+  const dateObj = new Date(dateVal);
+  if (isNaN(dateObj.getTime())) return "";
+
+  // Shift UTC time to target local time
+  const localTime = new Date(dateObj.getTime() - APP_OFFSET * 60 * 1000);
+  const rawHours = localTime.getUTCHours();
+  const minutes = String(localTime.getUTCMinutes()).padStart(2, "0");
+  const ampm = rawHours >= 12 ? "PM" : "AM";
+  const hours = rawHours % 12 || 12;
+  const hoursStr = String(hours).padStart(2, "0");
+  return `${hoursStr}:${minutes} ${ampm}`;
 }
 
 /**

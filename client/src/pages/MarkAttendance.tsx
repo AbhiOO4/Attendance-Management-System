@@ -1,6 +1,6 @@
 import { api } from "@/lib/api"
 import { useEffect, useMemo, useState } from "react"
-import { getLogicalShiftDate, isInExtendedPeriod, formatLogicalDateLabel } from "@/lib/dateUtils"
+import { getLogicalShiftDate, isInExtendedPeriod, formatLogicalDateLabel, formatCurrentDateLabel } from "@/lib/dateUtils"
 import toast from "react-hot-toast"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -34,12 +34,7 @@ function MarkAttendance() {
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
-  const formattedDate = new Date().toLocaleDateString("en-IN", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  })
+  const formattedDate = formatCurrentDateLabel()
 
   const fetchSites = async (targetDate: string = today) => {
     try {

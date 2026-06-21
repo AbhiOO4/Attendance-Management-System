@@ -1,5 +1,6 @@
 
 import { api } from "@/lib/api"
+import { formatLocalTime12h } from "@/lib/dateUtils"
 
 import ExcelJS from "exceljs"
 import { saveAs } from "file-saver"
@@ -317,31 +318,11 @@ function EmployeeAttendanceDetail() {
                   "-",
 
                   session?.checkIn
-                    ? new Date(
-                      session.checkIn
-                    ).toLocaleTimeString(
-                      "en-IN",
-                      {
-                        hour:
-                          "2-digit",
-                        minute:
-                          "2-digit",
-                      }
-                    )
+                    ? formatLocalTime12h(session.checkIn)
                     : "-",
 
                   session?.checkOut
-                    ? new Date(
-                      session.checkOut
-                    ).toLocaleTimeString(
-                      "en-IN",
-                      {
-                        hour:
-                          "2-digit",
-                        minute:
-                          "2-digit",
-                      }
-                    )
+                    ? formatLocalTime12h(session.checkOut)
                     : "-",
 
                   session?.workedHours ??
@@ -768,33 +749,13 @@ function EmployeeAttendanceDetail() {
 
                               <TableCell>
                                 {session?.checkIn
-                                  ? new Date(
-                                    session.checkIn
-                                  ).toLocaleTimeString(
-                                    "en-IN",
-                                    {
-                                      hour:
-                                        "2-digit",
-                                      minute:
-                                        "2-digit",
-                                    }
-                                  )
+                                  ? formatLocalTime12h(session.checkIn)
                                   : "-"}
                               </TableCell>
 
                               <TableCell>
                                 {session?.checkOut
-                                  ? new Date(
-                                    session.checkOut
-                                  ).toLocaleTimeString(
-                                    "en-IN",
-                                    {
-                                      hour:
-                                        "2-digit",
-                                      minute:
-                                        "2-digit",
-                                    }
-                                  )
+                                  ? formatLocalTime12h(session.checkOut)
                                   : "-"}
                               </TableCell>
 

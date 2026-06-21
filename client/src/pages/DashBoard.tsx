@@ -12,6 +12,7 @@ import {
 } from "react-router-dom"
 
 import { api } from "@/lib/api"
+import { getLogicalShiftDate } from "@/lib/dateUtils"
 
 import { Card } from "@/components/ui/card"
 
@@ -97,9 +98,7 @@ function DashBoard() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const isSupervisor = user?.role === "supervisor"
-  const today = new Date()
-    .toISOString()
-    .split("T")[0]
+  const today = getLogicalShiftDate()
 
   const [date, setDate] =
     useState(today)
