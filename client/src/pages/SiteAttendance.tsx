@@ -40,6 +40,7 @@ import {
   Clock3,
   Undo,
   Moon,
+  Sun,
 } from "lucide-react"
 
 interface Employee {
@@ -1217,6 +1218,49 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     )
   }
 
+  // Calculate attendance statistics
+  const stats = (() => {
+    const records = attendanceExists ? attendance : draftAttendance;
+    const totalAssigned = records.length;
+
+    // Filter to sessions belonging to this site
+    // An employee is "present" if they have at least one session on this site with a check-in filled.
+    const presentRecords = records.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+    );
+    const totalPresent = presentRecords.length;
+
+    // Classify each assigned employee as Day Shift or Night Shift.
+    // If the employee's active session for this site is a night shift session, they are Night Shift.
+    // Otherwise, they are Day Shift.
+    const dayShiftAssigned = records.filter(rec =>
+      !rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
+    );
+    const nightShiftAssigned = records.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
+    );
+
+    const totalDayShift = dayShiftAssigned.length;
+    const totalNightShift = nightShiftAssigned.length;
+
+    const dayShiftPresent = dayShiftAssigned.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+    ).length;
+
+    const nightShiftPresent = nightShiftAssigned.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+    ).length;
+
+    return {
+      totalAssigned,
+      totalPresent,
+      totalDayShift,
+      totalNightShift,
+      dayShiftPresent,
+      nightShiftPresent,
+    };
+  })();
+
   return (
     <div className="space-y-6 p-6">
 
@@ -1241,25 +1285,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                 <CardTitle className="flex items-center gap-2.5 flex-wrap">
                   <span>{site?.siteName}</span>
                   <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
-                    {attendanceExists ? (
-                      (() => {
-                        const totalPresent = attendance.filter(rec => 
-                          rec.sessions.some(s => s.checkIn)
-                        ).length;
-
-                        const dayPresent = attendance.filter(rec => 
-                          rec.sessions.some(s => s.checkIn && !s.isNightShift)
-                        ).length;
-
-                        const nightPresent = attendance.filter(rec => 
-                          rec.sessions.some(s => s.checkIn && s.isNightShift)
-                        ).length;
-
-                        return `${totalPresent} ${totalPresent === 1 ? 'Employee' : 'Employees'} Present (${dayPresent} Day • ${nightPresent} Night)`;
-                      })()
-                    ) : (
-                      `${draftAttendance.length} ${draftAttendance.length === 1 ? 'employee' : 'employees'}`
-                    )}
+                    {stats.totalPresent} / {stats.totalAssigned} Present
                   </span>
                 </CardTitle>
 
@@ -1272,6 +1298,30 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                     {site.locationDetails}
                   </p>
                 )}
+
+                {/* Day / Night Shift Stats: Slim, mobile-responsive vertical layout */}
+                <div className="mt-2.5 space-y-1 text-xs">
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <Sun className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                    <span>
+                      Day Shift:{" "}
+                      <strong className="text-foreground font-semibold">
+                        {stats.dayShiftPresent} / {stats.totalDayShift}
+                      </strong>{" "}
+                      present
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <Moon className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                    <span>
+                      Night Shift:{" "}
+                      <strong className="text-foreground font-semibold">
+                        {stats.nightShiftPresent} / {stats.totalNightShift}
+                      </strong>{" "}
+                      present
+                    </span>
+                  </div>
+                </div>
               </div>
 
             </div>
