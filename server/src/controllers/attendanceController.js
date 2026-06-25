@@ -270,6 +270,11 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConf
     }
   }
 
+  if (!workConfig || workConfig.nightShiftCutoffHour === undefined || workConfig.nightShiftCutoffHour === null) {
+    throw new Error("Work schedule configuration nightShiftCutoffHour is required.");
+  }
+  const cutoffHour = workConfig.nightShiftCutoffHour;
+
   // 2. Process sessions
   for (let i = 0; i < sorted.length; i++) {
     const current = sorted[i];
@@ -1049,7 +1054,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
-        const cutoffHour = workConfig.nightShiftCutoffHour || 7
+        const cutoffHour = workConfig.nightShiftCutoffHour
 
         let sessionIsNight = false;
         if (checkIn) {
@@ -1328,6 +1333,7 @@ export const getSiteAttendance = async (req, res) => {
       {
         $match: {
           date: { $gte: start, $lte: end },
+          "sessions.siteId": siteObjectId
         },
       },
 
@@ -1955,7 +1961,7 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
-      const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+      const cutoffHour = workConfig.nightShiftCutoffHour;
 
       // Validate sessions first
       for (const session of sessions) {
@@ -3025,7 +3031,7 @@ export const backfillAttendance = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Work schedule configuration not found' });
     }
 
-    const { fullDayHours, halfDayHours, overtimeThreshold, nightShiftCutoffHour: cutoffHour = 7 } = workConfig;
+    const { fullDayHours, halfDayHours, overtimeThreshold, nightShiftCutoffHour: cutoffHour } = workConfig;
 
     // Validate and build sessions
     if (!Array.isArray(sessions)) {

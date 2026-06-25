@@ -20,11 +20,11 @@ router.use(verifyToken)
 
 router.get('/', authorizeRoles("admin","supervisor"), empController.getAllEmployees)// 
 
-router.post('/', authorizeRoles("admin"), employeeValidation, empController.addEmployee)// 
+router.post('/', authorizeRoles("admin", "supervisor"), employeeValidation, empController.addEmployee)// 
 
 router.get('/Supervisors', authorizeRoles("admin"), empController.getSupervisors)//
 
-router.get('/jobTitles', authorizeRoles('admin'), empController.getJobTitles)
+router.get('/jobTitles', authorizeRoles('admin', 'supervisor'), empController.getJobTitles)
 
 router.post('/jobTitles', authorizeRoles('admin'), empController.addJobTitle)
 

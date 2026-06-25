@@ -30,7 +30,7 @@ export const requireSiteAccess = async (req, res, next) => {
   }
 
   try {
-    const siteId = req.params.siteId || req.params.id || req.body.siteId || req.query.siteId;
+    const siteId = req.params?.siteId || req.params?.id || req.body?.siteId || req.query?.siteId;
     if (!siteId) {
       return res.status(400).json({ success: false, message: "Site ID is required" });
     }

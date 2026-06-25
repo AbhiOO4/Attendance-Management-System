@@ -38,6 +38,6 @@ router.delete("/job/:jobId", authorizeRoles("admin"), siteController.deleteJob)
 router.post('/:siteId/add-job', authorizeRoles("admin"), siteController.addJob)
 router.delete('/job/:jobId/remove-employee', authorizeRoles("admin"), siteController.removeEmployeeFromJob)
 router.post('/job/:jobId/add-employee', authorizeRoles("admin"), siteController.addEmployeeToJob)
-router.patch('/:siteId', authorizeRoles("admin"), siteController.updateSite)
+router.patch('/:siteId', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.updateSite)
 
 export default router

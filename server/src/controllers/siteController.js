@@ -8,6 +8,7 @@ import mongoose from 'mongoose'
 import { json } from 'express'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
+import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 
 
 //Admin
@@ -1665,11 +1666,20 @@ export const updateSite = async (req, res) => {
       defaultCheckOut,
       nightDefaultCheckIn,
       nightDefaultCheckOut,
+      updateTodayRecords,
     } = req.body;
 
     const site = await siteModel.findById(siteId);
     if (!site) {
       return res.status(404).json({ message: "Site not found" });
+    }
+
+    // Supervisor site-access check: supervisors can only update their assigned site
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== siteId.toString()) {
+        return res.status(403).json({ message: "Forbidden: Access denied to this site" });
+      }
     }
 
     const workConfig = await workModel.findOne();
@@ -1741,6 +1751,14 @@ export const updateSite = async (req, res) => {
       }
     }
 
+    // Capture previous default values BEFORE updating
+    const prevDefaults = {
+      defaultCheckIn: site.defaultCheckIn || '',
+      defaultCheckOut: site.defaultCheckOut || '',
+      nightDefaultCheckIn: site.nightDefaultCheckIn || '',
+      nightDefaultCheckOut: site.nightDefaultCheckOut || '',
+    };
+
     if (locationDetails !== undefined) site.locationDetails = locationDetails;
     if (isCompleted !== undefined) site.isCompleted = isCompleted;
     if (defaultCheckIn !== undefined) site.defaultCheckIn = defaultCheckIn;
@@ -1749,6 +1767,42 @@ export const updateSite = async (req, res) => {
     if (nightDefaultCheckOut !== undefined) site.nightDefaultCheckOut = nightDefaultCheckOut;
 
     await site.save();
+
+    // Propagate changes to today's attendance records if requested
+    if (updateTodayRecords) {
+      const newDefaults = {
+        defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : prevDefaults.defaultCheckIn,
+        defaultCheckOut: defaultCheckOut !== undefined ? defaultCheckOut : prevDefaults.defaultCheckOut,
+        nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : prevDefaults.nightDefaultCheckIn,
+        nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : prevDefaults.nightDefaultCheckOut,
+      };
+
+      try {
+        const propagation = await propagateDefaultChanges(
+          site,
+          prevDefaults,
+          newDefaults,
+          workConfig
+        );
+
+        return res.status(200).json({
+          ...site.toObject(),
+          propagation,
+        });
+      } catch (propagationError) {
+        console.error('Error propagating default changes:', propagationError);
+        // Site was already saved successfully, return it with a propagation error note
+        return res.status(200).json({
+          ...site.toObject(),
+          propagation: {
+            updated: 0,
+            skipped: [],
+            error: 'Failed to propagate changes to attendance records',
+          },
+        });
+      }
+    }
+
     return res.status(200).json(site);
   } catch (error) {
     console.error(error);

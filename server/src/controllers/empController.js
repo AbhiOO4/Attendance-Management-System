@@ -4,6 +4,8 @@ import jobTitleModel from '../models/jobTitleModel.js';
 import userModel from '../models/userModel.js'
 import mongoose from 'mongoose'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
+import AttendanceLock from '../models/lockModel.js'
+import attendanceModel from '../models/attendanceModel.js'
 
 //Admin
 
@@ -19,9 +21,14 @@ export const getAllEmployees = async (req, res) => {
       page,
       limit,
       notSupervisor = "false",
+      employmentType,
     } = req.query;
 
     let filter = {};
+
+    if (employmentType) {
+      filter.employmentType = employmentType;
+    }
 
     if (notSupervisor === "true") {
       filter.$or = [
@@ -56,7 +63,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType"
       )
       .populate("currentJob", "name") // 👈 add this
       .sort({ name: 1 });
@@ -97,11 +104,55 @@ export const getAllEmployees = async (req, res) => {
 
 // POST /api/employees
 export const addEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const newEmployee = new empModel(req.body);
-    const savedEmp = await newEmployee.save();
+    const savedEmp = await newEmployee.save({ session });
+
+    if (savedEmp.employmentType === 'temporary' && savedEmp.currentSite) {
+      const siteId = savedEmp.currentSite;
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      const attendanceLock = await AttendanceLock.findOne({
+        siteId,
+        date: today,
+        isLocked: true,
+      }).session(session);
+
+      if (attendanceLock) {
+        const markedBy = req.user?.id || null;
+        await attendanceModel.create([{
+          employee: savedEmp._id,
+          siteId,
+          jobId: null,
+          markedBy,
+          date: today,
+          status: "absent",
+          isHoliday: false,
+          totalWorkHours: 0,
+          overtimeHours: 0,
+          sessions: [
+            {
+              siteId,
+              jobId: null,
+              checkIn: null,
+              checkOut: null,
+              workedHours: 0,
+              markedBy,
+            },
+          ],
+        }], { session });
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
     res.status(201).json(savedEmp);
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     if (error.code === 11000) {
       return res.status(409).json({
         message: "Conflict: Employee ID already exists in the system."

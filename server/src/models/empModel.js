@@ -50,6 +50,12 @@ const employeeSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+
+  employmentType: {
+    type: String,
+    enum: ['permanent', 'temporary'],
+    default: 'permanent'
   }
 
 }, {

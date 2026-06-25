@@ -1,10 +1,6 @@
-import { useState } from "react"
-import { useEffect } from "react"
-
-
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import SearchableSelect from "./SearchableSelect"
-
 import {
   Dialog,
   DialogContent,
@@ -12,23 +8,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
-
-interface Site {
-  _id: string
-  siteName: string
-}
 
 type NewEmployee = {
   name: string
@@ -45,22 +27,24 @@ type JobTitle = {
 }
 
 interface Props {
-  onAdd: ( newEmployee: NewEmployee ) => Promise<void>
-  sites: Site []
+  onAdd: (newEmployee: NewEmployee) => Promise<void>
+  assignedSiteId: string
 }
 
-function AddEmployee({ onAdd, sites }: Props) {
+function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
   const [open, setOpen] = useState(false)
-
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
-
-  const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0, employmentType: "permanent"})
+  const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType">>({
+    name: "",
+    employeeId: "",
+    jobTitle: "",
+    monthlySalary: 0,
+  })
   const [salaryInput, setSalaryInput] = useState("")
 
   const fetchTitles = async () => {
     try {
       const res = await api.get<JobTitle[]>('/api/employees/jobTitles')
-      console.log(res.data)
       setJobTitles(res.data)
     } catch (error) {
       console.log(error)
@@ -68,7 +52,6 @@ function AddEmployee({ onAdd, sites }: Props) {
   }
 
   const handleSubmit = async () => {
-
     if (!formData.name.trim()) {
       toast.error("Name is required")
       return
@@ -92,19 +75,18 @@ function AddEmployee({ onAdd, sites }: Props) {
 
     await onAdd({
       ...formData,
+      currentSite: assignedSiteId,
       monthlySalary: salary,
+      employmentType: "temporary",
     })
 
     setFormData({
       name: "",
       employeeId: "",
       jobTitle: "",
-      currentSite: " ",
       monthlySalary: 0,
-      employmentType: "permanent",
     })
     setSalaryInput("")
-
     setOpen(false)
   }
 
@@ -118,14 +100,14 @@ function AddEmployee({ onAdd, sites }: Props) {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button>
-          Add Employee
+          Add Hired Worker
         </Button>
       </DialogTrigger>
 
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            Add Employee
+            Add Hired Worker
           </DialogTitle>
         </DialogHeader>
 
@@ -164,51 +146,6 @@ function AddEmployee({ onAdd, sites }: Props) {
             placeholder="Select Job Title"
           />
 
-          <Select
-            value={formData.currentSite}
-            onValueChange={(value) => setFormData({
-              ...formData,
-              currentSite: value
-            })}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Assign Site" />
-            </SelectTrigger>
-
-            <SelectContent>
-              <SelectItem value=" ">
-                Not Assigned
-              </SelectItem>
-
-              {sites.map((site) => (
-                <SelectItem
-                  key={site._id}
-                  value={site._id}
-                >
-                  {site.siteName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
-            value={formData.employmentType}
-            onValueChange={(value) => setFormData({
-              ...formData,
-              employmentType: value as "permanent" | "temporary"
-            })}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Employment Type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="permanent">Permanent</SelectItem>
-              <SelectItem value="temporary">Temporary</SelectItem>
-            </SelectContent>
-          </Select>
-
-
-
           <Input
             type="number"
             step="any"
@@ -221,7 +158,7 @@ function AddEmployee({ onAdd, sites }: Props) {
             className="w-full"
             onClick={handleSubmit}
           >
-            Add Employee
+            Add Worker
           </Button>
         </div>
       </DialogContent>
@@ -229,4 +166,4 @@ function AddEmployee({ onAdd, sites }: Props) {
   )
 }
 
-export default AddEmployee
+export default AddTemporaryWorker

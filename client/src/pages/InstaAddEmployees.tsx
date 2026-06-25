@@ -85,6 +85,8 @@ interface Employee {
         _id: string
         name: string
     } | null
+
+    employmentType?: 'permanent' | 'temporary'
 }
 
 interface EmployeeResponse {
@@ -455,6 +457,11 @@ function InstaAddEmployees() {
                                                                 Supervisor
                                                             </Badge>
                                                         )}
+                                                        {employee.employmentType === 'temporary' && (
+                                                            <Badge variant="secondary" className="text-[10px] font-medium py-0 px-2 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30">
+                                                                Temporary
+                                                            </Badge>
+                                                        )}
                                                     </div>
                                                 </div>
                                                 <Button
@@ -515,6 +522,11 @@ function InstaAddEmployees() {
                                                                 {employee.user && (
                                                                     <Badge variant="secondary" className="ml-2">
                                                                         Supervisor
+                                                                    </Badge>
+                                                                )}
+                                                                {employee.employmentType === 'temporary' && (
+                                                                    <Badge variant="secondary" className="ml-2 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30">
+                                                                        Temporary
                                                                     </Badge>
                                                                 )}
                                                             </div>
@@ -625,6 +637,11 @@ function InstaAddEmployees() {
                                             {selectedEmployee.user && (
                                                 <Badge variant="secondary" className="bg-secondary/80 text-secondary-foreground text-[10px] font-medium py-0 px-1.5 h-4">
                                                     Supervisor
+                                                </Badge>
+                                            )}
+                                            {selectedEmployee.employmentType === 'temporary' && (
+                                                <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] font-medium py-0 px-1.5 h-4">
+                                                    Temporary
                                                 </Badge>
                                             )}
                                         </h3>

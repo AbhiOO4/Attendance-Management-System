@@ -4,6 +4,7 @@ import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import BulkAssignNightShift from "@/components/BulkAssignNightShift"
+import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
 import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
@@ -248,6 +249,12 @@ function SiteAttendance() {
   const [editNightDefaultCheckOut, setEditNightDefaultCheckOut] = useState("")
   const [savingDefaults, setSavingDefaults] = useState(false)
 
+  // Update defaults dialog state
+  const [updateDefaultsDialogOpen, setUpdateDefaultsDialogOpen] = useState(false)
+  const [pendingDefaultChanges, setPendingDefaultChanges] = useState<DefaultChange[]>([])
+  const [skippedEmployeeIds, setSkippedEmployeeIds] = useState<Set<string>>(new Set())
+  const [skippedReasons, setSkippedReasons] = useState<Map<string, string>>(new Map())
+
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
 
   useEffect(() => {
@@ -308,7 +315,7 @@ function SiteAttendance() {
       jobTitle: "",
     })
 
-const initializeAttendanceFromEmployees = async (siteData: Site) => {
+const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cutoffHour) => {
     try {
       const cached = localStorage.getItem(`attendance_draft_${id}_${today}`)
       if (cached) {
@@ -330,7 +337,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
           const defaultIn = siteData.defaultCheckIn || ""
           let isNightShift = false
           if (defaultIn) {
-            isNightShift = isCheckInInToggleRange(defaultIn, cutoffHour)
+            isNightShift = isCheckInInToggleRange(defaultIn, cutoffVal)
           }
           return {
             employee: {
@@ -876,44 +883,36 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     setLastClearedSaved(null)
   }
 
-  const handleSaveDefaults = async () => {
+  /**
+   * Detect which default shift time fields have actually changed.
+   * Returns an array of DefaultChange objects for the confirmation dialog.
+   */
+  const detectDefaultChanges = (): DefaultChange[] => {
+    if (!site) return []
+    const changes: DefaultChange[] = []
+
+    const fieldMap: Array<{ key: string; label: string; editVal: string; siteVal: string }> = [
+      { key: "defaultCheckIn", label: "Day Shift Check-in", editVal: editDefaultCheckIn, siteVal: site.defaultCheckIn || "" },
+      { key: "defaultCheckOut", label: "Day Shift Check-out", editVal: editDefaultCheckOut, siteVal: site.defaultCheckOut || "" },
+      { key: "nightDefaultCheckIn", label: "Night Shift Check-in", editVal: editNightDefaultCheckIn, siteVal: site.nightDefaultCheckIn || "" },
+      { key: "nightDefaultCheckOut", label: "Night Shift Check-out", editVal: editNightDefaultCheckOut, siteVal: site.nightDefaultCheckOut || "" },
+    ]
+
+    for (const { label, editVal, siteVal } of fieldMap) {
+      // Only count as a change if old was non-empty, new is non-empty, and they differ
+      if (siteVal && editVal && siteVal !== editVal) {
+        changes.push({ field: label, oldValue: siteVal, newValue: editVal })
+      }
+    }
+
+    return changes
+  }
+
+  /**
+   * Core save logic — called after user decision on whether to propagate.
+   */
+  const executeSaveDefaults = async (updateTodayRecords: boolean) => {
     if (!site) return
-
-    const toMinutes = (t: string) => {
-      const [h, m] = t.split(":").map(Number)
-      return h * 60 + m
-    }
-
-    // --- DAY SHIFT VALIDATION ---
-    if (editDefaultCheckIn) {
-      const [inH] = editDefaultCheckIn.split(":").map(Number)
-      if (inH < cutoffHour) {
-        toast.error(`Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`)
-        return
-      }
-    }
-    if (editDefaultCheckIn && editDefaultCheckOut) {
-      if (toMinutes(editDefaultCheckOut) <= toMinutes(editDefaultCheckIn)) {
-        toast.error("Day shift check-out must be after check-in (before midnight)")
-        return
-      }
-    }
-
-    // --- NIGHT SHIFT VALIDATION ---
-    if (editNightDefaultCheckIn) {
-      const inMin = toMinutes(editNightDefaultCheckIn)
-      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
-        toast.error(`Night shift check-in must be between ${cutoffHour}:00 and 23:59`)
-        return
-      }
-    }
-    if (editNightDefaultCheckOut) {
-      const outMin = toMinutes(editNightDefaultCheckOut)
-      if (outMin < 0 || outMin > cutoffHour * 60) {
-        toast.error(`Night shift check-out must be between 00:00 and ${cutoffHour}:00`)
-        return
-      }
-    }
 
     try {
       setSavingDefaults(true)
@@ -922,10 +921,47 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         defaultCheckOut: editDefaultCheckOut,
         nightDefaultCheckIn: editNightDefaultCheckIn,
         nightDefaultCheckOut: editNightDefaultCheckOut,
+        updateTodayRecords,
       })
 
       const updatedSite = res.data
-      toast.success("Default shift times updated successfully")
+
+      // Handle propagation results
+      if (updateTodayRecords && updatedSite.propagation) {
+        const { updated, skipped, error } = updatedSite.propagation
+
+        if (error) {
+          toast.error(error)
+        } else if (skipped && skipped.length > 0) {
+          toast.success(`Updated ${updated} record(s). ${skipped.length} record(s) skipped.`)
+
+          // Highlight skipped records
+          const newSkippedIds = new Set<string>()
+          const newSkippedReasons = new Map<string, string>()
+          for (const s of skipped) {
+            newSkippedIds.add(s.employeeId)
+            const reasonLabel = s.reason === 'overlap'
+              ? 'Skipped due to session overlap'
+              : 'Skipped due to invalid worked hours'
+            newSkippedReasons.set(s.employeeId, reasonLabel)
+          }
+          setSkippedEmployeeIds(newSkippedIds)
+          setSkippedReasons(newSkippedReasons)
+
+          // Auto-clear highlights after 10 seconds
+          setTimeout(() => {
+            setSkippedEmployeeIds(new Set())
+            setSkippedReasons(new Map())
+          }, 10000)
+        } else {
+          toast.success(`Default shift times updated. ${updated} record(s) updated.`)
+        }
+
+        // Refresh attendance data to show updated values
+        await fetchAttendance()
+      } else {
+        toast.success("Default shift times updated successfully")
+      }
 
       // Propagate default check-in to unsaved drafts if attendance does not exist yet
       if (!attendanceExists && draftAttendance.length > 0) {
@@ -967,13 +1003,70 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
         setIsDirty(true)
       }
 
-      setSite(updatedSite)
+      // Remove propagation field before setting site state
+      const { propagation: _propagation, ...siteData } = updatedSite
+      setSite(siteData)
       setIsEditingDefaults(false)
+      setUpdateDefaultsDialogOpen(false)
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Failed to update default shift times")
     } finally {
       setSavingDefaults(false)
     }
+  }
+
+  const handleSaveDefaults = async () => {
+    if (!site) return
+
+    const toMinutes = (t: string) => {
+      const [h, m] = t.split(":").map(Number)
+      return h * 60 + m
+    }
+
+    // --- DAY SHIFT VALIDATION ---
+    if (editDefaultCheckIn) {
+      const [inH] = editDefaultCheckIn.split(":").map(Number)
+      if (inH < cutoffHour) {
+        toast.error(`Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`)
+        return
+      }
+    }
+    if (editDefaultCheckIn && editDefaultCheckOut) {
+      if (toMinutes(editDefaultCheckOut) <= toMinutes(editDefaultCheckIn)) {
+        toast.error("Day shift check-out must be after check-in (before midnight)")
+        return
+      }
+    }
+
+    // --- NIGHT SHIFT VALIDATION ---
+    if (editNightDefaultCheckIn) {
+      const inMin = toMinutes(editNightDefaultCheckIn)
+      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
+        toast.error(`Night shift check-in must be between ${cutoffHour}:00 and 23:59`)
+        return
+      }
+    }
+    if (editNightDefaultCheckOut) {
+      const outMin = toMinutes(editNightDefaultCheckOut)
+      if (outMin < 0 || outMin > cutoffHour * 60) {
+        toast.error(`Night shift check-out must be between 00:00 and ${cutoffHour}:00`)
+        return
+      }
+    }
+
+    // Detect what changed
+    const changes = detectDefaultChanges()
+
+    // If attendance exists and there are meaningful changes (old non-empty → new non-empty),
+    // show the confirmation dialog
+    if (attendanceExists && changes.length > 0) {
+      setPendingDefaultChanges(changes)
+      setUpdateDefaultsDialogOpen(true)
+      return
+    }
+
+    // No changes that need propagation, or drafts only — save directly
+    await executeSaveDefaults(false)
   }
 
   const filteredDraftAttendance = draftAttendance.filter((record) => {
@@ -1103,50 +1196,45 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
   }, [isDirty])
 
   useEffect(() => {
-  const initialize = async () => {
-    try {
-      setLoading(true)
-
-      // Fetch night shift cutoff config
+    const initialize = async () => {
       try {
-        const configRes = await api.get("/api/config")
-        if (configRes.data?.data?.nightShiftCutoffHour !== undefined) {
-          setCutoffHour(configRes.data.data.nightShiftCutoffHour)
+        setLoading(true)
+
+        // Fetch independent metadata in parallel
+        const [configRes, siteData, statusRes] = await Promise.all([
+          api.get("/api/config").catch(err => {
+            console.error("Failed to fetch config:", err)
+            return null
+          }),
+          fetchSite(),
+          checkAttendanceStatus()
+        ])
+
+        const cutoffVal = configRes?.data?.data?.nightShiftCutoffHour ?? 0
+        setCutoffHour(cutoffVal)
+
+        if (statusRes?.exists) {
+          await fetchAttendance()
+        } else {
+          await Promise.all([
+            checkHolidayStatus(),
+            siteData ? initializeAttendanceFromEmployees(siteData, cutoffVal) : Promise.resolve()
+          ])
         }
-      } catch (err) {
-        console.error("Failed to fetch config:", err)
+
+      } catch (error) {
+        console.log(error)
+
+        toast.error(
+          "Failed to load attendance"
+        )
+      } finally {
+        setLoading(false)
       }
-
-      const siteData = await fetchSite()
-
-      const {
-        exists,
-      } = await checkAttendanceStatus()
-
-      if (exists) {
-        await fetchAttendance()
-      } else {
-        await checkHolidayStatus()
-        if (siteData) {
-          await initializeAttendanceFromEmployees(
-            siteData
-          )
-      }
-      }
-
-    } catch (error) {
-      console.log(error)
-
-      toast.error(
-        "Failed to load attendance"
-      )
-    } finally {
-      setLoading(false)
     }
-  }
 
-  initialize()
-}, [])
+    initialize()
+  }, [])
 
   if (loading) {
     return (
@@ -1168,11 +1256,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     );
     const totalPresent = presentRecords.length;
 
-    // Classify each assigned employee as Day Shift or Night Shift.
-    // If the employee's active session for this site is a night shift session, they are Night Shift.
-    // Otherwise, they are Day Shift.
+    // Classify each assigned employee as Day Shift and/or Night Shift.
+    // An employee can be assigned to both shifts on the same day.
     const dayShiftAssigned = records.filter(rec =>
-      !rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
+      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift)
     );
     const nightShiftAssigned = records.filter(rec =>
       rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
@@ -1182,11 +1269,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
     const totalNightShift = nightShiftAssigned.length;
 
     const dayShiftPresent = dayShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift && s.checkIn)
     ).length;
 
     const nightShiftPresent = nightShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift && s.checkIn)
     ).length;
 
     return {
@@ -1577,8 +1664,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                       className={
                         (isOverlapRow(record.employee) || (isEditing && !!inlineEditError))
                           ? "border-red-500 bg-red-50/50 dark:bg-red-950/10"
-                          : ""
+                          : skippedEmployeeIds.has(record.employeeId)
+                            ? "border-amber-500 bg-amber-50/50 dark:bg-amber-950/10"
+                            : ""
                       }
+                      title={skippedEmployeeIds.has(record.employeeId) ? skippedReasons.get(record.employeeId) || '' : undefined}
                     >
                       <CardContent className="pt-4 space-y-3">
 
@@ -1874,8 +1964,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
                                   className={
                                     (isOverlapRow(record.employee) || (isEditing && !!inlineEditError))
                                       ? "bg-red-50 dark:bg-red-950/20 border-red-500"
-                                      : ""
+                                      : skippedEmployeeIds.has(record.employeeId)
+                                        ? "bg-amber-50 dark:bg-amber-950/20 border-amber-500"
+                                        : ""
                                   }
+                                  title={skippedEmployeeIds.has(record.employeeId) ? skippedReasons.get(record.employeeId) || '' : undefined}
                                 >
                               {sessionIndex === 0 && (
                                 <TableCell rowSpan={sessions.length}>
@@ -2453,6 +2546,15 @@ const initializeAttendanceFromEmployees = async (siteData: Site) => {
             navigate(pendingPath)
           }
         }}
+      />
+
+      <UpdateDefaultsDialog
+        open={updateDefaultsDialogOpen}
+        onOpenChange={setUpdateDefaultsDialogOpen}
+        changes={pendingDefaultChanges}
+        loading={savingDefaults}
+        onConfirm={() => executeSaveDefaults(true)}
+        onSkip={() => executeSaveDefaults(false)}
       />
 
     </div>

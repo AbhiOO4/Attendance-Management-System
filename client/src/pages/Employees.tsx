@@ -51,6 +51,7 @@ interface Employee {
   currentSite: string | null
   currentJob: { _id: string; name: string } | null
   user?: string | null
+  employmentType: 'permanent' | 'temporary'
 }
 
 
@@ -81,6 +82,7 @@ type UpdateInfo = {
   jobTitle: string
   currentSite: string | null
   monthlySalary: number
+  employmentType: 'permanent' | 'temporary'
 }
 
 
@@ -343,6 +345,11 @@ function Employees() {
                       {employee.user && (
                         <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
                           Supervisor
+                        </Badge>
+                      )}
+                      {employee.employmentType === 'temporary' && (
+                        <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                          Temporary
                         </Badge>
                       )}
                     </div>

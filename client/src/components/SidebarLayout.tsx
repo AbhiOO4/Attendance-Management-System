@@ -50,6 +50,10 @@ function getSupervisorNavItems(
       name: "Mark Attendance",
       path: `/attendance/${assignedSite}`,
     })
+    items.push({
+      name: "Hired Workers",
+      path: "/hired-workers",
+    })
   }
 
   return items

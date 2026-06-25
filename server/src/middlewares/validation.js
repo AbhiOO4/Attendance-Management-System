@@ -29,6 +29,8 @@ const employeeSchema = Joi.object({
       'any.required': 'Monthly salary is required for salaried employees',
     }),
 
+  employmentType: Joi.string().valid('permanent', 'temporary').default('permanent'),
+
 });
 
 

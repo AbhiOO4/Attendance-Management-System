@@ -24,6 +24,7 @@ import Configure from "./pages/Configure"
 import ManageUsers from "./pages/ManageUsers"
 import EmployeeDetailAttendance from "./pages/EmployeeDetailAttendance"
 import InstaAddEmployees from "./pages/InstaAddEmployees"
+import HiredWorkers from "./pages/HiredWorkers"
 
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
@@ -210,6 +211,15 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
               <InstaAddEmployees />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="hired-workers"
+          element={
+            <ProtectedRoute allowedRoles={["supervisor"]}>
+              <HiredWorkers />
             </ProtectedRoute>
           }
         />
