@@ -27,7 +27,7 @@ type NavItem = {
   path: string
 }
 
-const ADMIN_NAV_ITEMS: NavItem[] = [
+const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", path: "/dashboard" },
   { name: "Employees", path: "/employees" },
   { name: "Mark Attendance", path: "/attendance" },
@@ -36,6 +36,15 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Site", path: "/site" },
   { name: "Configure", path: "/configure" },
   { name: "Manage Users", path: "/manage-users" },
+]
+
+const ADMIN_NAV_ITEMS: NavItem[] = [
+  { name: "Dashboard", path: "/dashboard" },
+  { name: "Employees", path: "/employees" },
+  { name: "Mark Attendance", path: "/attendance" },
+  { name: "Add Supervisors", path: "/supervisor" },
+  { name: "Site", path: "/site" },
+  { name: "Configure", path: "/configure" },
 ]
 
 function getSupervisorNavItems(
@@ -83,6 +92,10 @@ export default function SidebarLayout() {
 
   const navItems = useMemo(() => {
     if (!user) return []
+
+    if (user.role === "superadmin") {
+      return SUPER_ADMIN_NAV_ITEMS
+    }
 
     if (user.role === "admin") {
       return ADMIN_NAV_ITEMS

@@ -121,7 +121,7 @@ function EditUserModal({
         email,
       }
 
-      if (user.role !== 'admin') {
+      if (user.role !== 'admin' && user.role !== 'superadmin') {
         payload.assignedSite = assignedSite
       }
 
@@ -144,7 +144,7 @@ function EditUserModal({
     }
   }
 
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -157,7 +157,7 @@ function EditUserModal({
           </div>
           <div>
             <DialogTitle className="text-xl font-bold">
-              Edit {isAdmin ? 'Admin' : 'Supervisor'}
+              Edit {user?.role === 'superadmin' ? 'Super Admin' : user?.role === 'admin' ? 'Admin' : 'Supervisor'}
             </DialogTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
               Modify account credentials and system configuration.

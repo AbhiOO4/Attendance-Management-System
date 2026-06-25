@@ -2,7 +2,7 @@
 import userModel from '../models/userModel.js'
 
 export const requireAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
+  if (req.user.role !== "admin" && req.user.role !== "superadmin") {
     return res.status(403).json({
       message: "Admins only",
     })
@@ -13,8 +13,15 @@ export const requireAdmin = (req, res, next) => {
 
 export const authorizeRoles = (...roles) => {
   return (req, res, next) => {
+    const userRole = req.user.role;
+    const authorizedRoles = [...roles];
 
-    if (!roles.includes(req.user.role)) {
+    // If a route allows 'admin', it should automatically allow 'superadmin' as well
+    if (authorizedRoles.includes('admin') && !authorizedRoles.includes('superadmin')) {
+      authorizedRoles.push('superadmin');
+    }
+
+    if (!authorizedRoles.includes(userRole)) {
       return res.status(403).json({
         message: "Forbidden",
       })
@@ -25,7 +32,7 @@ export const authorizeRoles = (...roles) => {
 } 
 
 export const requireSiteAccess = async (req, res, next) => {
-  if (req.user.role === "admin") {
+  if (req.user.role === "admin" || req.user.role === "superadmin") {
     return next();
   }
 

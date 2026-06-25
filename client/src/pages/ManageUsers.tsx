@@ -112,7 +112,7 @@ function ManageUsers() {
   }, [])
 
   const supervisors = useMemo(() => {
-    return users.filter((user) => user.role !== "admin")
+    return users.filter((user) => user.role === "supervisor")
   }, [users])
 
   const admins = useMemo(() => {

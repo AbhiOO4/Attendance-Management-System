@@ -198,6 +198,22 @@ async function createAdmin (name, email, password) {
     await admin.save()
 }
 
-seeWorkSchedule()
+async function createSuperAdmin (name, email, password) {
+  try {
+    const existing = await userModel.findOne({ email });
+    if (existing) {
+      console.log(`Superadmin user with email ${email} already exists.`);
+      return;
+    }
+    const superadmin = new userModel({name, email, password, role: 'superadmin'})
+    await superadmin.save()
+    console.log(`Superadmin user ${name} created successfully.`);
+  } catch (error) {
+    console.error("Error creating superadmin:", error);
+  }
+}
+
+// seeWorkSchedule()
 // createAdmin('Abhi', 'abhi@gmail.com', "admin@2026", )
+createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
 

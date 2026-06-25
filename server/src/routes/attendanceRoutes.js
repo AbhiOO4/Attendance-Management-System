@@ -20,7 +20,7 @@ router.get('/dashboard/active-sites', authorizeRoles("admin", "supervisor"), att
 
 router.get('/reports/daily', authorizeRoles("admin", "supervisor"), attendanceController.getSiteAttendance)
 
-router.get('/reports/monthly/:month/:year', authorizeRoles("admin"), attendanceController.monthlyReport)
+router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
 router.get('/employee/:employeeId', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeeAttendanceByMonth)
 

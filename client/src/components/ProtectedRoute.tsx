@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge"
 
 type Props = {
   children: React.ReactNode
-  allowedRoles: ("admin" | "supervisor")[]
+  allowedRoles: ("admin" | "supervisor" | "superadmin")[]
 }
 
 export default function ProtectedRoute({

@@ -11,7 +11,7 @@ import { api } from "@/lib/api"
 export type User = {
   _id: string
   name: string
-  role: "admin" | "supervisor"
+  role: "admin" | "supervisor" | "superadmin"
   assignedSite: string | null
 }
 
@@ -49,7 +49,8 @@ const data = raw as {
 
   if (
     data.role !== "admin" &&
-    data.role !== "supervisor"
+    data.role !== "supervisor" &&
+    data.role !== "superadmin"
   ) {
     return null
   }

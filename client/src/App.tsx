@@ -73,7 +73,7 @@ function App() {
       {/* PROTECTED LAYOUT */}
       <Route
         element={
-          <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
+          <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
             <SidebarLayout />
           </ProtectedRoute>
         }
@@ -81,17 +81,17 @@ function App() {
 
         <Route path="dashboard"
           element={
-            <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <DashBoard />
             </ProtectedRoute>
           }
         />
 
-        {/* ADMIN ONLY */}
+        {/* ADMIN ONLY (and Superadmin) */}
         <Route
           path="employees"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <Employees />
             </ProtectedRoute>
           }
@@ -100,7 +100,7 @@ function App() {
         <Route
           path="employees/:id"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <EmployeeDetailAttendance />
             </ProtectedRoute>
           }
@@ -109,16 +109,17 @@ function App() {
         <Route
           path="attendance"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <MarkAttendance />
             </ProtectedRoute>
           }
         />
 
+        {/* SUPERADMIN ONLY */}
         <Route
           path="reports"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin"]}>
               <MonthlyReport />
             </ProtectedRoute>
           }
@@ -127,7 +128,7 @@ function App() {
         <Route
           path="supervisor"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <Supervisor />
             </ProtectedRoute>
           }
@@ -136,7 +137,7 @@ function App() {
         <Route
           path="supervisor/:id"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <AddSupervisor />
             </ProtectedRoute>
           }
@@ -145,7 +146,7 @@ function App() {
         <Route
           path="site"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <SitesPage />
             </ProtectedRoute>
           }
@@ -154,7 +155,7 @@ function App() {
         <Route
           path="site/:id"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <SiteDetail />
             </ProtectedRoute>
           }
@@ -163,7 +164,7 @@ function App() {
         <Route
           path="site/:id/manage-employees"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <ManageEmployees />
             </ProtectedRoute>
           }
@@ -172,7 +173,7 @@ function App() {
         <Route
           path="site/job/:jobId"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <ManageJobEmployees />
             </ProtectedRoute>
           }
@@ -181,26 +182,27 @@ function App() {
         <Route
           path="configure"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <Configure />
             </ProtectedRoute>
           }
         />
 
+        {/* SUPERADMIN ONLY */}
         <Route
           path="manage-users"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin"]}>
               <ManageUsers />
             </ProtectedRoute>
           }
         />
 
-        {/* SHARED (admin + supervisor) */}
+        {/* SHARED (superadmin + admin + supervisor) */}
         <Route
           path="attendance/:id"
           element={
-            <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <SiteAttendance />
             </ProtectedRoute>
           }
@@ -209,7 +211,7 @@ function App() {
         <Route
           path="attendance/:siteId/insta-add"
           element={
-            <ProtectedRoute allowedRoles={["admin", "supervisor"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <InstaAddEmployees />
             </ProtectedRoute>
           }
@@ -227,7 +229,7 @@ function App() {
         <Route
           path="attendance/edit"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <EditPastAttendance />
             </ProtectedRoute>
           }

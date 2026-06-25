@@ -20,12 +20,12 @@ router.post('/logout', logout)
 
 router.use(verifyToken)
 
-router.patch('/update/:userId',authorizeRoles('admin'), updateUser )
+router.patch('/update/:userId',authorizeRoles('superadmin'), updateUser )
 
-router.post('/admin', authorizeRoles('admin'), addAdmin)
+router.post('/admin', authorizeRoles('superadmin'), addAdmin)
 
-router.get('/',authorizeRoles('admin'), getUsers)
+router.get('/',authorizeRoles('superadmin'), getUsers)
 
-router.delete('/:userId', authorizeRoles('admin'), deleteUser)
+router.delete('/:userId', authorizeRoles('superadmin'), deleteUser)
 
 export default router
