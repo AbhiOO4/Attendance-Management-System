@@ -218,9 +218,9 @@ function App() {
         />
 
         <Route
-          path="hired-workers"
+          path="attendance/:siteId/hired-workers"
           element={
-            <ProtectedRoute allowedRoles={["supervisor"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <HiredWorkers />
             </ProtectedRoute>
           }

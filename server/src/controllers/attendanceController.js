@@ -1392,6 +1392,8 @@ export const getSiteAttendance = async (req, res) => {
 
           user: "$employee.user",
 
+          employmentType: "$employee.employmentType",
+
           status: "$status",
 
           totalWorkHours: "$totalWorkHours",

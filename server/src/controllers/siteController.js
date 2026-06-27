@@ -86,7 +86,7 @@ export const getSites = async (req, res) => {
 export const getSite = async (req, res) => {
     try{
         const { id } = req.params
-        const site = await siteModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("jobs", "name")
+        const site = await siteModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("jobs", "name isActive isDeleted isCompleted")
         if (!site) {
             return res.status(404).json({message: "Site not found"})
         }
@@ -223,7 +223,8 @@ export const removeEmployee = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { _id } = req.body;
+    const { _id, deleteAttendance } = req.body;
+    const { siteId } = req.params;
 
     const employee = await empModel.findById(_id).session(session);
 
@@ -232,6 +233,14 @@ export const removeEmployee = async (req, res) => {
       session.endSession();
       return res.status(404).json({
         message: "Employee doesn't exist",
+      });
+    }
+
+    if (employee.currentSite && employee.currentSite.toString() !== siteId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        message: "Employee is not currently assigned to this site",
       });
     }
 
@@ -244,11 +253,36 @@ export const removeEmployee = async (req, res) => {
       }, { session });
     }
 
+    const removedSiteId = employee.currentSite;
+
     // Clear employee assignments
     employee.currentSite = null;
     employee.currentJob = null;
 
     const saved = await employee.save({ session });
+
+    // Handle today's attendance record & session cleanup (conditional)
+    if (deleteAttendance && removedSiteId) {
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      const attendanceRecord = await attendanceModel.findOne({
+        employee: employee._id,
+        date: today
+      }).session(session);
+
+      if (attendanceRecord) {
+        attendanceRecord.sessions = attendanceRecord.sessions.filter(
+          (s) => s.siteId.toString() !== removedSiteId.toString()
+        );
+
+        if (attendanceRecord.sessions.length === 0) {
+          await attendanceModel.findByIdAndDelete(attendanceRecord._id, { session });
+        } else {
+          await attendanceRecord.save({ session });
+        }
+      }
+    }
 
     await session.commitTransaction();
     session.endSession();
@@ -1834,6 +1868,96 @@ export const toggleJobCompleted = async (req, res) => {
   }
 };
 
+export const updateEmployeeJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { siteId, employeeId } = req.params;
+    const { jobId } = req.body;
+
+    const employee = await empModel.findById(employeeId).session(session);
+
+    if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({
+        message: "Employee not found",
+      });
+    }
+
+    if (!employee.currentSite || employee.currentSite.toString() !== siteId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        message: "Employee is not assigned to this site",
+      });
+    }
+
+    const oldJobId = employee.currentJob;
+
+    // If new jobId is specified, check that the job exists and belongs to the site
+    if (jobId) {
+      const job = await jobModel.findById(jobId).session(session);
+      if (!job) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({
+          message: "Job not found",
+        });
+      }
+      if (job.site.toString() !== siteId) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          message: "Job does not belong to this site",
+        });
+      }
+    }
+
+    // If job hasn't changed, just return
+    if (oldJobId && jobId && oldJobId.toString() === jobId.toString()) {
+      await session.commitTransaction();
+      session.endSession();
+      await employee.populate("currentJob", "name");
+      return res.status(200).json(employee);
+    }
+
+    // Pull from old job list
+    if (oldJobId) {
+      await jobModel.findByIdAndUpdate(
+        oldJobId,
+        { $pull: { employees: employee._id } },
+        { session }
+      );
+    }
+
+    // Set new job
+    employee.currentJob = jobId || null;
+    await employee.save({ session });
+
+    // Push to new job list (prevent duplicates)
+    if (jobId) {
+      await jobModel.findByIdAndUpdate(
+        jobId,
+        { $addToSet: { employees: employee._id } },
+        { session }
+      );
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    await employee.populate("currentJob", "name");
+    return res.status(200).json(employee);
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 const siteController = {
     getSites,
     getSite,
@@ -1860,7 +1984,8 @@ const siteController = {
     instaAddEmployee,
     getAvailableEmployeesForSite,
     updateSite,
-    toggleJobCompleted
+    toggleJobCompleted,
+    updateEmployeeJob
 }
 
 export default siteController;

@@ -11,19 +11,31 @@ import {
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 type NewEmployee = {
   name: string
   employeeId: string
   jobTitle: string
   currentSite: string 
-  monthlySalary: number
+  currentJob: string | null
   employmentType: 'permanent' | 'temporary'
 }
 
 type JobTitle = {
   _id: string
   title: string
+}
+
+type SiteJob = {
+  _id: string
+  name: string
 }
 
 interface Props {
@@ -34,18 +46,30 @@ interface Props {
 function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
   const [open, setOpen] = useState(false)
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
-  const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType">>({
+  const [siteJobs, setSiteJobs] = useState<SiteJob[]>([])
+  const [selectedJob, setSelectedJob] = useState<string>("")
+  const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType" | "currentJob">>({
     name: "",
     employeeId: "",
     jobTitle: "",
-    monthlySalary: 0,
   })
-  const [salaryInput, setSalaryInput] = useState("")
 
   const fetchTitles = async () => {
     try {
       const res = await api.get<JobTitle[]>('/api/employees/jobTitles')
       setJobTitles(res.data)
+    } catch (error) {
+      console.log(error)
+    }
+  }
+
+  const fetchSiteJobs = async () => {
+    try {
+      const res = await api.get(`/api/site/${assignedSiteId}`)
+      if (res.data && res.data.jobs) {
+        const activeJobs = res.data.jobs.filter((j: any) => j.isActive && !j.isDeleted && !j.isCompleted)
+        setSiteJobs(activeJobs)
+      }
     } catch (error) {
       console.log(error)
     }
@@ -67,16 +91,12 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
       return
     }
 
-    const salary = parseFloat(salaryInput)
-    if (isNaN(salary) || salary <= 0) {
-      toast.error("Monthly salary must be greater than 0")
-      return
-    }
+    const jobVal = selectedJob && selectedJob !== "none" ? selectedJob : null;
 
     await onAdd({
       ...formData,
       currentSite: assignedSiteId,
-      monthlySalary: salary,
+      currentJob: jobVal,
       employmentType: "temporary",
     })
 
@@ -84,15 +104,15 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
       name: "",
       employeeId: "",
       jobTitle: "",
-      monthlySalary: 0,
     })
-    setSalaryInput("")
+    setSelectedJob("")
     setOpen(false)
   }
 
   useEffect(() => {
     if (open) {
       fetchTitles()
+      fetchSiteJobs()
     }
   }, [open])
 
@@ -104,14 +124,14 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
         </Button>
       </DialogTrigger>
 
-      <DialogContent>
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle>
             Add Hired Worker
           </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 pt-2">
           <Input
             placeholder="Name"
             value={formData.name}
@@ -146,16 +166,25 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
             placeholder="Select Job Title"
           />
 
-          <Input
-            type="number"
-            step="any"
-            placeholder="Monthly Salary"
-            value={salaryInput}
-            onChange={(e) => setSalaryInput(e.target.value)}
-          />
+          <Select
+            value={selectedJob}
+            onValueChange={setSelectedJob}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select Active Job (Optional)" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No Job / Unassigned</SelectItem>
+              {siteJobs.map((job) => (
+                <SelectItem key={job._id} value={job._id}>
+                  {job.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
           <Button
-            className="w-full"
+            className="w-full mt-2"
             onClick={handleSubmit}
           >
             Add Worker

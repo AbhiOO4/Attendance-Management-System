@@ -101,7 +101,10 @@ interface EmployeeResponse {
 
 type Job = {
     _id: string,
-    name: string
+    name: string,
+    isActive?: boolean,
+    isDeleted?: boolean,
+    isCompleted?: boolean
 }
 
 function InstaAddEmployees() {
@@ -300,7 +303,7 @@ function InstaAddEmployees() {
                             variant="outline"
                             size="icon"
                             onClick={() =>
-                                navigate(`/attendance/${siteId}`)
+                                navigate(`/attendance/${siteId}/hired-workers`)
                             }
                         >
                             <ArrowLeft className="h-4 w-4" />
@@ -505,7 +508,16 @@ function InstaAddEmployees() {
                                                     Employee
                                                 </TableHead>
                                                 <TableHead>
+                                                    Employee ID
+                                                </TableHead>
+                                                <TableHead>
+                                                    Job Title
+                                                </TableHead>
+                                                <TableHead>
                                                     Current Site
+                                                </TableHead>
+                                                <TableHead>
+                                                    Current Job
                                                 </TableHead>
                                                 <TableHead className="text-right">
                                                     Action
@@ -516,35 +528,31 @@ function InstaAddEmployees() {
                                             {employees.map((employee) => (
                                                 <TableRow key={employee._id} className="transition-colors hover:bg-muted/50">
                                                     <TableCell>
-                                                        <div className="space-y-1">
-                                                            <div className="font-medium text-foreground">
-                                                                {employee.name}
-                                                                {employee.user && (
-                                                                    <Badge variant="secondary" className="ml-2">
-                                                                        Supervisor
-                                                                    </Badge>
-                                                                )}
-                                                                {employee.employmentType === 'temporary' && (
-                                                                    <Badge variant="secondary" className="ml-2 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30">
-                                                                        Temporary
-                                                                    </Badge>
-                                                                )}
-                                                            </div>
-                                                            <div className="text-xs text-muted-foreground font-mono">
-                                                                {employee.employeeId}
-                                                            </div>
-                                                            <div className="text-xs text-muted-foreground">
-                                                                {employee.jobTitle}
-                                                            </div>
+                                                        <div className="font-medium text-foreground flex items-center gap-2">
+                                                            {employee.name}
+                                                            {employee.user && (
+                                                                <Badge variant="secondary">
+                                                                    Supervisor
+                                                                </Badge>
+                                                            )}
+                                                            {employee.employmentType === 'temporary' && (
+                                                                <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0">
+                                                                    Temporary
+                                                                </Badge>
+                                                            )}
                                                         </div>
                                                     </TableCell>
-                                                    <TableCell>
-                                                        <div className="font-medium text-foreground">
-                                                            {employee.currentSite?.siteName || "-"}
-                                                        </div>
-                                                        <div className="text-xs text-muted-foreground">
-                                                            {employee.currentJob?.name || "-"}
-                                                        </div>
+                                                    <TableCell className="font-mono text-xs text-muted-foreground">
+                                                        {employee.employeeId}
+                                                    </TableCell>
+                                                    <TableCell className="text-sm">
+                                                        {employee.jobTitle}
+                                                    </TableCell>
+                                                    <TableCell className="font-medium text-foreground text-sm">
+                                                        {employee.currentSite?.siteName || "-"}
+                                                    </TableCell>
+                                                    <TableCell className="text-sm text-muted-foreground">
+                                                        {employee.currentJob?.name || "-"}
                                                     </TableCell>
                                                     <TableCell className="text-right">
                                                         <Button
@@ -690,7 +698,7 @@ function InstaAddEmployees() {
                                         Don't assign job
                                     </SelectItem>
 
-                                    {site?.jobs?.map((job) => (
+                                    {site?.jobs?.filter(job => job.isActive !== false && !job.isDeleted && !job.isCompleted).map((job) => (
                                         <SelectItem key={job._id} value={job._id}>
                                             {job.name}
                                         </SelectItem>

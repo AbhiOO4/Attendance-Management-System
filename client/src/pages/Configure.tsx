@@ -113,6 +113,8 @@ export default function Configure() {
   const [deletingJobTitle, setDeletingJobTitle] = useState<string | null>(null);
   const [addingHoliday, setAddingHoliday] = useState(false);
   const [deletingHoliday, setDeletingHoliday] = useState<string | null>(null);
+  const [holidayToDelete, setHolidayToDelete] = useState<Holiday | null>(null);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
 
   const fetchJobTitles = async () => {
     try{
@@ -188,10 +190,10 @@ export default function Configure() {
     try {
       setDeletingHoliday(id);
       await api.delete(`/api/config/custom-holidays/${id}`);
-
       fetchHolidays();
-
       toast.success("Holiday deleted successfully");
+      setIsDeleteConfirmOpen(false);
+      setHolidayToDelete(null);
     } catch (err) {
       toast.error("Failed to delete holiday");
     } finally {
@@ -623,84 +625,21 @@ export default function Configure() {
           </CardContent>
         </Card>
 
-        {/* ================= ADD HOLIDAY ================= */}
-        <Card className="border-none shadow-sm">
-          <CardHeader className="border-b bg-muted/40">
-            <CardTitle className="text-xl">
-              Add Custom Holiday
-            </CardTitle>
-          </CardHeader>
-
-          <CardContent className="space-y-5 p-6">
-
-            <div className="grid gap-4 md:grid-cols-[220px_1fr_auto]">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">
-                  Date
-                </label>
-
-                <Input
-                  type="date"
-                  value={holidayForm.date}
-                  onChange={(e) =>
-                    setHolidayForm({
-                      ...holidayForm,
-                      date: e.target.value,
-                    })
-                  }
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium">
-                  Reason
-                </label>
-
-                <Input
-                  placeholder="Example: Independence Day"
-                  value={holidayForm.reason}
-                  onChange={(e) =>
-                    setHolidayForm({
-                      ...holidayForm,
-                      reason: e.target.value,
-                    })
-                  }
-                />
-              </div>
-
-              <div className="flex items-end">
-                <Button
-                  onClick={addHoliday}
-                  disabled={addingHoliday}
-                  className="w-full md:w-auto min-w-[120px]"
-                >
-                  {addingHoliday && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  {addingHoliday ? "Adding..." : "Add Holiday"}
-                </Button>
-              </div>
-            </div>
-
-          </CardContent>
-        </Card>
-
-        {/* ================= HOLIDAY TABLE ================= */}
+        {/* ================= CUSTOM HOLIDAYS ================= */}
         <Card className="border-none shadow-sm">
           <CardHeader className="border-b bg-muted/40">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-
               <div>
                 <CardTitle className="text-xl">
                   Custom Holidays
                 </CardTitle>
-
                 <p className="mt-1 text-sm text-muted-foreground">
-                  View and manage configured holidays.
+                  Add, view, and manage custom holidays.
                 </p>
               </div>
 
               {/* FILTERS */}
               <div className="flex flex-col gap-3 sm:flex-row">
-
                 <Select
                   value={filter.month.toString()}
                   onValueChange={(val) =>
@@ -741,77 +680,172 @@ export default function Configure() {
             </div>
           </CardHeader>
 
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="pl-6">
+          <CardContent className="space-y-6 p-6">
+            {/* ADD NEW HOLIDAY FORM */}
+            <div className="rounded-xl border p-4 bg-muted/20 space-y-3">
+              <h3 className="text-sm font-semibold tracking-tight text-foreground">
+                Add New Holiday
+              </h3>
+              <div className="grid gap-4 md:grid-cols-[220px_1fr_auto]">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">
                     Date
-                  </TableHead>
+                  </label>
+                  <Input
+                    type="date"
+                    value={holidayForm.date}
+                    onChange={(e) =>
+                      setHolidayForm({
+                        ...holidayForm,
+                        date: e.target.value,
+                      })
+                    }
+                    className="bg-background"
+                  />
+                </div>
 
-                  <TableHead>
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-muted-foreground">
                     Reason
-                  </TableHead>
+                  </label>
+                  <Input
+                    placeholder="Example: Independence Day"
+                    value={holidayForm.reason}
+                    onChange={(e) =>
+                      setHolidayForm({
+                        ...holidayForm,
+                        reason: e.target.value,
+                      })
+                    }
+                    className="bg-background"
+                  />
+                </div>
 
-                  <TableHead className="w-[140px]">
-                    Action
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
+                <div className="flex items-end">
+                  <Button
+                    onClick={addHoliday}
+                    disabled={addingHoliday}
+                    className="w-full md:w-auto min-w-[120px]"
+                  >
+                    {addingHoliday && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    {addingHoliday ? "Adding..." : "Add Holiday"}
+                  </Button>
+                </div>
+              </div>
+            </div>
 
-              <TableBody>
-                {holidays.length === 0 ? (
+            {/* HOLIDAYS LIST TABLE */}
+            <div className="rounded-xl border overflow-hidden">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell
-                      colSpan={3}
-                      className="h-40 text-center text-muted-foreground"
-                    >
-                      No holidays configured for this month
-                    </TableCell>
+                    <TableHead className="pl-6">
+                      Date
+                    </TableHead>
+                    <TableHead>
+                      Reason
+                    </TableHead>
+                    <TableHead className="w-[140px]">
+                      Action
+                    </TableHead>
                   </TableRow>
-                ) : (
-                  holidays.map((h) => (
-                    <TableRow key={h._id}>
-                      <TableCell className="pl-6 font-medium">
-                        {new Date(h.date).toLocaleDateString(
-                          "en-IN",
-                          {
-                            weekday: "short",
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                          }
-                        )}
-                      </TableCell>
+                </TableHeader>
 
-                      <TableCell>
-                        {h.reason}
-                      </TableCell>
-
-                      <TableCell>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          disabled={deletingHoliday === h._id}
-                          onClick={() =>
-                            deleteHoliday(h._id)
-                          }
-                          className="min-w-[70px]"
-                        >
-                          {deletingHoliday === h._id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            "Delete"
-                          )}
-                        </Button>
+                <TableBody>
+                  {holidays.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="h-40 text-center text-muted-foreground"
+                      >
+                        No holidays configured for this month
                       </TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                  ) : (
+                    holidays.map((h) => (
+                      <TableRow key={h._id}>
+                        <TableCell className="pl-6 font-medium">
+                          {new Date(h.date).toLocaleDateString(
+                            "en-IN",
+                            {
+                              weekday: "short",
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            }
+                          )}
+                        </TableCell>
+
+                        <TableCell>
+                          {h.reason}
+                        </TableCell>
+
+                        <TableCell>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => {
+                              setHolidayToDelete(h);
+                              setIsDeleteConfirmOpen(true);
+                            }}
+                            className="min-w-[70px]"
+                          >
+                            Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
+
+        {/* DELETE HOLIDAY CONFIRMATION DIALOG */}
+        <AlertDialog open={isDeleteConfirmOpen} onOpenChange={setIsDeleteConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete the custom holiday{" "}
+                <span className="font-semibold text-foreground">
+                  "{holidayToDelete?.reason}"
+                </span>{" "}
+                on{" "}
+                {holidayToDelete &&
+                  new Date(holidayToDelete.date).toLocaleDateString("en-IN", {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                . This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setHolidayToDelete(null)}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 animate-none"
+                onClick={() => {
+                  if (holidayToDelete) {
+                    deleteHoliday(holidayToDelete._id);
+                  }
+                }}
+                disabled={deletingHoliday === holidayToDelete?._id}
+              >
+                {deletingHoliday === holidayToDelete?._id ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Deleting...
+                  </span>
+                ) : (
+                  "Delete"
+                )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   )

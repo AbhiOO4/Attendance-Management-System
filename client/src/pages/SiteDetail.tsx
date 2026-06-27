@@ -760,7 +760,7 @@ function SiteDetail() {
 
             {isSiteActive ? (
               <Link
-                to={`/site/${id}/manage-employees`}
+                to={`/attendance/${id}/hired-workers`}
               >
                 <Button className="rounded-xl">
                   <Plus className="mr-2 h-4 w-4" />
@@ -873,7 +873,7 @@ function SiteDetail() {
 
             {isSiteActive ? (
               <Link
-                to={`/site/${id}/manage-employees`}
+                to={`/attendance/${id}/hired-workers`}
               >
                 <Button className="rounded-xl">
                   <Plus className="mr-2 h-4 w-4" />

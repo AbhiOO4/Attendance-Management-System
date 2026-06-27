@@ -37,11 +37,12 @@ import {
   Save,
   X,
   ArrowLeft,
-  UserPlus,
   Clock3,
   Undo,
   Moon,
   Sun,
+  Calendar,
+  Users,
 } from "lucide-react"
 
 interface Employee {
@@ -53,6 +54,7 @@ interface Employee {
   currentSite: string | null
   currentJob: Job | null
   user: string | null
+  employmentType?: 'permanent' | 'temporary'
 }
 
 interface EmployeesResponse {
@@ -114,6 +116,8 @@ export interface AttendanceRecord {
   sessions: AttendanceSession[]
 
   user?: string | null
+
+  employmentType?: 'permanent' | 'temporary'
 }
 
 interface FetchedAttendance {
@@ -135,7 +139,8 @@ interface DraftAttendanceRecord {
   employee: {
     _id: string,
     name: string,
-    user?: string | null
+    user?: string | null,
+    employmentType?: 'permanent' | 'temporary'
   }, //refering to the employee models object id
   employeeId: string,
   jobTitle: string,
@@ -344,6 +349,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
               _id: emp._id,
               name: emp.name,
               user: emp.user || null,
+              employmentType: emp.employmentType,
             },
 
             employeeId: emp.employeeId,
@@ -1290,7 +1296,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     <div className="space-y-6 p-6">
 
       {/* PAGE HEADER */}
-      <Card>
+      <Card className="overflow-hidden">
+        {isHoliday && (
+          <div className="bg-amber-50 dark:bg-amber-950/20 border-b border-amber-100 dark:border-amber-900/30 px-6 py-2 flex items-center gap-2 text-xs text-amber-800 dark:text-amber-300">
+            <Calendar className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>Today is a Holiday: <strong>{holidayReason}</strong></span>
+          </div>
+        )}
         <CardHeader>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
 
@@ -1356,11 +1368,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
               <Button
                 variant="default"
                 onClick={() =>
-                  handleSafeNavigation(`/attendance/${id}/insta-add`)
+                  handleSafeNavigation(`/attendance/${id}/hired-workers`)
                 }
               >
-                <UserPlus className="h-4 w-4 mr-2" />
-                Add Employees
+                <Users className="h-4 w-4 mr-2" />
+                Manage Employees
               </Button>
 
               {attendanceExists ? (
@@ -1578,28 +1590,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         </div>
       )}
 
-      {/* HOLIDAY INFO */}
-      {isHoliday && (
-        <Card className="border-yellow-500">
-          <CardContent className="pt-6">
 
-            <div className="flex flex-col gap-2">
-
-              <div>
-                <Badge>
-                  Holiday
-                </Badge>
-              </div>
-
-              <p className="font-medium">
-                {holidayReason}
-              </p>
-
-            </div>
-
-          </CardContent>
-        </Card>
-      )}
 
       {/* FILTERS */}
       <Card>
@@ -1681,6 +1672,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                               {record.user && (
                                 <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
                                   Supervisor
+                                </Badge>
+                              )}
+                              {record.employmentType === 'temporary' && (
+                                <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                                  Temporary
                                 </Badge>
                               )}
                             </div>
@@ -1983,6 +1979,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                             Supervisor
                                           </Badge>
                                         )}
+                                        {record.employmentType === 'temporary' && (
+                                          <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                                            Temporary
+                                          </Badge>
+                                        )}
                                       </div>
 
                                       <p className="text-sm text-muted-foreground">
@@ -2248,6 +2249,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                       Supervisor
                                     </Badge>
                                   )}
+                                  {record.employee.employmentType === 'temporary' && (
+                                    <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                                      Temporary
+                                    </Badge>
+                                  )}
                                 </div>
 
                                 <p className="text-sm text-muted-foreground">
@@ -2382,6 +2388,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                       {record.employee.user && (
                                         <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
                                           Supervisor
+                                        </Badge>
+                                      )}
+                                      {record.employee.employmentType === 'temporary' && (
+                                        <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                                          Temporary
                                         </Badge>
                                       )}
                                     </div>

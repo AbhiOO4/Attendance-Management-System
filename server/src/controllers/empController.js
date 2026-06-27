@@ -6,6 +6,7 @@ import mongoose from 'mongoose'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
 import AttendanceLock from '../models/lockModel.js'
 import attendanceModel from '../models/attendanceModel.js'
+import workModel from '../models/workModel.js'
 
 //Admin
 
@@ -109,6 +110,14 @@ export const addEmployee = async (req, res) => {
   try {
     const newEmployee = new empModel(req.body);
     const savedEmp = await newEmployee.save({ session });
+
+    if (savedEmp.currentJob) {
+      await jobModel.findByIdAndUpdate(
+        savedEmp.currentJob,
+        { $addToSet: { employees: savedEmp._id } },
+        { session }
+      );
+    }
 
     if (savedEmp.employmentType === 'temporary' && savedEmp.currentSite) {
       const siteId = savedEmp.currentSite;
@@ -605,6 +614,253 @@ export const deleteJobTitle = async (req, res) => {
   }
 };
 
+export const getTempPool = async (req, res) => {
+  try {
+    const { name, employeeId, jobTitle, page = 1, limit = 10 } = req.query;
+
+    let filter = {
+      employmentType: 'temporary',
+      currentSite: null,
+      isActive: true
+    };
+
+    if (jobTitle) {
+      filter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: "i" };
+    }
+
+    if (name) {
+      filter.name = { $regex: `^${escapeRegExp(name)}`, $options: "i" };
+    }
+
+    if (employeeId) {
+      filter.employeeId = {
+        $regex: `^${escapeRegExp(employeeId)}`,
+        $options: "i",
+      };
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const employees = await empModel.find(filter,
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType"
+      )
+      .populate("currentJob", "name")
+      .sort({ name: 1 })
+      .skip(skip)
+      .limit(Number(limit));
+
+    const totalEmployees = await empModel.countDocuments(filter);
+
+    res.status(200).json({
+      employees,
+      currentPage: Number(page),
+      totalPages: Math.ceil(totalEmployees / Number(limit)),
+      totalEmployees,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "failed to fetch temp pool" });
+  }
+};
+
+export const assignTempWorker = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { employeeId } = req.body;
+    let siteId = req.body.siteId;
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id).session(session);
+      if (!user || !user.assignedSite) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: "Supervisor has no assigned site" });
+      }
+      siteId = user.assignedSite;
+    }
+
+    if (!siteId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Site ID is required" });
+    }
+
+    const employee = await empModel.findById(employeeId).session(session);
+    if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    if (employee.employmentType !== 'temporary') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Only temporary workers can be assigned from the pool" });
+    }
+
+    if (employee.currentSite) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Employee is already assigned to a site" });
+    }
+
+    employee.currentSite = siteId;
+    await employee.save({ session });
+
+    // Handle locked/submitted daily attendance check
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    const attendanceLock = await AttendanceLock.findOne({
+      siteId,
+      date: today,
+      isLocked: true,
+    }).session(session);
+
+    if (attendanceLock) {
+      const markedBy = req.user?.id || null;
+      await attendanceModel.create([{
+        employee: employee._id,
+        siteId,
+        jobId: null,
+        markedBy,
+        date: today,
+        status: "absent",
+        isHoliday: false,
+        totalWorkHours: 0,
+        overtimeHours: 0,
+        sessions: [
+          {
+            siteId,
+            jobId: null,
+            checkIn: null,
+            checkOut: null,
+            workedHours: 0,
+            markedBy,
+          },
+        ],
+      }], { session });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({ message: "Employee assigned successfully", employee });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const releaseTempWorker = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { employeeId } = req.body;
+
+    const employee = await empModel.findById(employeeId).session(session);
+    if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    if (employee.employmentType !== 'temporary') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Only temporary workers can be released to the pool" });
+    }
+
+    if (!employee.currentSite) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "Employee is not currently assigned to any site" });
+    }
+
+    if (req.user.role === 'supervisor') {
+      const user = await userModel.findById(req.user.id).session(session);
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== employee.currentSite.toString()) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(403).json({ message: "You are not authorized to release a worker from another site" });
+      }
+    }
+
+    const releasedSiteId = employee.currentSite;
+
+    // Pull employee from Job list if assigned
+    if (employee.currentJob) {
+      await jobModel.findByIdAndUpdate(employee.currentJob, {
+        $pull: { employees: employee._id }
+      }, { session });
+    }
+
+    employee.currentSite = null;
+    employee.currentJob = null;
+    await employee.save({ session });
+
+    // Handle today's attendance record & session cleanup
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    const attendanceRecord = await attendanceModel.findOne({
+      employee: employee._id,
+      date: today
+    }).session(session);
+
+    if (attendanceRecord) {
+      attendanceRecord.sessions = attendanceRecord.sessions.filter(
+        (s) => s.siteId.toString() !== releasedSiteId.toString()
+      );
+
+      if (attendanceRecord.sessions.length === 0) {
+        await attendanceModel.findByIdAndDelete(attendanceRecord._id, { session });
+      } else {
+        const workConfig = await workModel.findOne().session(session);
+        const fullDayHours = workConfig?.fullDayHours || 8;
+        const halfDayHours = workConfig?.halfDayHours || 4;
+        const overtimeThreshold = workConfig?.overtimeThreshold || 8;
+
+        const totalWorkHours = attendanceRecord.sessions.reduce(
+          (sum, s) => sum + (s.workedHours || 0),
+          0
+        );
+
+        let status = 'absent';
+        if (totalWorkHours >= fullDayHours) {
+          status = 'fullday';
+        } else if (totalWorkHours >= halfDayHours) {
+          status = 'halfday';
+        }
+
+        let overtimeHours = 0;
+        if (totalWorkHours > overtimeThreshold) {
+          overtimeHours = totalWorkHours - overtimeThreshold;
+        }
+
+        attendanceRecord.totalWorkHours = totalWorkHours;
+        attendanceRecord.status = status;
+        attendanceRecord.overtimeHours = overtimeHours;
+
+        await attendanceRecord.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({ message: "Employee released successfully" });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 const empController = {
   getAllEmployees,
   addEmployee,
@@ -617,8 +873,10 @@ const empController = {
   deleteSupervisor,
   getJobTitles,
   addJobTitle,
-  deleteEmployee,
-  deleteJobTitle
+  deleteJobTitle,
+  getTempPool,
+  assignTempWorker,
+  releaseTempWorker,
 };
 
 export default empController;

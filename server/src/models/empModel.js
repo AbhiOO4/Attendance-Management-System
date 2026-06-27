@@ -26,7 +26,7 @@ const employeeSchema = new mongoose.Schema({
 
   monthlySalary: {
     type: Number,
-    required: [true, 'Monthly salary is required']
+    default: 0
   },
 
   user: {
