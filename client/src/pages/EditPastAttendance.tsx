@@ -138,7 +138,6 @@ type Site = {
   isActive: boolean
 }
 
-
 interface Filters {
   name: string
   employeeId: string
@@ -146,6 +145,18 @@ interface Filters {
   site: string
   page: number
   limit: number
+}
+
+const getDisplayStatus = (record: AttendanceRecord) => {
+  if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
+    const hasCheckInNoCheckOut = record.sessions.some(
+      (session) => session && session.checkIn && !session.checkOut
+    )
+    if (hasCheckInNoCheckOut) {
+      return "pending"
+    }
+  }
+  return record.status
 }
 
 function EditPastAttendance() {
@@ -728,16 +739,26 @@ function EditPastAttendance() {
                                     >
                                       <Badge
                                         variant={
-                                          record.status ===
+                                          getDisplayStatus(record) ===
                                             "fullday"
-                                            ? "default"
-                                            : record.status ===
+                                            ? "secondary"
+                                            : getDisplayStatus(record) ===
                                               "halfday"
                                               ? "secondary"
-                                              : "destructive"
+                                              : getDisplayStatus(record) ===
+                                                "pending"
+                                                ? "secondary"
+                                                : "destructive"
+                                        }
+                                        className={
+                                          getDisplayStatus(record) === "fullday"
+                                            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
+                                            : getDisplayStatus(record) === "pending"
+                                              ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
+                                              : ""
                                         }
                                       >
-                                        {record.status}
+                                        {getDisplayStatus(record)}
                                       </Badge>
                                     </TableCell>
 
@@ -754,7 +775,9 @@ function EditPastAttendance() {
                                       rowSpan={sessions.length}
                                     >
                                       {
-                                        record.overtimeHours
+                                        typeof record.overtimeHours === "number"
+                                          ? Math.round(record.overtimeHours * 100) / 100
+                                          : record.overtimeHours
                                       }{" "}
                                       hrs
                                     </TableCell>

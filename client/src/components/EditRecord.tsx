@@ -337,11 +337,19 @@ const [sessionToDelete, setSessionToDelete] =
       return "halfday"
     }
 
+    const hasCheckInNoCheckOut = sessions && sessions.length > 0 && sessions.some(
+      (session) => session && session.checkIn && !session.checkOut
+    )
+    if (hasCheckInNoCheckOut) {
+      return "pending"
+    }
+
     return "absent"
   }, [
     totalWorkHours,
     config.fullDayHours,
     config.halfDayHours,
+    sessions,
   ])
 
   // --------------------------------------------------
@@ -971,7 +979,20 @@ const [sessionToDelete, setSessionToDelete] =
                 Attendance Status
               </p>
 
-              <Badge className="mt-2 text-sm">
+              <Badge
+                variant={
+                  status === "fullday" || status === "halfday" || status === "pending"
+                    ? "secondary"
+                    : "destructive"
+                }
+                className={`mt-2 text-sm ${
+                  status === "fullday"
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
+                    : status === "pending"
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
+                      : ""
+                }`}
+              >
                 {status}
               </Badge>
             </div>

@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/card"
 
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 
 import {
   Select,
@@ -73,8 +74,17 @@ interface Employee {
   isActive: boolean
 }
 
-
-
+const getDisplayStatus = (record: AttendanceRecord) => {
+  if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
+    const hasCheckInNoCheckOut = record.sessions.some(
+      (session) => session && session.checkIn && !session.checkOut
+    )
+    if (hasCheckInNoCheckOut) {
+      return "pending"
+    }
+  }
+  return record.status
+}
 
 function EmployeeAttendanceDetail() {
   const { id } = useParams()
@@ -329,7 +339,7 @@ function EmployeeAttendanceDetail() {
                   "-",
 
                   sessionIndex === 0
-                    ? record.status
+                    ? getDisplayStatus(record)
                     : "",
 
                   sessionIndex === 0
@@ -337,7 +347,7 @@ function EmployeeAttendanceDetail() {
                     : "",
 
                   sessionIndex === 0
-                    ? record.overtimeHours
+                    ? (typeof record.overtimeHours === "number" ? Math.round(record.overtimeHours * 100) / 100 : record.overtimeHours)
                     : "",
                 ])
 
@@ -363,6 +373,16 @@ function EmployeeAttendanceDetail() {
                   right: {
                     style: "thin",
                   },
+                }
+
+                if (index % 2 !== 0) {
+                  cell.fill = {
+                    type: "pattern",
+                    pattern: "solid",
+                    fgColor: {
+                      argb: "D6E7F7",
+                    },
+                  }
                 }
               })
 
@@ -431,7 +451,7 @@ function EmployeeAttendanceDetail() {
       worksheet.views = [
         {
           state: "frozen",
-          ySplit: 8,
+          ySplit: 7,
         },
       ]
 
@@ -773,18 +793,29 @@ function EmployeeAttendanceDetail() {
                                       sessions.length
                                     }
                                   >
-                                    <div
-                                      className={`inline-flex rounded-full px-3 py-1 text-xs font-medium text-white ${record.status ===
+                                    <Badge
+                                      variant={
+                                        getDisplayStatus(record) ===
                                           "fullday"
-                                          ? "bg-green-600"
-                                          : record.status ===
+                                          ? "secondary"
+                                          : getDisplayStatus(record) ===
                                             "halfday"
-                                            ? "bg-yellow-500"
-                                            : "bg-red-600"
-                                        }`}
+                                            ? "secondary"
+                                            : getDisplayStatus(record) ===
+                                              "pending"
+                                              ? "secondary"
+                                              : "destructive"
+                                      }
+                                      className={
+                                        getDisplayStatus(record) === "fullday"
+                                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
+                                          : getDisplayStatus(record) === "pending"
+                                            ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
+                                            : ""
+                                      }
                                     >
-                                      {record.status}
-                                    </div>
+                                      {getDisplayStatus(record)}
+                                    </Badge>
                                   </TableCell>
 
                                   <TableCell
@@ -804,7 +835,9 @@ function EmployeeAttendanceDetail() {
                                     }
                                   >
                                     {
-                                      record.overtimeHours
+                                      typeof record.overtimeHours === "number"
+                                        ? Math.round(record.overtimeHours * 100) / 100
+                                        : record.overtimeHours
                                     }{" "}
                                     hrs
                                   </TableCell>
