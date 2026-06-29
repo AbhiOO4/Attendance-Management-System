@@ -111,7 +111,7 @@ function DashBoard() {
       null
     )
 
-  const activeSites = dashboard?.sites.filter((site) => site.manHoursToday > 0) || []
+  const activeSites = dashboard?.sites.filter((site) => site.employeesToday > 0 || site.manHoursToday > 0) || []
 
   // --- Sites Overview state ---
   const [overviewTab, setOverviewTab] = useState<"inprogress" | "completed">("inprogress")
