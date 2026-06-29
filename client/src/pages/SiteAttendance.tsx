@@ -118,7 +118,13 @@ export interface AttendanceRecord {
   user?: string | null
 
   employmentType?: 'permanent' | 'temporary'
+
+  breaksTaken?: number | null
+
+  totalRawHours?: number
 }
+
+
 
 interface FetchedAttendance {
   totalRecords: number,
@@ -146,7 +152,9 @@ interface DraftAttendanceRecord {
   jobTitle: string,
   jobId: string | null,
   sessions: DraftSession[]
+  breaksTaken?: number | null
 }
+
 
 interface DraftAttendancePayload {
   siteId: string,
@@ -188,6 +196,9 @@ function SiteAttendance() {
   const navigate = useNavigate()
 
   const [cutoffHour, setCutoffHour] = useState(7)
+  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
+  const [fullDayHours, setFullDayHours] = useState(8)
+
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
@@ -213,7 +224,9 @@ function SiteAttendance() {
     checkIn: string
     checkOut: string
     isNightShift: boolean
+    breaksTaken?: number | null
   } | null>(null)
+
 
   const [site, setSite] = useState<Site | null>(null)
 
@@ -238,10 +251,11 @@ function SiteAttendance() {
     useState<string | null>(null)
 
   const [inlineEdit, setInlineEdit] =
-    useState<{ checkIn: string; checkOut: string; isNightShift: boolean }>({
+    useState<{ checkIn: string; checkOut: string; isNightShift: boolean; breaksTaken: number | null }>({
       checkIn: "",
       checkOut: "",
       isNightShift: false,
+      breaksTaken: null,
     })
   const [inlineEditError, setInlineEditError] = useState<string | null>(null)
 
@@ -410,6 +424,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       const weeklyHolidays =
         configRes.data.data
           .weeklyHolidays || []
+
+      setCutoffHour(configRes.data.data.nightShiftCutoffHour ?? 7)
+      setBreakDurationMinutes(configRes.data.data.breakDurationMinutes ?? 60)
+      setFullDayHours(configRes.data.data.fullDayHours ?? 8)
+
 
       const todayDay = getCurrentTargetDayName()
 
@@ -625,6 +644,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       checkIn: toTimeValue(session?.checkIn),
       checkOut: toTimeValue(session?.checkOut),
       isNightShift: session?.isNightShift ?? false,
+      breaksTaken: record.breaksTaken ?? null,
     })
   }
 
@@ -633,7 +653,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     setOverlapError(null)
     setInlineEditError(null)
 
-    setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false })
+    setInlineEdit({ checkIn: "", checkOut: "", isNightShift: false, breaksTaken: null })
     setLastClearedSaved(null)
   }
 
@@ -681,7 +701,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
             isNightShift,
           },
         ],
+        // Pass the inline edited breaksTaken
+        breaksTaken: inlineEdit.breaksTaken,
       }
+
 
       const res = await api.patch(
         `/api/attendance/update/${record.attendanceId}?siteId=${site?._id}`,
@@ -797,7 +820,18 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     setIsDirty(true)
   }
 
+  const updateDraftBreaksTaken = (employeeId: string, value: number | null) => {
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== employeeId) return record
+        return { ...record, breaksTaken: value }
+      })
+    )
+    setIsDirty(true)
+  }
+
   const clearDraftSession = (employeeId: string, sessionIndex: number) => {
+
     const record = draftAttendance.find((r) => r.employee._id === employeeId)
     const session = record?.sessions[sessionIndex]
     if (record && session) {
@@ -871,11 +905,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       checkIn: inlineEdit.checkIn,
       checkOut: inlineEdit.checkOut,
       isNightShift: inlineEdit.isNightShift,
+      breaksTaken: inlineEdit.breaksTaken,
     })
     setInlineEdit({
       checkIn: "",
       checkOut: "",
       isNightShift: inlineEdit.isNightShift || false,
+      breaksTaken: null,
     })
   }
 
@@ -885,6 +921,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       checkIn: lastClearedSaved.checkIn,
       checkOut: lastClearedSaved.checkOut,
       isNightShift: lastClearedSaved.isNightShift,
+      breaksTaken: lastClearedSaved.breaksTaken ?? null,
     })
     setLastClearedSaved(null)
   }
@@ -1701,6 +1738,68 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                             : getSiteWorkedHours(record)}
                         </div>
 
+                        {breakDurationMinutes > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Breaks:</span>
+                            {isEditing ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                  disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken <= 0}
+                                  onClick={() => {
+                                    const currentSessionHours = record.sessions[0]?.workedHours || 0
+                                    const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
+                                    const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
+                                    const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
+                                    }))
+                                  }}
+                                >−</button>
+                                <span className="text-xs">
+                                  {inlineEdit.breaksTaken !== null
+                                    ? inlineEdit.breaksTaken
+                                    : "Auto"}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                  onClick={() => {
+                                    const currentSessionHours = record.sessions[0]?.workedHours || 0
+                                    const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
+                                    const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
+                                    const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      breaksTaken: (prev.breaksTaken ?? auto) + 1
+                                    }))
+                                  }}
+                                >+</button>
+                                {inlineEdit.breaksTaken !== null && (
+                                  <button
+                                    type="button"
+                                    className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
+                                    onClick={() => setInlineEdit((prev) => ({ ...prev, breaksTaken: null }))}
+                                    title="Reset to auto"
+                                  >✕</button>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs">
+                                {(() => {
+                                  const count = record.breaksTaken !== null && record.breaksTaken !== undefined
+                                    ? record.breaksTaken
+                                    : Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours);
+                                  return `${count}`;
+                                })()}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+
                         {isEditing ? (
                           <div className="space-y-3">
                              <div className="space-y-1">
@@ -1931,6 +2030,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
                       <TableHead>Hours</TableHead>
+                      {breakDurationMinutes > 0 && <TableHead className="text-xs text-muted-foreground">☕ Breaks</TableHead>}
                       <TableHead className="text-right">
                         Actions
                       </TableHead>
@@ -2107,6 +2207,66 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                         inlineEdit.isNightShift
                                       )
                                     : getSiteWorkedHours(record)}
+                                </TableCell>
+                              )}
+
+                              {breakDurationMinutes > 0 && sessionIndex === 0 && (
+                                <TableCell rowSpan={sessions.length}>
+                                  {isEditing ? (
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                        disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken <= 0}
+                                        onClick={() => {
+                                          const currentSessionHours = record.sessions[0]?.workedHours || 0
+                                          const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
+                                          const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
+                                          const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                          setInlineEdit((prev) => ({
+                                            ...prev,
+                                            breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
+                                          }))
+                                        }}
+                                      >−</button>
+                                      <span className="min-w-[44px] text-center text-xs font-medium">
+                                        {inlineEdit.breaksTaken !== null
+                                          ? inlineEdit.breaksTaken
+                                          : "Auto"}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                        onClick={() => {
+                                          const currentSessionHours = record.sessions[0]?.workedHours || 0
+                                          const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
+                                          const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
+                                          const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                          setInlineEdit((prev) => ({
+                                            ...prev,
+                                            breaksTaken: (prev.breaksTaken ?? auto) + 1
+                                          }))
+                                        }}
+                                      >+</button>
+                                      {inlineEdit.breaksTaken !== null && (
+                                        <button
+                                          type="button"
+                                          className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
+                                          onClick={() => setInlineEdit((prev) => ({ ...prev, breaksTaken: null }))}
+                                          title="Reset to auto"
+                                        >✕</button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-xs">
+                                      {(() => {
+                                        const count = record.breaksTaken !== null && record.breaksTaken !== undefined
+                                          ? record.breaksTaken
+                                          : Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours);
+                                        return `${count}`;
+                                      })()}
+                                    </span>
+                                  )}
                                 </TableCell>
                               )}
 
@@ -2300,6 +2460,45 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                               )}
                             </div>
 
+                            {breakDurationMinutes > 0 && (
+                              <div className="flex items-center gap-2 text-sm">
+                                <span className="font-medium">Breaks:</span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                    disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
+                                    onClick={() => {
+                                      const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                                      updateDraftBreaksTaken(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
+                                    }}
+                                  >−</button>
+                                  <span className="min-w-[40px] text-center text-xs">
+                                    {record.breaksTaken !== null && record.breaksTaken !== undefined
+                                      ? record.breaksTaken
+                                      : "Auto"}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                    onClick={() => {
+                                      const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                                      updateDraftBreaksTaken(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                                    }}
+                                  >+</button>
+                                  {record.breaksTaken !== null && record.breaksTaken !== undefined && (
+                                    <button
+                                      type="button"
+                                      className="text-xs text-muted-foreground hover:text-foreground ml-1"
+                                      onClick={() => updateDraftBreaksTaken(record.employee._id, null)}
+                                      title="Reset to auto"
+                                    >✕</button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+
                             {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
                               <div className="flex justify-start">
                                 <Button
@@ -2355,7 +2554,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
                       <TableHead>Hours</TableHead>
+                      {breakDurationMinutes > 0 && <TableHead className="text-xs text-muted-foreground">☕ Breaks</TableHead>}
                       <TableHead className="text-right">Actions</TableHead>
+
                     </TableRow>
                   </TableHeader>
 
@@ -2454,7 +2655,46 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   session.workedHours
                                 }
                               </TableCell>
+
+                              {breakDurationMinutes > 0 && (
+                                <TableCell>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                      disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
+                                      onClick={() => {
+                                        const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                                        updateDraftBreaksTaken(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
+                                      }}
+                                    >−</button>
+                                    <span className="min-w-[44px] text-center text-xs">
+                                      {record.breaksTaken !== null && record.breaksTaken !== undefined
+                                        ? record.breaksTaken
+                                        : "Auto"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                      onClick={() => {
+                                        const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                                        updateDraftBreaksTaken(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                                      }}
+                                    >+</button>
+                                    {record.breaksTaken !== null && record.breaksTaken !== undefined && (
+                                      <button
+                                        type="button"
+                                        className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
+                                        onClick={() => updateDraftBreaksTaken(record.employee._id, null)}
+                                        title="Reset to auto"
+                                      >✕</button>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              )}
+
                               <TableCell className="text-right">
+
                                 {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
                                   <Button
                                     variant="outline"

@@ -41,7 +41,9 @@ type WorkSchedule = {
   overtimeRatePerHour: number;
   weeklyHolidays: string[];
   nightShiftCutoffHour: number;
+  breakDurationMinutes: number;
 };
+
 
 type Holiday = {
   _id: string;
@@ -90,7 +92,9 @@ export default function Configure() {
     overtimeRatePerHour: 0,
     weeklyHolidays: [],
     nightShiftCutoffHour: 7,
+    breakDurationMinutes: 60,
   });
+
 
   const [holidayForm, setHolidayForm] = useState({
     date: "",
@@ -156,11 +160,12 @@ export default function Configure() {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
         overtimeThreshold: schedule.overtimeThreshold,
-        overtimeRatePerHour:
-          schedule.overtimeRatePerHour,
+        overtimeRatePerHour: schedule.overtimeRatePerHour,
         weeklyHolidays: schedule.weeklyHolidays,
         nightShiftCutoffHour: schedule.nightShiftCutoffHour,
+        breakDurationMinutes: schedule.breakDurationMinutes,
       });
+
 
       toast.success("Work schedule updated successfully");
     } catch (err) {
@@ -420,6 +425,31 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     Overtime pay amount per hour.
+                  </p>
+                </div>
+
+                {/* BREAK DURATION */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Break Duration (min)
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={480}
+                    step={15}
+                    value={schedule.breakDurationMinutes}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        breakDurationMinutes: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Duration of one break in minutes. 1 break is deducted per full day worked (e.g. 16h shift = 2 breaks). Set 0 to disable.
                   </p>
                 </div>
 

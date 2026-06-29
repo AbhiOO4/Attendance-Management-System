@@ -328,6 +328,51 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConf
 
 
 
+// --- BREAK / HOURS HELPER ---
+
+/**
+ * Computes net work hours, attendance status, and overtime from raw session hours.
+ *
+ * Design rules:
+ *  1. STATUS   — determined from RAW hours (break-agnostic) to prevent edge-case demotions.
+ *  2. BREAKS   — proportional: floor(raw / fullDayHours) per day, unless supervisor overrides.
+ *  3. NET HRS  — raw minus total break deduction (never below 0).
+ *  4. OVERTIME — calculated on NET hours against overtimeThreshold.
+ *
+ * @param {number}      rawHours    Sum of all session workedHours
+ * @param {object}      workConfig  WorkSchedule document (needs fullDayHours, halfDayHours,
+ *                                  overtimeThreshold, breakDurationMinutes)
+ * @param {number|null} breaksTaken null = auto; 0+ = supervisor override
+ * @returns {{ netWorkHours, status, overtimeHours, breaksApplied }}
+ */
+function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null) {
+  const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
+  const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
+
+  // STEP 1 – Status from raw hours (never affected by break deduction)
+  let status = 'absent';
+  if (rawHours >= fullDayHours)       status = 'fullday';
+  else if (rawHours >= halfDayHours)  status = 'halfday';
+
+  // STEP 2 – Number of breaks to apply
+  const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
+  const breaksApplied = (breaksTaken !== null && breaksTaken !== undefined && breaksTaken >= 0)
+    ? breaksTaken
+    : autoBreaks;
+  const totalBreakHours = breaksApplied * breakDurationHours;
+
+  // STEP 3 – Net work hours (floor at 0)
+  const netWorkHours = Number(Math.max(rawHours - totalBreakHours, 0).toFixed(2));
+
+  // STEP 4 – Overtime on net hours
+  const overtimeHours = netWorkHours > overtimeThreshold
+    ? Number((netWorkHours - overtimeThreshold).toFixed(2))
+    : 0;
+
+  return { netWorkHours, status, overtimeHours, breaksApplied };
+}
+
+
 // --- ADMINS ---
 
 
@@ -1014,6 +1059,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         employeeId,
         jobId,
         sessions,
+        breaksTaken = null,
       } = entry
 
       const empId = employee?._id 
@@ -1228,33 +1274,29 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.sessions = mergedSessions
 
       // -----------------------------
-      // TOTAL HOURS
+      // TOTAL HOURS, STATUS & OT
       // -----------------------------
-      const totalWorkHours =
-        mergedSessions.reduce(
-          (sum, s) =>
-            sum + (s.workedHours || 0),
-          0
-        )
+      const rawHours = mergedSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0)
 
-      let status = "absent"
+      // Preserve existing breaksTaken override if not supplied in this submission
+      const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
+        ? breaksTaken
+        : (attendanceDoc.breaksTaken ?? null)
 
-      if (totalWorkHours >= fullDayHours) {
-        status = "fullday"
-      } else if (totalWorkHours >= halfDayHours) {
-        status = "halfday"
-      }
+      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        effectiveBreaksTaken
+      )
 
-      let overtimeHours = 0
-
-      if (totalWorkHours > overtimeThreshold) {
-        overtimeHours = totalWorkHours - overtimeThreshold
-      }
-
-      attendanceDoc.totalWorkHours = totalWorkHours
+      attendanceDoc.totalWorkHours = netWorkHours
       attendanceDoc.status = status
       attendanceDoc.overtimeHours = overtimeHours
+      if (breaksTaken !== undefined) {
+        attendanceDoc.breaksTaken = breaksTaken
+      }
       attendanceDoc.isHoliday = isHolidayResolved
+
       // Night shift detection
       const hasCrossedMidnight = detectCrossedMidnight(mergedSessions, timezoneOffset)
       attendanceDoc.crossedMidnight = hasCrossedMidnight
@@ -1344,6 +1386,7 @@ export const getSiteAttendance = async (req, res) => {
       // filter sessions by site
       {
         $addFields: {
+          totalRawHours: { $sum: "$sessions.workedHours" },
           filteredSessions: {
             $filter: {
               input: "$sessions",
@@ -1355,6 +1398,7 @@ export const getSiteAttendance = async (req, res) => {
           },
         },
       },
+
 
       {
         $match: {
@@ -1407,6 +1451,11 @@ export const getSiteAttendance = async (req, res) => {
           shiftType: "$shiftType",
 
           crossedMidnight: "$crossedMidnight",
+
+          breaksTaken: "$breaksTaken",
+
+          totalRawHours: "$totalRawHours",
+
 
           sessions: {
             $map: {
@@ -1626,6 +1675,8 @@ export const getAttendanceRecords = async (req, res) => {
 
         crossedMidnight: record.crossedMidnight,
 
+        breaksTaken: record.breaksTaken,
+
         sessions: record.sessions.map(
           (session) => ({
             _id: session._id,
@@ -1776,7 +1827,9 @@ export const bulkEditAttendance = async (
         jobId,
         checkIn,
         checkOut,
+        breaksTaken = null,
       } = entry;
+
 
       // FIND ATTENDANCE DOC
       const attendanceDoc = await Attendance.findOne({
@@ -1833,33 +1886,32 @@ export const bulkEditAttendance = async (
       const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, workConfig);
       attendanceDoc.sessions = closedSessions;
 
-      // RECALCULATE TOTAL HOURS
-      const totalWorkHours = attendanceDoc.sessions.reduce(
+      // RECALCULATE TOTAL HOURS, STATUS & OT
+      const rawHours = attendanceDoc.sessions.reduce(
         (acc, sessionObj) => acc + (sessionObj.workedHours || 0),
         0
       );
 
-      // RECALCULATE STATUS
-      let status = "absent";
+      const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
+        ? breaksTaken
+        : (attendanceDoc.breaksTaken ?? null);
 
-      if (totalWorkHours >= fullDayHours) {
-        status = "fullday";
-      } else if (totalWorkHours >= halfDayHours) {
-        status = "halfday";
-      }
-
-      // RECALCULATE OT
-      let overtimeHours = 0;
-
-      if (totalWorkHours > overtimeThreshold) {
-        overtimeHours = totalWorkHours - overtimeThreshold;
-      }
+      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        effectiveBreaksTaken
+      );
 
       // UPDATE DOC
-      attendanceDoc.totalWorkHours = totalWorkHours;
+      attendanceDoc.totalWorkHours = netWorkHours;
       attendanceDoc.status = status;
       attendanceDoc.overtimeHours = overtimeHours;
+      if (breaksTaken !== undefined) {
+        attendanceDoc.breaksTaken = breaksTaken;
+      }
       attendanceDoc.isHoliday = isHolidayResolved;
+
+
 
       await attendanceDoc.save({ session });
 
@@ -1912,7 +1964,8 @@ export const bulkEditAttendance = async (
 export const updateAttendance = async (req, res) => {
   try {
     const { attendanceId } = req.params;
-    const { sessions, siteId: bodySiteId } = req.body;
+    const { sessions, siteId: bodySiteId, breaksTaken } = req.body;
+
     const { siteId: querySiteId } = req.query;
     const siteId = querySiteId || bodySiteId;
     const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
@@ -2204,8 +2257,7 @@ export const updateAttendance = async (req, res) => {
         }
       }
 
-      attendance.sessions =
-        combinedSessions;
+      attendance.sessions = combinedSessions;
 
       // Night shift detection
       const hasCrossedMidnight = detectCrossedMidnight(combinedSessions, timezoneOffset);
@@ -2213,50 +2265,28 @@ export const updateAttendance = async (req, res) => {
       attendance.shiftType = hasCrossedMidnight ? "night" : "day";
 
       // -----------------------------
-      // Total worked hours
+      // Total hours, status & OT
       // -----------------------------
-      const totalHours =
-        combinedSessions.reduce(
-          (total, session) =>
-            total + session.workedHours,
-          0
-        );
+      const rawHours = combinedSessions.reduce(
+        (total, session) => total + (session.workedHours || 0),
+        0
+      );
 
-      attendance.totalWorkHours =
-        Number(totalHours.toFixed(2));
+      const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
+        ? breaksTaken
+        : (attendance.breaksTaken ?? null);
 
-      // -----------------------------
-      // Overtime
-      // -----------------------------
-      attendance.overtimeHours =
-        totalHours >
-          workConfig.overtimeThreshold
-          ? Number(
-            (
-              totalHours -
-              workConfig.overtimeThreshold
-            ).toFixed(2)
-          )
-          : 0;
+      const { netWorkHours, status: computedStatus, overtimeHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        effectiveBreaksTaken
+      );
 
-      // -----------------------------
-      // Attendance status
-      // -----------------------------
-      if (
-        totalHours >=
-        workConfig.fullDayHours
-      ) {
-        attendance.status =
-          "fullday";
-      } else if (
-        totalHours >=
-        workConfig.halfDayHours
-      ) {
-        attendance.status =
-          "halfday";
-      } else {
-        attendance.status =
-          "absent";
+      attendance.totalWorkHours = netWorkHours;
+      attendance.overtimeHours = overtimeHours;
+      attendance.status = computedStatus;
+      if (breaksTaken !== undefined) {
+        attendance.breaksTaken = breaksTaken;
       }
     }
 
@@ -2337,6 +2367,11 @@ export const updateAttendance = async (req, res) => {
       shiftType: updatedAttendance.shiftType,
 
       crossedMidnight: updatedAttendance.crossedMidnight,
+
+      breaksTaken: updatedAttendance.breaksTaken,
+
+      totalRawHours: updatedAttendance.sessions.reduce((total, session) => total + (session.workedHours || 0), 0),
+
 
       sessions:
         updatedAttendance.sessions.map(
@@ -2529,6 +2564,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
         shiftType: record.shiftType,
 
         crossedMidnight: record.crossedMidnight,
+
+        breaksTaken: record.breaksTaken,
+
 
         sessions:
           record.sessions.map(
@@ -2723,6 +2761,9 @@ export const getAttendanceById = async (req, res) => {
           shiftType: "$shiftType",
 
           crossedMidnight: "$crossedMidnight",
+
+          breaksTaken: "$breaksTaken",
+
 
           sessions: {
             $map: {
@@ -3007,7 +3048,8 @@ export const getMissingEmployees = async (req, res) => {
 // Body: { employeeMongoId, date, sessions: [{siteId, jobId, checkIn, checkOut, isNightShift}] }
 export const backfillAttendance = async (req, res) => {
   try {
-    const { employeeMongoId, date, sessions = [] } = req.body;
+    const { employeeMongoId, date, sessions = [], breaksTaken = null } = req.body;
+
     const markedBy = req.user?.id;
     const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
       ? process.env.APP_TIMEZONE_OFFSET
@@ -3144,15 +3186,13 @@ export const backfillAttendance = async (req, res) => {
     }
 
     // Totals
-    const totalWorkHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
-    let status = 'absent';
-    if (totalWorkHours >= fullDayHours) status = 'fullday';
-    else if (totalWorkHours >= halfDayHours) status = 'halfday';
+    const rawHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
 
-    let overtimeHours = 0;
-    if (totalWorkHours > overtimeThreshold) {
-      overtimeHours = Number((totalWorkHours - overtimeThreshold).toFixed(2));
-    }
+    const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+      rawHours,
+      workConfig,
+      breaksTaken
+    );
 
     const hasCrossedMidnight = detectCrossedMidnight(builtSessions, timezoneOffset);
 
@@ -3173,12 +3213,14 @@ export const backfillAttendance = async (req, res) => {
       markedBy,
       isHoliday: isHolidayResolved,
       status,
-      totalWorkHours,
+      totalWorkHours: netWorkHours,
       overtimeHours,
+      breaksTaken: breaksTaken !== undefined ? breaksTaken : null,
       shiftType: hasCrossedMidnight ? 'night' : 'day',
       crossedMidnight: hasCrossedMidnight,
       sessions: builtSessions,
     });
+
 
     await newAttendance.save();
 
@@ -3207,6 +3249,7 @@ export const backfillAttendance = async (req, res) => {
       isHoliday: record.isHoliday,
       totalWorkHours: record.totalWorkHours,
       overtimeHours: record.overtimeHours,
+      breaksTaken: record.breaksTaken,
       shiftType: record.shiftType,
       crossedMidnight: record.crossedMidnight,
       sessions: record.sessions.map((session) => ({
@@ -3539,21 +3582,21 @@ export const assignNightShift = async (req, res) => {
       }
 
       // Recalculate totals
-      const totalWorkHours = attendanceDoc.sessions.reduce(
+      const rawHours = attendanceDoc.sessions.reduce(
         (sum, s) => sum + (s.workedHours || 0),
         0
       );
 
-      let status = "absent";
-      if (totalWorkHours >= fullDayHours) status = "fullday";
-      else if (totalWorkHours >= halfDayHours) status = "halfday";
+      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        attendanceDoc.breaksTaken ?? null
+      );
 
-      attendanceDoc.totalWorkHours = totalWorkHours;
+      attendanceDoc.totalWorkHours = netWorkHours;
       attendanceDoc.status = status;
-      attendanceDoc.overtimeHours =
-        totalWorkHours > overtimeThreshold
-          ? totalWorkHours - overtimeThreshold
-          : 0;
+      attendanceDoc.overtimeHours = overtimeHours;
+
 
       // Document-level night shift detection
       const crossed = detectCrossedMidnight(

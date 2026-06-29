@@ -107,7 +107,11 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     halfDayHours: 4,
     overtimeThreshold: 8,
     nightShiftCutoffHour: 7,
+    breakDurationMinutes: 60,
   })
+
+  const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
+
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const isDirty = sessions.length > 0
@@ -134,6 +138,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     setOverlapInfo(null)
     setOverlapIndexes([])
     setSessions([])
+    setBreaksTaken(null)
   }, [open, employee])
 
   useEffect(() => {
@@ -162,6 +167,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
         halfDayHours: res.data.data.halfDayHours,
         overtimeThreshold: res.data.data.overtimeThreshold,
         nightShiftCutoffHour: res.data.data.nightShiftCutoffHour ?? 7,
+        breakDurationMinutes: res.data.data.breakDurationMinutes ?? 60,
       })
     } catch (error) {
       console.log(error)
@@ -187,20 +193,34 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   // DERIVED VALUES
   // --------------------------------------------------
 
-  const totalWorkHours = useMemo(() => {
+  const rawHours = useMemo(() => {
     return Number(sessions.reduce((acc, curr) => acc + curr.workedHours, 0).toFixed(2))
   }, [sessions])
+
+  const autoBreaks = useMemo(() => {
+    return config.fullDayHours > 0 ? Math.floor(rawHours / config.fullDayHours) : 0
+  }, [rawHours, config.fullDayHours])
+
+  const breaksApplied = useMemo(() => {
+    return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
+  }, [breaksTaken, autoBreaks])
+
+  const totalWorkHours = useMemo(() => {
+    const breakHrs = breaksApplied * (config.breakDurationMinutes / 60)
+    return Number(Math.max(rawHours - breakHrs, 0).toFixed(2))
+  }, [rawHours, breaksApplied, config.breakDurationMinutes])
+
+  const status = useMemo(() => {
+    if (rawHours >= config.fullDayHours) return "fullday"
+    if (rawHours >= config.halfDayHours) return "halfday"
+    return "absent"
+  }, [rawHours, config.fullDayHours, config.halfDayHours])
 
   const overtimeHours = useMemo(() => {
     if (totalWorkHours <= config.overtimeThreshold) return 0
     return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
   }, [totalWorkHours, config.overtimeThreshold])
 
-  const status = useMemo(() => {
-    if (totalWorkHours >= config.fullDayHours) return "fullday"
-    if (totalWorkHours >= config.halfDayHours) return "halfday"
-    return "absent"
-  }, [totalWorkHours, config.fullDayHours, config.halfDayHours])
 
   // --------------------------------------------------
   // HANDLERS
@@ -382,6 +402,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
           checkOut: s.checkOut ? toTimeValue(s.checkOut) : null,
           isNightShift: s.isNightShift || false,
         })),
+        breaksTaken,
       }
 
       const res = await api.post("/api/attendance/backfill", payload)
@@ -452,6 +473,45 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
               )}
             </div>
           </div>
+
+          {/* BREAK CONTROL — record-level, above sessions */}
+          {config.breakDurationMinutes > 0 && (
+            <div className="flex flex-wrap items-center gap-2 md:gap-3 rounded-xl border bg-muted/10 px-4 py-3">
+              <span className="text-sm text-muted-foreground shrink-0">☕ Breaks taken:</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                  disabled={breaksTaken !== null && breaksTaken <= 0}
+                  onClick={() => setBreaksTaken((prev) => Math.max(0, (prev ?? autoBreaks) - 1))}
+                >−</button>
+
+                <span className="min-w-[60px] text-center text-sm font-medium">
+                  {breaksTaken !== null
+                    ? `${breaksTaken}`
+                    : `Auto · ${autoBreaks}`}
+                </span>
+
+                <button
+                  type="button"
+                  className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
+                  onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                >+</button>
+
+                {breaksTaken !== null && (
+                  <button
+                    type="button"
+                    className="ml-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={() => setBreaksTaken(null)}
+                    title="Reset to auto"
+                  >✕ auto</button>
+                )}
+              </div>
+              <span className="text-xs text-muted-foreground sm:ml-auto">
+                ({config.breakDurationMinutes} min/break)
+              </span>
+            </div>
+          )}
 
           {/* SESSIONS */}
           <div className="space-y-5">

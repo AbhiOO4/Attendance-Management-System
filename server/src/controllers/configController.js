@@ -36,7 +36,9 @@ export const updateWorkSchedule = async (req, res) => {
       overtimeRatePerHour,
       weeklyHolidays,
       nightShiftCutoffHour,
+      breakDurationMinutes,
     } = req.body;
+
 
     const schedule = await workModel.findOne({
       type: "default",
@@ -84,6 +86,16 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.nightShiftCutoffHour = nightShiftCutoffHour;
+    }
+
+    if (breakDurationMinutes !== undefined) {
+      if (breakDurationMinutes < 0 || breakDurationMinutes > 480) {
+        return res.status(400).json({
+          success: false,
+          message: "Break duration must be between 0 and 480 minutes",
+        });
+      }
+      schedule.breakDurationMinutes = breakDurationMinutes;
     }
 
     // Optional validation

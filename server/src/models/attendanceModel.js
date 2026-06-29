@@ -115,6 +115,15 @@ const attendanceSchema = new mongoose.Schema(
       type: [attendanceSessionSchema],
       default: [],
     },
+
+    // Number of breaks the employee actually took.
+    // null  → auto-computed as floor(totalWorkHours / fullDayHours) at save time.
+    // 0+    → supervisor override (e.g. skipped one break out of two due).
+    breaksTaken: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
   },
   {
     timestamps: true,

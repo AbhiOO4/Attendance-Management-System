@@ -69,6 +69,16 @@ const workScheduleSchema = new mongoose.Schema(
       max: 12,
       default: 7,
     },
+
+    // Duration of a single break in minutes.
+    // Total break deduction = floor(rawHours / fullDayHours) * breakDurationMinutes / 60
+    // Set to 0 to disable break deductions entirely.
+    breakDurationMinutes: {
+      type: Number,
+      min: 0,
+      max: 480,
+      default: 60,
+    },
   },
   { timestamps: true }
 );

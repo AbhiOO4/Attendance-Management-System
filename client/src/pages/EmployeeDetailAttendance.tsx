@@ -102,6 +102,21 @@ function EmployeeAttendanceDetail() {
   const [employee, setEmployee] =
     useState<Employee | null>(null)
 
+  const [fullDayHours, setFullDayHours] = useState(8)
+  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
+
+  const fetchConfig = async () => {
+    try {
+      const res = await api.get("/api/config")
+      setFullDayHours(res.data.data.fullDayHours ?? 8)
+      setBreakDurationMinutes(res.data.data.breakDurationMinutes ?? 60)
+    } catch (error) {
+      console.log(error)
+    }
+  }
+
+
+
   const [attendance, setAttendance] =
     useState<AttendanceRecord[]>([])
 
@@ -481,6 +496,7 @@ function EmployeeAttendanceDetail() {
 
   useEffect(() => {
     fetchEmployee()
+    fetchConfig()
   }, [id])
 
   useEffect(() => {
@@ -684,6 +700,8 @@ function EmployeeAttendanceDetail() {
 
                     <TableHead>OT Hours</TableHead>
 
+                    <TableHead>Breaks</TableHead>
+
                     <TableHead className="text-right">
                       Actions
                     </TableHead>
@@ -841,6 +859,22 @@ function EmployeeAttendanceDetail() {
                                     }{" "}
                                     hrs
                                   </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {(() => {
+                                      const count = record.breaksTaken !== null && record.breaksTaken !== undefined
+                                        ? record.breaksTaken
+                                        : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours);
+                                      const hrs = (count * breakDurationMinutes) / 60;
+                                      return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
+                                    })()}
+
+                                  </TableCell>
+
 
                                   <TableCell
                                     rowSpan={

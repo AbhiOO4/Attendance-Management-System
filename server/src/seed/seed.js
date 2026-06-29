@@ -19,6 +19,8 @@ import employeeModel from "../models/empModel.js"
 import userModel from "../models/userModel.js";
 import workModel from "../models/workModel.js";
 import jobTitleModel from "../models/jobTitleModel.js";
+import Attendance from "../models/attendanceModel.js";
+
 
 const seeWorkSchedule = async () => {
   try {
@@ -215,5 +217,50 @@ async function createSuperAdmin (name, email, password) {
 
 // seeWorkSchedule()
 // createAdmin('Abhi', 'abhi@gmail.com', "admin@2026", )
-createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
+// createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
+
+const recalculateExistingAttendance = async () => {
+  try {
+    const workConfig = await workModel.findOne({ type: "default" });
+    if (!workConfig) {
+      console.log("No default work config found.");
+      return;
+    }
+    const { fullDayHours, overtimeThreshold } = workConfig;
+    const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
+
+    const records = await Attendance.find();
+    console.log(`Found ${records.length} attendance records to recalculate.`);
+
+    let updatedCount = 0;
+    for (const record of records) {
+      // Calculate raw work hours from sessions
+      const rawHours = record.sessions.reduce((total, session) => total + (session.workedHours || 0), 0);
+      
+      const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
+      const breaksApplied = (record.breaksTaken !== null && record.breaksTaken !== undefined)
+        ? record.breaksTaken
+        : autoBreaks;
+
+      const netWorkHours = Math.max(rawHours - (breaksApplied * breakDurationHours), 0);
+      const overtimeHours = netWorkHours > overtimeThreshold ? Number((netWorkHours - overtimeThreshold).toFixed(2)) : 0;
+
+      record.totalWorkHours = Number(netWorkHours.toFixed(2));
+      record.overtimeHours = overtimeHours;
+      record.breaksTaken = record.breaksTaken ?? null; // Ensure breaksTaken exists on the document as null if not overridden
+
+      await record.save();
+      updatedCount++;
+    }
+
+    console.log(`Successfully recalculated and saved ${updatedCount} records.`);
+    process.exit(0);
+  } catch (error) {
+    console.error("Error recalculating existing attendance:", error);
+    process.exit(1);
+  }
+};
+
+// recalculateExistingAttendance();
+
 

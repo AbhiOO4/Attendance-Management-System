@@ -109,6 +109,10 @@ export interface AttendanceRecord {
   overtimeHours: number
 
   sessions: AttendanceSession[]
+
+  breaksTaken?: number | null
+
+  totalRawHours?: number
 }
 
 export interface AttendancePagination {
@@ -177,6 +181,10 @@ function EditPastAttendance() {
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
   const [isWeeklyHoliday, setIsWeeklyHoliday] = useState<boolean>(false)
+  const [fullDayHours, setFullDayHours] = useState(8)
+  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
+
+
 
   const [filters, setFilters] =
     useState<Filters>({
@@ -220,6 +228,10 @@ function EditPastAttendance() {
       const configRes = await api.get("/api/config")
 
       const weeklyHolidays = configRes.data.data.weeklyHolidays || []
+      setFullDayHours(configRes.data.data.fullDayHours ?? 8)
+      setBreakDurationMinutes(configRes.data.data.breakDurationMinutes ?? 60)
+
+
 
 
       // ---------------- WEEKLY HOLIDAY PRIORITY ----------------
@@ -627,6 +639,11 @@ function EditPastAttendance() {
                       OT Hours
                     </TableHead>
 
+                    <TableHead>
+                      Breaks
+                    </TableHead>
+
+
                     <TableHead className="text-right">
                       Actions
                     </TableHead>
@@ -781,6 +798,20 @@ function EditPastAttendance() {
                                       }{" "}
                                       hrs
                                     </TableCell>
+
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                       {(() => {
+                                         const count = record.breaksTaken !== null && record.breaksTaken !== undefined
+                                           ? record.breaksTaken
+                                           : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours);
+                                         const hrs = (count * breakDurationMinutes) / 60;
+                                         return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
+                                       })()}
+
+                                    </TableCell>
+
 
                                     <TableCell
                                       rowSpan={sessions.length}
