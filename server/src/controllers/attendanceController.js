@@ -689,20 +689,27 @@ export const getSummary = async (req, res) => {
             // employeeId -> total hours worked
             employeeHours:
               new Map(),
+
+            // Set of checked-in employee IDs
+            checkedInEmployees: new Set(),
           });
         }
 
         const siteStats =
           siteMap.get(siteId);
 
+        const employeeId =
+          attendance.employee.toString();
+
+        if (session.checkIn) {
+          siteStats.checkedInEmployees.add(employeeId);
+        }
+
         const workedHours =
           session.workedHours || 0;
 
         siteStats.manHoursToday +=
           workedHours;
-
-        const employeeId =
-          attendance.employee.toString();
 
         const existingHours =
           siteStats.employeeHours.get(
@@ -745,12 +752,7 @@ export const getSummary = async (req, res) => {
 
       if (!site) continue;
 
-      const employeesToday =
-        Array.from(
-          stats.employeeHours.values()
-        ).filter(
-          (hours) => hours > 0
-        ).length;
+      const employeesToday = stats.checkedInEmployees ? stats.checkedInEmployees.size : 0;
 
       sites.push({
         siteId,
