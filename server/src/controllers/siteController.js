@@ -34,8 +34,14 @@ export const getSites = async (req, res) => {
             // Fetch all attendance records for this date
             const records = await attendanceModel.find({ date: parsedDate }).lean()
 
+            // Fetch all locks for this date to determine initialization
+            const locks = await AttendanceLock.find({ date: parsedDate }).lean()
+            const lockedSiteIds = new Set(locks.map(l => l.siteId.toString()))
+
             const sitesWithStatus = sites.map(site => {
                 const siteIdStr = site._id.toString()
+                const isInitialized = lockedSiteIds.has(siteIdStr)
+
                 let hasAtLeastOneComplete = false
                 let hasIncomplete = false
 
@@ -57,10 +63,16 @@ export const getSites = async (req, res) => {
 
                 const taken = hasAtLeastOneComplete && !hasIncomplete
                 
+                let status = "pending"
+                if (isInitialized) {
+                    status = hasIncomplete ? "taken" : "completed"
+                }
+
                 const siteObj = site.toObject ? site.toObject() : site
                 return {
                     ...siteObj,
-                    taken
+                    taken,
+                    status
                 }
             })
 

@@ -16,10 +16,11 @@ type Site = {
   locationDetails: string
   isActive: boolean
   isPermanent?: boolean
+  status?: "pending" | "taken" | "completed"
 }
 
 type SiteAttendanceStatus = {
-  [key: string]: boolean
+  [key: string]: "pending" | "taken" | "completed"
 }
 
 function MarkAttendance() {
@@ -57,7 +58,7 @@ function MarkAttendance() {
 
       const statusMap: SiteAttendanceStatus = {}
       sortedSites.forEach((site: any) => {
-        statusMap[site._id] = site.taken || false
+        statusMap[site._id] = site.status || "pending"
       })
 
       setAttendanceStatus(statusMap)
@@ -151,7 +152,7 @@ function MarkAttendance() {
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {sites.map((site) => {
-              const taken = attendanceStatus[site._id]
+              const status = attendanceStatus[site._id] || "pending"
 
               return (
                 <Card
@@ -185,12 +186,18 @@ function MarkAttendance() {
                       <Badge
                         variant="outline"
                         className={
-                          taken
+                          status === "completed"
                             ? "border-green-500 bg-green-500/10 text-green-600"
+                            : status === "taken"
+                            ? "border-amber-500 bg-amber-500/10 text-amber-600"
                             : "border-red-500 bg-red-500/10 text-red-600"
                         }
                       >
-                        {taken ? "Taken" : "Pending"}
+                        {status === "completed"
+                          ? "Completed"
+                          : status === "taken"
+                          ? "Taken"
+                          : "Pending"}
                       </Badge>
                     </div>
                   </CardContent>
