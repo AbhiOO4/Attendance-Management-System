@@ -661,11 +661,13 @@ export const getSummary = async (req, res) => {
     const siteMap = new Map();
 
     for (const attendance of attendances) {
-      // Present count
-      if (
+      // Present count: count records with at least a session with a checkin filled (or status is fullday/halfday)
+      const isPresent =
         attendance.status === "fullday" ||
-        attendance.status === "halfday"
-      ) {
+        attendance.status === "halfday" ||
+        (attendance.sessions &&
+          attendance.sessions.some((s) => s.checkIn));
+      if (isPresent) {
         presentToday++;
       }
 
