@@ -2334,7 +2334,7 @@ export const updateAttendance = async (req, res) => {
       )
         .populate(
           "employee",
-          "name employeeId jobTitle"
+          "name employeeId jobTitle user employmentType"
         )
         .populate(
           "siteId",
@@ -2369,6 +2369,14 @@ export const updateAttendance = async (req, res) => {
       jobTitle:
         updatedAttendance.employee
           ?.jobTitle || "",
+
+      user:
+        updatedAttendance.employee
+          ?.user || null,
+
+      employmentType:
+        updatedAttendance.employee
+          ?.employmentType,
 
       siteId:
         updatedAttendance.siteId

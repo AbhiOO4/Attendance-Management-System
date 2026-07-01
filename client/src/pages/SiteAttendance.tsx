@@ -1933,7 +1933,6 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   Temporary
                                 </Badge>
                               )}
-                              {record.isSickLeave && <SickLeaveBadge />}
                             </div>
 
                             <p className="text-sm text-muted-foreground">
@@ -1941,7 +1940,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                             </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                            {record.isSickLeave ? (
+                              <SickLeaveBadge />
+                            ) : isEmployeeAbsent(record.sessions, id) ? (
+                              <AbsentIndicator />
+                            ) : null}
                             {!isEditing && (
                               <RowActionsMenu
                                 isSick={!!record.isSickLeave}
@@ -2313,14 +2316,17 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                             Temporary
                                           </Badge>
                                         )}
-                                        {record.isSickLeave && <SickLeaveBadge />}
                                       </div>
 
                                       <p className="text-sm text-muted-foreground">
                                         {record.employeeId} • {record.jobTitle}
                                       </p>
                                     </div>
-                                    {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                                    {record.isSickLeave ? (
+                                      <SickLeaveBadge />
+                                    ) : isEmployeeAbsent(record.sessions, id) ? (
+                                      <AbsentIndicator />
+                                    ) : null}
                                   </div>
                                 </TableCell>
                               )}
@@ -2655,7 +2661,6 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                       Temporary
                                     </Badge>
                                   )}
-                                  {record.isSickLeave && <SickLeaveBadge />}
                                 </div>
 
                                 <p className="text-sm text-muted-foreground">
@@ -2663,7 +2668,11 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                 </p>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
-                                {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                                {record.isSickLeave ? (
+                                  <SickLeaveBadge />
+                                ) : isEmployeeAbsent(record.sessions, id) ? (
+                                  <AbsentIndicator />
+                                ) : null}
                                 <RowActionsMenu
                                   isSick={!!record.isSickLeave}
                                   onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
@@ -2846,14 +2855,17 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                           Temporary
                                         </Badge>
                                       )}
-                                      {record.isSickLeave && <SickLeaveBadge />}
                                     </div>
 
                                     <p className="text-sm text-muted-foreground">
                                       {record.employeeId} • {record.jobTitle}
                                     </p>
                                   </div>
-                                  {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                                  {record.isSickLeave ? (
+                                    <SickLeaveBadge />
+                                  ) : isEmployeeAbsent(record.sessions, id) ? (
+                                    <AbsentIndicator />
+                                  ) : null}
                                 </div>
                               </TableCell>
 

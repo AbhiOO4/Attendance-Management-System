@@ -14,6 +14,13 @@ export default defineConfig({
       injectRegister: 'auto',
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        // Take over immediately on a new deploy instead of waiting for every
+        // tab/PWA instance to close, and delete the previous build's precache.
+        // This is what makes mobile clients pick up updates without a manual
+        // close/reopen.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\/.*/i,
