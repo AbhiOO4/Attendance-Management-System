@@ -32,6 +32,10 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
+import { Switch } from "@/components/ui/switch"
+
+import { Label } from "@/components/ui/label"
+
 import { Separator } from "@/components/ui/separator"
 
 import {
@@ -118,6 +122,8 @@ export interface AttendanceRecord {
   sessions: AttendanceSession[]
 
   breaksTaken?: number | null
+
+  isSickLeave?: boolean
 }
 
 
@@ -171,6 +177,8 @@ const [sessionToDelete, setSessionToDelete] =
   const [initialSessions, setInitialSessions] = useState<AttendanceSession[]>([])
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
   const [initialBreaksTaken, setInitialBreaksTaken] = useState<number | null>(null)
+  const [isSickLeave, setIsSickLeave] = useState(false)
+  const [initialIsSickLeave, setInitialIsSickLeave] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
 
@@ -195,7 +203,16 @@ const [sessionToDelete, setSessionToDelete] =
     return true
   }
 
-  const isDirty = !areSessionsEqual(sessions, initialSessions) || breaksTaken !== initialBreaksTaken
+  // Sick leave only applies to a fully empty day (no worked sessions).
+  const allSessionsEmpty = sessions.length === 0 || sessions.every(
+    (s) => !s.checkIn && !s.checkOut
+  )
+  const effectiveSickLeave = isSickLeave && allSessionsEmpty
+
+  const isDirty =
+    !areSessionsEqual(sessions, initialSessions) ||
+    breaksTaken !== initialBreaksTaken ||
+    effectiveSickLeave !== initialIsSickLeave
 
 
   const handleCloseAttempt = () => {
@@ -229,11 +246,16 @@ const [sessionToDelete, setSessionToDelete] =
       const bt = record.breaksTaken ?? null
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
+      const sick = record.isSickLeave ?? false
+      setIsSickLeave(sick)
+      setInitialIsSickLeave(sick)
     } else {
       setSessions([])
       setInitialSessions([])
       setBreaksTaken(null)
       setInitialBreaksTaken(null)
+      setIsSickLeave(false)
+      setInitialIsSickLeave(false)
     }
   }, [open, record])
 
@@ -354,6 +376,10 @@ const [sessionToDelete, setSessionToDelete] =
   ])
 
   const status = useMemo(() => {
+    if (effectiveSickLeave) {
+      return "sick"
+    }
+
     if (
       rawHours >=
       config.fullDayHours
@@ -377,6 +403,7 @@ const [sessionToDelete, setSessionToDelete] =
 
     return "absent"
   }, [
+    effectiveSickLeave,
     rawHours,
     config.fullDayHours,
     config.halfDayHours,
@@ -597,6 +624,7 @@ const [sessionToDelete, setSessionToDelete] =
         })
       ),
       breaksTaken,
+      isSickLeave: effectiveSickLeave,
     }
 
 
@@ -1055,20 +1083,42 @@ const [sessionToDelete, setSessionToDelete] =
 
               <Badge
                 variant={
-                  status === "fullday" || status === "halfday" || status === "pending"
-                    ? "secondary"
-                    : "destructive"
+                  status === "absent" ? "destructive" : "secondary"
                 }
                 className={`mt-2 text-sm ${
                   status === "fullday"
                     ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
                     : status === "pending"
                       ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
-                      : ""
+                      : status === "sick"
+                        ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
+                        : ""
                 }`}
               >
-                {status}
+                {status === "sick" ? "Sick Leave" : status}
               </Badge>
+            </div>
+
+            <Separator />
+
+            {/* SICK LEAVE TOGGLE — only valid for a fully empty day */}
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="sick-leave" className="text-sm font-medium">
+                  Sick Leave
+                </Label>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  {allSessionsEmpty
+                    ? "Mark this absent day as sick leave. Has no effect on pay."
+                    : "Clear all check-in/out times to mark this day as sick leave."}
+                </p>
+              </div>
+              <Switch
+                id="sick-leave"
+                checked={effectiveSickLeave}
+                disabled={!allSessionsEmpty}
+                onCheckedChange={setIsSickLeave}
+              />
             </div>
           </div>
 

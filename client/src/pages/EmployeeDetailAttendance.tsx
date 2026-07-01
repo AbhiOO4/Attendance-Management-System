@@ -75,6 +75,9 @@ interface Employee {
 }
 
 const getDisplayStatus = (record: AttendanceRecord) => {
+  if (record.isSickLeave) {
+    return "sick"
+  }
   if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
     const hasCheckInNoCheckOut = record.sessions.some(
       (session) => session && session.checkIn && !session.checkOut
@@ -354,7 +357,9 @@ function EmployeeAttendanceDetail() {
                   "-",
 
                   sessionIndex === 0
-                    ? getDisplayStatus(record)
+                    ? (getDisplayStatus(record) === "sick"
+                        ? "Sick Leave"
+                        : getDisplayStatus(record))
                     : "",
 
                   sessionIndex === 0
@@ -813,26 +818,23 @@ function EmployeeAttendanceDetail() {
                                   >
                                     <Badge
                                       variant={
-                                        getDisplayStatus(record) ===
-                                          "fullday"
-                                          ? "secondary"
-                                          : getDisplayStatus(record) ===
-                                            "halfday"
-                                            ? "secondary"
-                                            : getDisplayStatus(record) ===
-                                              "pending"
-                                              ? "secondary"
-                                              : "destructive"
+                                        getDisplayStatus(record) === "absent"
+                                          ? "destructive"
+                                          : "secondary"
                                       }
                                       className={
                                         getDisplayStatus(record) === "fullday"
                                           ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
                                           : getDisplayStatus(record) === "pending"
                                             ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
-                                            : ""
+                                            : getDisplayStatus(record) === "sick"
+                                              ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
+                                              : ""
                                       }
                                     >
-                                      {getDisplayStatus(record)}
+                                      {getDisplayStatus(record) === "sick"
+                                        ? "Sick Leave"
+                                        : getDisplayStatus(record)}
                                     </Badge>
                                   </TableCell>
 

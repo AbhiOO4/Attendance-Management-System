@@ -1060,9 +1060,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         jobId,
         sessions,
         breaksTaken = null,
+        isSickLeave = false,
       } = entry
 
-      const empId = employee?._id 
+      const empId = employee?._id
 
       if (!empId) {
         throwValidationError(400, "employee is required");
@@ -1296,6 +1297,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         attendanceDoc.breaksTaken = breaksTaken
       }
       attendanceDoc.isHoliday = isHolidayResolved
+      // Soft: pass through the requested value; the pre-save hook force-clears it
+      // if any session (this site or another) turns out to be filled.
+      attendanceDoc.isSickLeave = !!isSickLeave
 
       // Night shift detection
       const hasCrossedMidnight = detectCrossedMidnight(mergedSessions, timezoneOffset)
@@ -1429,6 +1433,8 @@ export const getSiteAttendance = async (req, res) => {
           date: "$date",
 
           isHoliday: "$isHoliday",
+
+          isSickLeave: "$isSickLeave",
 
           employee: "$employee._id",
 
@@ -1665,6 +1671,8 @@ export const getAttendanceRecords = async (req, res) => {
 
         isHoliday: record.isHoliday,
 
+        isSickLeave: record.isSickLeave || false,
+
         totalWorkHours:
           record.totalWorkHours,
 
@@ -1828,6 +1836,7 @@ export const bulkEditAttendance = async (
         checkIn,
         checkOut,
         breaksTaken = null,
+        isSickLeave,
       } = entry;
 
 
@@ -1910,6 +1919,10 @@ export const bulkEditAttendance = async (
         attendanceDoc.breaksTaken = breaksTaken;
       }
       attendanceDoc.isHoliday = isHolidayResolved;
+      if (isSickLeave !== undefined) {
+        // Soft: the pre-save hook clears it if the resulting session is filled.
+        attendanceDoc.isSickLeave = !!isSickLeave;
+      }
 
 
 
@@ -1964,7 +1977,7 @@ export const bulkEditAttendance = async (
 export const updateAttendance = async (req, res) => {
   try {
     const { attendanceId } = req.params;
-    const { sessions, siteId: bodySiteId, breaksTaken } = req.body;
+    const { sessions, siteId: bodySiteId, breaksTaken, isSickLeave } = req.body;
 
     const { siteId: querySiteId } = req.query;
     const siteId = querySiteId || bodySiteId;
@@ -2290,6 +2303,29 @@ export const updateAttendance = async (req, res) => {
       }
     }
 
+    // -----------------------------
+    // SICK LEAVE (hard validation)
+    // -----------------------------
+    // The inline/edit caller only ever sees the current site's sessions, so it
+    // cannot know about a filled session at another site. If sick leave is
+    // requested but the full record has any filled session, reject with a clear
+    // message instead of silently flipping it off.
+    if (isSickLeave !== undefined) {
+      const hasFilledSession = attendance.sessions.some(
+        (s) => s && (s.checkIn || s.checkOut)
+      );
+
+      if (isSickLeave && hasFilledSession) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cannot mark sick leave: this employee has attendance recorded at another site/session today.",
+        });
+      }
+
+      attendance.isSickLeave = !!isSickLeave;
+    }
+
     await attendance.save();
 
     const updatedAttendance =
@@ -2357,6 +2393,9 @@ export const updateAttendance = async (req, res) => {
 
       isHoliday:
         updatedAttendance.isHoliday,
+
+      isSickLeave:
+        updatedAttendance.isSickLeave || false,
 
       totalWorkHours:
         updatedAttendance.totalWorkHours,
@@ -2554,6 +2593,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         isHoliday:
           record.isHoliday,
+
+        isSickLeave:
+          record.isSickLeave || false,
 
         totalWorkHours:
           record.totalWorkHours,
@@ -3048,7 +3090,7 @@ export const getMissingEmployees = async (req, res) => {
 // Body: { employeeMongoId, date, sessions: [{siteId, jobId, checkIn, checkOut, isNightShift}] }
 export const backfillAttendance = async (req, res) => {
   try {
-    const { employeeMongoId, date, sessions = [], breaksTaken = null } = req.body;
+    const { employeeMongoId, date, sessions = [], breaksTaken = null, isSickLeave = false } = req.body;
 
     const markedBy = req.user?.id;
     const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
@@ -3212,6 +3254,7 @@ export const backfillAttendance = async (req, res) => {
       jobId: builtSessions.length > 0 ? (builtSessions[0].jobId || null) : null,
       markedBy,
       isHoliday: isHolidayResolved,
+      isSickLeave: !!isSickLeave,
       status,
       totalWorkHours: netWorkHours,
       overtimeHours,
@@ -3247,6 +3290,7 @@ export const backfillAttendance = async (req, res) => {
       date: record.date,
       status: record.status,
       isHoliday: record.isHoliday,
+      isSickLeave: record.isSickLeave || false,
       totalWorkHours: record.totalWorkHours,
       overtimeHours: record.overtimeHours,
       breaksTaken: record.breaksTaken,

@@ -968,7 +968,7 @@ const addSession = async () => {
                             size="sm"
                             onClick={() => clearModalSession(index)}
                           >
-                            Clear
+                            Absent
                           </Button>
                         ) : null}
                       </div>

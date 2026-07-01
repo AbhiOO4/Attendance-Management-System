@@ -3,9 +3,16 @@ dotenv.config({quiet: true})
 
 import mongoose from "mongoose";
 
+const real_db_url = ""
+
+
+const url = `${process.env.MONGO_URI}`
+
+
+
 const connectDB = async () => {
     try{
-        await mongoose.connect(`${process.env.MONGO_URI}`)
+        await mongoose.connect(real_db_url)
         console.log('connected to db')
     }catch(error){
         console.log('connection failed', error)
@@ -261,6 +268,6 @@ const recalculateExistingAttendance = async () => {
   }
 };
 
-// recalculateExistingAttendance();
+recalculateExistingAttendance();
 
 

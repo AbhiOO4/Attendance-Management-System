@@ -87,6 +87,15 @@ const attendanceSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Marks the day as sick leave. Purely an annotation of *why* an absent
+    // day is absent — it has no effect on pay. Enforced invariant (see the
+    // pre-save hook below): can only be true when every session is empty
+    // (no checkIn/checkOut). Any filled session forces this back to false.
+    isSickLeave: {
+      type: Boolean,
+      default: false,
+    },
+
     // Total worked hours across all sessions
     totalWorkHours: {
       type: Number,
@@ -129,6 +138,21 @@ const attendanceSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// INVARIANT: sick leave is only valid when the whole day has no worked
+// sessions. If any session has a check-in or check-out (this site or another),
+// sick leave is force-cleared. This is the single source of truth for the rule
+// and covers every write path (submit, edit, inline, backfill, recalc, crons)
+// since they all go through .save().
+attendanceSchema.pre("save", async function () {
+  if (
+    this.isSickLeave &&
+    Array.isArray(this.sessions) &&
+    this.sessions.some((s) => s && (s.checkIn || s.checkOut))
+  ) {
+    this.isSickLeave = false;
+  }
+});
 
 // Prevent duplicate attendance per employee per day
 attendanceSchema.index(

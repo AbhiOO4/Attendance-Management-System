@@ -50,6 +50,9 @@ async function runAutoCheckIn() {
         let updatedCount = 0;
 
         for (const record of records) {
+          // Never auto check-in an employee marked as sick leave.
+          if (record.isSickLeave) continue;
+
           let recordModified = false;
 
           for (const session of record.sessions) {

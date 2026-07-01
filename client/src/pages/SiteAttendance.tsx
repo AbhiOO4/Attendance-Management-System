@@ -43,7 +43,20 @@ import {
   Sun,
   Calendar,
   Users,
+  MoreVertical,
+  Check,
 } from "lucide-react"
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+
+import { cn } from "@/lib/utils"
 
 interface Employee {
   _id: string
@@ -122,6 +135,8 @@ export interface AttendanceRecord {
   breaksTaken?: number | null
 
   totalRawHours?: number
+
+  isSickLeave?: boolean
 }
 
 
@@ -153,6 +168,15 @@ interface DraftAttendanceRecord {
   jobId: string | null,
   sessions: DraftSession[]
   breaksTaken?: number | null
+  isSickLeave?: boolean
+  // Snapshot of the first session's times before sick leave cleared them,
+  // so toggling sick leave back off restores what was there.
+  sickClearedSession?: {
+    checkIn: string
+    checkOut: string
+    isNightShift: boolean
+    workedHours: number
+  } | null
 }
 
 
@@ -188,6 +212,77 @@ const AbsentIndicator = () => (
     <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500"></span>
   </span>
 )
+
+const SickLeaveBadge = () => (
+  <Badge
+    variant="secondary"
+    className="bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/50 dark:border-sky-800/30 text-[10px] px-1.5 py-0 h-4"
+  >
+    Sick Leave
+  </Badge>
+)
+
+/**
+ * Per-row 3-dot actions menu. Currently only exposes the Sick Leave toggle,
+ * but is the home for future row-level actions. The green tick on the left of
+ * the item reflects the current sick-leave state.
+ */
+function RowActionsMenu({
+  isSick,
+  onToggleSick,
+  saving = false,
+  showSick = true,
+  sickDisabled = false,
+  sickDisabledReason,
+}: {
+  isSick: boolean
+  onToggleSick: () => void
+  saving?: boolean
+  showSick?: boolean
+  sickDisabled?: boolean
+  sickDisabledReason?: string
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          title="More actions"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {showSick && (
+          <DropdownMenuItem
+            disabled={saving || sickDisabled}
+            title={sickDisabled ? sickDisabledReason : undefined}
+            onSelect={(e) => {
+              e.preventDefault()
+              if (!saving && !sickDisabled) onToggleSick()
+            }}
+          >
+            {saving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Check
+                className={cn(
+                  "mr-2 h-4 w-4 text-emerald-600",
+                  isSick ? "opacity-100" : "opacity-0"
+                )}
+              />
+            )}
+            Sick Leave
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
 
 function SiteAttendance() {
@@ -260,6 +355,9 @@ function SiteAttendance() {
   const [inlineEditError, setInlineEditError] = useState<string | null>(null)
 
   const [rowSaving, setRowSaving] = useState(false)
+
+  // Tracks which saved record is currently having its sick-leave flag toggled.
+  const [sickSavingId, setSickSavingId] = useState<string | null>(null)
 
   const [isEditingDefaults, setIsEditingDefaults] = useState(false)
   const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
@@ -383,6 +481,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                 isNightShift,
               },
             ],
+
+            isSickLeave: false,
           }
         })
 
@@ -531,6 +631,28 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
           res.data.message ||
           "Attendance submitted successfully"
         )
+
+        // Reconcile sick leave: any employee we requested as sick but who came
+        // back not-sick was force-cleared by the backend (they have a filled
+        // session at another site). Surface this instead of silently reverting.
+        const requestedSick = new Set(
+          draftAttendance
+            .filter((r) => r.isSickLeave)
+            .map((r) => String(r.employee._id))
+        )
+        if (requestedSick.size > 0) {
+          const returned = res.data.data || []
+          const revoked = returned.filter(
+            (doc: any) =>
+              requestedSick.has(String(doc.employee)) && !doc.isSickLeave
+          )
+          if (revoked.length > 0) {
+            toast.error(
+              `${revoked.length} employee(s) weren't marked sick — they have attendance at another site today.`,
+              { duration: 6000 }
+            )
+          }
+        }
 
         localStorage.removeItem(`attendance_draft_${id}_${today}`)
         localStorage.removeItem(`active_inline_edit_row_${id}`)
@@ -813,11 +935,106 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         return {
           ...record,
           sessions,
+          // Entering any time means the employee is not on sick leave.
+          isSickLeave: value ? false : record.isSickLeave,
         }
       })
     )
 
     setIsDirty(true)
+  }
+
+  // Draft: toggle sick leave locally. Turning it on clears the session times
+  // (sick = empty session); the backend remains the arbiter on submit.
+  const toggleDraftSickLeave = (employeeId: string) => {
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== employeeId) return record
+
+        const turningOn = !record.isSickLeave
+
+        if (turningOn) {
+          // Snapshot the current first-session times, then clear them.
+          const s0 = record.sessions[0]
+          const snapshot = s0
+            ? {
+                checkIn: s0.checkIn,
+                checkOut: s0.checkOut,
+                isNightShift: s0.isNightShift,
+                workedHours: s0.workedHours,
+              }
+            : null
+
+          const sessions = record.sessions.map((s, i) =>
+            i === 0 ? { ...s, checkIn: "", checkOut: "", workedHours: 0 } : s
+          )
+
+          return {
+            ...record,
+            isSickLeave: true,
+            sessions,
+            sickClearedSession: snapshot,
+          }
+        }
+
+        // Turning off: restore the snapshot the toggle had cleared.
+        const snap = record.sickClearedSession
+        const sessions = record.sessions.map((s, i) =>
+          i === 0 && snap
+            ? {
+                ...s,
+                checkIn: snap.checkIn,
+                checkOut: snap.checkOut,
+                isNightShift: snap.isNightShift,
+                workedHours: snap.workedHours,
+              }
+            : s
+        )
+
+        return {
+          ...record,
+          isSickLeave: false,
+          sessions,
+          sickClearedSession: null,
+        }
+      })
+    )
+    setIsDirty(true)
+  }
+
+  // Saved record: toggle sick leave via the backend, which validates against
+  // the full cross-site record. A filled session anywhere → 400 + toast.
+  const toggleSavedSickLeave = async (record: AttendanceRecord) => {
+    try {
+      setSickSavingId(record.attendanceId)
+      const nextValue = !record.isSickLeave
+
+      const res = await api.patch(
+        `/api/attendance/update/${record.attendanceId}?siteId=${site?._id}`,
+        { isSickLeave: nextValue }
+      )
+
+      const updatedRecord = {
+        ...res.data.attendance,
+        sessions: res.data.attendance.sessions.filter(
+          (session: AttendanceSession) =>
+            String(session.siteId) === String(site?._id)
+        ),
+      }
+
+      handleRecordUpdated(updatedRecord as AttendanceRecord)
+
+      toast.success(
+        nextValue ? "Marked as sick leave" : "Sick leave removed"
+      )
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.message ||
+          "Failed to update sick leave"
+      )
+    } finally {
+      setSickSavingId(null)
+    }
   }
 
   const updateDraftBreaksTaken = (employeeId: string, value: number | null) => {
@@ -1702,7 +1919,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
                         <div className="flex items-center justify-between gap-4">
                           <div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <p className="font-medium">
                                 {record.name}
                               </p>
@@ -1716,13 +1933,25 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   Temporary
                                 </Badge>
                               )}
+                              {record.isSickLeave && <SickLeaveBadge />}
                             </div>
 
                             <p className="text-sm text-muted-foreground">
                               {record.employeeId} • {record.jobTitle}
                             </p>
                           </div>
-                          {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                            {!isEditing && (
+                              <RowActionsMenu
+                                isSick={!!record.isSickLeave}
+                                saving={sickSavingId === record.attendanceId}
+                                sickDisabled={!isEmployeeAbsent(record.sessions, id)}
+                                sickDisabledReason="Clear the check-in to mark sick leave"
+                                onToggleSick={() => toggleSavedSickLeave(record)}
+                              />
+                            )}
+                          </div>
                         </div>
 
                         <div>
@@ -1904,7 +2133,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   onClick={() => clearInlineEdit(record)}
                                   disabled={rowSaving}
                                 >
-                                  Clear
+                                  Absent
                                 </Button>
                               ) : null}
                               <Button
@@ -2070,7 +2299,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                 <TableCell rowSpan={sessions.length}>
                                   <div className="flex items-center justify-between gap-4">
                                     <div className="space-y-1">
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex items-center gap-2 flex-wrap">
                                         <p className="font-medium">
                                           {record.name}
                                         </p>
@@ -2084,6 +2313,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                             Temporary
                                           </Badge>
                                         )}
+                                        {record.isSickLeave && <SickLeaveBadge />}
                                       </div>
 
                                       <p className="text-sm text-muted-foreground">
@@ -2293,7 +2523,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                           onClick={() => clearInlineEdit(record)}
                                           disabled={rowSaving}
                                         >
-                                          Clear
+                                          Absent
                                         </Button>
                                       ) : null}
                                       <Button
@@ -2320,29 +2550,40 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                         <X className="h-4 w-4" />
                                       </Button>
                                     </div>
-                                  ) : complete ? (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      title="Edit & add sessions"
-                                      onClick={() =>
-                                        openEditRecord(record)
-                                      }
-                                    >
-                                      <Pencil className="h-4 w-4" />
-                                      <Plus className="h-4 w-4 ml-1" />
-                                    </Button>
                                   ) : (
-                                    <Button
-                                      size="icon"
-                                      variant="outline"
-                                      title="Edit attendance"
-                                      onClick={() =>
-                                        startInlineEdit(record)
-                                      }
-                                    >
-                                      <Pencil className="h-4 w-4" />
-                                    </Button>
+                                    <div className="flex justify-end items-center gap-2">
+                                      {complete ? (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          title="Edit & add sessions"
+                                          onClick={() =>
+                                            openEditRecord(record)
+                                          }
+                                        >
+                                          <Pencil className="h-4 w-4" />
+                                          <Plus className="h-4 w-4 ml-1" />
+                                        </Button>
+                                      ) : (
+                                        <Button
+                                          size="icon"
+                                          variant="outline"
+                                          title="Edit attendance"
+                                          onClick={() =>
+                                            startInlineEdit(record)
+                                          }
+                                        >
+                                          <Pencil className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                      <RowActionsMenu
+                                        isSick={!!record.isSickLeave}
+                                        saving={sickSavingId === record.attendanceId}
+                                        sickDisabled={!isEmployeeAbsent(record.sessions, id)}
+                                        sickDisabledReason="Clear the check-in to mark sick leave"
+                                        onToggleSick={() => toggleSavedSickLeave(record)}
+                                      />
+                                    </div>
                                   )}
                                 </TableCell>
                               )}
@@ -2400,7 +2641,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
                             <div className="flex items-center justify-between gap-4">
                               <div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <p className="font-medium">
                                     {record.employee.name}
                                   </p>
@@ -2414,18 +2655,26 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                       Temporary
                                     </Badge>
                                   )}
+                                  {record.isSickLeave && <SickLeaveBadge />}
                                 </div>
 
                                 <p className="text-sm text-muted-foreground">
                                   {record.employeeId} • {record.jobTitle}
                                 </p>
                               </div>
-                              {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                              <div className="flex items-center gap-2 shrink-0">
+                                {isEmployeeAbsent(record.sessions, id) && <AbsentIndicator />}
+                                <RowActionsMenu
+                                  isSick={!!record.isSickLeave}
+                                  onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
+                                />
+                              </div>
                             </div>
 
                             <Input
                               type="time"
                               value={session.checkIn}
+                              disabled={!!record.isSickLeave}
                               onChange={(e) =>
                                 updateDraftSession(
                                   record.employee._id,
@@ -2439,6 +2688,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                             <Input
                               type="time"
                               value={session.checkOut}
+                              disabled={!!record.isSickLeave}
                               onChange={(e) =>
                                 updateDraftSession(
                                   record.employee._id,
@@ -2519,7 +2769,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   className="w-28 mt-2 px-3.5 h-8 text-xs font-medium"
                                   onClick={() => clearDraftSession(record.employee._id, 0)}
                                 >
-                                  Clear
+                                  Absent
                                 </Button>
                               </div>
                             ) : null}
@@ -2582,7 +2832,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                               <TableCell>
                                 <div className="flex items-center justify-between gap-4">
                                   <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <p className="font-medium">
                                         {record.employee.name}
                                       </p>
@@ -2596,6 +2846,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                           Temporary
                                         </Badge>
                                       )}
+                                      {record.isSickLeave && <SickLeaveBadge />}
                                     </div>
 
                                     <p className="text-sm text-muted-foreground">
@@ -2612,6 +2863,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   value={
                                     session.checkIn
                                   }
+                                  disabled={!!record.isSickLeave}
                                   onChange={(e) =>
                                     updateDraftSession(
                                       record.employee._id,
@@ -2629,6 +2881,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   value={
                                     session.checkOut
                                   }
+                                  disabled={!!record.isSickLeave}
                                   onChange={(e) =>
                                     updateDraftSession(
                                       record.employee._id,
@@ -2694,27 +2947,32 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                               )}
 
                               <TableCell className="text-right">
-
-                                {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={undoClearDraftSession}
-                                    className="inline-flex items-center gap-1.5 px-3.5 h-8 text-xs font-medium"
-                                  >
-                                    <Undo className="h-4 w-4" />
-                                    Undo
-                                  </Button>
-                                ) : isSessionNonEmpty(session) ? (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="px-3.5 h-8 text-xs font-medium"
-                                    onClick={() => clearDraftSession(record.employee._id, 0)}
-                                  >
-                                    Clear
-                                  </Button>
-                                ) : null}
+                                <div className="flex justify-end items-center gap-2">
+                                  {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={undoClearDraftSession}
+                                      className="inline-flex items-center gap-1.5 px-3.5 h-8 text-xs font-medium"
+                                    >
+                                      <Undo className="h-4 w-4" />
+                                      Undo
+                                    </Button>
+                                  ) : isSessionNonEmpty(session) ? (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="px-3.5 h-8 text-xs font-medium"
+                                      onClick={() => clearDraftSession(record.employee._id, 0)}
+                                    >
+                                      Absent
+                                    </Button>
+                                  ) : null}
+                                  <RowActionsMenu
+                                    isSick={!!record.isSickLeave}
+                                    onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
+                                  />
+                                </div>
                               </TableCell>
                             </TableRow>
                             {isOverlapRow(record.employee._id) && (
