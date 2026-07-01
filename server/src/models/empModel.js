@@ -47,6 +47,25 @@ const employeeSchema = new mongoose.Schema({
     default: null
   },
 
+  // Set by a transfer when the destination site has no saved attendance yet
+  // today. Consumed (and cleared) when that site's draft is built or its
+  // attendance is first submitted for the day.
+  pendingTransferCheckIn: {
+    type: Date,
+    default: null
+  },
+
+  pendingTransferSiteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site',
+    default: null
+  },
+
+  pendingTransferDate: {
+    type: Date,
+    default: null
+  },
+
   isActive: {
     type: Boolean,
     default: true

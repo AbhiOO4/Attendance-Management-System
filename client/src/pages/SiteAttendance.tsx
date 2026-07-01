@@ -4,6 +4,7 @@ import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
 import BulkAssignNightShift from "@/components/BulkAssignNightShift"
+import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
 import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
@@ -45,6 +46,7 @@ import {
   Users,
   MoreVertical,
   Check,
+  ArrowLeftRight,
 } from "lucide-react"
 
 import {
@@ -68,6 +70,9 @@ interface Employee {
   currentJob: Job | null
   user: string | null
   employmentType?: 'permanent' | 'temporary'
+  pendingTransferCheckIn?: string | null
+  pendingTransferSiteId?: string | null
+  pendingTransferDate?: string | null
 }
 
 interface EmployeesResponse {
@@ -234,6 +239,11 @@ function RowActionsMenu({
   showSick = true,
   sickDisabled = false,
   sickDisabledReason,
+  showTransfer = false,
+  onTransfer,
+  transferDisabled = false,
+  transferDisabledReason,
+  transferSaving = false,
 }: {
   isSick: boolean
   onToggleSick: () => void
@@ -241,6 +251,11 @@ function RowActionsMenu({
   showSick?: boolean
   sickDisabled?: boolean
   sickDisabledReason?: string
+  showTransfer?: boolean
+  onTransfer?: () => void
+  transferDisabled?: boolean
+  transferDisabledReason?: string
+  transferSaving?: boolean
 }) {
   return (
     <DropdownMenu>
@@ -277,6 +292,23 @@ function RowActionsMenu({
               />
             )}
             Sick Leave
+          </DropdownMenuItem>
+        )}
+        {showTransfer && (
+          <DropdownMenuItem
+            disabled={transferSaving || transferDisabled}
+            title={transferDisabled ? transferDisabledReason : undefined}
+            onSelect={(e) => {
+              e.preventDefault()
+              if (!transferSaving && !transferDisabled) onTransfer?.()
+            }}
+          >
+            {transferSaving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <ArrowLeftRight className="mr-2 h-4 w-4" />
+            )}
+            Transfer
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
@@ -358,6 +390,13 @@ function SiteAttendance() {
 
   // Tracks which saved record is currently having its sick-leave flag toggled.
   const [sickSavingId, setSickSavingId] = useState<string | null>(null)
+
+  // Transfer flow: site-picker modal state, plus a marker used to
+  // auto-open the modal once a forced checkout edit (see handleTransferClick)
+  // finishes saving.
+  const [transferModalOpen, setTransferModalOpen] = useState(false)
+  const [transferTargetRecord, setTransferTargetRecord] = useState<AttendanceRecord | null>(null)
+  const [pendingTransferAfterCheckout, setPendingTransferAfterCheckout] = useState<AttendanceRecord | null>(null)
 
   const [isEditingDefaults, setIsEditingDefaults] = useState(false)
   const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
@@ -451,7 +490,15 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
       const mappedDraft =
         res.data.employees.map((emp) => {
-          const defaultIn = siteData.defaultCheckIn || ""
+          const hasPendingTransfer =
+            !!emp.pendingTransferSiteId &&
+            String(emp.pendingTransferSiteId) === String(siteData._id) &&
+            !!emp.pendingTransferDate &&
+            String(emp.pendingTransferDate).slice(0, 10) === today.slice(0, 10)
+
+          const defaultIn = hasPendingTransfer && emp.pendingTransferCheckIn
+            ? toTimeValue(emp.pendingTransferCheckIn)
+            : (siteData.defaultCheckIn || "")
           let isNightShift = false
           if (defaultIn) {
             isNightShift = isCheckInInToggleRange(defaultIn, cutoffVal)
@@ -846,6 +893,14 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       toast.success("Attendance updated successfully")
 
       cancelInlineEdit()
+
+      // If this edit was forced by a Transfer click (checkout wasn't filled
+      // yet), proceed straight to the site-picker modal now that it is.
+      if (pendingTransferAfterCheckout?.attendanceId === record.attendanceId) {
+        setTransferTargetRecord(updatedRecord as AttendanceRecord)
+        setTransferModalOpen(true)
+        setPendingTransferAfterCheckout(null)
+      }
     } catch (error: any) {
       console.log(error)
       const responseData = error?.response?.data
@@ -862,6 +917,20 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     } finally {
       setRowSaving(false)
     }
+  }
+
+  // Transfer entry point from the kebab menu. If the current site's session
+  // isn't checked out yet, force that edit first (reusing the existing
+  // inline-edit row) and only open the site-picker modal once it saves.
+  const handleTransferClick = (record: AttendanceRecord) => {
+    const currentSession = record.sessions[0]
+    if (!currentSession?.checkOut) {
+      setPendingTransferAfterCheckout(record)
+      startInlineEdit(record)
+      return
+    }
+    setTransferTargetRecord(record)
+    setTransferModalOpen(true)
   }
 
   const updateDraftSession = (
@@ -1952,6 +2021,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                 sickDisabled={!isEmployeeAbsent(record.sessions, id)}
                                 sickDisabledReason="Clear the check-in to mark sick leave"
                                 onToggleSick={() => toggleSavedSickLeave(record)}
+                                showTransfer
+                                transferDisabled={false}
+                                onTransfer={() => handleTransferClick(record)}
                               />
                             )}
                           </div>
@@ -2588,6 +2660,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                         sickDisabled={!isEmployeeAbsent(record.sessions, id)}
                                         sickDisabledReason="Clear the check-in to mark sick leave"
                                         onToggleSick={() => toggleSavedSickLeave(record)}
+                                        showTransfer
+                                        transferDisabled={false}
+                                        onTransfer={() => handleTransferClick(record)}
                                       />
                                     </div>
                                   )}
@@ -2676,6 +2751,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                 <RowActionsMenu
                                   isSick={!!record.isSickLeave}
                                   onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
+                                  showTransfer
+                                  transferDisabled
+                                  transferDisabledReason="Save attendance before transferring"
+                                  onTransfer={() => {}}
                                 />
                               </div>
                             </div>
@@ -2983,6 +3062,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                                   <RowActionsMenu
                                     isSick={!!record.isSickLeave}
                                     onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
+                                    showTransfer
+                                    transferDisabled
+                                    transferDisabledReason="Save attendance before transferring"
+                                    onTransfer={() => {}}
                                   />
                                 </div>
                               </TableCell>
@@ -3043,6 +3126,23 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         siteId={id ?? ""}
         date={today}
         onAssigned={() => {
+          fetchAttendance()
+        }}
+      />
+
+      <TransferEmployeeModal
+        open={transferModalOpen}
+        onClose={() => {
+          setTransferModalOpen(false)
+          setTransferTargetRecord(null)
+        }}
+        employeeId={transferTargetRecord?.employee ?? ""}
+        employeeName={transferTargetRecord?.name ?? ""}
+        fromSiteId={id ?? ""}
+        date={today}
+        onTransferred={() => {
+          setTransferModalOpen(false)
+          setTransferTargetRecord(null)
           fetchAttendance()
         }}
       />

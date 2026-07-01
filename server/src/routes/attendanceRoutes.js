@@ -34,6 +34,11 @@ router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor"), req
 
 router.post('/night-shift/assign', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.assignNightShift)
 
+// Employee transfer between sites. Not using requireSiteAccess since it only
+// validates a single siteId; access is checked manually against fromSiteId
+// inside the controller.
+router.post('/transfer', authorizeRoles("admin", "supervisor"), attendanceController.transferEmployee)
+
 // GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
 router.get('/', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceRecords)
 

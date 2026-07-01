@@ -11,7 +11,7 @@ export const generateTokenAndSetCookie = (res, user) => {
         httpOnly: true, //cant be accesed with js avoid xss attacks
         secure: isProduction,
         sameSite: isProduction ? "none" : "strict", //csrf
-        maxAge: 7*24*60*60*1000
+        maxAge: 30*24*60*60*1000
     });
 
     return token;

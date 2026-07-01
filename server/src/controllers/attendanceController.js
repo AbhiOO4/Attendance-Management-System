@@ -1311,6 +1311,25 @@ export const siteFirstSubmitAttendance = async (req, res) => {
 
       await attendanceDoc.save({ session })
 
+      // Consume the pending-transfer stash if it targeted this exact
+      // site/date. The filter re-checks the match so a newer transfer
+      // (pointing elsewhere) isn't accidentally cleared.
+      await empModel.updateOne(
+        {
+          _id: empId,
+          pendingTransferSiteId: siteId,
+          pendingTransferDate: attendanceDate,
+        },
+        {
+          $set: {
+            pendingTransferCheckIn: null,
+            pendingTransferSiteId: null,
+            pendingTransferDate: null,
+          },
+        },
+        { session }
+      )
+
       processedRecords.push(attendanceDoc)
     }
 
@@ -2012,7 +2031,11 @@ export const updateAttendance = async (req, res) => {
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id);
-      if (!user || !user.assignedSite || user.assignedSite.toString() !== attendance.siteId.toString()) {
+      // Check against the specific site being edited (siteId), not the doc's
+      // primary/original site — a multi-site record can have sessions across
+      // several sites, and a supervisor should be able to edit their own
+      // site's session even if they weren't the one who created the doc.
+      if (!user || !user.assignedSite || !siteId || user.assignedSite.toString() !== siteId.toString()) {
         return res.status(403).json({
           success: false,
           message: "Forbidden: Access denied to this attendance record",
@@ -2680,11 +2703,22 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 export const getAttendanceById = async (req, res) => {
   try {
     const { attendanceId } = req.params
+    const { siteId } = req.query
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id);
       const record = await Attendance.findById(attendanceId);
-      if (!record || !user || !user.assignedSite || record.siteId.toString() !== user.assignedSite.toString()) {
+      // Check against the specific site the caller is viewing (siteId), not
+      // the doc's primary/original site — a multi-site record can contain
+      // sessions for sites other than whichever one created the doc.
+      if (
+        !record ||
+        !user ||
+        !user.assignedSite ||
+        !siteId ||
+        user.assignedSite.toString() !== siteId.toString() ||
+        !record.sessions.some((s) => s.siteId.toString() === siteId.toString())
+      ) {
         return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
       }
     }
@@ -2957,7 +2991,10 @@ export const addSessionToAttendance = async (
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id);
-      if (!user || !user.assignedSite || user.assignedSite.toString() !== attendance.siteId.toString()) {
+      // Check against the NEW session's own site, not the doc's primary
+      // site — this session may belong to a different site than whichever
+      // site's submission originally created the doc.
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== session.siteId.toString()) {
         return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
       }
     }
@@ -3006,6 +3043,175 @@ export const addSessionToAttendance = async (
       success: false,
       message:
         "Failed to add session",
+    })
+  }
+}//
+
+
+// POST /api/attendance/transfer
+// Moves an employee from their current site to a new one, carrying their
+// checkout time at the source site forward as the check-in at the
+// destination. See empModel.js pendingTransfer* fields for why this can't
+// always create a session directly (destination site may not have any
+// saved attendance for today yet).
+export const transferEmployee = async (req, res) => {
+  const { employeeId, fromSiteId, toSiteId, jobId = null, date } = req.body
+
+  if (!employeeId || !fromSiteId || !toSiteId || !date) {
+    return res.status(400).json({
+      success: false,
+      message: "employeeId, fromSiteId, toSiteId and date are required",
+    })
+  }
+
+  if (fromSiteId.toString() === toSiteId.toString()) {
+    return res.status(400).json({
+      success: false,
+      message: "Target site must be different from the current site",
+    })
+  }
+
+  const attendanceDate = new Date(date)
+  attendanceDate.setUTCHours(0, 0, 0, 0)
+
+  const dbSession = await mongoose.startSession()
+  dbSession.startTransaction()
+
+  try {
+    const throwValidationError = (status, message) => {
+      const err = new Error(message)
+      err.status = status
+      throw err
+    }
+
+    if (req.user.role === "supervisor") {
+      const user = await userModel.findById(req.user.id).session(dbSession)
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== fromSiteId.toString()) {
+        throwValidationError(403, "Forbidden: Access denied to this site")
+      }
+    }
+
+    const toSite = await Site.findById(toSiteId).session(dbSession)
+    if (!toSite || toSite.isDeleted || !toSite.isActive || toSite.isCompleted) {
+      throwValidationError(400, "Target site is not a valid transfer destination")
+    }
+
+    if (jobId) {
+      const job = await Job.findById(jobId).session(dbSession)
+      if (!job || job.site.toString() !== toSiteId.toString()) {
+        throwValidationError(400, "Job does not belong to the target site")
+      }
+    }
+
+    const employee = await empModel.findById(employeeId).session(dbSession)
+    if (!employee) {
+      throwValidationError(404, "Employee not found")
+    }
+
+    const attendanceDoc = await Attendance.findOne({
+      employee: employeeId,
+      date: attendanceDate,
+    }).session(dbSession)
+
+    if (!attendanceDoc) {
+      throwValidationError(400, "No attendance record found for this employee today")
+    }
+
+    const sourceSession = attendanceDoc.sessions
+      .filter((s) => s.siteId.toString() === fromSiteId.toString())
+      .sort((a, b) => new Date(b.checkIn || 0) - new Date(a.checkIn || 0))[0]
+
+    if (!sourceSession || !sourceSession.checkIn) {
+      throwValidationError(400, "Employee has not checked in at the current site today")
+    }
+
+    if (!sourceSession.checkOut) {
+      throwValidationError(400, "Please complete the check-out for the current session before transferring")
+    }
+
+    const carriedCheckIn = sourceSession.checkOut
+
+    const targetHasSavedRecord = await Attendance.exists({
+      date: attendanceDate,
+      "sessions.siteId": toSiteId,
+    }).session(dbSession)
+
+    if (targetHasSavedRecord) {
+      const incompleteAtTarget = attendanceDoc.sessions.find(
+        (s) => s.siteId.toString() === toSiteId.toString() && (!s.checkIn || !s.checkOut)
+      )
+
+      if (incompleteAtTarget) {
+        throwValidationError(400, "Employee already has an incomplete session at the target site today")
+      }
+
+      attendanceDoc.sessions.push({
+        siteId: toSiteId,
+        jobId: jobId || null,
+        checkIn: carriedCheckIn,
+        checkOut: null,
+        workedHours: 0,
+        markedBy: req.user.id,
+      })
+
+      await attendanceDoc.save({ session: dbSession })
+    } else {
+      employee.pendingTransferCheckIn = carriedCheckIn
+      employee.pendingTransferSiteId = toSiteId
+      employee.pendingTransferDate = attendanceDate
+    }
+
+    const oldJobId = employee.currentJob
+    if (oldJobId) {
+      await Job.findByIdAndUpdate(
+        oldJobId,
+        { $pull: { employees: employee._id } },
+        { session: dbSession }
+      )
+    }
+
+    employee.currentJob = jobId || null
+    employee.currentSite = toSiteId
+    await employee.save({ session: dbSession })
+
+    if (jobId) {
+      await Job.findByIdAndUpdate(
+        jobId,
+        { $addToSet: { employees: employee._id } },
+        { session: dbSession }
+      )
+    }
+
+    if (employee.user) {
+      await userModel.findByIdAndUpdate(
+        employee.user,
+        { assignedSite: toSiteId },
+        { session: dbSession }
+      )
+    }
+
+    await dbSession.commitTransaction()
+    dbSession.endSession()
+
+    await employee.populate("currentJob", "name")
+    await employee.populate("currentSite", "siteName")
+
+    return res.status(200).json({
+      success: true,
+      message: targetHasSavedRecord
+        ? "Employee transferred; new session added at target site"
+        : "Employee transferred; check-in will apply when the target site's attendance is next opened or submitted",
+      pending: !targetHasSavedRecord,
+      employee,
+    })
+  } catch (error) {
+    await dbSession.abortTransaction()
+    dbSession.endSession()
+    console.error(error)
+
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Failed to transfer employee",
     })
   }
 }//
@@ -3700,6 +3906,7 @@ const attendanceController = {
   siteFirstSubmitAttendance,
   getAttendanceById,
   addSessionToAttendance,
+  transferEmployee,
   getMissingEmployees,
   backfillAttendance,
   getActiveSitesOverview,

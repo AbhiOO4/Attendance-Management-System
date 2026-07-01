@@ -228,7 +228,9 @@ const [deleteDialogOpen, setDeleteDialogOpen] =
     try {
       if (!attendanceId) return
 
-      const res = await api.get(`/api/attendance/${attendanceId}`)
+      const res = await api.get(`/api/attendance/${attendanceId}`, {
+        params: { siteId: site._id },
+      })
 
       const attendance = res.data
 
