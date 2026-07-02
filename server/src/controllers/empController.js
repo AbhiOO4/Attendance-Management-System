@@ -7,6 +7,7 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import AttendanceLock from '../models/lockModel.js'
 import attendanceModel from '../models/attendanceModel.js'
 import workModel from '../models/workModel.js'
+import { resolveCollarType } from '../utils/collar.js'
 
 //Admin
 
@@ -64,7 +65,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType pendingTransferCheckIn pendingTransferSiteId pendingTransferDate"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType pendingTransferCheckIn pendingTransferSiteId pendingTransferDate"
       )
       .populate("currentJob", "name") // 👈 add this
       .sort({ name: 1 });
@@ -108,6 +109,9 @@ export const addEmployee = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
+    // Derive collar type from the chosen job title (client never sets it directly).
+    req.body.collarType = await resolveCollarType(req.body.jobTitle);
+
     const newEmployee = new empModel(req.body);
     const savedEmp = await newEmployee.save({ session });
 
@@ -254,6 +258,11 @@ export const editEmployee = async (req, res) => {
       return res.status(404).json({
         message: "Employee not found",
       });
+    }
+
+    // Keep the denormalized collar type in sync when the job title changes.
+    if (req.body.jobTitle && req.body.jobTitle !== existingEmployee.jobTitle) {
+      req.body.collarType = await resolveCollarType(req.body.jobTitle);
     }
 
     const prevSite = existingEmployee.currentSite?.toString() || null;
@@ -572,8 +581,11 @@ export const getJobTitles = async (req, res) => {
 
 export const addJobTitle = async (req, res) => {
   try{
-    const {title} = req.body
-    const newJob = new jobTitleModel({title})
+    const {title, collarType} = req.body
+    const newJob = new jobTitleModel({
+      title,
+      ...(collarType === 'staff' || collarType === 'skilled' ? { collarType } : {}),
+    })
 
     await newJob.save()
 
@@ -588,6 +600,48 @@ export const addJobTitle = async (req, res) => {
     })
   }
 }
+
+// PATCH /api/employees/jobTitles/:id  — reclassify a job title's collarType and
+// re-sync the denormalized collarType on every employee holding that title.
+export const updateJobTitle = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { collarType } = req.body;
+
+    if (collarType !== 'staff' && collarType !== 'skilled') {
+      return res.status(400).json({
+        message: "collarType must be 'skilled' or 'staff'",
+      });
+    }
+
+    const jobTitle = await jobTitleModel.findByIdAndUpdate(
+      id,
+      { collarType },
+      { new: true }
+    );
+
+    if (!jobTitle) {
+      return res.status(404).json({ message: "Title doesn't exist" });
+    }
+
+    // Re-sync employees holding this title (jobTitle is stored lowercased).
+    const result = await empModel.updateMany(
+      { jobTitle: { $regex: `^${escapeRegExp(jobTitle.title.trim())}$`, $options: 'i' } },
+      { collarType }
+    );
+
+    return res.status(200).json({
+      message: "Job title updated",
+      data: jobTitle,
+      employeesUpdated: result.modifiedCount ?? result.nModified ?? 0,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+};
 
 export const deleteJobTitle = async (req, res) => {
   try {
@@ -873,6 +927,7 @@ const empController = {
   deleteSupervisor,
   getJobTitles,
   addJobTitle,
+  updateJobTitle,
   deleteJobTitle,
   getTempPool,
   assignTempWorker,

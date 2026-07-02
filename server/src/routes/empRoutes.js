@@ -28,6 +28,8 @@ router.get('/jobTitles', authorizeRoles('admin', 'supervisor'), empController.ge
 
 router.post('/jobTitles', authorizeRoles('admin'), empController.addJobTitle)
 
+router.patch('/jobTitles/:id', authorizeRoles('admin'), empController.updateJobTitle)
+
 router.delete('/jobTitles/:id', authorizeRoles('admin'), empController.deleteJobTitle)
 
 router.get('/temp/pool', authorizeRoles("admin", "supervisor"), empController.getTempPool)

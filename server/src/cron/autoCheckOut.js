@@ -10,30 +10,47 @@ import {
   toLocalTimeString,
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { getStaffEmployeeIds } from '../utils/collar.js';
 
 /**
  * Fill checkOut for matching sessions of a set of sites on a given date.
  *
- * mode "day"   -> uses site.defaultCheckOut, processes day-shift sessions.
- * mode "night" -> uses site.nightDefaultCheckOut, processes night-shift sessions.
+ * mode "day"        -> site.defaultCheckOut, field-worker day sessions.
+ * mode "night"      -> site.nightDefaultCheckOut, field-worker night sessions.
+ * mode "staff"      -> site.staffDefaultCheckOut, staff (white-collar) day sessions.
+ * mode "staffnight" -> site.staffNightDefaultCheckOut, staff night sessions.
+ *
+ * `staffIds` scopes which employees each mode touches: staff modes only fill
+ * staff sessions; day/night modes exclude staff.
  */
-async function processSites(sites, dateStr, mode, workConfig, cutoffHour) {
+async function processSites(sites, dateStr, mode, workConfig, cutoffHour, staffIds = []) {
   const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
+
+  const isNightMode = mode === 'night' || mode === 'staffnight';
+  const isStaffMode = mode === 'staff' || mode === 'staffnight';
 
   const recordDate = new Date(dateStr);
   recordDate.setUTCHours(0, 0, 0, 0);
 
   for (const site of sites) {
     try {
-      const checkOutTimeStr =
-        mode === 'night' ? site.nightDefaultCheckOut : site.defaultCheckOut;
+      let checkOutTimeStr;
+      if (mode === 'night') checkOutTimeStr = site.nightDefaultCheckOut;
+      else if (mode === 'staff') checkOutTimeStr = site.staffDefaultCheckOut;
+      else if (mode === 'staffnight') checkOutTimeStr = site.staffNightDefaultCheckOut;
+      else checkOutTimeStr = site.defaultCheckOut;
 
       if (!checkOutTimeStr) continue;
 
-      // Records for this date that have a session at this site
+      // Records for this date that have a session at this site, scoped by collar.
+      const employeeFilter = isStaffMode
+        ? { employee: { $in: staffIds } }
+        : { employee: { $nin: staffIds } };
+
       const records = await Attendance.find({
         date: recordDate,
         'sessions.siteId': site._id,
+        ...employeeFilter,
       });
 
       let updatedCount = 0;
@@ -48,14 +65,14 @@ async function processSites(sites, dateStr, mode, workConfig, cutoffHour) {
 
           const isNight = session.isNightShift === true;
 
-          // Each cron only fills its own shift type
-          if (mode === 'night' && !isNight) continue;
-          if (mode === 'day' && isNight) continue;
+          // Each mode only fills its own shift type.
+          if (isNightMode && !isNight) continue;
+          if (!isNightMode && isNight) continue;
 
           const checkInTimeStr = toLocalTimeString(session.checkIn);
 
-          // Day shift: skip if check-in is later than the default check-out time
-          if (mode === 'day') {
+          // Day-type shifts: skip if check-in is later than the default check-out time
+          if (!isNightMode) {
             const [inH, inM] = checkInTimeStr.split(':').map(Number);
             const [outH, outM] = checkOutTimeStr.split(':').map(Number);
             if (inH * 60 + inM > outH * 60 + outM) {
@@ -165,7 +182,27 @@ async function runAutoCheckOut() {
       nightDefaultCheckOut: currentTime,
     });
 
-    if (daySites.length === 0 && nightSites.length === 0) return;
+    // Sites whose staffDefaultCheckOut matches current time (staff day sessions)
+    const staffSites = await Site.find({
+      isActive: true,
+      isDeleted: { $ne: true },
+      staffDefaultCheckOut: currentTime,
+    });
+
+    // Sites whose staffNightDefaultCheckOut matches current time (staff night
+    // sessions check out the next morning, like field night shifts → yesterday)
+    const staffNightSites = await Site.find({
+      isActive: true,
+      isDeleted: { $ne: true },
+      staffNightDefaultCheckOut: currentTime,
+    });
+
+    if (
+      daySites.length === 0 &&
+      nightSites.length === 0 &&
+      staffSites.length === 0 &&
+      staffNightSites.length === 0
+    ) return;
 
     const workConfig = await workModel.findOne();
     if (!workConfig) {
@@ -174,13 +211,22 @@ async function runAutoCheckOut() {
     }
 
     const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+    const staffIds = await getStaffEmployeeIds();
 
     if (daySites.length > 0) {
-      await processSites(daySites, todayStr, 'day', workConfig, cutoffHour);
+      await processSites(daySites, todayStr, 'day', workConfig, cutoffHour, staffIds);
     }
 
     if (nightSites.length > 0) {
-      await processSites(nightSites, yesterdayStr, 'night', workConfig, cutoffHour);
+      await processSites(nightSites, yesterdayStr, 'night', workConfig, cutoffHour, staffIds);
+    }
+
+    if (staffSites.length > 0) {
+      await processSites(staffSites, todayStr, 'staff', workConfig, cutoffHour, staffIds);
+    }
+
+    if (staffNightSites.length > 0) {
+      await processSites(staffNightSites, yesterdayStr, 'staffnight', workConfig, cutoffHour, staffIds);
     }
   } catch (error) {
     console.error('[AutoCheckOut] Cron job error:', error);

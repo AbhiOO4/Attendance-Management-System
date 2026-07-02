@@ -226,6 +226,42 @@ async function createSuperAdmin (name, email, password) {
 // createAdmin('Abhi', 'abhi@gmail.com', "admin@2026", )
 // createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
 
+// One-off backfill: set each employee's denormalized collarType from its job
+// title's collarType. Run once after deploying the collar feature. First
+// classify the relevant JobTitles as 'staff' (e.g. Staff, HSE) via the Configure
+// page or a direct DB update, then run this. Titles default to 'skilled'.
+const resyncEmployeeCollarType = async () => {
+  try {
+    const titles = await jobTitleModel.find().lean();
+    // Map lowercased title -> collarType for O(1) lookup.
+    const titleToCollar = new Map(
+      titles.map((t) => [t.title.trim().toLowerCase(), t.collarType || "skilled"])
+    );
+
+    const employees = await employeeModel.find();
+    console.log(`Found ${employees.length} employees to resync.`);
+
+    let updated = 0;
+    for (const emp of employees) {
+      const collarType =
+        titleToCollar.get((emp.jobTitle || "").trim().toLowerCase()) || "skilled";
+      if (emp.collarType !== collarType) {
+        emp.collarType = collarType;
+        await emp.save();
+        updated++;
+      }
+    }
+
+    console.log(`Resynced collarType on ${updated} employee(s).`);
+    process.exit(0);
+  } catch (error) {
+    console.error("Error resyncing employee collarType:", error);
+    process.exit(1);
+  }
+};
+
+// resyncEmployeeCollarType()
+
 const recalculateExistingAttendance = async () => {
   try {
     const workConfig = await workModel.findOne({ type: "default" });

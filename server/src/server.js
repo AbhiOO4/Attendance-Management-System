@@ -17,7 +17,8 @@ app.use(
 import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
 import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
-import { startAutoCheckInCron } from './cron/autoCheckIn.js'
+// Night check-in is now pre-filled when a night shift is assigned (see
+// assignNightShift), so the auto check-in cron is no longer scheduled.
 
 app.use(express.json()); // Essential to parse JSON payloads
 //Importing routes
@@ -66,7 +67,6 @@ const initializePermanentSite = async () => {
 connectDB().then(async () => {
     await initializePermanentSite();
     startAutoCheckOutCron();
-    startAutoCheckInCron();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })

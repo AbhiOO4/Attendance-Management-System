@@ -52,6 +52,28 @@ const siteSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: ""
+  },
+  // Fixed default check-in/out for staff (white-collar) workers, separate from
+  // the field-worker day/night defaults above. Day + night pairs.
+  staffDefaultCheckIn: {
+    type: String,
+    trim: true,
+    default: ""
+  },
+  staffDefaultCheckOut: {
+    type: String,
+    trim: true,
+    default: ""
+  },
+  staffNightDefaultCheckIn: {
+    type: String,
+    trim: true,
+    default: ""
+  },
+  staffNightDefaultCheckOut: {
+    type: String,
+    trim: true,
+    default: ""
   }
 }, {
   timestamps: true

@@ -101,12 +101,17 @@ export default function Configure() {
     reason: "",
   });
 
+  type CollarType = "skilled" | "staff"
+
   type jobTitle = {
     _id: string,
-    title: string
+    title: string,
+    collarType?: CollarType
   }
 
   const [jobTitles, setJobtitles] = useState<jobTitle[]>([])
+  const [newTitleCollar, setNewTitleCollar] = useState<CollarType>("skilled")
+  const [updatingCollarId, setUpdatingCollarId] = useState<string | null>(null)
 
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [filter, setFilter] = useState(getCurrentMonthYear());
@@ -237,11 +242,13 @@ export default function Configure() {
       setAddingJobTitle(true);
       await api.post("/api/employees/jobTitles", {
         title: formattedTitle,
+        collarType: newTitleCollar,
       });
 
       toast.success("Job title added");
 
       setJobTitleInput("");
+      setNewTitleCollar("skilled");
 
       fetchJobTitles();
     } catch (error: unknown) {
@@ -280,6 +287,23 @@ export default function Configure() {
       );
     } finally {
       setDeletingJobTitle(null);
+    }
+  };
+
+  // Reclassify a title as Skilled Labour / Staff. The backend re-syncs the
+  // collarType on every employee holding this title.
+  const updateTitleCollar = async (id: string, collarType: CollarType) => {
+    try {
+      setUpdatingCollarId(id);
+      await api.patch(`/api/employees/jobTitles/${id}`, { collarType });
+      toast.success("Category updated");
+      fetchJobTitles();
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.message || "Failed to update category"
+      );
+    } finally {
+      setUpdatingCollarId(null);
     }
   };
 
@@ -572,7 +596,7 @@ export default function Configure() {
           <CardContent className="space-y-6 p-6">
 
             {/* Add Job Title */}
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row">
               <Input
                 placeholder="Enter job title"
                 value={jobTitleInput}
@@ -581,10 +605,28 @@ export default function Configure() {
                 }
               />
 
+              <Select
+                value={newTitleCollar}
+                onValueChange={(v) => setNewTitleCollar(v as CollarType)}
+              >
+                <SelectTrigger className="sm:w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="skilled">Skilled Labour</SelectItem>
+                  <SelectItem value="staff">Staff</SelectItem>
+                </SelectContent>
+              </Select>
+
               <Button onClick={addJobTitle} disabled={addingJobTitle}>
                 {addingJobTitle ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>
             </div>
+
+            <p className="-mt-3 text-xs text-muted-foreground">
+              Staff (white-collar) titles are excluded from site man-hours &amp;
+              man-days stats and use the site's staff default shift times.
+            </p>
 
             {/* Existing Job Titles */}
             <div>
@@ -602,11 +644,34 @@ export default function Configure() {
                     {filteredJobTitles.map((job) => (
                       <div
                         key={job._id}
-                        className="flex items-center justify-between px-4 py-3"
+                        className="flex items-center justify-between gap-3 px-4 py-3"
                       >
-                        <span>{job.title}</span>
+                        <span className="truncate">{job.title}</span>
 
-                        <AlertDialog>
+                        <div className="flex items-center gap-2">
+                          {/* Skilled Labour / Staff segmented toggle */}
+                          <div className="inline-flex overflow-hidden rounded-md border">
+                            {(["skilled", "staff"] as CollarType[]).map((c) => {
+                              const active = (job.collarType ?? "skilled") === c;
+                              return (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  disabled={active || updatingCollarId === job._id}
+                                  onClick={() => updateTitleCollar(job._id, c)}
+                                  className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                                    active
+                                      ? "bg-primary text-primary-foreground"
+                                      : "bg-transparent text-muted-foreground hover:bg-muted"
+                                  } disabled:cursor-default`}
+                                >
+                                  {c === "skilled" ? "Skilled" : "Staff"}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <AlertDialog>
                           <AlertDialogTrigger asChild>
                             <Button
                               size="icon"
@@ -645,6 +710,7 @@ export default function Configure() {
                             </AlertDialogFooter>
                           </AlertDialogContent>
                         </AlertDialog>
+                        </div>
                       </div>
                     ))}
                   </div>

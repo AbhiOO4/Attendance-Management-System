@@ -22,6 +22,7 @@ import {
   getAppOffsetMinutes,
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
+import { getStaffEmployeeIds } from './collar.js';
 
 /**
  * Determine the logical target date for a given field change.
@@ -33,7 +34,7 @@ import { hasSessionOverlap } from './sessionOverlap.js';
  * All other fields target today's records.
  */
 function getTargetDate(field, cutoffHour) {
-  if (field === 'nightDefaultCheckOut') {
+  if (field === 'nightDefaultCheckOut' || field === 'staffNightDefaultCheckOut') {
     // Get current local hour
     const offset = getAppOffsetMinutes();
     const now = new Date();
@@ -54,14 +55,37 @@ function getTargetDate(field, cutoffHour) {
  * Determine if a field targets night-shift sessions.
  */
 function isNightField(field) {
-  return field === 'nightDefaultCheckIn' || field === 'nightDefaultCheckOut';
+  return (
+    field === 'nightDefaultCheckIn' ||
+    field === 'nightDefaultCheckOut' ||
+    field === 'staffNightDefaultCheckIn' ||
+    field === 'staffNightDefaultCheckOut'
+  );
+}
+
+/**
+ * Determine if a field is a staff (white-collar) default, which targets only
+ * staff employees' sessions (day or night depending on the field).
+ */
+function isStaffField(field) {
+  return (
+    field === 'staffDefaultCheckIn' ||
+    field === 'staffDefaultCheckOut' ||
+    field === 'staffNightDefaultCheckIn' ||
+    field === 'staffNightDefaultCheckOut'
+  );
 }
 
 /**
  * Determine if a field is a check-in field (vs check-out).
  */
 function isCheckInField(field) {
-  return field === 'defaultCheckIn' || field === 'nightDefaultCheckIn';
+  return (
+    field === 'defaultCheckIn' ||
+    field === 'nightDefaultCheckIn' ||
+    field === 'staffDefaultCheckIn' ||
+    field === 'staffNightDefaultCheckIn'
+  );
 }
 
 /**
@@ -92,6 +116,10 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     'defaultCheckOut',
     'nightDefaultCheckIn',
     'nightDefaultCheckOut',
+    'staffDefaultCheckIn',
+    'staffDefaultCheckOut',
+    'staffNightDefaultCheckIn',
+    'staffNightDefaultCheckOut',
   ];
 
   const changedFields = fieldsToCheck.filter((field) => {
@@ -107,20 +135,33 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     return { updated: 0, skipped: [] };
   }
 
+  // Staff (white-collar) employees. Staff-default changes only touch staff
+  // sessions; field-worker (day/night) changes exclude staff so an identical
+  // time value on a staff member isn't rewritten by the wrong default.
+  const staffIds = await getStaffEmployeeIds();
+
   for (const field of changedFields) {
     const oldTimeStr = prevDefaults[field];
     const newTimeStr = newDefaults[field];
     const isNight = isNightField(field);
+    const isStaff = isStaffField(field);
     const isCheckIn = isCheckInField(field);
     const targetDateStr = getTargetDate(field, cutoffHour);
 
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);
 
+    // Scope by collar: staff fields → only staff employees; field-worker
+    // (day/night) fields → exclude staff employees.
+    const employeeFilter = isStaff
+      ? { employee: { $in: staffIds } }
+      : { employee: { $nin: staffIds } };
+
     // Find attendance records for this site on the target date
     const records = await Attendance.find({
       date: targetDate,
       'sessions.siteId': site._id,
+      ...employeeFilter,
     }).populate('employee', 'name employeeId');
 
     for (const record of records) {

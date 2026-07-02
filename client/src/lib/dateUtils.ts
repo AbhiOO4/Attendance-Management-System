@@ -52,8 +52,8 @@ export function formatCurrentDateLabel(): string {
  * Returns the day-of-week name (lowercase) for the current date in the app's timezone.
  * e.g., "saturday"
  */
-export function getCurrentTargetDayName(): string {
-  const dateStr = getCurrentTargetDateString();
+export function getCurrentTargetDayName(cutoffHour: number = 7): string {
+  const dateStr = getLogicalShiftDate(cutoffHour);
   const date = new Date(dateStr + "T12:00:00"); // noon to avoid timezone edge
   return date.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
 }

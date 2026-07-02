@@ -10,6 +10,9 @@ import { escapeRegExp } from '../utils/escapeRegExp.js';
 import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
+import { getStaffEmployeeIds } from '../utils/collar.js';
+import { combineDateAndTimeLocal } from '../utils/timeLocal.js';
+import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 
 
 // --- NIGHT SHIFT HELPERS ---
@@ -690,6 +693,11 @@ export const getSummary = async (req, res) => {
         isActive: true,
       });
 
+    // Staff (white-collar) are excluded from man-hours / man-days stats but
+    // still counted in headcount/attendance below.
+    const staffIds = await getStaffEmployeeIds();
+    const staffIdSet = new Set(staffIds.map((s) => s.toString()));
+
     // Attendance records for selected day
     const attendances =
       await Attendance.find({
@@ -714,6 +722,11 @@ export const getSummary = async (req, res) => {
           attendance.sessions.some((s) => s.checkIn));
       if (isPresent) {
         presentToday++;
+      }
+
+      // Staff are excluded from all man-hours / per-site productivity stats.
+      if (staffIdSet.has(attendance.employee.toString())) {
+        continue;
       }
 
       // Total man hours
@@ -1466,6 +1479,8 @@ export const getSiteAttendance = async (req, res) => {
           user: "$employee.user",
 
           employmentType: "$employee.employmentType",
+
+          collarType: "$employee.collarType",
 
           status: "$status",
 
@@ -3563,12 +3578,18 @@ const getActiveSitesOverview = async (req, res) => {
         .lean();
     }
 
+    // Staff (white-collar) are excluded from man-hours / man-days stats.
+    const staffIds = await getStaffEmployeeIds();
+
     // For each site, aggregate attendance metrics and get jobs
     const enrichedSites = await Promise.all(sites.map(async (site) => {
       const siteIdStr = site._id.toString();
 
       // Get attendance records with sessions for this site
-      const records = await Attendance.find({ 'sessions.siteId': site._id }).lean();
+      const records = await Attendance.find({
+        'sessions.siteId': site._id,
+        employee: { $nin: staffIds },
+      }).lean();
 
       let totalManHours = 0;
       let totalManDays = 0;
@@ -3755,10 +3776,32 @@ export const assignNightShift = async (req, res) => {
     const fullDayHours = workConfig?.fullDayHours ?? 8;
     const halfDayHours = workConfig?.halfDayHours ?? 4;
     const overtimeThreshold = workConfig?.overtimeThreshold ?? 8;
+    const cutoffHour = workConfig?.nightShiftCutoffHour ?? 7;
+
+    // The night check-in is pre-filled at assignment time from the site's night
+    // default (staff use their own staff-night default), replacing the old
+    // auto-check-in cron.
+    const siteDoc = await Site.findById(siteId)
+      .select("nightDefaultCheckIn staffNightDefaultCheckIn")
+      .session(dbSession);
 
     let processedCount = 0;
 
     for (const empId of employeeIds) {
+      const emp = await Employee.findById(empId)
+        .select("currentSite currentJob collarType")
+        .session(dbSession);
+
+      const isStaff = emp?.collarType === "staff";
+      const nightDefaultIn = isStaff
+        ? (siteDoc?.staffNightDefaultCheckIn || siteDoc?.nightDefaultCheckIn || "")
+        : (siteDoc?.nightDefaultCheckIn || "");
+
+      // Date object for the pre-filled check-in, or null if no default configured.
+      const prefillCheckIn = nightDefaultIn
+        ? combineDateAndTimeLocal(date, nightDefaultIn, { isNightShift: true, cutoffHour })
+        : null;
+
       let attendanceDoc = await Attendance.findOne({
         employee: empId,
         date: attendanceDate,
@@ -3767,7 +3810,7 @@ export const assignNightShift = async (req, res) => {
       const nightSession = {
         siteId,
         jobId: null,
-        checkIn: null,
+        checkIn: prefillCheckIn,
         checkOut: null,
         workedHours: 0,
         markedBy,
@@ -3776,10 +3819,6 @@ export const assignNightShift = async (req, res) => {
 
       if (!attendanceDoc) {
         // Case A: no record for the date → create one with a single night session
-        const emp = await Employee.findById(empId)
-          .select("currentSite currentJob")
-          .session(dbSession);
-
         if (
           emp?.currentJob &&
           emp.currentSite?.toString() === siteId.toString()
@@ -3815,6 +3854,7 @@ export const assignNightShift = async (req, res) => {
         if (emptySiteSession) {
           // Case B: reuse an existing empty/absent session for this site
           emptySiteSession.isNightShift = true;
+          emptySiteSession.checkIn = prefillCheckIn;
           emptySiteSession.markedBy = emptySiteSession.markedBy || markedBy;
         } else {
           // Try to find an active session (check-in only, empty check-out) for this site
@@ -3823,8 +3863,9 @@ export const assignNightShift = async (req, res) => {
           );
 
           if (activeSiteSession) {
-            // Case C: Convert check-in only session into an empty night shift session
-            activeSiteSession.checkIn = null;
+            // Case C: Convert check-in only session into a night shift, replacing
+            // the day check-in with the night default check-in.
+            activeSiteSession.checkIn = prefillCheckIn;
             activeSiteSession.checkOut = null;
             activeSiteSession.workedHours = 0;
             activeSiteSession.isNightShift = true;
@@ -3837,6 +3878,21 @@ export const assignNightShift = async (req, res) => {
             attendanceDoc.sessions.push(nightSession);
           }
         }
+      }
+
+      // Safety: if the pre-filled check-in would overlap another session on this
+      // record, clear it back to empty rather than persist an overlap.
+      if (prefillCheckIn && hasSessionOverlap(
+        attendanceDoc.sessions.map((s) => ({ checkIn: s.checkIn, checkOut: s.checkOut }))
+      )) {
+        const ns = attendanceDoc.sessions.find(
+          (s) =>
+            s.siteId.toString() === siteId.toString() &&
+            s.isNightShift &&
+            s.checkIn &&
+            new Date(s.checkIn).getTime() === prefillCheckIn.getTime()
+        );
+        if (ns) ns.checkIn = null;
       }
 
       // Recalculate totals

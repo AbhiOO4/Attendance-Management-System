@@ -32,6 +32,15 @@ import {
 import { Badge } from "@/components/ui/badge"
 
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog"
+
+import {
   Loader2,
   Pencil,
   Plus,
@@ -60,6 +69,8 @@ import {
 
 import { cn } from "@/lib/utils"
 
+type CollarType = 'skilled' | 'staff'
+
 interface Employee {
   _id: string
   name: string
@@ -70,6 +81,7 @@ interface Employee {
   currentJob: Job | null
   user: string | null
   employmentType?: 'permanent' | 'temporary'
+  collarType?: CollarType
   pendingTransferCheckIn?: string | null
   pendingTransferSiteId?: string | null
   pendingTransferDate?: string | null
@@ -94,6 +106,10 @@ interface Site {
   defaultCheckOut?: string
   nightDefaultCheckIn?: string
   nightDefaultCheckOut?: string
+  staffDefaultCheckIn?: string
+  staffDefaultCheckOut?: string
+  staffNightDefaultCheckIn?: string
+  staffNightDefaultCheckOut?: string
 }
 
 export interface AttendanceSession {
@@ -137,6 +153,8 @@ export interface AttendanceRecord {
 
   employmentType?: 'permanent' | 'temporary'
 
+  collarType?: CollarType
+
   breaksTaken?: number | null
 
   totalRawHours?: number
@@ -170,6 +188,7 @@ interface DraftAttendanceRecord {
   }, //refering to the employee models object id
   employeeId: string,
   jobTitle: string,
+  collarType?: CollarType,
   jobId: string | null,
   sessions: DraftSession[]
   breaksTaken?: number | null
@@ -197,6 +216,8 @@ interface Filters {
   employeeId: string
   jobTitle: string
 }
+
+type CategoryFilter = 'temporary' | 'omani' | null
 
 const isSessionNonEmpty = (session?: { checkIn?: string | null; checkOut?: string | null }) => {
   return !!session?.checkIn || !!session?.checkOut
@@ -316,6 +337,17 @@ function RowActionsMenu({
   )
 }
 
+const EmptyState = () => (
+  <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+    <div className="p-4 rounded-full bg-muted/60 text-muted-foreground/60 mb-4 animate-pulse">
+      <Users className="h-10 w-10 stroke-[1.5]" />
+    </div>
+    <h3 className="text-base font-semibold text-foreground">No records found</h3>
+    <p className="text-xs text-muted-foreground mt-1.5 max-w-[280px]">
+      We couldn't find any employees matching the search filters or selected category.
+    </p>
+  </div>
+)
 
 function SiteAttendance() {
   const {id} = useParams()
@@ -403,6 +435,10 @@ function SiteAttendance() {
   const [editDefaultCheckOut, setEditDefaultCheckOut] = useState("")
   const [editNightDefaultCheckIn, setEditNightDefaultCheckIn] = useState("")
   const [editNightDefaultCheckOut, setEditNightDefaultCheckOut] = useState("")
+  const [editStaffDefaultCheckIn, setEditStaffDefaultCheckIn] = useState("")
+  const [editStaffDefaultCheckOut, setEditStaffDefaultCheckOut] = useState("")
+  const [editStaffNightDefaultCheckIn, setEditStaffNightDefaultCheckIn] = useState("")
+  const [editStaffNightDefaultCheckOut, setEditStaffNightDefaultCheckOut] = useState("")
   const [savingDefaults, setSavingDefaults] = useState(false)
 
   // Update defaults dialog state
@@ -419,6 +455,10 @@ function SiteAttendance() {
       setEditDefaultCheckOut(site.defaultCheckOut || "")
       setEditNightDefaultCheckIn(site.nightDefaultCheckIn || "")
       setEditNightDefaultCheckOut(site.nightDefaultCheckOut || "")
+      setEditStaffDefaultCheckIn(site.staffDefaultCheckIn || "")
+      setEditStaffDefaultCheckOut(site.staffDefaultCheckOut || "")
+      setEditStaffNightDefaultCheckIn(site.staffNightDefaultCheckIn || "")
+      setEditStaffNightDefaultCheckOut(site.staffNightDefaultCheckOut || "")
     }
   }, [site])
 
@@ -432,9 +472,21 @@ function SiteAttendance() {
   const handleRecordUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
       prev.map((record) =>
-        record.attendanceId ===
-          updatedRecord.attendanceId
-          ? updatedRecord
+        record.attendanceId === updatedRecord.attendanceId
+          ? {
+              // The update endpoints return the raw attendance doc, which lacks
+              // the employee-derived display fields (name, jobTitle, collarType,
+              // etc.). Merge so those survive — otherwise collarType is lost and
+              // the row jumps back to the Skilled Labour tab until a refresh.
+              ...record,
+              ...updatedRecord,
+              name: updatedRecord.name ?? record.name,
+              employeeId: updatedRecord.employeeId ?? record.employeeId,
+              jobTitle: updatedRecord.jobTitle ?? record.jobTitle,
+              collarType: updatedRecord.collarType ?? record.collarType,
+              employmentType: updatedRecord.employmentType ?? record.employmentType,
+              user: updatedRecord.user ?? record.user,
+            }
           : record
       )
     )
@@ -471,9 +523,16 @@ function SiteAttendance() {
       jobTitle: "",
     })
 
-const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cutoffHour) => {
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
+
+  // Skilled Labour (blue-collar) vs Staff (white-collar) tab. Records without an
+  // explicit collarType are treated as skilled.
+  const [collarTab, setCollarTab] = useState<CollarType>("skilled")
+
+  const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cutoffHour) => {
     try {
-      const cached = localStorage.getItem(`attendance_draft_${id}_${today}`)
+      const activeToday = getLogicalShiftDate(cutoffVal)
+      const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
       if (cached) {
         setDraftAttendance(JSON.parse(cached))
         setIsDirty(true)
@@ -494,11 +553,17 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
             !!emp.pendingTransferSiteId &&
             String(emp.pendingTransferSiteId) === String(siteData._id) &&
             !!emp.pendingTransferDate &&
-            String(emp.pendingTransferDate).slice(0, 10) === today.slice(0, 10)
+            String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
 
+          // Staff (white-collar) prefill from the site's staff default check-in;
+          // field workers use the day default.
+          const isStaff = emp.collarType === "staff"
+          const roleDefaultIn = isStaff
+            ? (siteData.staffDefaultCheckIn || siteData.defaultCheckIn || "")
+            : (siteData.defaultCheckIn || "")
           const defaultIn = hasPendingTransfer && emp.pendingTransferCheckIn
             ? toTimeValue(emp.pendingTransferCheckIn)
-            : (siteData.defaultCheckIn || "")
+            : roleDefaultIn
           let isNightShift = false
           if (defaultIn) {
             isNightShift = isCheckInInToggleRange(defaultIn, cutoffVal)
@@ -514,6 +579,8 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
             employeeId: emp.employeeId,
 
             jobTitle: emp.jobTitle,
+
+            collarType: emp.collarType,
 
             jobId:
               emp.currentJob?._id || null,
@@ -562,22 +629,29 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
   const [holidayReason, setHolidayReason] = useState("")
 
-  const checkHolidayStatus = async () => {
+  const checkHolidayStatus = async (targetDate?: string, currentCutoff?: number) => {
     try {
 
       const configRes =
         await api.get("/api/config")
 
-      const weeklyHolidays =
-        configRes.data.data
-          .weeklyHolidays || []
+      const configData = configRes.data.data
+      const weeklyHolidays = configData.weeklyHolidays || []
 
-      setCutoffHour(configRes.data.data.nightShiftCutoffHour ?? 7)
-      setBreakDurationMinutes(configRes.data.data.breakDurationMinutes ?? 60)
-      setFullDayHours(configRes.data.data.fullDayHours ?? 8)
+      const activeCutoff = currentCutoff !== undefined ? currentCutoff : (configData.nightShiftCutoffHour ?? 7)
+      setCutoffHour(activeCutoff)
+      setBreakDurationMinutes(configData.breakDurationMinutes ?? 60)
+      setFullDayHours(configData.fullDayHours ?? 8)
 
-
-      const todayDay = getCurrentTargetDayName()
+      let todayDay = ""
+      if (targetDate) {
+        const [year, month, day] = targetDate.split('-').map(Number)
+        todayDay = new Date(year, month - 1, day)
+          .toLocaleDateString("en-US", { weekday: "long" })
+          .toLowerCase()
+      } else {
+        todayDay = getCurrentTargetDayName(activeCutoff)
+      }
 
       if (
         weeklyHolidays.includes(
@@ -593,12 +667,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         return
       }
 
+      const activeDateStr = targetDate || getLogicalShiftDate(activeCutoff)
       const holidayRes =
         await api.get(
           "/api/config/custom-holidays/check",
           {
             params: {
-              date: today,
+              date: activeDateStr,
             },
           }
         )
@@ -631,12 +706,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
   ///api/attendance/reports/daily?date=2026-05-29&siteId=69e231212487b777fb7eb7b5
 
-  const fetchAttendance = async () => {
+  const fetchAttendance = async (targetDate: string = today) => {
     try {
       const res = await api.get<FetchedAttendance>("/api/attendance/reports/daily",
         {
           params: {
-            date: today,
+            date: targetDate,
             siteId: id,
           },
         })
@@ -646,7 +721,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       setAttendance(res.data.data)
 
       // Also resolve and set the holidayReason
-      await checkHolidayStatus()
+      await checkHolidayStatus(targetDate)
 
     } catch (error) {
       console.log(error)
@@ -709,7 +784,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
         setIsDirty(false)
 
-        await fetchAttendance()
+        await fetchAttendance(today)
       }
     } catch (error: any) {
       console.log(error)
@@ -1225,6 +1300,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       { key: "defaultCheckOut", label: "Day Shift Check-out", editVal: editDefaultCheckOut, siteVal: site.defaultCheckOut || "" },
       { key: "nightDefaultCheckIn", label: "Night Shift Check-in", editVal: editNightDefaultCheckIn, siteVal: site.nightDefaultCheckIn || "" },
       { key: "nightDefaultCheckOut", label: "Night Shift Check-out", editVal: editNightDefaultCheckOut, siteVal: site.nightDefaultCheckOut || "" },
+      { key: "staffDefaultCheckIn", label: "Staff Day Check-in", editVal: editStaffDefaultCheckIn, siteVal: site.staffDefaultCheckIn || "" },
+      { key: "staffDefaultCheckOut", label: "Staff Day Check-out", editVal: editStaffDefaultCheckOut, siteVal: site.staffDefaultCheckOut || "" },
+      { key: "staffNightDefaultCheckIn", label: "Staff Night Check-in", editVal: editStaffNightDefaultCheckIn, siteVal: site.staffNightDefaultCheckIn || "" },
+      { key: "staffNightDefaultCheckOut", label: "Staff Night Check-out", editVal: editStaffNightDefaultCheckOut, siteVal: site.staffNightDefaultCheckOut || "" },
     ]
 
     for (const { label, editVal, siteVal } of fieldMap) {
@@ -1250,6 +1329,10 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         defaultCheckOut: editDefaultCheckOut,
         nightDefaultCheckIn: editNightDefaultCheckIn,
         nightDefaultCheckOut: editNightDefaultCheckOut,
+        staffDefaultCheckIn: editStaffDefaultCheckIn,
+        staffDefaultCheckOut: editStaffDefaultCheckOut,
+        staffNightDefaultCheckIn: editStaffNightDefaultCheckIn,
+        staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
         updateTodayRecords,
       })
 
@@ -1287,7 +1370,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         }
 
         // Refresh attendance data to show updated values
-        await fetchAttendance()
+        await fetchAttendance(today)
       } else {
         toast.success("Default shift times updated successfully")
       }
@@ -1383,6 +1466,30 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
       }
     }
 
+    // --- STAFF DAY SHIFT VALIDATION ---
+    if (editStaffDefaultCheckIn && editStaffDefaultCheckOut) {
+      if (toMinutes(editStaffDefaultCheckOut) <= toMinutes(editStaffDefaultCheckIn)) {
+        toast.error("Staff day check-out must be after check-in (before midnight)")
+        return
+      }
+    }
+
+    // --- STAFF NIGHT SHIFT VALIDATION (same windows as field night shift) ---
+    if (editStaffNightDefaultCheckIn) {
+      const inMin = toMinutes(editStaffNightDefaultCheckIn)
+      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
+        toast.error(`Staff night check-in must be between ${cutoffHour}:00 and 23:59`)
+        return
+      }
+    }
+    if (editStaffNightDefaultCheckOut) {
+      const outMin = toMinutes(editStaffNightDefaultCheckOut)
+      if (outMin < 0 || outMin > cutoffHour * 60) {
+        toast.error(`Staff night check-out must be between 00:00 and ${cutoffHour}:00`)
+        return
+      }
+    }
+
     // Detect what changed
     const changes = detectDefaultChanges()
 
@@ -1390,6 +1497,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     // show the confirmation dialog
     if (attendanceExists && changes.length > 0) {
       setPendingDefaultChanges(changes)
+      setIsEditingDefaults(false)
       setUpdateDefaultsDialogOpen(true)
       return
     }
@@ -1398,8 +1506,42 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     await executeSaveDefaults(false)
   }
 
+  // Sync all edit fields from the saved site values.
+  const syncDefaultsFromSite = () => {
+    setEditDefaultCheckIn(site?.defaultCheckIn || "")
+    setEditDefaultCheckOut(site?.defaultCheckOut || "")
+    setEditNightDefaultCheckIn(site?.nightDefaultCheckIn || "")
+    setEditNightDefaultCheckOut(site?.nightDefaultCheckOut || "")
+    setEditStaffDefaultCheckIn(site?.staffDefaultCheckIn || "")
+    setEditStaffDefaultCheckOut(site?.staffDefaultCheckOut || "")
+    setEditStaffNightDefaultCheckIn(site?.staffNightDefaultCheckIn || "")
+    setEditStaffNightDefaultCheckOut(site?.staffNightDefaultCheckOut || "")
+  }
+
+  // Open the modal with a fresh copy of the saved values.
+  const openEditDefaults = () => {
+    syncDefaultsFromSite()
+    setIsEditingDefaults(true)
+  }
+
+  // Cancel: discard edits (restore saved values) and close.
+  const cancelEditDefaults = () => {
+    syncDefaultsFromSite()
+    setIsEditingDefaults(false)
+  }
+
+  // Records default to 'skilled' when collarType is missing (older data).
+  const matchesCollarTab = (collar?: CollarType) =>
+    (collar ?? "skilled") === collarTab
+
   const filteredDraftAttendance = draftAttendance.filter((record) => {
+      const categoryMatch =
+        !categoryFilter ||
+        (categoryFilter === 'temporary' && record.employee.employmentType === 'temporary') ||
+        (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
       return (
+        matchesCollarTab(record.collarType) &&
+        categoryMatch &&
         record.employee.name
           .toLowerCase()
           .includes(
@@ -1419,7 +1561,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     })
 
   const filteredAttendance = attendance.filter((record) => {
+      const categoryMatch =
+        !categoryFilter ||
+        (categoryFilter === 'temporary' && record.employmentType === 'temporary') ||
+        (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
       return (
+        matchesCollarTab(record.collarType) &&
+        categoryMatch &&
         record.name
           .toLowerCase()
           .includes(
@@ -1542,11 +1690,13 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         const cutoffVal = configRes?.data?.data?.nightShiftCutoffHour ?? 0
         setCutoffHour(cutoffVal)
 
+        const calculatedDate = getLogicalShiftDate(cutoffVal)
+
         if (statusRes?.exists) {
-          await fetchAttendance()
+          await fetchAttendance(calculatedDate)
         } else {
           await Promise.all([
-            checkHolidayStatus(),
+            checkHolidayStatus(calculatedDate, cutoffVal),
             siteData ? initializeAttendanceFromEmployees(siteData, cutoffVal) : Promise.resolve()
           ])
         }
@@ -1573,9 +1723,22 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
     )
   }
 
-  // Calculate attendance statistics
+  // Counts per collar group (unaffected by name/id/title filters) for the tabs.
+  const collarCounts = (() => {
+    const source = attendanceExists ? attendance : draftAttendance;
+    let skilled = 0;
+    let staff = 0;
+    for (const r of source) {
+      if ((r.collarType ?? "skilled") === "staff") staff++;
+      else skilled++;
+    }
+    return { skilled, staff };
+  })();
+
+  // Calculate attendance statistics for the ACTIVE collar tab.
   const stats = (() => {
-    const records = attendanceExists ? attendance : draftAttendance;
+    const source = attendanceExists ? attendance : draftAttendance;
+    const records = source.filter((rec) => matchesCollarTab(rec.collarType));
     const totalAssigned = records.length;
 
     // Filter to sessions belonging to this site
@@ -1647,7 +1810,18 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                   <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
                     {stats.totalPresent} / {stats.totalAssigned} Present
                   </span>
+                  <Badge
+                    variant="secondary"
+                    className={
+                      collarTab === "staff"
+                        ? "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30"
+                        : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/30"
+                    }
+                  >
+                    {collarTab === "staff" ? "Staff" : "Skilled Labour"}
+                  </Badge>
                 </CardTitle>
+
 
                 <p className="text-sm text-muted-foreground mt-1">
                   {formattedDate}
@@ -1721,173 +1895,205 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         </CardHeader>
       </Card>
 
-      {/* DEFAULT SHIFT TIMES CARD */}
-      <Card className="rounded-2xl border bg-card p-6 shadow-sm">
-        <div className="flex flex-col gap-4">
+      {/* DEFAULT SHIFT TIMES — compact summary + edit modal */}
+      <Card className="rounded-2xl border bg-card shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between px-4 py-3 sm:px-5 sm:py-4">
 
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-3 rounded-md bg-muted text-muted-foreground">
-                <Clock3 className="h-6 w-6" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-lg text-foreground">Default Shift Times</h3>
-                <p className="text-sm text-muted-foreground">Day &amp; night defaults for pre-filling and auto check-in/out</p>
+          {/* Sections: Skilled + Staff */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:gap-6 min-w-0">
+
+            {/* Skilled */}
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Skilled</p>
+              <div className="flex flex-col gap-1">
+                {[
+                  { label: "Day", cin: site?.defaultCheckIn, cout: site?.defaultCheckOut },
+                  { label: "Night", cin: site?.nightDefaultCheckIn, cout: site?.nightDefaultCheckOut },
+                ].map((s) => (
+                  <div key={s.label} className="flex items-center gap-2 text-sm">
+                    <span className="w-10 text-[11px] text-muted-foreground">{s.label}</span>
+                    <span className="tabular-nums text-foreground font-medium">
+                      {s.cin || "–"}
+                    </span>
+                    <span className="text-muted-foreground text-xs">→</span>
+                    <span className="tabular-nums text-foreground font-medium">
+                      {s.cout || "–"}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              {!isEditingDefaults && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsEditingDefaults(true)}
-                  className="rounded-md border-muted-foreground/30 hover:bg-accent flex items-center gap-1.5"
-                >
-                  <Pencil className="h-4 w-4" />
-                  Edit
-                </Button>
-              )}
-              <Button
-                size="sm"
-                onClick={() => setBulkAssignOpen(true)}
-                className="rounded-md flex items-center gap-1.5"
-                disabled={!attendanceExists}
-                title={!attendanceExists ? "Attendance records must be saved first before assigning night shifts" : undefined}
-              >
-                <Moon className="h-4 w-4" />
-                Assign Night Shift
-              </Button>
+            {/* Divider */}
+            <div className="hidden sm:block w-px bg-border" />
+            <div className="block sm:hidden h-px bg-border" />
+
+            {/* Staff */}
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Staff</p>
+              <div className="flex flex-col gap-1">
+                {[
+                  { label: "Day", cin: site?.staffDefaultCheckIn, cout: site?.staffDefaultCheckOut },
+                  { label: "Night", cin: site?.staffNightDefaultCheckIn, cout: site?.staffNightDefaultCheckOut },
+                ].map((s) => (
+                  <div key={s.label} className="flex items-center gap-2 text-sm">
+                    <span className="w-10 text-[11px] text-muted-foreground">{s.label}</span>
+                    <span className="tabular-nums text-foreground font-medium">
+                      {s.cin || "–"}
+                    </span>
+                    <span className="text-muted-foreground text-xs">→</span>
+                    <span className="tabular-nums text-foreground font-medium">
+                      {s.cout || "–"}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
+
           </div>
 
-          {isEditingDefaults ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openEditDefaults}
+              className="rounded-md border-muted-foreground/30 hover:bg-accent flex items-center gap-1.5"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Edit</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setBulkAssignOpen(true)}
+              className="rounded-md flex items-center gap-1.5"
+              disabled={!attendanceExists}
+              title={!attendanceExists ? "Attendance records must be saved first before assigning night shifts" : undefined}
+            >
+              <Moon className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Assign Night Shift</span>
+              <span className="sm:hidden">Night</span>
+            </Button>
+          </div>
 
-              {/* DAY SHIFT */}
-              <div className="rounded-md border border-muted bg-muted/30 p-4 space-y-3">
-                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Day Shift</div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">In</label>
-                    <Input
-                      type="time"
-                      value={editDefaultCheckIn}
-                      onChange={(e) => setEditDefaultCheckIn(e.target.value)}
-                      className="w-32 rounded-md border-muted bg-background"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">Out</label>
-                    <Input
-                      type="time"
-                      value={editDefaultCheckOut}
-                      onChange={(e) => setEditDefaultCheckOut(e.target.value)}
-                      className="w-32 rounded-md border-muted bg-background"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* NIGHT SHIFT */}
-              <div className="rounded-md border border-muted bg-muted/30 p-4 space-y-3">
-                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Night Shift</div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">In</label>
-                    <Input
-                      type="time"
-                      value={editNightDefaultCheckIn}
-                      onChange={(e) => setEditNightDefaultCheckIn(e.target.value)}
-                      className="w-32 rounded-md border-muted bg-background"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-semibold text-muted-foreground uppercase w-7">Out</label>
-                    <Input
-                      type="time"
-                      value={editNightDefaultCheckOut}
-                      onChange={(e) => setEditNightDefaultCheckOut(e.target.value)}
-                      className="w-32 rounded-md border-muted bg-background"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* ACTIONS */}
-              <div className="md:col-span-2 flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={handleSaveDefaults}
-                  disabled={savingDefaults}
-                  className="rounded-md flex items-center gap-1.5"
-                >
-                  {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Save
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setEditDefaultCheckIn(site?.defaultCheckIn || "")
-                    setEditDefaultCheckOut(site?.defaultCheckOut || "")
-                    setEditNightDefaultCheckIn(site?.nightDefaultCheckIn || "")
-                    setEditNightDefaultCheckOut(site?.nightDefaultCheckOut || "")
-                    setIsEditingDefaults(false)
-                  }}
-                  className="rounded-md flex items-center gap-1.5"
-                >
-                  <X className="h-4 w-4" />
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-              {/* DAY SHIFT (read) */}
-              <div className="rounded-md border border-muted bg-muted/30 p-4">
-                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Day Shift</div>
-                <div className="flex gap-6">
-                  <div>
-                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">In</div>
-                    <p className="mt-0.5 font-bold text-foreground">
-                      {site?.defaultCheckIn ? site.defaultCheckIn : "--:--"}
-                    </p>
-                  </div>
-                  <div className="border-r border-border h-8 self-center"></div>
-                  <div>
-                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Out</div>
-                    <p className="mt-0.5 font-bold text-foreground">
-                      {site?.defaultCheckOut ? site.defaultCheckOut : "--:--"}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* NIGHT SHIFT (read) */}
-              <div className="rounded-md border border-muted bg-muted/30 p-4">
-                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Night Shift</div>
-                <div className="flex gap-6">
-                  <div>
-                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">In</div>
-                    <p className="mt-0.5 font-bold text-foreground">
-                      {site?.nightDefaultCheckIn ? site.nightDefaultCheckIn : "--:--"}
-                    </p>
-                  </div>
-                  <div className="border-r border-border h-8 self-center"></div>
-                  <div>
-                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Out</div>
-                    <p className="mt-0.5 font-bold text-foreground">
-                      {site?.nightDefaultCheckOut ? site.nightDefaultCheckOut : "--:--"}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       </Card>
+
+      {/* DEFAULT SHIFT TIMES — edit modal */}
+      <Dialog
+        open={isEditingDefaults}
+        onOpenChange={(o) => {
+          // Close only (no reset) so the propagation-confirm flow keeps the
+          // edited values; the Cancel button handles discarding edits.
+          if (!o && !savingDefaults) setIsEditingDefaults(false)
+        }}
+      >
+        <DialogContent className="!max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Clock3 className="h-5 w-5" />
+              Default Shift Times
+            </DialogTitle>
+            <DialogDescription>
+              Used to pre-fill check-in and auto-fill check-out. Staff use their own
+              day &amp; night times.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-5 py-2">
+
+            {/* Skilled section */}
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-0.5">Skilled</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {[
+                  { label: "Day", inVal: editDefaultCheckIn, setIn: setEditDefaultCheckIn, outVal: editDefaultCheckOut, setOut: setEditDefaultCheckOut },
+                  { label: "Night", inVal: editNightDefaultCheckIn, setIn: setEditNightDefaultCheckIn, outVal: editNightDefaultCheckOut, setOut: setEditNightDefaultCheckOut },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                    <div className="text-xs font-medium text-muted-foreground">{s.label}</div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground w-6 shrink-0">In</label>
+                      <Input
+                        type="time"
+                        value={s.inVal}
+                        onChange={(e) => s.setIn(e.target.value)}
+                        className="flex-1 h-8 text-sm rounded-md"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground w-6 shrink-0">Out</label>
+                      <Input
+                        type="time"
+                        value={s.outVal}
+                        onChange={(e) => s.setOut(e.target.value)}
+                        className="flex-1 h-8 text-sm rounded-md"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="h-px bg-border" />
+
+            {/* Staff section */}
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-0.5">Staff</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {[
+                  { label: "Day", inVal: editStaffDefaultCheckIn, setIn: setEditStaffDefaultCheckIn, outVal: editStaffDefaultCheckOut, setOut: setEditStaffDefaultCheckOut },
+                  { label: "Night", inVal: editStaffNightDefaultCheckIn, setIn: setEditStaffNightDefaultCheckIn, outVal: editStaffNightDefaultCheckOut, setOut: setEditStaffNightDefaultCheckOut },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+                    <div className="text-xs font-medium text-muted-foreground">{s.label}</div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground w-6 shrink-0">In</label>
+                      <Input
+                        type="time"
+                        value={s.inVal}
+                        onChange={(e) => s.setIn(e.target.value)}
+                        className="flex-1 h-8 text-sm rounded-md"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-muted-foreground w-6 shrink-0">Out</label>
+                      <Input
+                        type="time"
+                        value={s.outVal}
+                        onChange={(e) => s.setOut(e.target.value)}
+                        className="flex-1 h-8 text-sm rounded-md"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={cancelEditDefaults}
+              disabled={savingDefaults}
+              className="flex items-center gap-1.5"
+            >
+              <X className="h-4 w-4" />
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveDefaults}
+              disabled={savingDefaults}
+              className="flex items-center gap-1.5"
+            >
+              {savingDefaults ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* NIGHT SHIFT BANNER */}
       {extendedPeriod && (
@@ -1915,55 +2121,124 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
 
 
 
-      {/* FILTERS */}
-      <Card>
-        <CardContent className="pt-6">
+      {/* COLLAR TABS: Skilled Labour (blue-collar) vs Staff (white-collar) */}
+      <div className="flex items-center gap-0 border-b border-muted/30">
+        {([
+          { key: "skilled" as CollarType, label: "Skilled Labour", count: collarCounts.skilled },
+          { key: "staff" as CollarType, label: "Staff", count: collarCounts.staff },
+        ]).map((tab) => {
+          const isActive = collarTab === tab.key
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setCollarTab(tab.key)}
+              className={`relative inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-colors duration-200 ${
+                isActive
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+              <span
+                className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "bg-muted/60 text-muted-foreground"
+                }`}
+              >
+                {tab.count}
+              </span>
+              {isActive && (
+                <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary rounded-t-full" />
+              )}
+            </button>
+          )
+        })}
+      </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+      {/* FILTERS — sticky */}
+      <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
+        <div className="grid gap-3 md:grid-cols-3">
 
-            <Input
-              placeholder="Search name"
-              value={filters.name}
-              onChange={(e) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  name: e.target.value,
-                }))
-              }
-            />
+          <Input
+            placeholder="Search name"
+            value={filters.name}
+            onChange={(e) =>
+              setFilters((prev) => ({
+                ...prev,
+                name: e.target.value,
+              }))
+            }
+          />
 
-            <Input
-              placeholder="Employee ID"
-              value={filters.employeeId}
-              onChange={(e) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  employeeId: e.target.value,
-                }))
-              }
-            />
+          <Input
+            placeholder="Employee ID"
+            value={filters.employeeId}
+            onChange={(e) =>
+              setFilters((prev) => ({
+                ...prev,
+                employeeId: e.target.value,
+              }))
+            }
+          />
 
-            <Input
-              placeholder="Job Title"
-              value={filters.jobTitle}
-              onChange={(e) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  jobTitle: e.target.value,
-                }))
-              }
-            />
+          <Input
+            placeholder="Job Title"
+            value={filters.jobTitle}
+            onChange={(e) =>
+              setFilters((prev) => ({
+                ...prev,
+                jobTitle: e.target.value,
+              }))
+            }
+          />
 
-          </div>
+        </div>
 
-        </CardContent>
-      </Card>
+        {/* Category chips */}
+        <div className="flex items-center gap-2">
+          <span className="hidden sm:inline text-[11px] text-muted-foreground font-medium shrink-0">Category:</span>
+          {([
+            { key: 'temporary' as const, label: 'Temporary Workers' },
+            { key: 'omani'     as const, label: 'Omani Staff' },
+          ] as { key: CategoryFilter & string; label: string }[]).map(({ key, label }) => {
+            const active = categoryFilter === key
+            return (
+              <button
+                key={key}
+                onClick={() => setCategoryFilter(active ? null : key)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 text-xs font-medium border transition-colors",
+                  active
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-muted/50 text-muted-foreground border-border hover:bg-muted hover:text-foreground"
+                )}
+              >
+                {active && <Check className="hidden sm:block h-3 w-3" />}
+                {label}
+              </button>
+            )
+          })}
+          {categoryFilter && (
+            <button
+              onClick={() => setCategoryFilter(null)}
+              className="ml-auto text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+            >
+              <X className="h-3 w-3" />
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
 
       <Card>
         <CardContent className="pt-6">
 
           {attendanceExists ? (
-            <>
+            filteredAttendance.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <>
               {/* MOBILE */}
               <div className="space-y-3 md:hidden">
                 {filteredAttendance.map((record) => {
@@ -2699,9 +2974,12 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                   </TableBody>
                 </Table>
               </div>
-            </>
-
+              </>
+            )
           ) : (
+            filteredDraftAttendance.length === 0 ? (
+              <EmptyState />
+            ) : (
               <>
                 {/* MOBILE */}
                 <div className="space-y-3 md:hidden">
@@ -3104,9 +3382,9 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
                   </TableBody>
                 </Table>
               </div>
-              </>
-
-          )}
+            </>
+          )
+        )}
 
         </CardContent>
       </Card>
@@ -3126,7 +3404,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         siteId={id ?? ""}
         date={today}
         onAssigned={() => {
-          fetchAttendance()
+          fetchAttendance(today)
         }}
       />
 
@@ -3143,7 +3421,7 @@ const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cut
         onTransferred={() => {
           setTransferModalOpen(false)
           setTransferTargetRecord(null)
-          fetchAttendance()
+          fetchAttendance(today)
         }}
       />
 

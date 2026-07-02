@@ -75,6 +75,16 @@ const employeeSchema = new mongoose.Schema({
     type: String,
     enum: ['permanent', 'temporary'],
     default: 'permanent'
+  },
+
+  // Worker category, denormalized from the employee's JobTitle. 'skilled' =
+  // blue-collar field worker; 'staff' = white-collar office worker. Staff are
+  // excluded from site man-hours/man-days stats but still tracked and paid.
+  // Kept in sync in addEmployee/editEmployee and on job-title reclassification.
+  collarType: {
+    type: String,
+    enum: ['skilled', 'staff'],
+    default: 'skilled'
   }
 
 }, {

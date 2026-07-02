@@ -9,6 +9,7 @@ import { json } from 'express'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
+import { getStaffEmployeeIds } from '../utils/collar.js'
 
 
 //Admin
@@ -401,9 +402,13 @@ export const getSiteJobs = async (req,res) => {
         })
         .lean();
 
+    // Staff (white-collar) are excluded from per-job man-hours / man-days stats.
+    const staffIds = await getStaffEmployeeIds();
+
     const attendanceRecords =
       await attendanceModel.find({
         "sessions.siteId": siteId,
+        employee: { $nin: staffIds },
       });
 
     const jobStatsMap = {};
@@ -695,9 +700,13 @@ export const jobManHoursAndDays = async (req,res) => {
   try {
     const { jobId } = req.params;
 
+    // Staff (white-collar) are excluded from man-hours / man-days stats.
+    const staffIds = await getStaffEmployeeIds();
+
     const records =
-      await Attendance.find({
+      await attendanceModel.find({
         "sessions.jobId": jobId,
+        employee: { $nin: staffIds },
       });
 
     if (!records.length) {
@@ -775,9 +784,13 @@ export const siteManHoursAndDays = async (req,res) => {
   try {
     const { siteId } = req.params;
 
+    // Staff (white-collar) are excluded from man-hours / man-days stats.
+    const staffIds = await getStaffEmployeeIds();
+
     const records =
       await attendanceModel.find({
         "sessions.siteId": siteId,
+        employee: { $nin: staffIds },
       });
 
     if (!records.length) {
@@ -1712,6 +1725,10 @@ export const updateSite = async (req, res) => {
       defaultCheckOut,
       nightDefaultCheckIn,
       nightDefaultCheckOut,
+      staffDefaultCheckIn,
+      staffDefaultCheckOut,
+      staffNightDefaultCheckIn,
+      staffNightDefaultCheckOut,
       updateTodayRecords,
     } = req.body;
 
@@ -1797,12 +1814,59 @@ export const updateSite = async (req, res) => {
       }
     }
 
+    // --- STAFF SHIFT VALIDATION ---
+    // Staff work fixed office hours: same-day, check-out after check-in.
+    const staffIn = staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : site.staffDefaultCheckIn;
+    const staffOut = staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : site.staffDefaultCheckOut;
+
+    if (staffIn && staffOut) {
+      const inMin = toMinutes(staffIn);
+      const outMin = toMinutes(staffOut);
+      if (inMin === null || outMin === null) {
+        return res.status(400).json({ message: "Invalid staff shift times" });
+      }
+      if (outMin <= inMin) {
+        return res.status(400).json({
+          message: "Staff check-out must be after check-in (before midnight)",
+        });
+      }
+    }
+
+    // --- STAFF NIGHT SHIFT VALIDATION (same windows as field night shift) ---
+    if (staffNightDefaultCheckIn !== undefined && staffNightDefaultCheckIn !== "") {
+      const inMin = toMinutes(staffNightDefaultCheckIn);
+      if (inMin === null) {
+        return res.status(400).json({ message: "Invalid staff night check-in time" });
+      }
+      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
+        return res.status(400).json({
+          message: `Staff night check-in must be between ${cutoffHour}:00 and 23:59`,
+        });
+      }
+    }
+
+    if (staffNightDefaultCheckOut !== undefined && staffNightDefaultCheckOut !== "") {
+      const outMin = toMinutes(staffNightDefaultCheckOut);
+      if (outMin === null) {
+        return res.status(400).json({ message: "Invalid staff night check-out time" });
+      }
+      if (outMin < 0 || outMin > cutoffHour * 60) {
+        return res.status(400).json({
+          message: `Staff night check-out must be between 00:00 and ${cutoffHour}:00`,
+        });
+      }
+    }
+
     // Capture previous default values BEFORE updating
     const prevDefaults = {
       defaultCheckIn: site.defaultCheckIn || '',
       defaultCheckOut: site.defaultCheckOut || '',
       nightDefaultCheckIn: site.nightDefaultCheckIn || '',
       nightDefaultCheckOut: site.nightDefaultCheckOut || '',
+      staffDefaultCheckIn: site.staffDefaultCheckIn || '',
+      staffDefaultCheckOut: site.staffDefaultCheckOut || '',
+      staffNightDefaultCheckIn: site.staffNightDefaultCheckIn || '',
+      staffNightDefaultCheckOut: site.staffNightDefaultCheckOut || '',
     };
 
     if (locationDetails !== undefined) site.locationDetails = locationDetails;
@@ -1811,6 +1875,10 @@ export const updateSite = async (req, res) => {
     if (defaultCheckOut !== undefined) site.defaultCheckOut = defaultCheckOut;
     if (nightDefaultCheckIn !== undefined) site.nightDefaultCheckIn = nightDefaultCheckIn;
     if (nightDefaultCheckOut !== undefined) site.nightDefaultCheckOut = nightDefaultCheckOut;
+    if (staffDefaultCheckIn !== undefined) site.staffDefaultCheckIn = staffDefaultCheckIn;
+    if (staffDefaultCheckOut !== undefined) site.staffDefaultCheckOut = staffDefaultCheckOut;
+    if (staffNightDefaultCheckIn !== undefined) site.staffNightDefaultCheckIn = staffNightDefaultCheckIn;
+    if (staffNightDefaultCheckOut !== undefined) site.staffNightDefaultCheckOut = staffNightDefaultCheckOut;
 
     await site.save();
 
@@ -1821,6 +1889,10 @@ export const updateSite = async (req, res) => {
         defaultCheckOut: defaultCheckOut !== undefined ? defaultCheckOut : prevDefaults.defaultCheckOut,
         nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : prevDefaults.nightDefaultCheckIn,
         nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : prevDefaults.nightDefaultCheckOut,
+        staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : prevDefaults.staffDefaultCheckIn,
+        staffDefaultCheckOut: staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : prevDefaults.staffDefaultCheckOut,
+        staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : prevDefaults.staffNightDefaultCheckIn,
+        staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : prevDefaults.staffNightDefaultCheckOut,
       };
 
       try {
