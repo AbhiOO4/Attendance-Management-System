@@ -2000,34 +2000,34 @@ function SiteAttendance() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex flex-col gap-5 py-2">
+          <div className="flex flex-col gap-4 py-2">
 
             {/* Skilled section */}
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-0.5">Skilled</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5 px-0.5">Skilled</p>
+              <div className="space-y-2">
                 {[
                   { label: "Day", inVal: editDefaultCheckIn, setIn: setEditDefaultCheckIn, outVal: editDefaultCheckOut, setOut: setEditDefaultCheckOut },
                   { label: "Night", inVal: editNightDefaultCheckIn, setIn: setEditNightDefaultCheckIn, outVal: editNightDefaultCheckOut, setOut: setEditNightDefaultCheckOut },
                 ].map((s) => (
-                  <div key={s.label} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
-                    <div className="text-xs font-medium text-muted-foreground">{s.label}</div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-muted-foreground w-6 shrink-0">In</label>
+                  <div key={s.label} className="flex items-center gap-3 rounded-lg border border-border bg-muted/10 p-2.5">
+                    <span className="text-xs font-semibold text-foreground w-10 shrink-0">{s.label}</span>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-medium">In</span>
                       <Input
                         type="time"
                         value={s.inVal}
                         onChange={(e) => s.setIn(e.target.value)}
-                        className="flex-1 h-8 text-sm rounded-md"
+                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
                       />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-muted-foreground w-6 shrink-0">Out</label>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-medium">Out</span>
                       <Input
                         type="time"
                         value={s.outVal}
                         onChange={(e) => s.setOut(e.target.value)}
-                        className="flex-1 h-8 text-sm rounded-md"
+                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
                       />
                     </div>
                   </div>
@@ -2040,30 +2040,30 @@ function SiteAttendance() {
 
             {/* Staff section */}
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-0.5">Staff</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5 px-0.5">Staff</p>
+              <div className="space-y-2">
                 {[
                   { label: "Day", inVal: editStaffDefaultCheckIn, setIn: setEditStaffDefaultCheckIn, outVal: editStaffDefaultCheckOut, setOut: setEditStaffDefaultCheckOut },
                   { label: "Night", inVal: editStaffNightDefaultCheckIn, setIn: setEditStaffNightDefaultCheckIn, outVal: editStaffNightDefaultCheckOut, setOut: setEditStaffNightDefaultCheckOut },
                 ].map((s) => (
-                  <div key={s.label} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
-                    <div className="text-xs font-medium text-muted-foreground">{s.label}</div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-muted-foreground w-6 shrink-0">In</label>
+                  <div key={s.label} className="flex items-center gap-3 rounded-lg border border-border bg-muted/10 p-2.5">
+                    <span className="text-xs font-semibold text-foreground w-10 shrink-0">{s.label}</span>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-medium">In</span>
                       <Input
                         type="time"
                         value={s.inVal}
                         onChange={(e) => s.setIn(e.target.value)}
-                        className="flex-1 h-8 text-sm rounded-md"
+                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
                       />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-muted-foreground w-6 shrink-0">Out</label>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <span className="text-[10px] text-muted-foreground uppercase font-medium">Out</span>
                       <Input
                         type="time"
                         value={s.outVal}
                         onChange={(e) => s.setOut(e.target.value)}
-                        className="flex-1 h-8 text-sm rounded-md"
+                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
                       />
                     </div>
                   </div>
