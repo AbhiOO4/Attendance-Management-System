@@ -211,11 +211,7 @@ interface DraftAttendancePayload {
   attendance : DraftAttendanceRecord[]
 }
 
-interface Filters {
-  name: string
-  employeeId: string
-  jobTitle: string
-}
+// Search query filter type is a single string
 
 type CategoryFilter = 'temporary' | 'omani' | null
 
@@ -516,12 +512,7 @@ function SiteAttendance() {
 
 
   //client side filtering
-  const [filters, setFilters] =
-    useState<Filters>({
-      name: "",
-      employeeId: "",
-      jobTitle: "",
-    })
+  const [searchQuery, setSearchQuery] = useState("")
 
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
 
@@ -1539,24 +1530,16 @@ function SiteAttendance() {
         !categoryFilter ||
         (categoryFilter === 'temporary' && record.employee.employmentType === 'temporary') ||
         (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
+      const query = searchQuery.trim().toLowerCase()
+      const matchesQuery =
+        !query ||
+        record.employee.name.toLowerCase().includes(query) ||
+        record.employeeId.toLowerCase().includes(query) ||
+        record.jobTitle.toLowerCase().includes(query)
       return (
         matchesCollarTab(record.collarType) &&
         categoryMatch &&
-        record.employee.name
-          .toLowerCase()
-          .includes(
-            filters.name.toLowerCase()
-          ) &&
-        record.employeeId
-          .toLowerCase()
-          .includes(
-            filters.employeeId.toLowerCase()
-          ) &&
-        record.jobTitle
-          .toLowerCase()
-          .includes(
-            filters.jobTitle.toLowerCase()
-          )
+        matchesQuery
       )
     })
 
@@ -1565,24 +1548,16 @@ function SiteAttendance() {
         !categoryFilter ||
         (categoryFilter === 'temporary' && record.employmentType === 'temporary') ||
         (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
+      const query = searchQuery.trim().toLowerCase()
+      const matchesQuery =
+        !query ||
+        record.name.toLowerCase().includes(query) ||
+        record.employeeId.toLowerCase().includes(query) ||
+        record.jobTitle.toLowerCase().includes(query)
       return (
         matchesCollarTab(record.collarType) &&
         categoryMatch &&
-        record.name
-          .toLowerCase()
-          .includes(
-            filters.name.toLowerCase()
-          ) &&
-        record.employeeId
-          .toLowerCase()
-          .includes(
-            filters.employeeId.toLowerCase()
-          ) &&
-        record.jobTitle
-          .toLowerCase()
-          .includes(
-            filters.jobTitle.toLowerCase()
-          )
+        matchesQuery
       )
     })
 
@@ -2158,41 +2133,13 @@ function SiteAttendance() {
 
       {/* FILTERS — sticky */}
       <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
-        <div className="grid gap-3 md:grid-cols-3">
-
+        <div className="w-full">
           <Input
-            placeholder="Search name"
-            value={filters.name}
-            onChange={(e) =>
-              setFilters((prev) => ({
-                ...prev,
-                name: e.target.value,
-              }))
-            }
+            placeholder="Search by name, ID, or job title..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-background placeholder:text-xs sm:placeholder:text-sm placeholder:text-muted-foreground/60"
           />
-
-          <Input
-            placeholder="Employee ID"
-            value={filters.employeeId}
-            onChange={(e) =>
-              setFilters((prev) => ({
-                ...prev,
-                employeeId: e.target.value,
-              }))
-            }
-          />
-
-          <Input
-            placeholder="Job Title"
-            value={filters.jobTitle}
-            onChange={(e) =>
-              setFilters((prev) => ({
-                ...prev,
-                jobTitle: e.target.value,
-              }))
-            }
-          />
-
         </div>
 
         {/* Category chips */}
