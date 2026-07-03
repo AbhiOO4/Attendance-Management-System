@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { useEffect, useMemo, useRef, useState, Fragment } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment } from "react"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
@@ -562,13 +562,13 @@ function SiteAttendance() {
   // Scrolls the sticky filters bar to the top of the main scroll container.
   // The target is recomputed as a delta from the *current* scroll position, so
   // it self-corrects even while the layout/viewport is still shifting.
-  const scrollFiltersToContainerTop = () => {
+  const scrollFiltersToContainerTop = (behavior: ScrollBehavior = "smooth") => {
     const scrollContainer = document.getElementById("main-scroll-container")
     if (!scrollContainer || !filtersRef.current) return
     const containerRect = scrollContainer.getBoundingClientRect()
     const filtersRect = filtersRef.current.getBoundingClientRect()
     const target = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
-    scrollContainer.scrollTo({ top: Math.max(target, 0), behavior: "smooth" })
+    scrollContainer.scrollTo({ top: Math.max(target, 0), behavior })
   }
 
   // On real mobile devices, focusing the search input opens the virtual
@@ -631,33 +631,22 @@ function SiteAttendance() {
     setCategoryFilter(nextVal)
     if (nextVal) {
       setIsSearchFocused(true)
-      if (window.innerWidth < 768) {
-        // No keyboard here — just wait for the expanded layout (min-height /
-        // back button) to render, then scroll the filters to the top.
-        setTimeout(scrollFiltersToContainerTop, 150)
-      }
-    } else if (!searchQuery) {
-      setIsSearchFocused(false)
-      if (window.innerWidth < 768) {
-        const scrollContainer = document.getElementById("main-scroll-container")
-        if (scrollContainer) {
-          scrollContainer.scrollTo({ top: 0, behavior: "smooth" })
-        }
-      }
+      // The scroll-to-top is handled by a layout effect keyed on categoryFilter
+      // (below), so it runs synchronously after the result-set reflow and before
+      // paint — avoiding the "jump down then back up" flicker, especially when
+      // the filter yields no records.
     }
+    // Deselecting (and Clear below) intentionally KEEPS the expanded focus
+    // mode. Collapsing it would remove the extra scroll room (min-height /
+    // bottom padding), letting the browser clamp scrollTop — which is what
+    // made the filters bar drift down from the top. The focus mode ends via
+    // the back arrow (handleSearchDismiss) or the scroll-up gesture (see the
+    // touch effect near the top of the component's effects).
   }
 
   const handleClearCategoryFilter = () => {
     setCategoryFilter(null)
-    if (!searchQuery) {
-      setIsSearchFocused(false)
-      if (window.innerWidth < 768) {
-        const scrollContainer = document.getElementById("main-scroll-container")
-        if (scrollContainer) {
-          scrollContainer.scrollTo({ top: 0, behavior: "smooth" })
-        }
-      }
-    }
+    // Stay in the expanded focus mode — see handleCategoryFilterChange.
   }
 
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
@@ -1882,12 +1871,87 @@ function SiteAttendance() {
     }
   }, [isDirty])
 
-  // Focus search input when isSearchFocused becomes true
+  // Mobile drag gestures while the search/filter UI is engaged:
+  //  - ANY drag blurs the search input so the keyboard gets out of the way
+  //    while browsing results.
+  //  - A deliberate DOWNWARD drag (finger top→bottom = scrolling up) that has
+  //    actually unpinned the sticky filters bar — i.e. the user is revealing
+  //    the upper section of the page — ends the focused/expanded mode
+  //    entirely. Scrolling down through results never collapses it.
+  // We key off touch events (real fingers only) instead of the scroll event,
+  // so our own programmatic scrolls can never trigger any of this.
+  // Note: we intentionally do NOT auto-focus the input when isSearchFocused
+  // becomes true — selecting a category expands this same UI, and focusing
+  // there would pop the keyboard and cause overscroll. The search field is
+  // focused directly by the user's tap (see the Input's onPointerDown/onFocus).
   useEffect(() => {
-    if (isSearchFocused && searchInputRef.current) {
-      searchInputRef.current.focus()
+    let startY: number | null = null
+
+    const onTouchStart = (e: TouchEvent) => {
+      startY = e.touches[0]?.clientY ?? null
     }
-  }, [isSearchFocused])
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (window.innerWidth >= 768) return
+
+      // Get the keyboard out of the way on any drag.
+      if (document.activeElement === searchInputRef.current) {
+        searchInputRef.current?.blur()
+      }
+
+      if (startY === null) return
+      const dy = (e.touches[0]?.clientY ?? startY) - startY
+      // Finger moving down = scrolling toward the top. Require a deliberate
+      // drag so tap wobble and downward-list scrolling never collapse the UI.
+      if (dy < 30) return
+
+      const scrollContainer = document.getElementById("main-scroll-container")
+      if (!scrollContainer || !filtersRef.current) return
+      const gap =
+        filtersRef.current.getBoundingClientRect().top -
+        scrollContainer.getBoundingClientRect().top
+      // gap > 0 means the sticky bar has unpinned from the container top —
+      // the upper section (page header) is being revealed. End focus mode.
+      if (gap > 2) {
+        setIsSearchFocused(false)
+        startY = null
+      }
+    }
+
+    const onTouchEnd = () => {
+      startY = null
+    }
+
+    window.addEventListener("touchstart", onTouchStart, { passive: true })
+    window.addEventListener("touchmove", onTouchMove, { passive: true })
+    window.addEventListener("touchend", onTouchEnd, { passive: true })
+    return () => {
+      window.removeEventListener("touchstart", onTouchStart)
+      window.removeEventListener("touchmove", onTouchMove)
+      window.removeEventListener("touchend", onTouchEnd)
+    }
+  }, [])
+
+  // Pin the filters bar to the top when a category filter expands the sticky UI
+  // on mobile. Runs as a layout effect (after the result-set reflow, before
+  // paint) so switching to an empty result set can't briefly shift the view
+  // down before we correct it. Instant scroll ("auto") avoids any animated
+  // wobble; the delta math self-corrects if we're already at the top.
+  useLayoutEffect(() => {
+    if (window.innerWidth >= 768) return
+    if (!categoryFilter) return
+    // Instant scroll before paint avoids the reflow flicker in the common case.
+    scrollFiltersToContainerTop("auto")
+    // On the FIRST selection, isSearchFocused flips false→true in this same
+    // commit, and the expanded min-height that provides scroll room isn't
+    // reliably usable synchronously — so the scroll above can clamp short of the
+    // top. Re-assert on the next frame, once that height is in effect, so the
+    // bar reliably reaches the top. Both passes are instant and converge, so
+    // there's no visible wobble.
+    const raf = requestAnimationFrame(() => scrollFiltersToContainerTop("auto"))
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryFilter])
 
   useEffect(() => {
     const initialize = async () => {
@@ -1996,8 +2060,12 @@ function SiteAttendance() {
   })();
 
   return (
+    // NOTE: no transition on this container — the expanded padding below is
+    // the scroll room that lets the filters bar pin to the top. Animating it
+    // (transition-all) meant the room didn't exist yet when the pre-paint
+    // scroll ran, so the first category tap clamped short of the top.
     <div className={cn(
-      "space-y-6 p-6 transition-all duration-300",
+      "space-y-6 p-6",
       isSearchFocused && "min-h-[120vh] pb-[60vh] md:min-h-0 md:pb-0"
     )}>
 
