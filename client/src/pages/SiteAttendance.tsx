@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { useEffect, useMemo, useState, Fragment } from "react"
+import { useEffect, useMemo, useRef, useState, Fragment } from "react"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
@@ -279,14 +279,51 @@ function RowActionsMenu({
   transferDisabledReason?: string
   transferSaving?: boolean
 }) {
+  const [open, setOpen] = useState(false)
+
+  // Touch-threshold gating: on touch devices a finger that lands on the kebab
+  // and then scrolls should NOT open the menu. We track the touch start point
+  // and only treat it as a deliberate tap if the finger stayed within a small
+  // movement threshold. Mouse/keyboard fall through to Radix's default.
+  const touchStart = useRef<{ x: number; y: number } | null>(null)
+  const touchMoved = useRef(false)
+  const MOVE_THRESHOLD = 10 // px
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           size="icon"
           variant="ghost"
           className="h-8 w-8"
           title="More actions"
+          onPointerDown={(e) => {
+            // Suppress Radix's built-in open-on-pointerdown for touch so a
+            // scroll gesture can't trigger it; we decide on touch end instead.
+            if (e.pointerType === "touch") e.preventDefault()
+          }}
+          onTouchStart={(e) => {
+            const t = e.touches[0]
+            touchStart.current = { x: t.clientX, y: t.clientY }
+            touchMoved.current = false
+          }}
+          onTouchMove={(e) => {
+            if (!touchStart.current) return
+            const t = e.touches[0]
+            if (
+              Math.abs(t.clientX - touchStart.current.x) > MOVE_THRESHOLD ||
+              Math.abs(t.clientY - touchStart.current.y) > MOVE_THRESHOLD
+            ) {
+              touchMoved.current = true
+            }
+          }}
+          onTouchEnd={() => {
+            // Deliberate tap (no meaningful movement) → toggle the menu.
+            if (touchStart.current && !touchMoved.current) {
+              setOpen((o) => !o)
+            }
+            touchStart.current = null
+          }}
         >
           <MoreVertical className="h-4 w-4" />
         </Button>
