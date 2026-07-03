@@ -2287,43 +2287,8 @@ function SiteAttendance() {
 
 
 
-      {/* COLLAR TABS: Skilled Labour (blue-collar) vs Staff (white-collar) */}
-      <div className="flex items-center gap-0 border-b border-muted/30">
-        {([
-          { key: "skilled" as CollarType, label: "Skilled Labour", count: collarCounts.skilled },
-          { key: "staff" as CollarType, label: "Staff", count: collarCounts.staff },
-        ]).map((tab) => {
-          const isActive = collarTab === tab.key
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setCollarTab(tab.key)}
-              className={`relative inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-colors duration-200 ${
-                isActive
-                  ? "text-primary"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab.label}
-              <span
-                className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "bg-muted/60 text-muted-foreground"
-                }`}
-              >
-                {tab.count}
-              </span>
-              {isActive && (
-                <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary rounded-t-full" />
-              )}
-            </button>
-          )
-        })}
-      </div>
-
       {/* FILTERS — sticky */}
-      <div ref={filtersRef} className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
+      <div ref={filtersRef} className="sticky top-0 z-20 -mx-6 px-6 pt-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
         <div className="w-full flex items-center gap-2">
           {isSearchFocused && (
             <Button
@@ -2397,6 +2362,41 @@ function SiteAttendance() {
               Clear
             </button>
           )}
+        </div>
+
+        {/* COLLAR TABS: Skilled Labour (blue-collar) vs Staff (white-collar) */}
+        <div className="flex items-center gap-0 border-t border-muted/20 pt-1 -mx-6 px-6">
+          {([
+            { key: "skilled" as CollarType, label: "Skilled Labour", count: collarCounts.skilled },
+            { key: "staff" as CollarType, label: "Staff", count: collarCounts.staff },
+          ]).map((tab) => {
+            const isActive = collarTab === tab.key
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setCollarTab(tab.key)}
+                className={`relative inline-flex items-center gap-2 px-5 pb-2.5 pt-1.5 text-sm font-semibold transition-colors duration-200 ${
+                  isActive
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted/60 text-muted-foreground"
+                  }`}
+                >
+                  {tab.count}
+                </span>
+                {isActive && (
+                  <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary rounded-t-full" />
+                )}
+              </button>
+            )
+          })}
         </div>
       </div>
 
