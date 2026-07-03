@@ -563,8 +563,14 @@ function SiteAttendance() {
     setIsSearchFocused(true)
     if (window.innerWidth < 768) {
       setTimeout(() => {
-        filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      }, 150)
+        const scrollContainer = document.getElementById("main-scroll-container")
+        if (scrollContainer && filtersRef.current) {
+          const containerRect = scrollContainer.getBoundingClientRect()
+          const filtersRect = filtersRef.current.getBoundingClientRect()
+          const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
+          scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
+        }
+      }, 350)
     }
   }
 
@@ -574,7 +580,10 @@ function SiteAttendance() {
     setSearchQuery("")
     searchInputRef.current?.blur()
     if (window.innerWidth < 768) {
-      window.scrollTo({ top: 0, behavior: "smooth" })
+      const scrollContainer = document.getElementById("main-scroll-container")
+      if (scrollContainer) {
+        scrollContainer.scrollTo({ top: 0, behavior: "smooth" })
+      }
     }
   }
 
@@ -585,13 +594,22 @@ function SiteAttendance() {
       setIsSearchFocused(true)
       if (window.innerWidth < 768) {
         setTimeout(() => {
-          filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          const scrollContainer = document.getElementById("main-scroll-container")
+          if (scrollContainer && filtersRef.current) {
+            const containerRect = scrollContainer.getBoundingClientRect()
+            const filtersRect = filtersRef.current.getBoundingClientRect()
+            const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
+            scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
+          }
         }, 150)
       }
     } else if (!searchQuery) {
       setIsSearchFocused(false)
       if (window.innerWidth < 768) {
-        window.scrollTo({ top: 0, behavior: "smooth" })
+        const scrollContainer = document.getElementById("main-scroll-container")
+        if (scrollContainer) {
+          scrollContainer.scrollTo({ top: 0, behavior: "smooth" })
+        }
       }
     }
   }
@@ -601,7 +619,10 @@ function SiteAttendance() {
     if (!searchQuery) {
       setIsSearchFocused(false)
       if (window.innerWidth < 768) {
-        window.scrollTo({ top: 0, behavior: "smooth" })
+        const scrollContainer = document.getElementById("main-scroll-container")
+        if (scrollContainer) {
+          scrollContainer.scrollTo({ top: 0, behavior: "smooth" })
+        }
       }
     }
   }
