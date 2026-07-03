@@ -559,18 +559,57 @@ function SiteAttendance() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const filtersRef = useRef<HTMLDivElement>(null)
 
+  // Scrolls the sticky filters bar to the top of the main scroll container.
+  // The target is recomputed as a delta from the *current* scroll position, so
+  // it self-corrects even while the layout/viewport is still shifting.
+  const scrollFiltersToContainerTop = () => {
+    const scrollContainer = document.getElementById("main-scroll-container")
+    if (!scrollContainer || !filtersRef.current) return
+    const containerRect = scrollContainer.getBoundingClientRect()
+    const filtersRect = filtersRef.current.getBoundingClientRect()
+    const target = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
+    scrollContainer.scrollTo({ top: Math.max(target, 0), behavior: "smooth" })
+  }
+
+  // On real mobile devices, focusing the search input opens the virtual
+  // keyboard. The browser then runs its OWN "scroll focused element into view",
+  // which races with — and usually clobbers — a single timed programmatic
+  // scroll. A fixed timeout is just a guess at when the keyboard animation ends
+  // (it varies per device), so it's unreliable. Instead we listen to the
+  // visualViewport resize events the keyboard actually emits and re-assert our
+  // target position every time the viewport settles, for a short window after
+  // focus, so we win the race regardless of animation timing.
+  const scrollFiltersToTopWithKeyboard = () => {
+    const vv = window.visualViewport
+    if (!vv) {
+      // No visualViewport support: fall back to a single delayed scroll that
+      // fires after the keyboard has (hopefully) finished animating.
+      setTimeout(scrollFiltersToContainerTop, 350)
+      return
+    }
+
+    let settleTimer: ReturnType<typeof setTimeout>
+    const onViewportResize = () => {
+      clearTimeout(settleTimer)
+      settleTimer = setTimeout(scrollFiltersToContainerTop, 100)
+    }
+    vv.addEventListener("resize", onViewportResize)
+
+    // Stop listening and do a final pass once the keyboard has surely settled.
+    setTimeout(() => {
+      vv.removeEventListener("resize", onViewportResize)
+      clearTimeout(settleTimer)
+      scrollFiltersToContainerTop()
+    }, 700)
+
+    // Optimistic first pass (covers the case where the keyboard is already open).
+    scrollFiltersToContainerTop()
+  }
+
   const handleSearchFocus = () => {
     setIsSearchFocused(true)
     if (window.innerWidth < 768) {
-      setTimeout(() => {
-        const scrollContainer = document.getElementById("main-scroll-container")
-        if (scrollContainer && filtersRef.current) {
-          const containerRect = scrollContainer.getBoundingClientRect()
-          const filtersRect = filtersRef.current.getBoundingClientRect()
-          const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
-          scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
-        }
-      }, 350)
+      scrollFiltersToTopWithKeyboard()
     }
   }
 
@@ -593,15 +632,9 @@ function SiteAttendance() {
     if (nextVal) {
       setIsSearchFocused(true)
       if (window.innerWidth < 768) {
-        setTimeout(() => {
-          const scrollContainer = document.getElementById("main-scroll-container")
-          if (scrollContainer && filtersRef.current) {
-            const containerRect = scrollContainer.getBoundingClientRect()
-            const filtersRect = filtersRef.current.getBoundingClientRect()
-            const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
-            scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
-          }
-        }, 150)
+        // No keyboard here — just wait for the expanded layout (min-height /
+        // back button) to render, then scroll the filters to the top.
+        setTimeout(scrollFiltersToContainerTop, 150)
       }
     } else if (!searchQuery) {
       setIsSearchFocused(false)
