@@ -555,6 +555,56 @@ function SiteAttendance() {
 
   //client side filtering
   const [searchQuery, setSearchQuery] = useState("")
+  const [isSearchFocused, setIsSearchFocused] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const filtersRef = useRef<HTMLDivElement>(null)
+
+  const handleSearchFocus = () => {
+    setIsSearchFocused(true)
+    if (window.innerWidth < 768) {
+      setTimeout(() => {
+        filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      }, 150)
+    }
+  }
+
+  const handleSearchDismiss = () => {
+    setIsSearchFocused(false)
+    setCategoryFilter(null)
+    setSearchQuery("")
+    searchInputRef.current?.blur()
+    if (window.innerWidth < 768) {
+      window.scrollTo({ top: 0, behavior: "smooth" })
+    }
+  }
+
+  const handleCategoryFilterChange = (key: CategoryFilter) => {
+    const nextVal = categoryFilter === key ? null : key
+    setCategoryFilter(nextVal)
+    if (nextVal) {
+      setIsSearchFocused(true)
+      if (window.innerWidth < 768) {
+        setTimeout(() => {
+          filtersRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+        }, 150)
+      }
+    } else if (!searchQuery) {
+      setIsSearchFocused(false)
+      if (window.innerWidth < 768) {
+        window.scrollTo({ top: 0, behavior: "smooth" })
+      }
+    }
+  }
+
+  const handleClearCategoryFilter = () => {
+    setCategoryFilter(null)
+    if (!searchQuery) {
+      setIsSearchFocused(false)
+      if (window.innerWidth < 768) {
+        window.scrollTo({ top: 0, behavior: "smooth" })
+      }
+    }
+  }
 
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
 
@@ -1778,6 +1828,13 @@ function SiteAttendance() {
     }
   }, [isDirty])
 
+  // Focus search input when isSearchFocused becomes true
+  useEffect(() => {
+    if (isSearchFocused && searchInputRef.current) {
+      searchInputRef.current.focus()
+    }
+  }, [isSearchFocused])
+
   useEffect(() => {
     const initialize = async () => {
       try {
@@ -1885,7 +1942,10 @@ function SiteAttendance() {
   })();
 
   return (
-    <div className="space-y-6 p-6">
+    <div className={cn(
+      "space-y-6 p-6 transition-all duration-300",
+      isSearchFocused && "min-h-[120vh] pb-[60vh] md:min-h-0 md:pb-0"
+    )}>
 
       {/* PAGE HEADER */}
       <Card className="overflow-hidden">
@@ -2263,14 +2323,45 @@ function SiteAttendance() {
       </div>
 
       {/* FILTERS — sticky */}
-      <div className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
-        <div className="w-full">
-          <Input
-            placeholder="Search by name, ID, or job title..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-background placeholder:text-xs sm:placeholder:text-sm placeholder:text-muted-foreground/60"
-          />
+      <div ref={filtersRef} className="sticky top-0 z-20 -mx-6 px-6 py-3 bg-background/90 backdrop-blur-md border-b border-border/50 shadow-[0_1px_6px_0_rgba(0,0,0,0.06)] space-y-2.5">
+        <div className="w-full flex items-center gap-2">
+          {isSearchFocused && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden shrink-0 -ml-2 h-9 w-9 text-muted-foreground hover:bg-muted"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleSearchDismiss()
+              }}
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+          )}
+          <div className="relative flex-1">
+            <Input
+              ref={searchInputRef}
+              placeholder="Search by name, ID, or job title..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={handleSearchFocus}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  handleSearchDismiss()
+                }
+              }}
+              className="w-full bg-background placeholder:text-xs md:placeholder:text-sm placeholder:text-muted-foreground/60 pr-8"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground h-5 w-5 flex items-center justify-center rounded-full hover:bg-muted transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Category chips */}
@@ -2284,7 +2375,7 @@ function SiteAttendance() {
             return (
               <button
                 key={key}
-                onClick={() => setCategoryFilter(active ? null : key)}
+                onClick={() => handleCategoryFilterChange(key)}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 text-xs font-medium border transition-colors",
                   active
@@ -2299,7 +2390,7 @@ function SiteAttendance() {
           })}
           {categoryFilter && (
             <button
-              onClick={() => setCategoryFilter(null)}
+              onClick={handleClearCategoryFilter}
               className="ml-auto text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
             >
               <X className="h-3 w-3" />
