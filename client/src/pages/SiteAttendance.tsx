@@ -2363,6 +2363,23 @@ function SiteAttendance() {
               placeholder="Search by name, ID, or job title..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onPointerDown={(e) => {
+                // Mobile: take control of focus so the browser's native
+                // scroll-into-view (which fights our positioning when the
+                // keyboard opens) never runs. We preventDefault to stop the
+                // native tap-focus, then focus ourselves with preventScroll —
+                // this still opens the keyboard (focus stays inside the tap
+                // gesture) but leaves us as the only thing that scrolls.
+                if (
+                  window.innerWidth < 768 &&
+                  document.activeElement !== searchInputRef.current
+                ) {
+                  e.preventDefault()
+                  searchInputRef.current?.focus({ preventScroll: true })
+                  // onFocus fires from this programmatic focus and runs
+                  // handleSearchFocus, so no need to call it here.
+                }
+              }}
               onFocus={handleSearchFocus}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
