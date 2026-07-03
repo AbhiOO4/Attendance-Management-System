@@ -1115,6 +1115,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           job,
           checkIn,
           checkOut,
+          manuallyCleared = false,
         } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
@@ -1181,6 +1182,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           workedHours: Number(workedHours.toFixed(2)),
           markedBy,
           isNightShift: sessionIsNight,
+          // A filled check-in always clears the deliberate-absence flag.
+          manuallyCleared: checkInDate ? false : !!manuallyCleared,
         })
       }
 
@@ -1914,9 +1917,19 @@ export const bulkEditAttendance = async (
 
       // UPDATE EXISTING SESSION
       if (existingSessionIndex !== -1) {
+        const existingObj = attendanceDoc.sessions[existingSessionIndex].toObject();
+        // Deliberate-absence flag: filled check-in clears it; emptying a
+        // previously filled session sets it; otherwise keep as-is.
+        let manuallyCleared = existingObj.manuallyCleared || false;
+        if (checkIn) {
+          manuallyCleared = false;
+        } else if (existingObj.checkIn || existingObj.checkOut) {
+          manuallyCleared = true;
+        }
         attendanceDoc.sessions[existingSessionIndex] = {
-          ...attendanceDoc.sessions[existingSessionIndex].toObject(),
+          ...existingObj,
           ...updatedSession,
+          manuallyCleared,
         };
       } else {
         // IF SESSION DOESN'T EXIST, ADD IT
@@ -2150,6 +2163,25 @@ export const updateAttendance = async (req, res) => {
             }
           }
 
+          // Deliberate-absence flag: a filled check-in always clears it; an
+          // emptied session that previously had times was explicitly cleared
+          // by the editor; an untouched empty session keeps its flag.
+          let manuallyCleared = false;
+          if (!session.checkIn) {
+            const existing = session._id
+              ? attendance.sessions.find(
+                  (s) => s._id.toString() === session._id.toString()
+                )
+              : null;
+            if (existing && (existing.checkIn || existing.checkOut)) {
+              manuallyCleared = true;
+            } else if (existing) {
+              manuallyCleared = existing.manuallyCleared || false;
+            } else {
+              manuallyCleared = !!session.manuallyCleared;
+            }
+          }
+
           return {
             _id: session._id,
             siteId: session.siteId,
@@ -2162,6 +2194,7 @@ export const updateAttendance = async (req, res) => {
               workedHours.toFixed(2)
             ),
             isNightShift: sessionIsNight,
+            manuallyCleared,
             markedBy:
               session.markedBy ||
               attendance.markedBy,
@@ -3792,9 +3825,10 @@ export const assignNightShift = async (req, res) => {
         .select("currentSite currentJob collarType")
         .session(dbSession);
 
+      // Collar-aware, NO fallback: staff use only the staff night default.
       const isStaff = emp?.collarType === "staff";
       const nightDefaultIn = isStaff
-        ? (siteDoc?.staffNightDefaultCheckIn || siteDoc?.nightDefaultCheckIn || "")
+        ? (siteDoc?.staffNightDefaultCheckIn || "")
         : (siteDoc?.nightDefaultCheckIn || "");
 
       // Date object for the pre-filled check-in, or null if no default configured.

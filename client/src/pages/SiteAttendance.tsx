@@ -126,6 +126,8 @@ export interface AttendanceSession {
   workedHours: number
 
   isNightShift?: boolean
+
+  manuallyCleared?: boolean
 }
 
 export interface AttendanceRecord {
@@ -177,6 +179,9 @@ interface DraftSession {
   checkOut: string,
   workedHours: number,
   isNightShift: boolean
+  // True when the supervisor deliberately cleared this session (Absent button /
+  // manually emptied check-in). Immune to empty→time default propagation.
+  manuallyCleared?: boolean
 }
 //siteId, date, isHoliday are common fields
 interface DraftAttendanceRecord {
@@ -547,10 +552,11 @@ function SiteAttendance() {
             String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
 
           // Staff (white-collar) prefill from the site's staff default check-in;
-          // field workers use the day default.
+          // field workers use the day default. Never fall back across collars —
+          // if the applicable default is empty, the check-in is left empty.
           const isStaff = emp.collarType === "staff"
           const roleDefaultIn = isStaff
-            ? (siteData.staffDefaultCheckIn || siteData.defaultCheckIn || "")
+            ? (siteData.staffDefaultCheckIn || "")
             : (siteData.defaultCheckIn || "")
           const defaultIn = hasPendingTransfer && emp.pendingTransferCheckIn
             ? toTimeValue(emp.pendingTransferCheckIn)
@@ -1055,9 +1061,19 @@ function SiteAttendance() {
           nextIsNightShift = prevIsNight
         }
 
+        // Deliberate-absence flag: typing a check-in clears it; manually
+        // emptying the check-in sets it (same intent as the Absent button).
+        let nextManuallyCleared = sessions[sessionIndex].manuallyCleared || false
+        if (field === "checkIn") {
+          nextManuallyCleared = value === ""
+        } else if (session.checkIn) {
+          nextManuallyCleared = false
+        }
+
         sessions[sessionIndex] = {
           ...session,
           isNightShift: nextIsNightShift,
+          manuallyCleared: nextManuallyCleared,
         }
 
         sessions[sessionIndex].workedHours =
@@ -1208,6 +1224,8 @@ function SiteAttendance() {
           checkOut: "",
           workedHours: 0,
           isNightShift: sessions[sessionIndex].isNightShift || false,
+          // Deliberate absence: immune to empty→time default propagation.
+          manuallyCleared: true,
         }
 
         return {
@@ -1239,6 +1257,9 @@ function SiteAttendance() {
             lastCleared.checkOut,
             lastCleared.isNightShift
           ),
+          // Undoing the clear restores presence; the session is no longer a
+          // deliberate absence (unless the restored check-in is itself empty).
+          manuallyCleared: !lastCleared.checkIn,
         }
 
         return {
@@ -1298,9 +1319,15 @@ function SiteAttendance() {
     ]
 
     for (const { label, editVal, siteVal } of fieldMap) {
-      // Only count as a change if old was non-empty, new is non-empty, and they differ
-      if (siteVal && editVal && siteVal !== editVal) {
-        changes.push({ field: label, oldValue: siteVal, newValue: editVal })
+      // Any real difference counts — including setting a default for the first
+      // time (empty → time, fills eligible empty sessions) and clearing one
+      // (time → empty, empties sessions still holding the old default).
+      if (siteVal !== editVal) {
+        changes.push({
+          field: label,
+          oldValue: siteVal || "--:--",
+          newValue: editVal || "--:--",
+        })
       }
     }
 
@@ -1366,42 +1393,109 @@ function SiteAttendance() {
         toast.success("Default shift times updated successfully")
       }
 
-      // Propagate default check-in to unsaved drafts if attendance does not exist yet
+      // Propagate default time changes to unsaved drafts (attendance not yet
+      // submitted). Same matrix as the server-side propagation, collar-aware
+      // (staff rows follow ONLY the staff defaults, no fallback):
+      //  - update (A→B): sessions holding the previous default move to the new one.
+      //  - clear  (A→""): sessions holding the previous default are emptied
+      //    (check-ins only when there's no check-out). NOT marked as deliberate
+      //    absences, so a future default can refill them.
+      //  - fill  (""→B): empty sessions of the matching shift get the new
+      //    check-in — except deliberate absences (manuallyCleared) and sick
+      //    leave. Draft check-outs are never pre-filled.
       if (!attendanceExists && draftAttendance.length > 0) {
-        const oldCheckIn = site.defaultCheckIn || ""
-        const newCheckIn = editDefaultCheckIn
+        type Transition = "update" | "clear" | "fill" | "none"
+        const transitionOf = (oldV: string, newV: string): Transition =>
+          oldV === newV ? "none" : oldV && newV ? "update" : oldV ? "clear" : "fill"
+
+        type Candidate = { old: string; next: string; night: boolean }
+        const defaultsByCollar: Record<
+          CollarType,
+          { checkIn: Candidate[]; checkOut: Candidate[] }
+        > = {
+          staff: {
+            checkIn: [
+              { old: site.staffDefaultCheckIn || "", next: editStaffDefaultCheckIn, night: false },
+              { old: site.staffNightDefaultCheckIn || "", next: editStaffNightDefaultCheckIn, night: true },
+            ],
+            checkOut: [
+              { old: site.staffDefaultCheckOut || "", next: editStaffDefaultCheckOut, night: false },
+              { old: site.staffNightDefaultCheckOut || "", next: editStaffNightDefaultCheckOut, night: true },
+            ],
+          },
+          skilled: {
+            checkIn: [
+              { old: site.defaultCheckIn || "", next: editDefaultCheckIn, night: false },
+              { old: site.nightDefaultCheckIn || "", next: editNightDefaultCheckIn, night: true },
+            ],
+            checkOut: [
+              { old: site.defaultCheckOut || "", next: editDefaultCheckOut, night: false },
+              { old: site.nightDefaultCheckOut || "", next: editNightDefaultCheckOut, night: true },
+            ],
+          },
+        }
 
         setDraftAttendance(prev =>
-          prev.map(record => ({
-            ...record,
-            sessions: record.sessions.map(session => {
-              if (session.checkIn === "" || session.checkIn === oldCheckIn) {
-                const prevIsNight = session.isNightShift || false
-                let isNightShift = false
-                if (newCheckIn) {
-                  const [inH] = newCheckIn.split(":").map(Number)
-                  const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                  if (prevIsNight) {
-                    isNightShift = !isDayOnlyCheckIn
-                  } else {
-                    const inRange = inH >= 0 && inH < cutoffHour
-                    const crossesMidnight = session.checkOut ? isCrossMidnight(newCheckIn, session.checkOut, false) : false
-                    isNightShift = inRange || crossesMidnight
+          prev.map(record => {
+            const collar: CollarType = record.collarType === "staff" ? "staff" : "skilled"
+            const { checkIn: inCands, checkOut: outCands } = defaultsByCollar[collar]
+            return {
+              ...record,
+              sessions: record.sessions.map(session => {
+                const sessionNight = session.isNightShift || false
+                let nextIn = session.checkIn
+                let nextOut = session.checkOut
+                let nextCleared = session.manuallyCleared || false
+                let modified = false
+
+                for (const c of inCands) {
+                  const t = transitionOf(c.old, c.next)
+                  if (t === "none") continue
+                  if (t === "fill") {
+                    if (record.isSickLeave) continue
+                    if (nextIn || nextOut) continue
+                    if (nextCleared) continue
+                    if (sessionNight !== c.night) continue
+                    nextIn = c.next
+                    modified = true
+                  } else if (nextIn && nextIn === c.old) {
+                    if (t === "clear") {
+                      // Never wipe worked data.
+                      if (nextOut) continue
+                      nextIn = ""
+                      // Emptied by a default change, not a deliberate absence.
+                      nextCleared = false
+                      modified = true
+                    } else {
+                      nextIn = c.next
+                      modified = true
+                    }
                   }
-                } else {
-                  isNightShift = prevIsNight
                 }
-                const workedHours = calculateHours(newCheckIn, session.checkOut, isNightShift)
+
+                for (const c of outCands) {
+                  const t = transitionOf(c.old, c.next)
+                  // Drafts never pre-fill check-outs; the cron/saved-record
+                  // propagation handles those after submit.
+                  if (t === "none" || t === "fill") continue
+                  if (!nextOut || nextOut !== c.old) continue
+                  nextOut = t === "clear" ? "" : c.next
+                  modified = true
+                }
+
+                if (!modified) return session
+
+                const workedHours = calculateHours(nextIn, nextOut, sessionNight)
                 return {
                   ...session,
-                  checkIn: newCheckIn,
-                  isNightShift,
+                  checkIn: nextIn,
+                  checkOut: nextOut,
+                  manuallyCleared: nextCleared,
                   workedHours,
                 }
-              }
-              return session
-            })
-          }))
+              }),
+            }
+          })
         )
         setIsDirty(true)
       }

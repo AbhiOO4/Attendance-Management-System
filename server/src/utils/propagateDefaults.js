@@ -2,12 +2,25 @@
  * Propagate default shift time changes to existing attendance records.
  *
  * When an admin/supervisor changes a site's default check-in or check-out time
- * after the cron has already auto-filled values for the day, this utility
- * updates matching attendance records immediately.
+ * after values have been filled for the day, this utility updates matching
+ * attendance records immediately.
  *
- * Matching rule: only sessions whose current time value equals the PREVIOUS
- * default are updated. Manually edited records (different from the old default)
- * are left untouched.
+ * Three transitions are supported per field (see the matrix in the loop):
+ *   update (A → B):  sessions whose current time equals the PREVIOUS default
+ *                    are moved to the new default. Manually edited records
+ *                    (different from the old default) are left untouched.
+ *   clear  (A → ""): sessions whose current time equals the PREVIOUS default
+ *                    are emptied. Check-ins are only cleared when there is no
+ *                    check-out (never wipe worked data).
+ *   fill   ("" → B): empty sessions are filled with the new default — EXCEPT
+ *                    sessions flagged `manuallyCleared` (deliberate absence via
+ *                    the Absent button) and sick-leave records. Check-outs are
+ *                    only filled when the resulting time is already in the past
+ *                    (mirrors the cron; never pre-credit future hours).
+ *
+ * Collar scoping: staff* fields only touch staff (white-collar) employees'
+ * sessions; day/night fields exclude staff. There is NO fallback from staff
+ * fields to the field-worker defaults.
  *
  * Overlap and validity checks are performed per-record before applying changes.
  */
@@ -88,13 +101,20 @@ function isCheckInField(field) {
   );
 }
 
+function skippedEntry(record, reason, field) {
+  return {
+    employeeId: record.employee?.employeeId || record.employee?._id?.toString() || '',
+    employeeName: record.employee?.name || 'Unknown',
+    reason,
+    field,
+  };
+}
+
 /**
  * Propagate default value changes to matching attendance records.
  *
  * @param {Object}  site          - The site document (already saved with new values)
- * @param {Object}  prevDefaults  - Previous default values before the change:
- *                                  { defaultCheckIn, defaultCheckOut,
- *                                    nightDefaultCheckIn, nightDefaultCheckOut }
+ * @param {Object}  prevDefaults  - Previous default values before the change
  * @param {Object}  newDefaults   - New default values (same shape as prevDefaults)
  * @param {Object}  workConfig    - Work schedule config (fullDayHours, halfDayHours,
  *                                  overtimeThreshold, nightShiftCutoffHour)
@@ -110,7 +130,6 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
   let totalUpdated = 0;
   const allSkipped = [];
 
-  // Determine which fields actually changed
   const fieldsToCheck = [
     'defaultCheckIn',
     'defaultCheckOut',
@@ -122,13 +141,11 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     'staffNightDefaultCheckOut',
   ];
 
+  // Any real difference counts — including empty→time (fill) and time→empty (clear).
   const changedFields = fieldsToCheck.filter((field) => {
     const oldVal = prevDefaults[field] || '';
     const newVal = newDefaults[field] || '';
-    // A real change: old was non-empty AND new is non-empty AND they differ
-    // If old was empty, the cron never filled anything → nothing to propagate
-    // If new is empty, user is clearing the default → Case 3: do nothing
-    return oldVal !== '' && newVal !== '' && oldVal !== newVal;
+    return oldVal !== newVal;
   });
 
   if (changedFields.length === 0) {
@@ -141,11 +158,13 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
   const staffIds = await getStaffEmployeeIds();
 
   for (const field of changedFields) {
-    const oldTimeStr = prevDefaults[field];
-    const newTimeStr = newDefaults[field];
+    const oldTimeStr = prevDefaults[field] || '';
+    const newTimeStr = newDefaults[field] || '';
     const isNight = isNightField(field);
     const isStaff = isStaffField(field);
     const isCheckIn = isCheckInField(field);
+    const transition =
+      oldTimeStr && newTimeStr ? 'update' : oldTimeStr ? 'clear' : 'fill';
     const targetDateStr = getTargetDate(field, cutoffHour);
 
     const targetDate = new Date(targetDateStr);
@@ -165,6 +184,9 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     }).populate('employee', 'name employeeId');
 
     for (const record of records) {
+      // Never fill anything on a sick-leave day.
+      if (transition === 'fill' && record.isSickLeave) continue;
+
       let recordModified = false;
 
       for (const session of record.sessions) {
@@ -175,26 +197,58 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
         if (isNight && session.isNightShift !== true) continue;
         if (!isNight && session.isNightShift === true) continue;
 
-        // Determine the session field to check/update
-        const currentDateValue = isCheckIn ? session.checkIn : session.checkOut;
-
-        // Skip if the field is empty (cron hasn't filled it yet)
-        if (!currentDateValue) continue;
-
-        // Compare the time portion of the stored Date against the old default
-        const currentTimeStr = toLocalTimeString(currentDateValue);
-        if (currentTimeStr !== oldTimeStr) continue;
-
-        // --- This session matches: compute the new Date value ---
-
         if (isCheckIn) {
-          // Updating check-in
+          // ---------- CHECK-IN FIELD ----------
+          if (transition === 'fill') {
+            // Only completely empty sessions, never deliberate absences.
+            if (session.checkIn || session.checkOut) continue;
+            if (session.manuallyCleared) continue;
+
+            const newCheckInDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
+              isNightShift: isNight,
+              cutoffHour,
+            });
+
+            const candidate = record.sessions.map((s) =>
+              s._id.toString() === session._id.toString()
+                ? { checkIn: newCheckInDate, checkOut: null }
+                : { checkIn: s.checkIn, checkOut: s.checkOut }
+            );
+
+            if (hasSessionOverlap(candidate)) {
+              allSkipped.push(skippedEntry(record, 'overlap', field));
+              continue;
+            }
+
+            session.checkIn = newCheckInDate;
+            session.manuallyCleared = false;
+            recordModified = true;
+            continue;
+          }
+
+          // update / clear both require the current value to equal the old default
+          if (!session.checkIn) continue;
+          if (toLocalTimeString(session.checkIn) !== oldTimeStr) continue;
+
+          if (transition === 'clear') {
+            // Never wipe worked data — only clear check-in-only sessions.
+            if (session.checkOut) continue;
+            session.checkIn = null;
+            session.workedHours = 0;
+            // Cleared by a default change, NOT a deliberate absence: leave the
+            // flag false so a future default can refill this session.
+            session.manuallyCleared = false;
+            recordModified = true;
+            continue;
+          }
+
+          // transition === 'update'
+          const prevCheckIn = session.checkIn;
           const newCheckInDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
             isNightShift: isNight,
             cutoffHour,
           });
 
-          // Build candidate sessions for overlap check
           const candidate = record.sessions.map((s) =>
             s._id.toString() === session._id.toString()
               ? { checkIn: newCheckInDate, checkOut: s.checkOut }
@@ -202,12 +256,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
           );
 
           if (hasSessionOverlap(candidate)) {
-            allSkipped.push({
-              employeeId: record.employee?.employeeId || record.employee?._id?.toString() || '',
-              employeeName: record.employee?.name || 'Unknown',
-              reason: 'overlap',
-              field,
-            });
+            allSkipped.push(skippedEntry(record, 'overlap', field));
             continue;
           }
 
@@ -220,14 +269,8 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
               (1000 * 60 * 60);
 
             if (!(workedHours > 0 && workedHours <= 24)) {
-              allSkipped.push({
-                employeeId: record.employee?.employeeId || record.employee?._id?.toString() || '',
-                employeeName: record.employee?.name || 'Unknown',
-                reason: 'invalid_hours',
-                field,
-              });
-              // Revert
-              session.checkIn = currentDateValue;
+              allSkipped.push(skippedEntry(record, 'invalid_hours', field));
+              session.checkIn = prevCheckIn; // revert
               continue;
             }
 
@@ -236,36 +279,79 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
 
           recordModified = true;
         } else {
-          // Updating check-out
-          if (!session.checkIn) {
-            // Can't set checkout without check-in
+          // ---------- CHECK-OUT FIELD ----------
+          if (transition === 'fill') {
+            // Only open sessions (checked in, not out).
+            if (!session.checkIn || session.checkOut) continue;
+
+            const checkInTimeStr = toLocalTimeString(session.checkIn);
+            const newCheckOutDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
+              referenceCheckIn: checkInTimeStr,
+              isNightShift: isNight,
+              cutoffHour,
+            });
+
+            // Never pre-credit hours: only fill when the check-out time has
+            // already passed (the cron handles the future case at that time).
+            if (newCheckOutDate.getTime() > Date.now()) continue;
+
+            const workedHours =
+              (newCheckOutDate.getTime() - new Date(session.checkIn).getTime()) /
+              (1000 * 60 * 60);
+
+            if (!(workedHours > 0 && workedHours <= 24)) {
+              allSkipped.push(skippedEntry(record, 'invalid_hours', field));
+              continue;
+            }
+
+            const candidate = record.sessions.map((s) =>
+              s._id.toString() === session._id.toString()
+                ? { checkIn: s.checkIn, checkOut: newCheckOutDate }
+                : { checkIn: s.checkIn, checkOut: s.checkOut }
+            );
+
+            if (hasSessionOverlap(candidate)) {
+              allSkipped.push(skippedEntry(record, 'overlap', field));
+              continue;
+            }
+
+            session.checkOut = newCheckOutDate;
+            session.workedHours = Number(workedHours.toFixed(2));
+            recordModified = true;
             continue;
           }
 
-          const checkInTimeStr = toLocalTimeString(session.checkIn);
+          // update / clear both require the current value to equal the old default
+          if (!session.checkOut) continue;
+          if (toLocalTimeString(session.checkOut) !== oldTimeStr) continue;
 
+          if (transition === 'clear') {
+            // Session goes back to open (checked in, awaiting check-out).
+            session.checkOut = null;
+            session.workedHours = 0;
+            recordModified = true;
+            continue;
+          }
+
+          // transition === 'update'
+          if (!session.checkIn) continue;
+
+          const checkInTimeStr = toLocalTimeString(session.checkIn);
           const newCheckOutDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
             referenceCheckIn: checkInTimeStr,
             isNightShift: isNight,
             cutoffHour,
           });
 
-          // Validate worked hours
           const workedHours =
             (newCheckOutDate.getTime() - new Date(session.checkIn).getTime()) /
             (1000 * 60 * 60);
 
           if (!(workedHours > 0 && workedHours <= 24)) {
-            allSkipped.push({
-              employeeId: record.employee?.employeeId || record.employee?._id?.toString() || '',
-              employeeName: record.employee?.name || 'Unknown',
-              reason: 'invalid_hours',
-              field,
-            });
+            allSkipped.push(skippedEntry(record, 'invalid_hours', field));
             continue;
           }
 
-          // Build candidate sessions for overlap check
           const candidate = record.sessions.map((s) =>
             s._id.toString() === session._id.toString()
               ? { checkIn: s.checkIn, checkOut: newCheckOutDate }
@@ -273,12 +359,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
           );
 
           if (hasSessionOverlap(candidate)) {
-            allSkipped.push({
-              employeeId: record.employee?.employeeId || record.employee?._id?.toString() || '',
-              employeeName: record.employee?.name || 'Unknown',
-              reason: 'overlap',
-              field,
-            });
+            allSkipped.push(skippedEntry(record, 'overlap', field));
             continue;
           }
 

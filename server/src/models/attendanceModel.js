@@ -37,6 +37,16 @@ const attendanceSessionSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // True when a supervisor explicitly cleared this session's times (the
+    // "Absent" button / manual empty). Distinguishes "deliberately absent"
+    // from "empty because the site had no default yet", so a later
+    // empty→time default change never refills a deliberate absence.
+    // Reset to false whenever a check-in is set by any path.
+    manuallyCleared: {
+      type: Boolean,
+      default: false,
+    },
   },
   { _id: true }
 );
