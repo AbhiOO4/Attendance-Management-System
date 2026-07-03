@@ -559,18 +559,30 @@ function SiteAttendance() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const filtersRef = useRef<HTMLDivElement>(null)
 
+  const getFiltersScrollTop = (scrollContainer: HTMLElement) => {
+    if (!filtersRef.current) return 0
+    let offsetTop = 0
+    let current: HTMLElement | null = filtersRef.current
+    while (current && current !== scrollContainer) {
+      offsetTop += current.offsetTop
+      current = current.offsetParent as HTMLElement | null
+    }
+    return offsetTop
+  }
+
   const handleSearchFocus = () => {
     setIsSearchFocused(true)
     if (window.innerWidth < 768) {
-      setTimeout(() => {
-        const scrollContainer = document.getElementById("main-scroll-container")
-        if (scrollContainer && filtersRef.current) {
-          const containerRect = scrollContainer.getBoundingClientRect()
-          const filtersRect = filtersRef.current.getBoundingClientRect()
-          const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
-          scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
-        }
-      }, 350)
+      const scrollContainer = document.getElementById("main-scroll-container")
+      if (scrollContainer) {
+        const targetTop = getFiltersScrollTop(scrollContainer)
+        // Immediate scroll
+        scrollContainer.scrollTo({ top: targetTop, behavior: "smooth" })
+        // Delayed backup scroll to override virtual keyboard native scroll transitions
+        setTimeout(() => {
+          scrollContainer.scrollTo({ top: targetTop, behavior: "smooth" })
+        }, 400)
+      }
     }
   }
 
@@ -593,15 +605,12 @@ function SiteAttendance() {
     if (nextVal) {
       setIsSearchFocused(true)
       if (window.innerWidth < 768) {
-        setTimeout(() => {
-          const scrollContainer = document.getElementById("main-scroll-container")
-          if (scrollContainer && filtersRef.current) {
-            const containerRect = scrollContainer.getBoundingClientRect()
-            const filtersRect = filtersRef.current.getBoundingClientRect()
-            const scrollTop = scrollContainer.scrollTop + (filtersRect.top - containerRect.top)
-            scrollContainer.scrollTo({ top: scrollTop, behavior: "smooth" })
-          }
-        }, 150)
+        const scrollContainer = document.getElementById("main-scroll-container")
+        if (scrollContainer) {
+          const targetTop = getFiltersScrollTop(scrollContainer)
+          // No virtual keyboard, scroll immediately
+          scrollContainer.scrollTo({ top: targetTop, behavior: "smooth" })
+        }
       }
     } else if (!searchQuery) {
       setIsSearchFocused(false)
