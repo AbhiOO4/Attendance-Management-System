@@ -10,6 +10,8 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
+import { combineDateAndTimeLocal } from '../utils/timeLocal.js'
+import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 
 
 //Admin
@@ -1213,7 +1215,7 @@ export const instaAddEmployee = async (req, res) => {
   session.startTransaction();
   try {
     const { siteId } = req.params
-    const { empId, currentJob } = req.body
+    const { empId, currentJob, checkInTime } = req.body
 
     const markedBy = req.user?.id
 
@@ -1264,99 +1266,175 @@ export const instaAddEmployee = async (req, res) => {
     const today = new Date()
     today.setUTCHours(0, 0, 0, 0)
 
-    const attendanceLock =
-      await AttendanceLock.findOne({
-        siteId,
-        date: today,
-        isLocked: true,
-      }).session(session)
-
-    const oldJobId = employee.currentJob
-
     // ----------------------------------
-    // SITE ATTENDANCE NOT SUBMITTED YET
+    // VALIDATE & CONVERT CHECK-IN TIME
     // ----------------------------------
-    if (!attendanceLock) {
-      employee.currentSite = siteId
-      employee.currentJob = currentJob
 
-      await employee.save({ session })
-
-      if (oldJobId) {
-        await jobModel.findByIdAndUpdate(
-          oldJobId,
-          {
-            $pull: {
-              employees: employee._id,
-            },
-          },
-          { session }
-        )
-      }
-
-      await session.commitTransaction();
-      session.endSession();
-
-      return res.status(200).json({
-        success: true,
-        message:
-          "Employee assigned to site successfully",
+    if (!checkInTime) {
+      await session.abortTransaction()
+      session.endSession()
+      return res.status(400).json({
+        success: false,
+        message: "Check-in time is required",
       })
     }
 
+    if (!/^\d{2}:\d{2}$/.test(checkInTime)) {
+      await session.abortTransaction()
+      session.endSession()
+      return res.status(400).json({
+        success: false,
+        message: "Invalid check-in time format. Expected HH:mm",
+      })
+    }
+
+    const todayStr = today.toISOString().split("T")[0]
+    const checkInDate = combineDateAndTimeLocal(todayStr, checkInTime)
+
     // ----------------------------------
-    // SITE ATTENDANCE ALREADY SUBMITTED
+    // OVERLAP CHECK & AUTO-CLOSE
     // ----------------------------------
 
-    let attendance = await attendanceModel.findOne({
+    const attendance = await attendanceModel.findOne({
       employee: empId,
       date: today,
     }).session(session)
 
     if (attendance) {
-      const alreadyHasSession =
-        attendance.sessions.some(
-          (session) =>
-            session.siteId.toString() ===
-            siteId.toString()
-        )
+      const alreadyHasSession = attendance.sessions.some(
+        (s) => s.siteId.toString() === siteId.toString()
+      )
 
       if (!alreadyHasSession) {
-        attendance.sessions.push({
-          siteId,
-          jobId: currentJob,
-          checkIn: null,
-          checkOut: null,
-          workedHours: 0,
-          markedBy,
-        })
+        const candidateSessions = [
+          ...attendance.sessions.map(s => ({
+            checkIn: s.checkIn,
+            checkOut: s.checkOut,
+            siteId: s.siteId,
+          })),
+          { checkIn: checkInDate, checkOut: null },
+        ]
+
+        if (hasSessionOverlap(candidateSessions)) {
+          const newStart = checkInDate.getTime()
+          let conflicting = null
+          for (const s of attendance.sessions) {
+            if (!s.checkIn) continue
+            const sStart = new Date(s.checkIn).getTime()
+            const sEnd = s.checkOut ? new Date(s.checkOut).getTime() : sStart
+            if (newStart >= sStart && newStart < sEnd) {
+              conflicting = s
+              break
+            }
+            if (!s.checkOut && sStart === newStart) {
+              conflicting = s
+              break
+            }
+          }
+
+          let conflictingSiteName = "Unknown Site"
+          if (conflicting) {
+            const cSite = await siteModel.findById(conflicting.siteId).select("siteName").session(session)
+            if (cSite) conflictingSiteName = cSite.siteName
+          }
+
+          await session.abortTransaction()
+          session.endSession()
+          return res.status(400).json({
+            success: false,
+            message: "Check-in time overlaps with an existing session",
+            overlap: {
+              employeeId: empId,
+              conflictingSession: {
+                siteId: conflicting?.siteId,
+                siteName: conflictingSiteName,
+                checkIn: conflicting?.checkIn,
+                checkOut: conflicting?.checkOut,
+              },
+            },
+          })
+        }
+
+        // Auto-close most recent open session from a different site
+        const openSession = [...attendance.sessions]
+          .filter(s => s.checkIn && !s.checkOut && s.siteId.toString() !== siteId.toString())
+          .sort((a, b) => new Date(b.checkIn).getTime() - new Date(a.checkIn).getTime())[0]
+
+        if (openSession) {
+          openSession.checkOut = checkInDate
+          openSession.workedHours = (checkInDate.getTime() - new Date(openSession.checkIn).getTime()) / 3600000
+        }
 
         await attendance.save({ session })
       }
-    } else {
-      const newAttendances = await attendanceModel.create([{
-        employee: empId,
-        siteId,
-        jobId: currentJob,
-        markedBy,
-        date: today,
-        status: "absent",
-        isHoliday: false,
-        totalWorkHours: 0,
-        overtimeHours: 0,
-        sessions: [
-          {
+    }
+
+    // ----------------------------------
+    // CHECK LOCK STATUS
+    // ----------------------------------
+
+    const attendanceLock = await AttendanceLock.findOne({
+      siteId,
+      date: today,
+      isLocked: true,
+    }).session(session)
+
+    const oldJobId = employee.currentJob
+
+    if (attendanceLock) {
+      // ----------------------------------
+      // SITE ATTENDANCE ALREADY SUBMITTED
+      // ----------------------------------
+
+      if (attendance) {
+        const alreadyHasSession = attendance.sessions.some(
+          (s) => s.siteId.toString() === siteId.toString()
+        )
+
+        if (!alreadyHasSession) {
+          attendance.sessions.push({
             siteId,
             jobId: currentJob,
-            checkIn: null,
+            checkIn: checkInDate,
             checkOut: null,
             workedHours: 0,
             markedBy,
-          },
-        ],
-      }], { session })
-      attendance = newAttendances[0]
+          })
+
+          await attendance.save({ session })
+        }
+      } else {
+        await attendanceModel.create([{
+          employee: empId,
+          siteId,
+          jobId: currentJob,
+          markedBy,
+          date: today,
+          status: "absent",
+          isHoliday: false,
+          totalWorkHours: 0,
+          overtimeHours: 0,
+          sessions: [
+            {
+              siteId,
+              jobId: currentJob,
+              checkIn: checkInDate,
+              checkOut: null,
+              workedHours: 0,
+              markedBy,
+            },
+          ],
+        }], { session })
+      }
     }
+
+    // ----------------------------------
+    // SET PENDING TRANSFER FIELDS
+    // ----------------------------------
+
+    employee.pendingTransferCheckIn = checkInDate
+    employee.pendingTransferSiteId = siteId
+    employee.pendingTransferDate = today
 
     // ----------------------------------
     // UPDATE EMPLOYEE ASSIGNMENT
@@ -1385,7 +1463,6 @@ export const instaAddEmployee = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Employee added successfully",
-      attendance,
     })
   } catch (error) {
     await session.abortTransaction();

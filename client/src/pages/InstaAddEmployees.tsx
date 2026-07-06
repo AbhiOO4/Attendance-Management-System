@@ -1,4 +1,5 @@
 import { api } from "@/lib/api"
+import { formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
     useEffect,
@@ -11,6 +12,7 @@ import {
 
 import toast from "react-hot-toast"
 
+import axios from "axios"
 
 import { useNavigate } from "react-router-dom"
 
@@ -46,7 +48,9 @@ import {
     UserPlus,
     ArrowLeft,
     MapPin,
-    Briefcase
+    Briefcase,
+    Clock3,
+    AlertCircle
 } from "lucide-react"
 
 import {
@@ -64,6 +68,8 @@ import {
     DialogTitle,
     DialogFooter,
 } from "@/components/ui/dialog"
+
+import { Label } from "@/components/ui/label"
 
 interface Employee {
     _id: string
@@ -107,6 +113,16 @@ type Job = {
     isCompleted?: boolean
 }
 
+type OverlapError = {
+    employeeId: string
+    conflictingSession: {
+        siteId: string
+        siteName: string
+        checkIn: string | null
+        checkOut: string | null
+    }
+}
+
 function InstaAddEmployees() {
     const { siteId } = useParams()
 
@@ -146,6 +162,10 @@ function InstaAddEmployees() {
     const [site, setSite] = useState<Site | null>(null)
 
     const [selectedJob, setSelectedJob] = useState<string | null>(null)
+
+    const [checkInTime, setCheckInTime] = useState("")
+    const [submitting, setSubmitting] = useState(false)
+    const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
 
     const [filters, setFilters] = useState({
         name: "",
@@ -248,12 +268,23 @@ function InstaAddEmployees() {
         fetchEmployees()
     }, [page, activeFilters])
 
-    const instaAdd = async (employeeId: string, jobId: string | null) => {
+    const openConfirmModal = (employee: Employee) => {
+        setSelectedEmployee(employee)
+        setSelectedJob(null)
+        setCheckInTime("")
+        setOverlapError(null)
+        setConfirmOpen(true)
+    }
+
+    const instaAdd = async (employeeId: string, jobId: string | null, checkIn: string): Promise<boolean> => {
         try {
-            await api.post(`/api/site/${siteId}/insta-add-employee`, { empId: employeeId, currentJob: jobId })
-            toast.success("Employee Added successfully")
-            
-            // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
+            await api.post(`/api/site/${siteId}/insta-add-employee`, {
+                empId: employeeId,
+                currentJob: jobId,
+                checkInTime: checkIn,
+            })
+            toast.success("Employee added successfully")
+
             if (siteId) {
                 Object.keys(localStorage).forEach((key) => {
                     if (key.startsWith(`attendance_draft_${siteId}_`)) {
@@ -267,20 +298,38 @@ function InstaAddEmployees() {
             setEmployees((prev) =>
                 prev.filter((emp) => emp._id !== employeeId)
             )
+            return true
         } catch (error) {
             console.log(error)
-            toast.error("Couldn't add employee!")
+            if (axios.isAxiosError(error) && error.response?.data?.overlap) {
+                setOverlapError(error.response.data.overlap)
+                toast.error(error.response.data.message || "Check-in time overlaps with an existing session")
+            } else {
+                toast.error("Couldn't add employee!")
+            }
+            return false
         }
     }
 
     const confirmAdd = async () => {
         if (!selectedEmployee) return
 
-        await instaAdd(selectedEmployee._id, selectedJob)
+        if (!checkInTime) {
+            toast.error("Check-in time is required")
+            return
+        }
 
-        setConfirmOpen(false)
-        setSelectedEmployee(null)
-        setSelectedJob(null)
+        setSubmitting(true)
+        const success = await instaAdd(selectedEmployee._id, selectedJob, checkInTime)
+        setSubmitting(false)
+
+        if (success) {
+            setConfirmOpen(false)
+            setSelectedEmployee(null)
+            setSelectedJob(null)
+            setCheckInTime("")
+            setOverlapError(null)
+        }
     }
 
     if (loading) {
@@ -469,11 +518,7 @@ function InstaAddEmployees() {
                                                 </div>
                                                 <Button
                                                     size="sm"
-                                                    onClick={() => {
-                                                        setSelectedEmployee(employee)
-                                                        setSelectedJob(null)
-                                                        setConfirmOpen(true)
-                                                    }}
+                                                    onClick={() => openConfirmModal(employee)}
                                                     className="shrink-0 transition-transform active:scale-95 duration-100"
                                                 >
                                                     <UserPlus className="h-4 w-4 mr-1.5" />
@@ -557,11 +602,7 @@ function InstaAddEmployees() {
                                                     <TableCell className="text-right">
                                                         <Button
                                                             size="sm"
-                                                            onClick={() => {
-                                                                setSelectedEmployee(employee)
-                                                                setSelectedJob(null)
-                                                                setConfirmOpen(true)
-                                                            }}
+                                                            onClick={() => openConfirmModal(employee)}
                                                         >
                                                             <UserPlus className="h-4 w-4 mr-2" />
                                                             Add
@@ -617,9 +658,13 @@ function InstaAddEmployees() {
 
             <Dialog
                 open={confirmOpen}
-                onOpenChange={
-                    setConfirmOpen
-                }
+                onOpenChange={(open) => {
+                    setConfirmOpen(open)
+                    if (!open) {
+                        setCheckInTime("")
+                        setOverlapError(null)
+                    }
+                }}
             >
                 <DialogContent className="sm:max-w-[460px] rounded-2xl overflow-hidden p-0 border border-border bg-card shadow-2xl">
                     <DialogHeader className="px-6 pt-6 pb-4 bg-muted/30 border-b border-border/40">
@@ -706,12 +751,54 @@ function InstaAddEmployees() {
                                 </SelectContent>
                             </Select>
                         </div>
+
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Clock3 className="h-4 w-4 text-muted-foreground" />
+                                <Label className="text-sm font-semibold text-foreground">Check-in Time</Label>
+                                <Badge variant="secondary" className="text-[10px] font-medium py-0 px-1.5 h-4 bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300 border border-red-200/50 dark:border-red-800/30">
+                                    Required
+                                </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Enter the check-in time for this employee at <strong>{site?.siteName}</strong>.
+                            </p>
+
+                            <Input
+                                type="time"
+                                value={checkInTime}
+                                onChange={(e) => {
+                                    setCheckInTime(e.target.value)
+                                    setOverlapError(null)
+                                }}
+                                className="w-full bg-background border-input shadow-sm hover:border-accent mt-1"
+                            />
+
+                            {overlapError && (
+                                <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
+                                    <div className="font-medium flex items-center gap-1.5">
+                                        <AlertCircle className="h-4 w-4 shrink-0" />
+                                        Conflicts with existing session
+                                    </div>
+                                    <div>
+                                        Site: {overlapError.conflictingSession.siteName}
+                                    </div>
+                                    <div>
+                                        Time: {formatLocalTime12h(overlapError.conflictingSession.checkIn)}
+                                        {overlapError.conflictingSession.checkOut
+                                            ? ` - ${formatLocalTime12h(overlapError.conflictingSession.checkOut)}`
+                                            : " (no check-out)"}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     <DialogFooter className="px-6 py-4 bg-muted/30 border-t border-border/40 flex sm:justify-end gap-2">
                         <Button
                             variant="outline"
                             onClick={() => setConfirmOpen(false)}
+                            disabled={submitting}
                             className="w-full sm:w-auto"
                         >
                             Cancel
@@ -719,10 +806,20 @@ function InstaAddEmployees() {
 
                         <Button
                             onClick={confirmAdd}
+                            disabled={submitting || !checkInTime}
                             className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
                         >
-                            <UserPlus className="h-4 w-4" />
-                            Confirm Add
+                            {submitting ? (
+                                <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Adding...
+                                </>
+                            ) : (
+                                <>
+                                    <UserPlus className="h-4 w-4" />
+                                    Confirm Add
+                                </>
+                            )}
                         </Button>
                     </DialogFooter>
                 </DialogContent>
