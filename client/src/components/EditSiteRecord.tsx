@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import {
   Dialog,
@@ -242,9 +242,17 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     }
   }, [open, attendanceId])
 
+  // Fetch the work-schedule config only once the dialog actually opens — this
+  // component is mounted (closed) on every SiteAttendance page load, and an
+  // eager fetch added a wasted /api/config request to that page's load.
+  const configFetchedRef = useRef(false)
   useEffect(() => {
-    fetchConfig()
-  }, [])
+    if (open && !configFetchedRef.current) {
+      configFetchedRef.current = true
+      fetchConfig()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const fetchConfig = async () => {
     try {

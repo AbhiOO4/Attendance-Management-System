@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment } from "react"
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment, memo } from "react"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
@@ -220,6 +220,25 @@ interface DraftAttendancePayload {
 
 type CategoryFilter = 'temporary' | 'omani' | null
 
+type OverlapError = {
+  employeeId: string
+
+  conflictingSession: {
+    siteId: string
+    siteName: string
+    checkIn: string
+    checkOut: string
+  }
+}
+
+const formatConflictingSessionTime = (overlap: OverlapError | null) => {
+  if (!overlap?.conflictingSession) return ""
+  const { checkIn, checkOut } = overlap.conflictingSession
+  const inStr = checkIn ? formatLocalTime12h(checkIn) : ""
+  const outStr = checkOut ? formatLocalTime12h(checkOut) : "Present"
+  return `${inStr} - ${outStr}`
+}
+
 const isSessionNonEmpty = (session?: { checkIn?: string | null; checkOut?: string | null }) => {
   return !!session?.checkIn || !!session?.checkOut
 }
@@ -375,6 +394,420 @@ function RowActionsMenu({
   )
 }
 
+interface DraftRowProps {
+  record: DraftAttendanceRecord
+  siteId?: string
+  breakDurationMinutes: number
+  fullDayHours: number
+  /** Overlap details when this row conflicts with another session, else null. */
+  overlap: OverlapError | null
+  /** True when this row was just cleared and can be undone. */
+  showUndo: boolean
+  onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
+  onToggleSick: (employeeId: string) => void
+  onUpdateBreaks: (employeeId: string, value: number | null) => void
+  onClearSession: (employeeId: string, sessionIndex: number) => void
+  onUndoClear: () => void
+}
+
+/**
+ * Memoized draft rows (mobile card + desktop table row). Draft edits update
+ * one record while the rest keep their identity, so React.memo lets every
+ * other row skip re-rendering on each keystroke — the main render cost on
+ * sites with large rosters.
+ */
+const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
+  record,
+  siteId,
+  breakDurationMinutes,
+  fullDayHours,
+  overlap,
+  showUndo,
+  onUpdateSession,
+  onToggleSick,
+  onUpdateBreaks,
+  onClearSession,
+  onUndoClear,
+}: DraftRowProps) {
+  const session = record.sessions[0]
+
+  return (
+    <Card
+      className={
+        overlap
+          ? "border-red-500"
+          : ""
+      }
+    >
+      <CardContent className="space-y-4 pt-4">
+
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-medium">
+                {record.employee.name}
+              </p>
+              {record.employee.user && (
+                <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                  Supervisor
+                </Badge>
+              )}
+              {record.employee.employmentType === 'temporary' && (
+                <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                  Temporary
+                </Badge>
+              )}
+            </div>
+
+            <p className="text-sm text-muted-foreground">
+              {record.employeeId} • {record.jobTitle}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {record.isSickLeave ? (
+              <SickLeaveBadge />
+            ) : isEmployeeAbsent(record.sessions, siteId) ? (
+              <AbsentIndicator />
+            ) : null}
+            <RowActionsMenu
+              isSick={!!record.isSickLeave}
+              onToggleSick={() => onToggleSick(record.employee._id)}
+              showTransfer
+              transferDisabled
+              transferDisabledReason="Save attendance before transferring"
+              onTransfer={() => {}}
+            />
+          </div>
+        </div>
+
+        <Input
+          type="time"
+          value={session.checkIn}
+          disabled={!!record.isSickLeave}
+          onChange={(e) =>
+            onUpdateSession(
+              record.employee._id,
+              0,
+              "checkIn",
+              e.target.value
+            )
+          }
+        />
+
+        <Input
+          type="time"
+          value={session.checkOut}
+          disabled={!!record.isSickLeave}
+          onChange={(e) =>
+            onUpdateSession(
+              record.employee._id,
+              0,
+              "checkOut",
+              e.target.value
+            )
+          }
+        />
+
+        <div className="text-sm font-medium flex items-center gap-1.5">
+          <span>Shift:</span>
+          {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? (
+            <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
+              🌙 Night
+            </span>
+          ) : (
+            <span className="text-muted-foreground">☀️ Day</span>
+          )}
+        </div>
+
+        {breakDurationMinutes > 0 && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-medium">Breaks:</span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
+                onClick={() => {
+                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
+                }}
+              >−</button>
+              <span className="min-w-[40px] text-center text-xs">
+                {record.breaksTaken !== null && record.breaksTaken !== undefined
+                  ? record.breaksTaken
+                  : "Auto"}
+              </span>
+              <button
+                type="button"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                onClick={() => {
+                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                }}
+              >+</button>
+              {record.breaksTaken !== null && record.breaksTaken !== undefined && (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground ml-1"
+                  onClick={() => onUpdateBreaks(record.employee._id, null)}
+                  title="Reset to auto"
+                >✕</button>
+              )}
+            </div>
+          </div>
+        )}
+
+
+        {showUndo ? (
+          <div className="flex justify-start">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-28 mt-2 flex items-center justify-center gap-1.5 px-3.5 h-8 text-xs font-medium"
+              onClick={onUndoClear}
+            >
+              <Undo className="h-4 w-4" />
+              Undo
+            </Button>
+          </div>
+        ) : isSessionNonEmpty(session) ? (
+          <div className="flex justify-start">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-28 mt-2 px-3.5 h-8 text-xs font-medium"
+              onClick={() => onClearSession(record.employee._id, 0)}
+            >
+              Absent
+            </Button>
+          </div>
+        ) : null}
+
+        {overlap && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
+            <div className="font-medium">
+              Conflicts with existing session
+            </div>
+            <div>
+              Site: {overlap.conflictingSession?.siteName}
+            </div>
+            <div>
+              Time: {formatConflictingSessionTime(overlap)}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+})
+
+const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
+  record,
+  siteId,
+  breakDurationMinutes,
+  fullDayHours,
+  overlap,
+  showUndo,
+  onUpdateSession,
+  onToggleSick,
+  onUpdateBreaks,
+  onClearSession,
+  onUndoClear,
+}: DraftRowProps) {
+  const session = record.sessions[0]
+
+  return (
+    <>
+      <TableRow
+        className={
+          overlap
+            ? "bg-red-50 dark:bg-red-950/20 border-red-500"
+            : ""
+        }
+      >
+        <TableCell>
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-medium">
+                  {record.employee.name}
+                </p>
+                {record.employee.user && (
+                  <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                    Supervisor
+                  </Badge>
+                )}
+                {record.employee.employmentType === 'temporary' && (
+                  <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                    Temporary
+                  </Badge>
+                )}
+              </div>
+
+              <p className="text-sm text-muted-foreground">
+                {record.employeeId} • {record.jobTitle}
+              </p>
+            </div>
+            {record.isSickLeave ? (
+              <SickLeaveBadge />
+            ) : isEmployeeAbsent(record.sessions, siteId) ? (
+              <AbsentIndicator />
+            ) : null}
+          </div>
+        </TableCell>
+
+        <TableCell>
+          <Input
+            type="time"
+            value={
+              session.checkIn
+            }
+            disabled={!!record.isSickLeave}
+            onChange={(e) =>
+              onUpdateSession(
+                record.employee._id,
+                0,
+                "checkIn",
+                e.target.value
+              )
+            }
+          />
+        </TableCell>
+
+        <TableCell>
+          <Input
+            type="time"
+            value={
+              session.checkOut
+            }
+            disabled={!!record.isSickLeave}
+            onChange={(e) =>
+              onUpdateSession(
+                record.employee._id,
+                0,
+                "checkOut",
+                e.target.value
+              )
+            }
+          />
+        </TableCell>
+
+        <TableCell>
+          {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? (
+            <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
+              🌙 Night
+            </span>
+          ) : (
+            <span className="text-muted-foreground">☀️ Day</span>
+          )}
+        </TableCell>
+
+        <TableCell>
+          {
+            session.workedHours
+          }
+        </TableCell>
+
+        {breakDurationMinutes > 0 && (
+          <TableCell>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
+                onClick={() => {
+                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
+                }}
+              >−</button>
+              <span className="min-w-[44px] text-center text-xs">
+                {record.breaksTaken !== null && record.breaksTaken !== undefined
+                  ? record.breaksTaken
+                  : "Auto"}
+              </span>
+              <button
+                type="button"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                onClick={() => {
+                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                }}
+              >+</button>
+              {record.breaksTaken !== null && record.breaksTaken !== undefined && (
+                <button
+                  type="button"
+                  className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
+                  onClick={() => onUpdateBreaks(record.employee._id, null)}
+                  title="Reset to auto"
+                >✕</button>
+              )}
+            </div>
+          </TableCell>
+        )}
+
+        <TableCell className="text-right">
+          <div className="flex justify-end items-center gap-2">
+            {showUndo ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onUndoClear}
+                className="inline-flex items-center gap-1.5 px-3.5 h-8 text-xs font-medium"
+              >
+                <Undo className="h-4 w-4" />
+                Undo
+              </Button>
+            ) : isSessionNonEmpty(session) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="px-3.5 h-8 text-xs font-medium"
+                onClick={() => onClearSession(record.employee._id, 0)}
+              >
+                Absent
+              </Button>
+            ) : null}
+            <RowActionsMenu
+              isSick={!!record.isSickLeave}
+              onToggleSick={() => onToggleSick(record.employee._id)}
+              showTransfer
+              transferDisabled
+              transferDisabledReason="Save attendance before transferring"
+              onTransfer={() => {}}
+            />
+          </div>
+        </TableCell>
+      </TableRow>
+      {overlap && (
+        <TableRow className="border-red-500/30">
+          <TableCell
+            colSpan={6}
+            className="bg-red-50 dark:bg-red-950/20"
+          >
+            <div className="space-y-1 text-sm text-red-700 dark:text-red-200">
+              <div className="font-medium">
+                Conflicts with existing session
+              </div>
+
+              <div>
+                Site:
+                {" "}
+                {overlap.conflictingSession?.siteName}
+              </div>
+
+              <div>
+                Time:
+                {" "}
+                {formatConflictingSessionTime(overlap)}
+              </div>
+            </div>
+          </TableCell>
+        </TableRow>
+      )}
+    </>
+  )
+})
+
 const EmptyState = () => (
   <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
     <div className="p-4 rounded-full bg-muted/60 text-muted-foreground/60 mb-4 animate-pulse">
@@ -396,6 +829,16 @@ function SiteAttendance() {
   const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
   const [fullDayHours, setFullDayHours] = useState(8)
 
+  // Work-schedule config fetched once on mount; checkHolidayStatus reuses it
+  // instead of paying an extra serial /api/config round trip on every
+  // attendance (re)load.
+  const configCacheRef = useRef<{
+    weeklyHolidays?: string[]
+    nightShiftCutoffHour?: number
+    breakDurationMinutes?: number
+    fullDayHours?: number
+  } | null>(null)
+
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
@@ -408,6 +851,27 @@ function SiteAttendance() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
   const [draftAttendance, setDraftAttendance] = useState<DraftAttendanceRecord[]>([])
+
+  // Draft persistence is debounced (see the sync effect further down) —
+  // serializing the whole roster to localStorage on every keystroke caused
+  // jank on large sites. Anything queued here but not yet written is flushed
+  // on unmount and on beforeunload so no edits are lost.
+  const pendingDraftWriteRef = useRef<{ key: string; data: DraftAttendanceRecord[] } | null>(null)
+
+  const flushPendingDraftWrite = () => {
+    const pending = pendingDraftWriteRef.current
+    if (pending) {
+      localStorage.setItem(pending.key, JSON.stringify(pending.data))
+      pendingDraftWriteRef.current = null
+    }
+  }
+
+  // Drop the queued write without persisting it — used when the draft is
+  // deliberately discarded (successful submit, or leaving via the unsaved-
+  // changes dialog) so the flush can't resurrect it.
+  const discardPendingDraftWrite = () => {
+    pendingDraftWriteRef.current = null
+  }
 
   const [lastCleared, setLastCleared] = useState<{
     employeeId: string
@@ -487,6 +951,22 @@ function SiteAttendance() {
 
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false)
 
+  // Mount only ONE of the mobile/desktop trees. Both used to be rendered and
+  // the inactive one hidden with CSS (md:hidden / hidden md:block), which
+  // doubled the DOM size and the re-render work on every keystroke.
+  // 767px matches Tailwind's md breakpoint (and the window.innerWidth < 768
+  // checks used elsewhere in this file).
+  const [isMobileView, setIsMobileView] = useState(
+    () => window.matchMedia("(max-width: 767px)").matches
+  )
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)")
+    const onChange = (e: MediaQueryListEvent) => setIsMobileView(e.matches)
+    mq.addEventListener("change", onChange)
+    return () => mq.removeEventListener("change", onChange)
+  }, [])
+
   useEffect(() => {
     if (site) {
       setEditDefaultCheckIn(site.defaultCheckIn || "")
@@ -556,6 +1036,7 @@ function SiteAttendance() {
   //client side filtering
   const [searchQuery, setSearchQuery] = useState("")
   const [isSearchFocused, setIsSearchFocused] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const filtersRef = useRef<HTMLDivElement>(null)
 
@@ -649,8 +1130,6 @@ function SiteAttendance() {
     // Stay in the expanded focus mode — see handleCategoryFilterChange.
   }
 
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(null)
-
   // Skilled Labour (blue-collar) vs Staff (white-collar) tab. Records without an
   // explicit collarType are treated as skilled.
   const [collarTab, setCollarTab] = useState<CollarType>("skilled")
@@ -734,41 +1213,27 @@ function SiteAttendance() {
     }
   }
 
-  type OverlapError = {
-    employeeId: string
-
-    conflictingSession: {
-      siteId: string
-      siteName: string
-      checkIn: string
-      checkOut: string
-    }
-  }
   const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
 
-  const formatConflictingTime = () => {
-    if (!overlapError?.conflictingSession) return ""
-    const { checkIn, checkOut } = overlapError.conflictingSession
-    const inStr = checkIn ? formatLocalTime12h(checkIn) : ""
-    const outStr = checkOut ? formatLocalTime12h(checkOut) : "Present"
-    return `${inStr} - ${outStr}`
-  }
+  const formatConflictingTime = () => formatConflictingSessionTime(overlapError)
 
   const [holidayReason, setHolidayReason] = useState("")
 
   const checkHolidayStatus = async (targetDate?: string, currentCutoff?: number) => {
     try {
 
-      const configRes =
-        await api.get("/api/config")
+      let configData = configCacheRef.current
+      if (!configData) {
+        const configRes = await api.get("/api/config")
+        configData = configRes.data.data
+        configCacheRef.current = configData
+      }
+      const weeklyHolidays = configData?.weeklyHolidays || []
 
-      const configData = configRes.data.data
-      const weeklyHolidays = configData.weeklyHolidays || []
-
-      const activeCutoff = currentCutoff !== undefined ? currentCutoff : (configData.nightShiftCutoffHour ?? 7)
+      const activeCutoff = currentCutoff !== undefined ? currentCutoff : (configData?.nightShiftCutoffHour ?? 7)
       setCutoffHour(activeCutoff)
-      setBreakDurationMinutes(configData.breakDurationMinutes ?? 60)
-      setFullDayHours(configData.fullDayHours ?? 8)
+      setBreakDurationMinutes(configData?.breakDurationMinutes ?? 60)
+      setFullDayHours(configData?.fullDayHours ?? 8)
 
       let todayDay = ""
       if (targetDate) {
@@ -903,6 +1368,9 @@ function SiteAttendance() {
           }
         }
 
+        // Drop any debounced draft write queued before the submit so it can't
+        // resurrect the draft we just cleared.
+        discardPendingDraftWrite()
         localStorage.removeItem(`attendance_draft_${id}_${today}`)
         localStorage.removeItem(`active_inline_edit_row_${id}`)
         localStorage.removeItem(`active_inline_edit_data_${id}`)
@@ -969,9 +1437,12 @@ function SiteAttendance() {
     }
   }
 
-  const calculateHours = (checkIn: string, checkOut: string, isNightShift: boolean = false) => {
-    return calculateHoursBetween(checkIn, checkOut, isNightShift, cutoffHour)
-  }
+  const calculateHours = useCallback(
+    (checkIn: string, checkOut: string, isNightShift: boolean = false) => {
+      return calculateHoursBetween(checkIn, checkOut, isNightShift, cutoffHour)
+    },
+    [cutoffHour]
+  )
 
   const getSiteWorkedHours = (
     record: AttendanceRecord
@@ -1135,7 +1606,7 @@ function SiteAttendance() {
     setTransferModalOpen(true)
   }
 
-  const updateDraftSession = (
+  const updateDraftSession = useCallback((
     employeeId: string,
     sessionIndex: number,
     field: "checkIn" | "checkOut",
@@ -1223,11 +1694,11 @@ function SiteAttendance() {
     )
 
     setIsDirty(true)
-  }
+  }, [cutoffHour, calculateHours])
 
   // Draft: toggle sick leave locally. Turning it on clears the session times
   // (sick = empty session); the backend remains the arbiter on submit.
-  const toggleDraftSickLeave = (employeeId: string) => {
+  const toggleDraftSickLeave = useCallback((employeeId: string) => {
     setDraftAttendance((prev) =>
       prev.map((record) => {
         if (record.employee._id !== employeeId) return record
@@ -1281,7 +1752,7 @@ function SiteAttendance() {
       })
     )
     setIsDirty(true)
-  }
+  }, [])
 
   // Saved record: toggle sick leave via the backend, which validates against
   // the full cross-site record. A filled session anywhere → 400 + toast.
@@ -1318,7 +1789,7 @@ function SiteAttendance() {
     }
   }
 
-  const updateDraftBreaksTaken = (employeeId: string, value: number | null) => {
+  const updateDraftBreaksTaken = useCallback((employeeId: string, value: number | null) => {
     setDraftAttendance((prev) =>
       prev.map((record) => {
         if (record.employee._id !== employeeId) return record
@@ -1326,11 +1797,20 @@ function SiteAttendance() {
       })
     )
     setIsDirty(true)
-  }
+  }, [])
 
-  const clearDraftSession = (employeeId: string, sessionIndex: number) => {
+  // Mirror of draftAttendance for stable callbacks (clearDraftSession) that
+  // need to READ the current draft without depending on it — a dependency
+  // would change the callback identity on every keystroke and defeat the
+  // React.memo on the draft rows.
+  const draftAttendanceRef = useRef<DraftAttendanceRecord[]>(draftAttendance)
+  useEffect(() => {
+    draftAttendanceRef.current = draftAttendance
+  }, [draftAttendance])
 
-    const record = draftAttendance.find((r) => r.employee._id === employeeId)
+  const clearDraftSession = useCallback((employeeId: string, sessionIndex: number) => {
+
+    const record = draftAttendanceRef.current.find((r) => r.employee._id === employeeId)
     const session = record?.sessions[sessionIndex]
     if (record && session) {
       setLastCleared({
@@ -1365,9 +1845,9 @@ function SiteAttendance() {
       })
     )
     setIsDirty(true)
-  }
+  }, [])
 
-  const undoClearDraftSession = () => {
+  const undoClearDraftSession = useCallback(() => {
     if (!lastCleared) return
 
     setDraftAttendance((prev) =>
@@ -1400,7 +1880,7 @@ function SiteAttendance() {
     )
     setIsDirty(true)
     setLastCleared(null)
-  }
+  }, [lastCleared, calculateHours])
 
   const clearInlineEdit = (record: AttendanceRecord) => {
     setLastClearedSaved({
@@ -1745,49 +2225,116 @@ function SiteAttendance() {
     setIsEditingDefaults(false)
   }
 
-  // Records default to 'skilled' when collarType is missing (older data).
-  const matchesCollarTab = (collar?: CollarType) =>
-    (collar ?? "skilled") === collarTab
+  // Records default to 'skilled' when collarType is missing (older data);
+  // filters/stats below compare (record.collarType ?? "skilled") === collarTab.
 
-  const filteredDraftAttendance = draftAttendance.filter((record) => {
+  // Deferring the query keeps typing in the search box responsive: the input
+  // updates immediately while the (heavier) list re-filter renders at lower
+  // priority.
+  const deferredSearchQuery = useDeferredValue(searchQuery)
+
+  const filteredDraftAttendance = useMemo(() => {
+    const query = deferredSearchQuery.trim().toLowerCase()
+    return draftAttendance.filter((record) => {
       const categoryMatch =
         !categoryFilter ||
         (categoryFilter === 'temporary' && record.employee.employmentType === 'temporary') ||
         (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
-      const query = searchQuery.trim().toLowerCase()
       const matchesQuery =
         !query ||
         record.employee.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        matchesCollarTab(record.collarType) &&
+        (record.collarType ?? "skilled") === collarTab &&
         categoryMatch &&
         matchesQuery
       )
     })
+  }, [draftAttendance, categoryFilter, deferredSearchQuery, collarTab])
 
-  const filteredAttendance = attendance.filter((record) => {
+  const filteredAttendance = useMemo(() => {
+    const query = deferredSearchQuery.trim().toLowerCase()
+    return attendance.filter((record) => {
       const categoryMatch =
         !categoryFilter ||
         (categoryFilter === 'temporary' && record.employmentType === 'temporary') ||
         (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
-      const query = searchQuery.trim().toLowerCase()
       const matchesQuery =
         !query ||
         record.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        matchesCollarTab(record.collarType) &&
+        (record.collarType ?? "skilled") === collarTab &&
         categoryMatch &&
         matchesQuery
       )
     })
+  }, [attendance, categoryFilter, deferredSearchQuery, collarTab])
+
+  // Counts per collar group (unaffected by name/id/title filters) for the tabs.
+  const collarCounts = useMemo(() => {
+    const source = attendanceExists ? attendance : draftAttendance
+    let skilled = 0
+    let staff = 0
+    for (const r of source) {
+      if ((r.collarType ?? "skilled") === "staff") staff++
+      else skilled++
+    }
+    return { skilled, staff }
+  }, [attendanceExists, attendance, draftAttendance])
+
+  // Calculate attendance statistics for the ACTIVE collar tab.
+  const stats = useMemo(() => {
+    const source: Array<{ collarType?: CollarType; sessions: Array<{ siteId: string; checkIn?: string | null; isNightShift?: boolean }> }> =
+      attendanceExists ? attendance : draftAttendance
+    const records = source.filter((rec) => (rec.collarType ?? "skilled") === collarTab)
+    const totalAssigned = records.length
+
+    // Filter to sessions belonging to this site
+    // An employee is "present" if they have at least one session on this site with a check-in filled.
+    const presentRecords = records.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
+    )
+    const totalPresent = presentRecords.length
+
+    // Classify each assigned employee as Day Shift and/or Night Shift.
+    // An employee can be assigned to both shifts on the same day.
+    const dayShiftAssigned = records.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift)
+    )
+    const nightShiftAssigned = records.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
+    )
+
+    const totalDayShift = dayShiftAssigned.length
+    const totalNightShift = nightShiftAssigned.length
+
+    const dayShiftPresent = dayShiftAssigned.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift && s.checkIn)
+    ).length
+
+    const nightShiftPresent = nightShiftAssigned.filter(rec =>
+      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift && s.checkIn)
+    ).length
+
+    return {
+      totalAssigned,
+      totalPresent,
+      totalDayShift,
+      totalNightShift,
+      dayShiftPresent,
+      nightShiftPresent,
+    }
+  }, [attendanceExists, attendance, draftAttendance, collarTab, id])
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isDirty) return
+
+      // Persist any debounced-but-unwritten draft edits before the tab closes.
+      flushPendingDraftWrite()
 
       e.preventDefault()
       e.returnValue = ""
@@ -1806,12 +2353,31 @@ function SiteAttendance() {
     }
   }, [isDirty])
 
-  // Sync draft attendance to local storage
+  // Sync draft attendance to local storage — debounced (see
+  // pendingDraftWriteRef near the top of the component).
   useEffect(() => {
-    if (isDirty && draftAttendance && draftAttendance.length > 0 && id) {
-      localStorage.setItem(`attendance_draft_${id}_${today}`, JSON.stringify(draftAttendance))
+    if (!(isDirty && draftAttendance && draftAttendance.length > 0 && id)) {
+      // Draft no longer eligible for persistence (e.g. just submitted) —
+      // drop anything queued so a stale draft can't be re-written later.
+      pendingDraftWriteRef.current = null
+      return
     }
+
+    pendingDraftWriteRef.current = {
+      key: `attendance_draft_${id}_${today}`,
+      data: draftAttendance,
+    }
+
+    const timer = setTimeout(flushPendingDraftWrite, 300)
+    return () => clearTimeout(timer)
   }, [draftAttendance, isDirty, id, today])
+
+  // Flush any pending draft write when leaving the page (SPA navigation).
+  useEffect(() => {
+    return () => {
+      flushPendingDraftWrite()
+    }
+  }, [])
 
   // Sync inline edits to local storage
   useEffect(() => {
@@ -1968,6 +2534,10 @@ function SiteAttendance() {
           checkAttendanceStatus()
         ])
 
+        if (configRes?.data?.data) {
+          configCacheRef.current = configRes.data.data
+        }
+
         const cutoffVal = configRes?.data?.data?.nightShiftCutoffHour ?? 0
         setCutoffHour(cutoffVal)
 
@@ -2003,61 +2573,6 @@ function SiteAttendance() {
       </div>
     )
   }
-
-  // Counts per collar group (unaffected by name/id/title filters) for the tabs.
-  const collarCounts = (() => {
-    const source = attendanceExists ? attendance : draftAttendance;
-    let skilled = 0;
-    let staff = 0;
-    for (const r of source) {
-      if ((r.collarType ?? "skilled") === "staff") staff++;
-      else skilled++;
-    }
-    return { skilled, staff };
-  })();
-
-  // Calculate attendance statistics for the ACTIVE collar tab.
-  const stats = (() => {
-    const source = attendanceExists ? attendance : draftAttendance;
-    const records = source.filter((rec) => matchesCollarTab(rec.collarType));
-    const totalAssigned = records.length;
-
-    // Filter to sessions belonging to this site
-    // An employee is "present" if they have at least one session on this site with a check-in filled.
-    const presentRecords = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
-    );
-    const totalPresent = presentRecords.length;
-
-    // Classify each assigned employee as Day Shift and/or Night Shift.
-    // An employee can be assigned to both shifts on the same day.
-    const dayShiftAssigned = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift)
-    );
-    const nightShiftAssigned = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
-    );
-
-    const totalDayShift = dayShiftAssigned.length;
-    const totalNightShift = nightShiftAssigned.length;
-
-    const dayShiftPresent = dayShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift && s.checkIn)
-    ).length;
-
-    const nightShiftPresent = nightShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift && s.checkIn)
-    ).length;
-
-    return {
-      totalAssigned,
-      totalPresent,
-      totalDayShift,
-      totalNightShift,
-      dayShiftPresent,
-      nightShiftPresent,
-    };
-  })();
 
   return (
     // NOTE: no transition on this container — the expanded padding below is
@@ -2548,6 +3063,7 @@ function SiteAttendance() {
             ) : (
               <>
               {/* MOBILE */}
+              {isMobileView && (
               <div className="space-y-3 md:hidden">
                 {filteredAttendance.map((record) => {
                   const isEditing =
@@ -2907,7 +3423,9 @@ function SiteAttendance() {
                   )
                 })}
               </div>
+              )}
               {/* DESKTOP */}
+              {!isMobileView && (
               <div className="hidden md:block">
                 <Table>
                   <TableHeader>
@@ -3282,6 +3800,7 @@ function SiteAttendance() {
                   </TableBody>
                 </Table>
               </div>
+              )}
               </>
             )
           ) : (
@@ -3290,185 +3809,29 @@ function SiteAttendance() {
             ) : (
               <>
                 {/* MOBILE */}
+                {isMobileView && (
                 <div className="space-y-3 md:hidden">
-                  {filteredDraftAttendance.map(
-                    (record) => {
-                      const session = record.sessions[0]
-
-                      return (
-                        <Card
-                          key={record.employee._id}
-                          className={
-                            isOverlapRow(record.employee._id)
-                              ? "border-red-500"
-                              : ""
-                          }
-                        >
-                          <CardContent className="space-y-4 pt-4">
-
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="font-medium">
-                                    {record.employee.name}
-                                  </p>
-                                  {record.employee.user && (
-                                    <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                      Supervisor
-                                    </Badge>
-                                  )}
-                                  {record.employee.employmentType === 'temporary' && (
-                                    <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
-                                      Temporary
-                                    </Badge>
-                                  )}
-                                </div>
-
-                                <p className="text-sm text-muted-foreground">
-                                  {record.employeeId} • {record.jobTitle}
-                                </p>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                {record.isSickLeave ? (
-                                  <SickLeaveBadge />
-                                ) : isEmployeeAbsent(record.sessions, id) ? (
-                                  <AbsentIndicator />
-                                ) : null}
-                                <RowActionsMenu
-                                  isSick={!!record.isSickLeave}
-                                  onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
-                                  showTransfer
-                                  transferDisabled
-                                  transferDisabledReason="Save attendance before transferring"
-                                  onTransfer={() => {}}
-                                />
-                              </div>
-                            </div>
-
-                            <Input
-                              type="time"
-                              value={session.checkIn}
-                              disabled={!!record.isSickLeave}
-                              onChange={(e) =>
-                                updateDraftSession(
-                                  record.employee._id,
-                                  0,
-                                  "checkIn",
-                                  e.target.value
-                                )
-                              }
-                            />
-
-                            <Input
-                              type="time"
-                              value={session.checkOut}
-                              disabled={!!record.isSickLeave}
-                              onChange={(e) =>
-                                updateDraftSession(
-                                  record.employee._id,
-                                  0,
-                                  "checkOut",
-                                  e.target.value
-                                )
-                              }
-                            />
-
-                            <div className="text-sm font-medium flex items-center gap-1.5">
-                              <span>Shift:</span>
-                              {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? (
-                                <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-                                  🌙 Night
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground">☀️ Day</span>
-                              )}
-                            </div>
-
-                            {breakDurationMinutes > 0 && (
-                              <div className="flex items-center gap-2 text-sm">
-                                <span className="font-medium">Breaks:</span>
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                                    disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
-                                    onClick={() => {
-                                      const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
-                                      updateDraftBreaksTaken(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
-                                    }}
-                                  >−</button>
-                                  <span className="min-w-[40px] text-center text-xs">
-                                    {record.breaksTaken !== null && record.breaksTaken !== undefined
-                                      ? record.breaksTaken
-                                      : "Auto"}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
-                                    onClick={() => {
-                                      const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
-                                      updateDraftBreaksTaken(record.employee._id, (record.breaksTaken ?? auto) + 1)
-                                    }}
-                                  >+</button>
-                                  {record.breaksTaken !== null && record.breaksTaken !== undefined && (
-                                    <button
-                                      type="button"
-                                      className="text-xs text-muted-foreground hover:text-foreground ml-1"
-                                      onClick={() => updateDraftBreaksTaken(record.employee._id, null)}
-                                      title="Reset to auto"
-                                    >✕</button>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-
-                            {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
-                              <div className="flex justify-start">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="w-28 mt-2 flex items-center justify-center gap-1.5 px-3.5 h-8 text-xs font-medium"
-                                  onClick={undoClearDraftSession}
-                                >
-                                  <Undo className="h-4 w-4" />
-                                  Undo
-                                </Button>
-                              </div>
-                            ) : isSessionNonEmpty(session) ? (
-                              <div className="flex justify-start">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="w-28 mt-2 px-3.5 h-8 text-xs font-medium"
-                                  onClick={() => clearDraftSession(record.employee._id, 0)}
-                                >
-                                  Absent
-                                </Button>
-                              </div>
-                            ) : null}
-
-                            {isOverlapRow(record.employee._id) && (
-                              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
-                                <div className="font-medium">
-                                  Conflicts with existing session
-                                </div>
-                                <div>
-                                  Site: {overlapError?.conflictingSession?.siteName}
-                                </div>
-                                <div>
-                                  Time: {formatConflictingTime()}
-                                </div>
-                              </div>
-                            )}
-                          </CardContent>
-                        </Card>
-                      )
-                    }
-                  )}
+                  {filteredDraftAttendance.map((record) => (
+                    <DraftAttendanceMobileCard
+                      key={record.employee._id}
+                      record={record}
+                      siteId={id}
+                      breakDurationMinutes={breakDurationMinutes}
+                      fullDayHours={fullDayHours}
+                      overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
+                      showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
+                      onUpdateSession={updateDraftSession}
+                      onToggleSick={toggleDraftSickLeave}
+                      onUpdateBreaks={updateDraftBreaksTaken}
+                      onClearSession={clearDraftSession}
+                      onUndoClear={undoClearDraftSession}
+                    />
+                  ))}
                 </div>
+                )}
 
               {/* desktop */}
+              {!isMobileView && (
               <div className="hidden md:block">
                 <Table>
                   <TableHeader>
@@ -3486,210 +3849,27 @@ function SiteAttendance() {
 
                   <TableBody>
 
-                    {filteredDraftAttendance.map(
-                      (record) => {
-                        const session =
-                          record.sessions[0]
-
-                        return (
-                          <>
-                            <TableRow
-                              key={record.employee._id}
-                              className={
-                                isOverlapRow(
-                                  record.employee._id
-                                )
-                                  ? "bg-red-50 dark:bg-red-950/20 border-red-500"
-                                  : ""
-                              }
-                            >
-                              <TableCell>
-                                <div className="flex items-center justify-between gap-4">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <p className="font-medium">
-                                        {record.employee.name}
-                                      </p>
-                                      {record.employee.user && (
-                                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                                          Supervisor
-                                        </Badge>
-                                      )}
-                                      {record.employee.employmentType === 'temporary' && (
-                                        <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
-                                          Temporary
-                                        </Badge>
-                                      )}
-                                    </div>
-
-                                    <p className="text-sm text-muted-foreground">
-                                      {record.employeeId} • {record.jobTitle}
-                                    </p>
-                                  </div>
-                                  {record.isSickLeave ? (
-                                    <SickLeaveBadge />
-                                  ) : isEmployeeAbsent(record.sessions, id) ? (
-                                    <AbsentIndicator />
-                                  ) : null}
-                                </div>
-                              </TableCell>
-
-                              <TableCell>
-                                <Input
-                                  type="time"
-                                  value={
-                                    session.checkIn
-                                  }
-                                  disabled={!!record.isSickLeave}
-                                  onChange={(e) =>
-                                    updateDraftSession(
-                                      record.employee._id,
-                                      0,
-                                      "checkIn",
-                                      e.target.value
-                                    )
-                                  }
-                                />
-                              </TableCell>
-
-                              <TableCell>
-                                <Input
-                                  type="time"
-                                  value={
-                                    session.checkOut
-                                  }
-                                  disabled={!!record.isSickLeave}
-                                  onChange={(e) =>
-                                    updateDraftSession(
-                                      record.employee._id,
-                                      0,
-                                      "checkOut",
-                                      e.target.value
-                                    )
-                                  }
-                                />
-                              </TableCell>
-
-                              <TableCell>
-                                {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? (
-                                  <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-                                    🌙 Night
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground">☀️ Day</span>
-                                )}
-                              </TableCell>
-
-                              <TableCell>
-                                {
-                                  session.workedHours
-                                }
-                              </TableCell>
-
-                              {breakDurationMinutes > 0 && (
-                                <TableCell>
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                                      disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
-                                      onClick={() => {
-                                        const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
-                                        updateDraftBreaksTaken(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
-                                      }}
-                                    >−</button>
-                                    <span className="min-w-[44px] text-center text-xs">
-                                      {record.breaksTaken !== null && record.breaksTaken !== undefined
-                                        ? record.breaksTaken
-                                        : "Auto"}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
-                                      onClick={() => {
-                                        const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
-                                        updateDraftBreaksTaken(record.employee._id, (record.breaksTaken ?? auto) + 1)
-                                      }}
-                                    >+</button>
-                                    {record.breaksTaken !== null && record.breaksTaken !== undefined && (
-                                      <button
-                                        type="button"
-                                        className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
-                                        onClick={() => updateDraftBreaksTaken(record.employee._id, null)}
-                                        title="Reset to auto"
-                                      >✕</button>
-                                    )}
-                                  </div>
-                                </TableCell>
-                              )}
-
-                              <TableCell className="text-right">
-                                <div className="flex justify-end items-center gap-2">
-                                  {lastCleared && lastCleared.employeeId === record.employee._id && !session.checkIn && !session.checkOut ? (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={undoClearDraftSession}
-                                      className="inline-flex items-center gap-1.5 px-3.5 h-8 text-xs font-medium"
-                                    >
-                                      <Undo className="h-4 w-4" />
-                                      Undo
-                                    </Button>
-                                  ) : isSessionNonEmpty(session) ? (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      className="px-3.5 h-8 text-xs font-medium"
-                                      onClick={() => clearDraftSession(record.employee._id, 0)}
-                                    >
-                                      Absent
-                                    </Button>
-                                  ) : null}
-                                  <RowActionsMenu
-                                    isSick={!!record.isSickLeave}
-                                    onToggleSick={() => toggleDraftSickLeave(record.employee._id)}
-                                    showTransfer
-                                    transferDisabled
-                                    transferDisabledReason="Save attendance before transferring"
-                                    onTransfer={() => {}}
-                                  />
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                            {isOverlapRow(record.employee._id) && (
-                              <TableRow className="border-red-500/30">
-                                <TableCell
-                                  colSpan={6}
-                                  className="bg-red-50 dark:bg-red-950/20"
-                                >
-                                  <div className="space-y-1 text-sm text-red-700 dark:text-red-200">
-                                    <div className="font-medium">
-                                      Conflicts with existing session
-                                    </div>
-
-                                    <div>
-                                      Site:
-                                      {" "}
-                                      {overlapError?.conflictingSession?.siteName}
-                                    </div>
-
-                                    <div>
-                                      Time:
-                                      {" "}
-                                      {formatConflictingTime()}
-                                    </div>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            )}
-                          </>
-                        )
-                      }
-                    )}
+                    {filteredDraftAttendance.map((record) => (
+                      <DraftAttendanceDesktopRow
+                        key={record.employee._id}
+                        record={record}
+                        siteId={id}
+                        breakDurationMinutes={breakDurationMinutes}
+                        fullDayHours={fullDayHours}
+                        overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
+                        showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
+                        onUpdateSession={updateDraftSession}
+                        onToggleSick={toggleDraftSickLeave}
+                        onUpdateBreaks={updateDraftBreaksTaken}
+                        onClearSession={clearDraftSession}
+                        onUndoClear={undoClearDraftSession}
+                      />
+                    ))}
 
                   </TableBody>
                 </Table>
               </div>
+              )}
             </>
           )
         )}
@@ -3743,6 +3923,9 @@ function SiteAttendance() {
           setShowLeaveDialog(false)
           setIsDirty(false)
 
+          // The user chose to discard the draft — make sure the unmount flush
+          // can't write it back after we remove it below.
+          discardPendingDraftWrite()
           localStorage.removeItem(`attendance_draft_${id}_${today}`)
           localStorage.removeItem(`active_inline_edit_row_${id}`)
           localStorage.removeItem(`active_inline_edit_data_${id}`)

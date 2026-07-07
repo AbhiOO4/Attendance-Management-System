@@ -1,34 +1,44 @@
+import { lazy, Suspense } from "react"
 import { Route, Routes } from "react-router-dom"
 
 import { useAuth } from "@/context/AuthContext"
 
-import DashBoard from "./pages/DashBoard"
-import Employees from "./pages/Employees"
-import Supervisor from "./pages/Supervisor"
-import AddSupervisor from "./pages/AddSupervisor"
-import Login from "./pages/Login"
-import LandingPage from "./pages/LandingPage"
-import DemoLogin from "./pages/DemoLogin"
+// Route-level code splitting: each page loads on demand so heavy,
+// page-specific dependencies (e.g. exceljs/xlsx in the report pages)
+// stay out of the initial bundle.
+const DashBoard = lazy(() => import("./pages/DashBoard"))
+const Employees = lazy(() => import("./pages/Employees"))
+const Supervisor = lazy(() => import("./pages/Supervisor"))
+const AddSupervisor = lazy(() => import("./pages/AddSupervisor"))
+const Login = lazy(() => import("./pages/Login"))
+const LandingPage = lazy(() => import("./pages/LandingPage"))
+const DemoLogin = lazy(() => import("./pages/DemoLogin"))
 
-import SitesPage from "./pages/SitesPage"
-import SiteDetail from "./pages/SiteDetail"
-import ManageEmployees from "./pages/ManageEmployees"
+const SitesPage = lazy(() => import("./pages/SitesPage"))
+const SiteDetail = lazy(() => import("./pages/SiteDetail"))
+const ManageEmployees = lazy(() => import("./pages/ManageEmployees"))
 
-import MarkAttendance from "./pages/MarkAttendance"
-import SiteAttendance from "./pages/SiteAttendance"
-import EditPastAttendance from "./pages/EditPastAttendance"
+const MarkAttendance = lazy(() => import("./pages/MarkAttendance"))
+const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
+const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
 
-import ManageJobEmployees from "./pages/ManageJobEmployees"
-import MonthlyReport from "./pages/MonthlyReport"
-import Configure from "./pages/Configure"
-import ManageUsers from "./pages/ManageUsers"
-import EmployeeDetailAttendance from "./pages/EmployeeDetailAttendance"
-import InstaAddEmployees from "./pages/InstaAddEmployees"
-import HiredWorkers from "./pages/HiredWorkers"
+const ManageJobEmployees = lazy(() => import("./pages/ManageJobEmployees"))
+const MonthlyReport = lazy(() => import("./pages/MonthlyReport"))
+const Configure = lazy(() => import("./pages/Configure"))
+const ManageUsers = lazy(() => import("./pages/ManageUsers"))
+const EmployeeDetailAttendance = lazy(() => import("./pages/EmployeeDetailAttendance"))
+const InstaAddEmployees = lazy(() => import("./pages/InstaAddEmployees"))
+const HiredWorkers = lazy(() => import("./pages/HiredWorkers"))
 
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
 import PublicRoute from "./components/PublicRoute"
+
+const RouteFallback = () => (
+  <div className="flex h-[60vh] items-center justify-center">
+    <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+  </div>
+)
 
 function App() {
   const { loading } = useAuth()
@@ -43,6 +53,7 @@ function App() {
   }
 
   return (
+    <Suspense fallback={<RouteFallback />}>
     <Routes>
       {/* PUBLIC */}
       {/* PUBLIC */}
@@ -236,6 +247,7 @@ function App() {
         />
       </Route>
     </Routes>
+    </Suspense>
   )
 }
 
