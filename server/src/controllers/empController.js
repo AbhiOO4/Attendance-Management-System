@@ -65,9 +65,10 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType pendingTransferCheckIn pendingTransferSiteId pendingTransferDate"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId"
       )
       .populate("currentJob", "name") // 👈 add this
+      .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
       .sort({ name: 1 });
 
     // apply pagination only if both page and limit are provided

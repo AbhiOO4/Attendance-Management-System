@@ -85,7 +85,12 @@ interface Employee {
   pendingTransferCheckIn?: string | null
   pendingTransferSiteId?: string | null
   pendingTransferDate?: string | null
+  // Populated source site of a pending transfer into the current site.
+  pendingTransferFromSiteId?: { _id: string; siteName: string } | null
 }
+
+// Source site of an inbound transfer, shown as the "Transferred from" badge.
+type TransferredFrom = { siteId: string; name: string } | null
 
 interface EmployeesResponse {
   employees: Employee[]
@@ -162,6 +167,9 @@ export interface AttendanceRecord {
   totalRawHours?: number
 
   isSickLeave?: boolean
+
+  // Set (day-scoped) when this employee was transferred into this site.
+  transferredFrom?: TransferredFrom
 }
 
 
@@ -206,6 +214,8 @@ interface DraftAttendanceRecord {
     isNightShift: boolean
     workedHours: number
   } | null
+  // Set when this employee was transferred into this site (pending transfer).
+  transferredFrom?: TransferredFrom
 }
 
 
@@ -265,6 +275,18 @@ const SickLeaveBadge = () => (
     className="bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/50 dark:border-sky-800/30 text-[10px] px-1.5 py-0 h-4"
   >
     Sick Leave
+  </Badge>
+)
+
+// Shown (day-scoped) on employees transferred into the current site so the
+// supervisor knows where they came from. These rows are also floated to the top.
+const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
+  <Badge
+    variant="secondary"
+    className="bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30 text-[10px] px-1.5 py-0 h-4"
+    title={`Transferred from ${siteName}`}
+  >
+    Transferred from {siteName}
   </Badge>
 )
 
@@ -457,6 +479,9 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
                   Temporary
                 </Badge>
               )}
+              {record.transferredFrom && (
+                <TransferredFromBadge siteName={record.transferredFrom.name} />
+              )}
             </div>
 
             <p className="text-sm text-muted-foreground">
@@ -641,6 +666,9 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                   <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
                     Temporary
                   </Badge>
+                )}
+                {record.transferredFrom && (
+                  <TransferredFromBadge siteName={record.transferredFrom.name} />
                 )}
               </div>
 
@@ -1203,6 +1231,13 @@ function SiteAttendance() {
             ],
 
             isSickLeave: false,
+
+            transferredFrom: hasPendingTransfer && emp.pendingTransferFromSiteId
+              ? {
+                  siteId: emp.pendingTransferFromSiteId._id,
+                  name: emp.pendingTransferFromSiteId.siteName,
+                }
+              : null,
           }
         })
 
@@ -2251,6 +2286,8 @@ function SiteAttendance() {
         matchesQuery
       )
     })
+    // Float transferred-in employees to the top (stable: preserves order otherwise).
+    .sort((a, b) => Number(!!b.transferredFrom) - Number(!!a.transferredFrom))
   }, [draftAttendance, categoryFilter, deferredSearchQuery, collarTab])
 
   const filteredAttendance = useMemo(() => {
@@ -2271,6 +2308,8 @@ function SiteAttendance() {
         matchesQuery
       )
     })
+    // Float transferred-in employees to the top (stable: preserves order otherwise).
+    .sort((a, b) => Number(!!b.transferredFrom) - Number(!!a.transferredFrom))
   }, [attendance, categoryFilter, deferredSearchQuery, collarTab])
 
   // Counts per collar group (unaffected by name/id/title filters) for the tabs.
@@ -3101,6 +3140,9 @@ function SiteAttendance() {
                                   Temporary
                                 </Badge>
                               )}
+                              {record.transferredFrom && (
+                                <TransferredFromBadge siteName={record.transferredFrom.name} />
+                              )}
                             </div>
 
                             <p className="text-sm text-muted-foreground">
@@ -3488,6 +3530,9 @@ function SiteAttendance() {
                                           <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
                                             Temporary
                                           </Badge>
+                                        )}
+                                        {record.transferredFrom && (
+                                          <TransferredFromBadge siteName={record.transferredFrom.name} />
                                         )}
                                       </div>
 

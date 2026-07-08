@@ -38,6 +38,16 @@ const attendanceSessionSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Source site this session was transferred in from. Set when a transfer
+    // (or a consumed pending transfer) lands this session at its destination
+    // site. Powers the "Transferred from <Site>" indicator on the destination
+    // site's attendance page. Null for normal (non-transfer) sessions.
+    transferredFromSiteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      default: null,
+    },
+
     // True when a supervisor explicitly cleared this session's times (the
     // "Absent" button / manual empty). Distinguishes "deliberately absent"
     // from "empty because the site had no default yet", so a later

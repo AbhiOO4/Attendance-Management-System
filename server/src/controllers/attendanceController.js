@@ -1104,6 +1104,22 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         })
       }
 
+      // Look up a pending transfer targeting THIS site/date so the resulting
+      // session carries its source site (powers the "Transferred from <Site>"
+      // indicator once attendance is saved). The stash itself is cleared after
+      // save, below.
+      const empPending = await empModel.findById(empId)
+        .select("pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId")
+        .session(session)
+
+      const transferredFromForSite =
+        empPending?.pendingTransferSiteId &&
+          empPending.pendingTransferSiteId.toString() === siteId.toString() &&
+          empPending.pendingTransferDate &&
+          new Date(empPending.pendingTransferDate).getTime() === attendanceDate.getTime()
+          ? empPending.pendingTransferFromSiteId
+          : null
+
       // -----------------------------
       // BUILD SESSIONS
       // -----------------------------
@@ -1184,6 +1200,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           isNightShift: sessionIsNight,
           // A filled check-in always clears the deliberate-absence flag.
           manuallyCleared: checkInDate ? false : !!manuallyCleared,
+          // Carry the transfer source onto the session created for this site.
+          transferredFromSiteId:
+            finalSiteId.toString() === siteId.toString() ? transferredFromForSite : null,
         })
       }
 
@@ -1341,6 +1360,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             pendingTransferCheckIn: null,
             pendingTransferSiteId: null,
             pendingTransferDate: null,
+            pendingTransferFromSiteId: null,
           },
         },
         { session }
@@ -1445,6 +1465,36 @@ export const getSiteAttendance = async (req, res) => {
         },
       },
 
+      // Resolve the transfer source for this site (if any session at this site
+      // was transferred in). Takes the first session carrying a source site.
+      {
+        $addFields: {
+          transferredFromSiteId: {
+            $let: {
+              vars: {
+                transferredSessions: {
+                  $filter: {
+                    input: "$filteredSessions",
+                    as: "s",
+                    cond: { $ne: ["$$s.transferredFromSiteId", null] },
+                  },
+                },
+              },
+              in: { $arrayElemAt: ["$$transferredSessions.transferredFromSiteId", 0] },
+            },
+          },
+        },
+      },
+
+      {
+        $lookup: {
+          from: "sites",
+          localField: "transferredFromSiteId",
+          foreignField: "_id",
+          as: "transferredFromSite",
+        },
+      },
+
       // employee lookup
       {
         $lookup: {
@@ -1498,6 +1548,19 @@ export const getSiteAttendance = async (req, res) => {
           breaksTaken: "$breaksTaken",
 
           totalRawHours: "$totalRawHours",
+
+          // { siteId, name } when this employee was transferred into this site
+          // (day-scoped), else null. Drives the "Transferred from <Site>" badge.
+          transferredFrom: {
+            $cond: [
+              { $gt: [{ $size: "$transferredFromSite" }, 0] },
+              {
+                siteId: { $toString: "$transferredFromSiteId" },
+                name: { $arrayElemAt: ["$transferredFromSite.siteName", 0] },
+              },
+              null,
+            ],
+          },
 
 
           sessions: {
@@ -2163,20 +2226,24 @@ export const updateAttendance = async (req, res) => {
             }
           }
 
+          // Match the existing stored session (by _id) so edit-only fields
+          // like the transfer source are preserved rather than dropped when
+          // the session is rebuilt from the request body.
+          const existingSession = session._id
+            ? attendance.sessions.find(
+                (s) => s._id.toString() === session._id.toString()
+              )
+            : null;
+
           // Deliberate-absence flag: a filled check-in always clears it; an
           // emptied session that previously had times was explicitly cleared
           // by the editor; an untouched empty session keeps its flag.
           let manuallyCleared = false;
           if (!session.checkIn) {
-            const existing = session._id
-              ? attendance.sessions.find(
-                  (s) => s._id.toString() === session._id.toString()
-                )
-              : null;
-            if (existing && (existing.checkIn || existing.checkOut)) {
+            if (existingSession && (existingSession.checkIn || existingSession.checkOut)) {
               manuallyCleared = true;
-            } else if (existing) {
-              manuallyCleared = existing.manuallyCleared || false;
+            } else if (existingSession) {
+              manuallyCleared = existingSession.manuallyCleared || false;
             } else {
               manuallyCleared = !!session.manuallyCleared;
             }
@@ -2195,6 +2262,9 @@ export const updateAttendance = async (req, res) => {
             ),
             isNightShift: sessionIsNight,
             manuallyCleared,
+            // Preserve the transfer source across edits (badge must survive
+            // the destination supervisor filling in a check-out, etc.).
+            transferredFromSiteId: existingSession?.transferredFromSiteId || null,
             markedBy:
               session.markedBy ||
               attendance.markedBy,
@@ -3200,6 +3270,7 @@ export const transferEmployee = async (req, res) => {
         checkOut: null,
         workedHours: 0,
         markedBy: req.user.id,
+        transferredFromSiteId: fromSiteId,
       })
 
       await attendanceDoc.save({ session: dbSession })
@@ -3207,6 +3278,7 @@ export const transferEmployee = async (req, res) => {
       employee.pendingTransferCheckIn = carriedCheckIn
       employee.pendingTransferSiteId = toSiteId
       employee.pendingTransferDate = attendanceDate
+      employee.pendingTransferFromSiteId = fromSiteId
     }
 
     const oldJobId = employee.currentJob

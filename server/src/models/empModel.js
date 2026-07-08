@@ -61,6 +61,15 @@ const employeeSchema = new mongoose.Schema({
     default: null
   },
 
+  // Source site of a pending transfer, carried onto the destination session
+  // when the stash is consumed so the "Transferred from <Site>" indicator can
+  // be shown in draft mode before attendance is saved.
+  pendingTransferFromSiteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site',
+    default: null
+  },
+
   pendingTransferDate: {
     type: Date,
     default: null
