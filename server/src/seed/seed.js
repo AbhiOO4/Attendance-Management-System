@@ -279,7 +279,7 @@ const recalculateExistingAttendance = async () => {
     for (const record of records) {
       // Calculate raw work hours from sessions
       const rawHours = record.sessions.reduce((total, session) => total + (session.workedHours || 0), 0);
-      
+
       const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
       const breaksApplied = (record.breaksTaken !== null && record.breaksTaken !== undefined)
         ? record.breaksTaken
@@ -290,7 +290,7 @@ const recalculateExistingAttendance = async () => {
 
       record.totalWorkHours = Number(netWorkHours.toFixed(2));
       record.overtimeHours = overtimeHours;
-      record.breaksTaken = record.breaksTaken ?? null; // Ensure breaksTaken exists on the document as null if not overridden
+      record.breaksTaken = record.breaksTaken ?? null;
 
       await record.save();
       updatedCount++;
