@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 
 import { useAuth } from "@/context/AuthContext"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 
 import {
   Users,
@@ -97,8 +98,9 @@ interface OverviewResponse {
 function DashBoard() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { currentCutoff } = useWorkConfig()
   const isSupervisor = user?.role === "supervisor"
-  const today = getLogicalShiftDate()
+  const today = getLogicalShiftDate(currentCutoff)
 
   const [date, setDate] =
     useState(today)

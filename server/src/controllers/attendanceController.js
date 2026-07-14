@@ -13,6 +13,7 @@ import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
 import { combineDateAndTimeLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { resolveCutoffForDate, isEarlyMorningCheckIn, validateSessionTimes } from '../utils/cutoff.js';
 
 
 // --- NIGHT SHIFT HELPERS ---
@@ -29,7 +30,13 @@ import { hasSessionOverlap } from '../utils/sessionOverlap.js';
  *   If referenceCheckIn is provided and the time is earlier,
  *   the date is advanced by one day (auto cross-midnight detection).
  */
-function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour = 7, timezoneOffset = null } = {}) {
+function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour, timezoneOffset = null } = {}) {
+  // No default: the cutoff must be resolved for the record's own business day
+  // (see utils/cutoff.js). Silently falling back to 7 would combine onto the wrong day.
+  if (typeof cutoffHour !== "number") {
+    throw new Error("combineDateAndTime requires a cutoffHour resolved for the record's date");
+  }
+
   // If timezoneOffset is passed (e.g. "-330"), construct standard offset string like "+05:30"
   let offsetStr = "";
   let targetOffset = timezoneOffset;
@@ -81,66 +88,6 @@ function toLocalTimeString(dateVal, offsetVal) {
   const h = String(localTime.getUTCHours()).padStart(2, '0');
   const m = String(localTime.getUTCMinutes()).padStart(2, '0');
   return `${h}:${m}`;
-}
-
-function validateSessionTimes(checkIn, checkOut, isNightShift = false, cutoffHour = 7) {
-  // 1. RULE: Check-out without check-in is NOT allowed
-  if (!checkIn && checkOut) {
-    return "Check-out cannot exist without check-in";
-  }
-
-  // If check-in is present but no check-out, it's valid (representing an active shift)
-  if (checkIn && !checkOut) {
-    return null;
-  }
-
-  // If both are empty, it's valid (representing no shift)
-  if (!checkIn && !checkOut) {
-    return null;
-  }
-
-  const [inH, inM] = checkIn.split(":").map(Number);
-  const [outH, outM] = checkOut.split(":").map(Number);
-  const inMin = inH * 60 + inM;
-  const outMin = outH * 60 + outM;
-  const cutoffMin = cutoffHour * 60;
-
-  // 2. RULE (New - Early Morning Check-in):
-  // If check-in is between 12:00 AM and cutoffHour (00:00 - 07:00)
-  if (inH >= 0 && inH < cutoffHour) {
-    const isOutInCutoffRange = (outMin >= 0) && (outMin <= cutoffMin);
-    if (!isOutInCutoffRange || inMin >= outMin) {
-      return `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`;
-    }
-    return null;
-  }
-
-  // Detect if shift crosses midnight (check-out time < check-in time)
-  const crossesMidnight = outMin < inMin;
-
-  // 3. RULE (Corrected - Through Midnight Shift):
-  // If check-out is between 12:00 AM and cutoffHour (00:00 - 07:00) and shift crosses midnight
-  if (crossesMidnight && (outMin >= 0 && outMin <= cutoffMin)) {
-    if (inH < 12) {
-      return `For night shifts crossing midnight and ending before ${cutoffHour}:00 AM, the check-in time must be 12:00 PM (noon) or later.`;
-    }
-  }
-
-  // 4. RULE (Existing - Night Shift Check-in):
-  if (isNightShift || crossesMidnight) {
-    if (inH >= cutoffHour && inH < 12) {
-      return `Check-in time must be before the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
-    }
-  }
-
-  // 5. RULE (Existing - Night Shift Check-out):
-  if (isNightShift || crossesMidnight) {
-    if (outMin > cutoffMin && outH < 12) {
-      return `Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -245,8 +192,10 @@ async function checkHolidayForDate(dateObj) {
 /**
  * Automatically sets the check-out time of a previous session at a different site
  * to the check-in time of the current session, if the previous session is check-in only.
+ *
+ * `cutoffHour` must already be resolved for the attendance record's business day.
  */
-function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConfig = null) {
+function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffHour) {
   if (!Array.isArray(sessions) || sessions.length <= 1) return sessions;
 
   // 1. Sort sessions chronologically by checkIn time. Empty check-ins go last.
@@ -273,10 +222,9 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConf
     }
   }
 
-  if (!workConfig || workConfig.nightShiftCutoffHour === undefined || workConfig.nightShiftCutoffHour === null) {
-    throw new Error("Work schedule configuration nightShiftCutoffHour is required.");
+  if (typeof cutoffHour !== "number") {
+    throw new Error("autoClosePreviousSiteSessions requires a cutoffHour resolved for the record's date");
   }
-  const cutoffHour = workConfig.nightShiftCutoffHour;
 
   // 2. Process sessions
   for (let i = 0; i < sorted.length; i++) {
@@ -304,9 +252,7 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, workConf
 
         // Recalculate isNightShift for prev session
         let sessionIsNight = prev.isNightShift || false;
-        const localInTime = new Date(inTime.getTime() - offsetVal * 60 * 1000);
-        const inH = localInTime.getUTCHours();
-        if (inH >= 0 && inH < cutoffHour) {
+        if (isEarlyMorningCheckIn(toLocalTimeString(prev.checkIn, offsetVal), cutoffHour)) {
           sessionIsNight = true;
         }
 
@@ -1135,12 +1081,12 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
-        const cutoffHour = workConfig.nightShiftCutoffHour
+        const cutoffHour = resolveCutoffForDate(workConfig, date)
 
         let sessionIsNight = false;
         if (checkIn) {
           const [inH, inM] = checkIn.split(":").map(Number);
-          if (inH >= 0 && inH < cutoffHour) {
+          if (isEarlyMorningCheckIn(checkIn, cutoffHour)) {
             sessionIsNight = true;
           }
           if (checkOut) {
@@ -1225,7 +1171,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, workConfig);
+      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, resolveCutoffForDate(workConfig, date));
 
       // -----------------------------
       // SORT ALL SESSIONS
@@ -2002,7 +1948,7 @@ export const bulkEditAttendance = async (
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, workConfig);
+      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, resolveCutoffForDate(workConfig, attendanceDate));
       attendanceDoc.sessions = closedSessions;
 
       // RECALCULATE TOTAL HOURS, STATUS & OT
@@ -2147,7 +2093,9 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
-      const cutoffHour = workConfig.nightShiftCutoffHour;
+      // The cutoff in force on THIS record's business day — not today's. A record written
+      // under an old cutoff must stay editable after the cutoff changes.
+      const cutoffHour = resolveCutoffForDate(workConfig, attendance.date);
 
       // Validate sessions first
       for (const session of sessions) {
@@ -2155,9 +2103,7 @@ export const updateAttendance = async (req, res) => {
         let sessionIsNight = session.isNightShift || false;
         if (session.checkIn) {
           const inDate = new Date(session.checkIn);
-          const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
-          const inH = localInTime.getUTCHours();
-          if (inH >= 0 && inH < cutoffHour) {
+          if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffHour)) {
             sessionIsNight = true;
           }
           if (session.checkOut) {
@@ -2197,10 +2143,7 @@ export const updateAttendance = async (req, res) => {
           let sessionIsNight = session.isNightShift || false;
 
           if (session.checkIn) {
-            const inDate = new Date(session.checkIn);
-            const localInTime = new Date(inDate.getTime() - offsetVal * 60 * 1000);
-            const inH = localInTime.getUTCHours();
-            if (inH >= 0 && inH < cutoffHour) {
+            if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffHour)) {
               sessionIsNight = true;
             }
 
@@ -2304,7 +2247,7 @@ export const updateAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, workConfig);
+      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, resolveCutoffForDate(workConfig, attendance.date));
 
       // -----------------------------
       // Sort by checkIn
@@ -2481,14 +2424,14 @@ export const updateAttendance = async (req, res) => {
           "siteId",
           "siteName"
         )
-        .populate("jobId", "name")
+        .populate("jobId", "name jobCode")
         .populate(
           "sessions.siteId",
           "siteName"
         )
         .populate(
           "sessions.jobId",
-          "name"
+          "name jobCode"
         );
 
     const formattedAttendance = {
@@ -2535,6 +2478,10 @@ export const updateAttendance = async (req, res) => {
         updatedAttendance.jobId
           ?.name || "",
 
+      jobCode:
+        updatedAttendance.jobId
+          ?.jobCode || null,
+
       date: updatedAttendance.date,
 
       status:
@@ -2580,6 +2527,10 @@ export const updateAttendance = async (req, res) => {
             jobName:
               session.jobId?.name ||
               "",
+
+            jobCode:
+              session.jobId?.jobCode ||
+              null,
 
             checkIn:
               session.checkIn,
@@ -2688,7 +2639,7 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         .populate(
           "jobId",
-          "jobName"
+          "name jobCode"
         )
 
         .populate(
@@ -2698,7 +2649,7 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         .populate(
           "sessions.jobId",
-          "name"
+          "name jobCode"
         )
 
         .sort({
@@ -2733,6 +2684,10 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         jobName:
           record.jobId?.name ||
+          null,
+
+        jobCode:
+          record.jobId?.jobCode ||
           null,
 
         date: record.date,
@@ -2778,6 +2733,11 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
               jobName:
                 session.jobId
                   ?.name ||
+                null,
+
+              jobCode:
+                session.jobId
+                  ?.jobCode ||
                 null,
 
               checkIn:
@@ -3455,7 +3415,11 @@ export const backfillAttendance = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Work schedule configuration not found' });
     }
 
-    const { fullDayHours, halfDayHours, overtimeThreshold, nightShiftCutoffHour: cutoffHour } = workConfig;
+    const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
+
+    // Backfilling a past day must use the cutoff that was in force on THAT day, or the
+    // check-out gets combined onto the wrong calendar day relative to its neighbours.
+    const cutoffHour = resolveCutoffForDate(workConfig, date);
 
     // Validate and build sessions
     if (!Array.isArray(sessions)) {
@@ -3474,7 +3438,7 @@ export const backfillAttendance = async (req, res) => {
       let sessionIsNight = false;
       if (checkIn) {
         const [inH, inM] = checkIn.split(':').map(Number);
-        if (inH >= 0 && inH < cutoffHour) {
+        if (isEarlyMorningCheckIn(checkIn, cutoffHour)) {
           sessionIsNight = true;
         }
         if (checkOut) {
@@ -3881,7 +3845,7 @@ export const assignNightShift = async (req, res) => {
     const fullDayHours = workConfig?.fullDayHours ?? 8;
     const halfDayHours = workConfig?.halfDayHours ?? 4;
     const overtimeThreshold = workConfig?.overtimeThreshold ?? 8;
-    const cutoffHour = workConfig?.nightShiftCutoffHour ?? 7;
+    const cutoffHour = resolveCutoffForDate(workConfig, attendanceDate);
 
     // The night check-in is pre-filled at assignment time from the site's night
     // default (staff use their own staff-night default), replacing the old

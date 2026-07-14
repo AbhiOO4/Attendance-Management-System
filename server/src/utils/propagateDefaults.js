@@ -36,6 +36,7 @@ import {
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
 import { getStaffEmployeeIds } from './collar.js';
+import { getCurrentCutoff, resolveCutoffForDate } from './cutoff.js';
 
 /**
  * Determine the logical target date for a given field change.
@@ -122,7 +123,10 @@ function skippedEntry(record, reason, field) {
  * @returns {Object} { updated: number, skipped: Array<{ employeeId, employeeName, reason, field }> }
  */
 export async function propagateDefaultChanges(site, prevDefaults, newDefaults, workConfig) {
-  const cutoffHour = (workConfig && workConfig.nightShiftCutoffHour) || 7;
+  // Deciding WHICH day to propagate onto is a "now" question (are we in the extended
+  // period?), so it uses the currently-active cutoff. Combining a time ONTO that day is a
+  // per-day question, and is resolved separately below once the target date is known.
+  const currentCutoff = getCurrentCutoff(workConfig);
   const fullDayHours = (workConfig && workConfig.fullDayHours) || 8;
   const halfDayHours = (workConfig && workConfig.halfDayHours) || 4;
   const overtimeThreshold = (workConfig && workConfig.overtimeThreshold) || 8;
@@ -165,7 +169,11 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     const isCheckIn = isCheckInField(field);
     const transition =
       oldTimeStr && newTimeStr ? 'update' : oldTimeStr ? 'clear' : 'fill';
-    const targetDateStr = getTargetDate(field, cutoffHour);
+    const targetDateStr = getTargetDate(field, currentCutoff);
+
+    // The cutoff in force on the day we're actually writing to — on a changeover morning
+    // the night check-out target is yesterday, which may still be on the old cutoff.
+    const cutoffHour = resolveCutoffForDate(workConfig, targetDateStr);
 
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);

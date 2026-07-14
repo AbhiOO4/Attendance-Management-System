@@ -12,6 +12,11 @@ import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
 import { combineDateAndTimeLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
+import {
+  getCurrentCutoff,
+  resolveCutoffForDate,
+  validateSiteDefaultsAgainstCutoff,
+} from '../utils/cutoff.js'
 
 
 //Admin
@@ -1289,7 +1294,10 @@ export const instaAddEmployee = async (req, res) => {
     }
 
     const todayStr = today.toISOString().split("T")[0]
-    const checkInDate = combineDateAndTimeLocal(todayStr, checkInTime)
+    const assignWorkConfig = await workModel.findOne()
+    const checkInDate = combineDateAndTimeLocal(todayStr, checkInTime, {
+      cutoffHour: resolveCutoffForDate(assignWorkConfig, todayStr),
+    })
 
     // ----------------------------------
     // OVERLAP CHECK & AUTO-CLOSE
@@ -1823,7 +1831,9 @@ export const updateSite = async (req, res) => {
     }
 
     const workConfig = await workModel.findOne();
-    const cutoffHour = workConfig ? (workConfig.nightShiftCutoffHour || 7) : 7;
+    // Site defaults describe how the site operates from now on, so they are checked against
+    // the cutoff currently in force.
+    const cutoffHour = getCurrentCutoff(workConfig);
 
     const toMinutes = (t) => {
       if (!t) return null;
@@ -1832,23 +1842,28 @@ export const updateSite = async (req, res) => {
       return h * 60 + m;
     };
 
+    // --- CUTOFF-WINDOW VALIDATION ---
+    // Night defaults must straddle the cutoff (check-in after it, check-out before it), or the
+    // auto check-in/out crons combine them onto the wrong calendar day. Shared with
+    // configController, which refuses a cutoff change that would break existing sites.
+    const cutoffErrors = validateSiteDefaultsAgainstCutoff(
+      {
+        defaultCheckIn,
+        nightDefaultCheckIn,
+        nightDefaultCheckOut,
+        staffNightDefaultCheckIn,
+        staffNightDefaultCheckOut,
+      },
+      cutoffHour
+    );
+    if (cutoffErrors.length > 0) {
+      return res.status(400).json({ message: cutoffErrors[0] });
+    }
+
     // --- DAY SHIFT VALIDATION ---
     // Resolve the effective day times (incoming value overrides stored value)
     const dayIn = defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn;
     const dayOut = defaultCheckOut !== undefined ? defaultCheckOut : site.defaultCheckOut;
-
-    if (defaultCheckIn !== undefined && defaultCheckIn !== "") {
-      const inMin = toMinutes(defaultCheckIn);
-      if (inMin === null) {
-        return res.status(400).json({ message: "Invalid day shift check-in time" });
-      }
-      // Day check-in cannot fall inside the night/AM window
-      if (inMin < cutoffHour * 60) {
-        return res.status(400).json({
-          message: `Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`,
-        });
-      }
-    }
 
     if (dayIn && dayOut) {
       const inMin = toMinutes(dayIn);
@@ -1860,33 +1875,6 @@ export const updateSite = async (req, res) => {
       if (outMin <= inMin) {
         return res.status(400).json({
           message: "Day shift check-out must be after check-in (before midnight)",
-        });
-      }
-    }
-
-    // --- NIGHT SHIFT VALIDATION ---
-    // nightDefaultCheckIn must be between cutoff (07:00) and 23:59
-    if (nightDefaultCheckIn !== undefined && nightDefaultCheckIn !== "") {
-      const inMin = toMinutes(nightDefaultCheckIn);
-      if (inMin === null) {
-        return res.status(400).json({ message: "Invalid night shift check-in time" });
-      }
-      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
-        return res.status(400).json({
-          message: `Night shift check-in must be between ${cutoffHour}:00 and 23:59`,
-        });
-      }
-    }
-
-    // nightDefaultCheckOut must be between 00:00 and cutoff (07:00)
-    if (nightDefaultCheckOut !== undefined && nightDefaultCheckOut !== "") {
-      const outMin = toMinutes(nightDefaultCheckOut);
-      if (outMin === null) {
-        return res.status(400).json({ message: "Invalid night shift check-out time" });
-      }
-      if (outMin < 0 || outMin > cutoffHour * 60) {
-        return res.status(400).json({
-          message: `Night shift check-out must be between 00:00 and ${cutoffHour}:00`,
         });
       }
     }
@@ -1905,31 +1893,6 @@ export const updateSite = async (req, res) => {
       if (outMin <= inMin) {
         return res.status(400).json({
           message: "Staff check-out must be after check-in (before midnight)",
-        });
-      }
-    }
-
-    // --- STAFF NIGHT SHIFT VALIDATION (same windows as field night shift) ---
-    if (staffNightDefaultCheckIn !== undefined && staffNightDefaultCheckIn !== "") {
-      const inMin = toMinutes(staffNightDefaultCheckIn);
-      if (inMin === null) {
-        return res.status(400).json({ message: "Invalid staff night check-in time" });
-      }
-      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
-        return res.status(400).json({
-          message: `Staff night check-in must be between ${cutoffHour}:00 and 23:59`,
-        });
-      }
-    }
-
-    if (staffNightDefaultCheckOut !== undefined && staffNightDefaultCheckOut !== "") {
-      const outMin = toMinutes(staffNightDefaultCheckOut);
-      if (outMin === null) {
-        return res.status(400).json({ message: "Invalid staff night check-out time" });
-      }
-      if (outMin < 0 || outMin > cutoffHour * 60) {
-        return res.status(400).json({
-          message: `Staff night check-out must be between 00:00 and ${cutoffHour}:00`,
         });
       }
     }

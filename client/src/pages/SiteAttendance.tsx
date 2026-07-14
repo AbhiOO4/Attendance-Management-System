@@ -1,5 +1,6 @@
 import { api } from "@/lib/api"
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment, memo } from "react"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
@@ -853,19 +854,12 @@ function SiteAttendance() {
 
   const navigate = useNavigate()
 
-  const [cutoffHour, setCutoffHour] = useState(7)
-  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
-  const [fullDayHours, setFullDayHours] = useState(8)
-
-  // Work-schedule config fetched once on mount; checkHolidayStatus reuses it
-  // instead of paying an extra serial /api/config round trip on every
-  // attendance (re)load.
-  const configCacheRef = useRef<{
-    weeklyHolidays?: string[]
-    nightShiftCutoffHour?: number
-    breakDurationMinutes?: number
-    fullDayHours?: number
-  } | null>(null)
+  // This page always operates on the CURRENT business day, so the currently-active cutoff is
+  // the right one. (Editing an existing record is different — see EditSiteRecord, which
+  // resolves the cutoff from the record's own date.)
+  const { config: workConfig, currentCutoff: cutoffHour, loading: configLoading } = useWorkConfig()
+  const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
+  const fullDayHours = workConfig?.fullDayHours ?? 8
 
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
@@ -1256,19 +1250,8 @@ function SiteAttendance() {
 
   const checkHolidayStatus = async (targetDate?: string, currentCutoff?: number) => {
     try {
-
-      let configData = configCacheRef.current
-      if (!configData) {
-        const configRes = await api.get("/api/config")
-        configData = configRes.data.data
-        configCacheRef.current = configData
-      }
-      const weeklyHolidays = configData?.weeklyHolidays || []
-
-      const activeCutoff = currentCutoff !== undefined ? currentCutoff : (configData?.nightShiftCutoffHour ?? 7)
-      setCutoffHour(activeCutoff)
-      setBreakDurationMinutes(configData?.breakDurationMinutes ?? 60)
-      setFullDayHours(configData?.fullDayHours ?? 8)
+      const weeklyHolidays = workConfig?.weeklyHolidays || []
+      const activeCutoff = currentCutoff !== undefined ? currentCutoff : cutoffHour
 
       let todayDay = ""
       if (targetDate) {
@@ -2559,27 +2542,20 @@ function SiteAttendance() {
   }, [categoryFilter])
 
   useEffect(() => {
+    // Wait for WorkConfigProvider — initializing against the fallback cutoff would compute the
+    // wrong logical business day and seed the roster with wrong night-shift flags.
+    if (configLoading) return
+
     const initialize = async () => {
       try {
         setLoading(true)
 
-        // Fetch independent metadata in parallel
-        const [configRes, siteData, statusRes] = await Promise.all([
-          api.get("/api/config").catch(err => {
-            console.error("Failed to fetch config:", err)
-            return null
-          }),
+        const [siteData, statusRes] = await Promise.all([
           fetchSite(),
           checkAttendanceStatus()
         ])
 
-        if (configRes?.data?.data) {
-          configCacheRef.current = configRes.data.data
-        }
-
-        const cutoffVal = configRes?.data?.data?.nightShiftCutoffHour ?? 0
-        setCutoffHour(cutoffVal)
-
+        const cutoffVal = cutoffHour
         const calculatedDate = getLogicalShiftDate(cutoffVal)
 
         if (statusRes?.exists) {
@@ -2603,9 +2579,10 @@ function SiteAttendance() {
     }
 
     initialize()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configLoading])
 
-  if (loading) {
+  if (loading || configLoading) {
     return (
       <div className="flex justify-center items-center h-[60vh]">
         <Loader2 className="h-8 w-8 animate-spin" />

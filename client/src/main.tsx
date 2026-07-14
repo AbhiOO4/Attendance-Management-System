@@ -5,6 +5,7 @@ import App from './App.tsx'
 import { BrowserRouter } from 'react-router-dom'
 import {Toaster} from 'react-hot-toast'
 import { AuthProvider } from './context/AuthContext.tsx'
+import { WorkConfigProvider } from './context/WorkConfigContext.tsx'
 import { ThemeProvider } from "next-themes"
 import { registerSW } from 'virtual:pwa-register'
 
@@ -43,14 +44,18 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AuthProvider>
       <BrowserRouter>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="system"
-          enableSystem
-        >
-          <App />
-        </ThemeProvider>
-        <Toaster />
+        {/* Inside the router: WorkConfigProvider refetches the cutoff history on navigation,
+            so a long-lived tab can't validate against a stale work schedule. */}
+        <WorkConfigProvider>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="system"
+            enableSystem
+          >
+            <App />
+          </ThemeProvider>
+          <Toaster />
+        </WorkConfigProvider>
       </BrowserRouter>
     </AuthProvider>
   </StrictMode>,

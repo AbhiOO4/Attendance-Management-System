@@ -1,6 +1,7 @@
 import { api } from "@/lib/api"
 import { useEffect, useMemo, useState } from "react"
 import { getLogicalShiftDate, isInExtendedPeriod, formatLogicalDateLabel, formatCurrentDateLabel } from "@/lib/dateUtils"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -31,7 +32,8 @@ function MarkAttendance() {
   const [attendanceStatus, setAttendanceStatus] =
     useState<SiteAttendanceStatus>({})
 
-  const [cutoffHour, setCutoffHour] = useState(7)
+  // This page only ever deals with today's roster, so the currently-active cutoff applies.
+  const { currentCutoff: cutoffHour, loading: configLoading } = useWorkConfig()
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
@@ -73,24 +75,11 @@ function MarkAttendance() {
   }
 
   useEffect(() => {
-    const init = async () => {
-      let currentCutoff = cutoffHour
-      // Fetch night shift cutoff config
-      try {
-        const configRes = await api.get("/api/config")
-        if (configRes.data?.data?.nightShiftCutoffHour !== undefined) {
-          currentCutoff = configRes.data.data.nightShiftCutoffHour
-          setCutoffHour(currentCutoff)
-        }
-      } catch (err) {
-        console.error("Failed to fetch config:", err)
-      }
-      
-      const targetDate = getLogicalShiftDate(currentCutoff)
-      fetchSites(targetDate)
-    }
-    init()
-  }, [])
+    // Wait for the config: the logical business day depends on the cutoff.
+    if (configLoading) return
+    fetchSites(getLogicalShiftDate(cutoffHour))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configLoading, cutoffHour])
 
   if (loading) {
     return (

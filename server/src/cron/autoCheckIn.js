@@ -8,6 +8,7 @@ import {
   combineDateAndTimeLocal,
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { resolveCutoffForDate } from '../utils/cutoff.js';
 
 /**
  * Run the auto check-in process for night shifts.
@@ -32,7 +33,8 @@ async function runAutoCheckIn() {
     if (matchingSites.length === 0) return;
 
     const workConfig = await workModel.findOne();
-    const cutoffHour = (workConfig && workConfig.nightShiftCutoffHour) || 7;
+    // The records being filled are dated todayStr, so use that day's cutoff.
+    const cutoffHour = resolveCutoffForDate(workConfig, todayStr);
 
     const todayDate = new Date(todayStr);
     todayDate.setUTCHours(0, 0, 0, 0);

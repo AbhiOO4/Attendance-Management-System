@@ -27,6 +27,13 @@ import userModel from "../models/userModel.js";
 import workModel from "../models/workModel.js";
 import jobTitleModel from "../models/jobTitleModel.js";
 import Attendance from "../models/attendanceModel.js";
+import {
+  getCurrentCutoff,
+  normalizeBusinessDate,
+  resolveCutoffForDate,
+  validateSessionTimes,
+} from "../utils/cutoff.js";
+import { toLocalTimeString } from "../utils/timeLocal.js";
 
 
 const seeWorkSchedule = async () => {
@@ -304,6 +311,144 @@ const recalculateExistingAttendance = async () => {
   }
 };
 
-recalculateExistingAttendance();
+// ---------------------------------------------------------------------------
+// CUTOFF HISTORY (retroactive repair)
+// ---------------------------------------------------------------------------
+//
+// The night-shift cutoff is baked into every stored checkIn/checkOut Date, so a record must
+// be read with the cutoff that was in force on ITS OWN business day. That mapping lives in
+// WorkSchedule.cutoffHistory, and the API deliberately refuses to backdate entries.
+//
+// If the cutoff was changed BEFORE effective-dating existed, the boot migration
+// (ensureCutoffHistory) can only assume the current value always applied — which leaves the
+// older records mis-interpreted and uneditable. These two functions are the escape hatch:
+//
+//   1. auditCutoffHistory()  — find records the CURRENT history mis-interprets, and the last
+//                              business day affected. That day tells you when the cutoff
+//                              actually changed.
+//   2. setCutoffHistory([...]) — write the corrected history. Backdating is allowed here.
+//
+// Example: the cutoff used to be 7 and was changed to 4 on 2026-07-04.
+//
+//   setCutoffHistory([
+//     { cutoffHour: 7, effectiveFrom: "1970-01-01" },   // everything before the change
+//     { cutoffHour: 4, effectiveFrom: "2026-07-04" },   // the day the new cutoff took effect
+//   ]);
+//
+// Re-run auditCutoffHistory() afterwards; it should report 0 problems.
+
+const auditCutoffHistory = async () => {
+  try {
+    const workConfig = await workModel.findOne({ type: "default" });
+    if (!workConfig) {
+      console.log("No default work config found.");
+      return process.exit(1);
+    }
+
+    console.log("Current cutoffHistory:");
+    for (const e of workConfig.cutoffHistory || []) {
+      console.log(`   ${e.cutoffHour}:00 from ${new Date(e.effectiveFrom).toISOString().slice(0, 10)}`);
+    }
+
+    // toLocalTimeString is not null-safe, and an open session has no check-out.
+    const hhmm = (d) => (d ? toLocalTimeString(d) : null);
+
+    const records = await Attendance.find({ "sessions.0": { $exists: true } })
+      .select("date sessions")
+      .lean();
+
+    const problems = [];
+    for (const record of records) {
+      const cutoffHour = resolveCutoffForDate(workConfig, record.date);
+      for (const session of record.sessions) {
+        const inStr = hhmm(session.checkIn);
+        const outStr = hhmm(session.checkOut);
+        const error = validateSessionTimes(inStr, outStr, session.isNightShift, cutoffHour);
+        if (error) {
+          problems.push({
+            date: new Date(record.date).toISOString().slice(0, 10),
+            checkIn: inStr,
+            checkOut: outStr,
+            resolvedCutoff: cutoffHour,
+            error,
+          });
+        }
+      }
+    }
+
+    console.log(`\nScanned ${records.length} records. Sessions the current history mis-interprets: ${problems.length}`);
+    for (const p of problems) {
+      console.log(`   ${p.date}  ${p.checkIn}→${p.checkOut ?? "—"}  (resolved cutoff ${p.resolvedCutoff}:00)  ${p.error}`);
+    }
+
+    if (problems.length > 0) {
+      const lastBad = problems
+        .map((p) => p.date)
+        .sort()
+        .pop();
+      console.log(
+        `\nLast affected business day: ${lastBad}. The old cutoff was still in force then, so the` +
+        `\nnew cutoff's effectiveFrom must be AFTER ${lastBad}. Fix with setCutoffHistory([...]).`
+      );
+    }
+
+    process.exit(0);
+  } catch (error) {
+    console.error("Error auditing cutoff history:", error);
+    process.exit(1);
+  }
+};
+
+// auditCutoffHistory();
+
+const setCutoffHistory = async (entries) => {
+  try {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      console.log("Pass a non-empty array of { cutoffHour, effectiveFrom }.");
+      return process.exit(1);
+    }
+
+    const normalized = entries.map(({ cutoffHour, effectiveFrom }) => {
+      if (typeof cutoffHour !== "number" || cutoffHour < 0 || cutoffHour > 12) {
+        throw new Error(`cutoffHour must be a number 0-12, got: ${cutoffHour}`);
+      }
+      const date = normalizeBusinessDate(effectiveFrom);
+      if (!date) throw new Error(`Invalid effectiveFrom: ${effectiveFrom}`);
+      return { cutoffHour, effectiveFrom: date };
+    });
+
+    normalized.sort((a, b) => a.effectiveFrom.getTime() - b.effectiveFrom.getTime());
+
+    const workConfig = await workModel.findOne({ type: "default" });
+    if (!workConfig) {
+      console.log("No default work config found.");
+      return process.exit(1);
+    }
+
+    workConfig.cutoffHistory = normalized;
+    // Keep the denormalized field mirroring whichever entry is active right now.
+    workConfig.nightShiftCutoffHour = getCurrentCutoff(workConfig);
+    await workConfig.save();
+
+    console.log("cutoffHistory set to:");
+    for (const e of normalized) {
+      console.log(`   ${e.cutoffHour}:00 from ${e.effectiveFrom.toISOString().slice(0, 10)}`);
+    }
+    console.log(`Active cutoff is now ${workConfig.nightShiftCutoffHour}:00.`);
+    console.log("Re-run auditCutoffHistory() to confirm 0 problems.");
+
+    process.exit(0);
+  } catch (error) {
+    console.error("Error setting cutoff history:", error);
+    process.exit(1);
+  }
+};
+
+// setCutoffHistory([
+//   { cutoffHour: 7, effectiveFrom: "1970-01-01" },
+//   { cutoffHour: 4, effectiveFrom: "2026-07-04" },
+// ]);
+
+// recalculateExistingAttendance();
 
 

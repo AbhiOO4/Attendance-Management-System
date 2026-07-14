@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import {
   Dialog,
@@ -50,6 +50,7 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
 // TYPES
@@ -139,13 +140,23 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
   const [sessions, setSessions] = useState<AttendanceSession[]>([])
   const [saving, setSaving] = useState(false)
 
-  const [config, setConfig] = useState({
-    fullDayHours: 8,
-    halfDayHours: 4,
-    overtimeThreshold: 8,
-    nightShiftCutoffHour: 7,
-    breakDurationMinutes: 60,
-  })
+  const { config: workConfig, cutoffFor } = useWorkConfig()
+
+  const config = useMemo(
+    () => ({
+      fullDayHours: workConfig?.fullDayHours ?? 8,
+      halfDayHours: workConfig?.halfDayHours ?? 4,
+      overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
+      breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+    }),
+    [workConfig]
+  )
+
+  // The cutoff in force on this record's own business day — not today's.
+  const recordCutoff = useMemo(
+    () => cutoffFor(record?.date),
+    [cutoffFor, record?.date]
+  )
 
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
   const [initialBreaksTaken, setInitialBreaksTaken] = useState<number | null>(null)
@@ -242,33 +253,6 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     }
   }, [open, attendanceId])
 
-  // Fetch the work-schedule config only once the dialog actually opens — this
-  // component is mounted (closed) on every SiteAttendance page load, and an
-  // eager fetch added a wasted /api/config request to that page's load.
-  const configFetchedRef = useRef(false)
-  useEffect(() => {
-    if (open && !configFetchedRef.current) {
-      configFetchedRef.current = true
-      fetchConfig()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  const fetchConfig = async () => {
-    try {
-      const res = await api.get("/api/config")
-      setConfig({
-        fullDayHours: res.data.data.fullDayHours,
-        halfDayHours: res.data.data.halfDayHours,
-        overtimeThreshold: res.data.data.overtimeThreshold,
-        nightShiftCutoffHour: res.data.data.nightShiftCutoffHour ?? 7,
-        breakDurationMinutes: res.data.data.breakDurationMinutes ?? 60,
-      })
-    } catch (error) {
-      console.log(error)
-    }
-  }
-
   // --------------------------------------------------
   // HELPERS
   // --------------------------------------------------
@@ -340,11 +324,11 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       let nextIsNight = false
       if (checkInVal) {
         const [inH] = checkInVal.split(":").map(Number)
-        const isDayOnlyCheckIn = inH >= config.nightShiftCutoffHour && inH < 12
+        const isDayOnlyCheckIn = inH >= recordCutoff && inH < 12
         if (originalIsNight) {
           nextIsNight = !isDayOnlyCheckIn
         } else {
-          const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
+          const inRange = inH >= 0 && inH < recordCutoff
           const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
           nextIsNight = inRange || crossesMidnight
         }
@@ -353,8 +337,8 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       }
 
       updated[index].isNightShift = nextIsNight
-      updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, config.nightShiftCutoffHour) : null
-      updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, config.nightShiftCutoffHour) : null
+      updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, recordCutoff) : null
+      updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, recordCutoff) : null
       updated[index].workedHours = calculateWorkedHours(updated[index].checkIn, updated[index].checkOut)
     } else {
       updated[index] = { ...updated[index], [field as any]: value }
@@ -463,7 +447,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       sessions.forEach((session, index) => {
         const inTime = toTimeValue(session.checkIn)
         const outTime = toTimeValue(session.checkOut)
-        const err = validateSessionTimes(inTime, outTime, session.isNightShift, config.nightShiftCutoffHour)
+        const err = validateSessionTimes(inTime, outTime, session.isNightShift, recordCutoff)
         if (err) {
           errors[index] = err
           hasError = true

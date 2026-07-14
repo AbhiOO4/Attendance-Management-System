@@ -73,8 +73,14 @@ export function getTodayLocal() {
 export function combineDateAndTimeLocal(
   dateStr,
   timeStr,
-  { referenceCheckIn = null, isNightShift = false, cutoffHour = 7 } = {}
+  { referenceCheckIn = null, isNightShift = false, cutoffHour } = {}
 ) {
+  // No default: the cutoff must be resolved for dateStr's business day (see utils/cutoff.js).
+  // Silently falling back to 7 would combine the time onto the wrong calendar day.
+  if (typeof cutoffHour !== "number") {
+    throw new Error("combineDateAndTimeLocal requires a cutoffHour resolved for dateStr");
+  }
+
   const offset = getAppOffsetMinutes();
   const offsetStr = getOffsetString(offset);
   const dt = new Date(`${dateStr}T${timeStr}:00${offsetStr}`);

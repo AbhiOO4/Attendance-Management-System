@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
+import { useWorkConfig } from "@/context/WorkConfigContext";
 import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+type CutoffEntry = {
+  cutoffHour: number;
+  effectiveFrom: string;
+};
+
 type WorkSchedule = {
   fullDayHours: number;
   halfDayHours: number;
@@ -42,6 +48,7 @@ type WorkSchedule = {
   weeklyHolidays: string[];
   nightShiftCutoffHour: number;
   breakDurationMinutes: number;
+  cutoffHistory?: CutoffEntry[];
 };
 
 
@@ -84,7 +91,23 @@ const getCurrentMonthYear = () => {
   };
 };
 
+const formatCutoffDate = (value: string) => {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return value;
+  // The seeded legacy entry is an epoch sentinel, not a real changeover date.
+  if (d.getUTCFullYear() <= 1970) return "the beginning";
+  return d.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+};
+
 export default function Configure() {
+  const { refreshConfig } = useWorkConfig();
+
   const [schedule, setSchedule] = useState<WorkSchedule>({
     fullDayHours: 8,
     halfDayHours: 4,
@@ -94,6 +117,27 @@ export default function Configure() {
     nightShiftCutoffHour: 7,
     breakDurationMinutes: 60,
   });
+
+  const cutoffHistory = useMemo(
+    () =>
+      [...(schedule.cutoffHistory ?? [])].sort(
+        (a, b) => new Date(a.effectiveFrom).getTime() - new Date(b.effectiveFrom).getTime()
+      ),
+    [schedule.cutoffHistory]
+  );
+
+  // Entries dated in the future haven't taken effect yet; the last one that has is active.
+  const { activeCutoff, pendingCutoff } = useMemo(() => {
+    const now = Date.now();
+    const active = [...cutoffHistory]
+      .reverse()
+      .find((e) => new Date(e.effectiveFrom).getTime() <= now);
+    const pending = cutoffHistory.find((e) => new Date(e.effectiveFrom).getTime() > now);
+    return {
+      activeCutoff: active?.cutoffHour ?? schedule.nightShiftCutoffHour,
+      pendingCutoff: pending ?? null,
+    };
+  }, [cutoffHistory, schedule.nightShiftCutoffHour]);
 
 
   const [holidayForm, setHolidayForm] = useState({
@@ -161,7 +205,7 @@ export default function Configure() {
   const updateSchedule = async () => {
     try {
       setUpdatingSchedule(true);
-      await api.patch("/api/config/update", {
+      const res = await api.patch("/api/config/update", {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
         overtimeThreshold: schedule.overtimeThreshold,
@@ -171,10 +215,22 @@ export default function Configure() {
         breakDurationMinutes: schedule.breakDurationMinutes,
       });
 
+      // Pull the saved doc back: a cutoff change is recorded in cutoffHistory with an
+      // effective date rather than applied immediately, so the form must re-render from
+      // what the server actually stored.
+      if (res.data?.data) setSchedule(res.data.data);
+      await refreshConfig();
 
-      toast.success("Work schedule updated successfully");
-    } catch (err) {
-      toast.error("Failed to update work schedule");
+      // The server explains when a cutoff change takes effect — show that, not a generic
+      // success message.
+      toast.success(res.data?.message || "Work schedule updated successfully");
+    } catch (err: any) {
+      // A rejected cutoff change names the sites whose night defaults would break.
+      toast.error(
+        err?.response?.data?.message || "Failed to update work schedule",
+        { duration: 8000 }
+      );
+      fetchSchedule();
     } finally {
       setUpdatingSchedule(false);
     }
@@ -567,8 +623,50 @@ export default function Configure() {
                     Business day extends until this hour (0–12). Times before this cutoff
                     are credited to the previous day. Default: 7 (7:00 AM).
                   </p>
+
+                  <p className="text-xs text-muted-foreground">
+                    A change takes effect from the next business day. Attendance already
+                    recorded keeps the cutoff it was created under, so past records stay
+                    editable and keep their hours.
+                  </p>
                 </div>
+
+                {pendingCutoff && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Scheduled change</label>
+                    <p className="text-sm">
+                      Cutoff becomes{" "}
+                      <span className="font-semibold">{pendingCutoff.cutoffHour}:00</span> on{" "}
+                      <span className="font-semibold">
+                        {formatCutoffDate(pendingCutoff.effectiveFrom)}
+                      </span>
+                      .
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Currently active: {activeCutoff}:00
+                    </p>
+                  </div>
+                )}
               </div>
+
+              {cutoffHistory.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Cutoff history</label>
+                  <ul className="space-y-1">
+                    {cutoffHistory.map((entry, i) => (
+                      <li
+                        key={`${entry.effectiveFrom}-${i}`}
+                        className="text-xs text-muted-foreground"
+                      >
+                        <span className="font-medium text-foreground">
+                          {entry.cutoffHour}:00
+                        </span>{" "}
+                        — from {formatCutoffDate(entry.effectiveFrom)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
 
             {/* SAVE BUTTON */}

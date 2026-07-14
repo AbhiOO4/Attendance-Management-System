@@ -1,4 +1,5 @@
 import { api } from "@/lib/api"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useEffect, useState } from "react"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
@@ -70,6 +71,8 @@ export interface AttendanceSession {
 
   jobName?: string
 
+  jobCode?: string | null
+
   checkIn?: string | null
 
   checkOut?: string | null
@@ -97,6 +100,8 @@ export interface AttendanceRecord {
   jobId?: string | null
 
   jobName?: string
+
+  jobCode?: string | null
 
   date: string
 
@@ -186,8 +191,9 @@ function EditPastAttendance() {
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
   const [isWeeklyHoliday, setIsWeeklyHoliday] = useState<boolean>(false)
-  const [fullDayHours, setFullDayHours] = useState(8)
-  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
+  const { config: workConfig } = useWorkConfig()
+  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
 
 
 
@@ -228,16 +234,7 @@ function EditPastAttendance() {
 
   const checkHolidayStatus = async () => {
     try {
-
-      // ---------------- GET WORK SCHEDULE ----------------
-      const configRes = await api.get("/api/config")
-
-      const weeklyHolidays = configRes.data.data.weeklyHolidays || []
-      setFullDayHours(configRes.data.data.fullDayHours ?? 8)
-      setBreakDurationMinutes(configRes.data.data.breakDurationMinutes ?? 60)
-
-
-
+      const weeklyHolidays = workConfig?.weeklyHolidays || []
 
       // ---------------- WEEKLY HOLIDAY PRIORITY ----------------
       const [year, month, day] = date.split('-').map(Number)

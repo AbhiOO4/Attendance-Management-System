@@ -11,6 +11,7 @@ import {
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
+import { resolveCutoffForDate } from '../utils/cutoff.js';
 
 /**
  * Fill checkOut for matching sessions of a set of sites on a given date.
@@ -210,23 +211,26 @@ async function runAutoCheckOut() {
       return;
     }
 
-    const cutoffHour = workConfig.nightShiftCutoffHour || 7;
+    // Resolve the cutoff per target business day: the night modes close out YESTERDAY's
+    // records, which on a changeover day still belong to the previous cutoff.
+    const todayCutoff = resolveCutoffForDate(workConfig, todayStr);
+    const yesterdayCutoff = resolveCutoffForDate(workConfig, yesterdayStr);
     const staffIds = await getStaffEmployeeIds();
 
     if (daySites.length > 0) {
-      await processSites(daySites, todayStr, 'day', workConfig, cutoffHour, staffIds);
+      await processSites(daySites, todayStr, 'day', workConfig, todayCutoff, staffIds);
     }
 
     if (nightSites.length > 0) {
-      await processSites(nightSites, yesterdayStr, 'night', workConfig, cutoffHour, staffIds);
+      await processSites(nightSites, yesterdayStr, 'night', workConfig, yesterdayCutoff, staffIds);
     }
 
     if (staffSites.length > 0) {
-      await processSites(staffSites, todayStr, 'staff', workConfig, cutoffHour, staffIds);
+      await processSites(staffSites, todayStr, 'staff', workConfig, todayCutoff, staffIds);
     }
 
     if (staffNightSites.length > 0) {
-      await processSites(staffNightSites, yesterdayStr, 'staffnight', workConfig, cutoffHour, staffIds);
+      await processSites(staffNightSites, yesterdayStr, 'staffnight', workConfig, yesterdayCutoff, staffIds);
     }
   } catch (error) {
     console.error('[AutoCheckOut] Cron job error:', error);

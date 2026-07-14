@@ -1,4 +1,5 @@
 
+import { useWorkConfig } from "@/context/WorkConfigContext"
 import { api } from "@/lib/api"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 
@@ -105,18 +106,9 @@ function EmployeeAttendanceDetail() {
   const [employee, setEmployee] =
     useState<Employee | null>(null)
 
-  const [fullDayHours, setFullDayHours] = useState(8)
-  const [breakDurationMinutes, setBreakDurationMinutes] = useState(60)
-
-  const fetchConfig = async () => {
-    try {
-      const res = await api.get("/api/config")
-      setFullDayHours(res.data.data.fullDayHours ?? 8)
-      setBreakDurationMinutes(res.data.data.breakDurationMinutes ?? 60)
-    } catch (error) {
-      console.log(error)
-    }
-  }
+  const { config: workConfig } = useWorkConfig()
+  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
 
 
 
@@ -515,7 +507,6 @@ function EmployeeAttendanceDetail() {
 
   useEffect(() => {
     fetchEmployee()
-    fetchConfig()
   }, [id])
 
   useEffect(() => {
@@ -705,7 +696,7 @@ function EmployeeAttendanceDetail() {
 
                     <TableHead>Site</TableHead>
 
-                    <TableHead>Job</TableHead>
+                    <TableHead>Job No</TableHead>
 
                     <TableHead>Check In</TableHead>
 
@@ -801,7 +792,7 @@ function EmployeeAttendanceDetail() {
                               </TableCell>
 
                               <TableCell>
-                                {session?.jobName || "-"}
+                                {session?.jobCode || "-"}
                               </TableCell>
 
                               <TableCell>

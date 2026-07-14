@@ -43,6 +43,7 @@ import {
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
 // TYPES
@@ -102,13 +103,21 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   const [overlapIndexes, setOverlapIndexes] = useState<number[]>([])
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [sessionToDelete, setSessionToDelete] = useState<number | null>(null)
-  const [config, setConfig] = useState({
-    fullDayHours: 8,
-    halfDayHours: 4,
-    overtimeThreshold: 8,
-    nightShiftCutoffHour: 7,
-    breakDurationMinutes: 60,
-  })
+  const { config: workConfig, cutoffFor } = useWorkConfig()
+
+  const config = useMemo(
+    () => ({
+      fullDayHours: workConfig?.fullDayHours ?? 8,
+      halfDayHours: workConfig?.halfDayHours ?? 4,
+      overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
+      breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+    }),
+    [workConfig]
+  )
+
+  // Backfilling a past day must combine and validate times with the cutoff that was in force
+  // on THAT day, so the new record is consistent with the ones already on it.
+  const recordCutoff = useMemo(() => cutoffFor(date), [cutoffFor, date])
 
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
 
@@ -143,7 +152,6 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
   useEffect(() => {
     fetchSites()
-    fetchConfig()
   }, [])
 
   // --------------------------------------------------
@@ -159,20 +167,6 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     }
   }
 
-  const fetchConfig = async () => {
-    try {
-      const res = await api.get("/api/config")
-      setConfig({
-        fullDayHours: res.data.data.fullDayHours,
-        halfDayHours: res.data.data.halfDayHours,
-        overtimeThreshold: res.data.data.overtimeThreshold,
-        nightShiftCutoffHour: res.data.data.nightShiftCutoffHour ?? 7,
-        breakDurationMinutes: res.data.data.breakDurationMinutes ?? 60,
-      })
-    } catch (error) {
-      console.log(error)
-    }
-  }
 
   // --------------------------------------------------
   // HELPERS
@@ -244,7 +238,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       let nextIsNight = false
       if (checkInVal) {
         const [inH] = checkInVal.split(":").map(Number)
-        const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
+        const inRange = inH >= 0 && inH < recordCutoff
         const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
         nextIsNight = inRange || crossesMidnight
       }
@@ -252,8 +246,8 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       updated[index].isNightShift = nextIsNight
 
       // Combine date and time
-      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, nextIsNight, config.nightShiftCutoffHour) : null
-      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, nextIsNight, config.nightShiftCutoffHour) : null
+      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, nextIsNight, recordCutoff) : null
+      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, nextIsNight, recordCutoff) : null
       updated[index].workedHours = calculateWorkedHours(
         updated[index].checkIn,
         updated[index].checkOut
@@ -368,7 +362,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const err = validateSessionTimes(inTime, outTime, session.isNightShift, config.nightShiftCutoffHour)
+      const err = validateSessionTimes(inTime, outTime, session.isNightShift, recordCutoff)
       if (err) {
         errors[index] = err
         hasError = true

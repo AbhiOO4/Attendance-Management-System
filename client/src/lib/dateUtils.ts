@@ -1,6 +1,12 @@
 /**
  * Night shift date/time utilities.
  * Centralizes the "Logical Business Day" concept.
+ *
+ * NOTE: every cutoffHour parameter below is REQUIRED, deliberately. The cutoff is baked into
+ * each attendance record's stored check-in/out timestamps at write time, so a record must be
+ * interpreted with the cutoff that was in force on ITS OWN business day — not today's. Get it
+ * from useWorkConfig(): cutoffFor(record.date) for a specific record, currentCutoff for "now".
+ * A default here would silently reinterpret old records after an admin changes the cutoff.
  */
 
 export const APP_OFFSET = (() => {
@@ -11,6 +17,88 @@ export const APP_OFFSET = (() => {
   }
   return -330; // Fallback to IST
 })();
+
+export const DEFAULT_CUTOFF_HOUR = 7;
+
+export type CutoffEntry = {
+  cutoffHour: number;
+  effectiveFrom: string | Date;
+};
+
+export type WorkConfig = {
+  fullDayHours: number;
+  halfDayHours: number;
+  overtimeThreshold: number;
+  overtimeRatePerHour: number;
+  weeklyHolidays: string[];
+  nightShiftCutoffHour: number;
+  breakDurationMinutes: number;
+  cutoffHistory?: CutoffEntry[];
+};
+
+/**
+ * Normalize a business day to a Date at UTC midnight — matching how the server stores
+ * `Attendance.date` and `cutoffHistory[].effectiveFrom`.
+ */
+export function normalizeBusinessDate(dateLike: string | Date | null | undefined): Date | null {
+  if (!dateLike) return null;
+
+  if (typeof dateLike === "string") {
+    const dateOnly = dateLike.includes("T") ? dateLike.split("T")[0] : dateLike;
+    const dt = new Date(`${dateOnly}T00:00:00.000Z`);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  const dt = new Date(dateLike);
+  if (isNaN(dt.getTime())) return null;
+  dt.setUTCHours(0, 0, 0, 0);
+  return dt;
+}
+
+/**
+ * The cutoff hour that was (or will be) in force on a given business day.
+ * Mirrors server/src/utils/cutoff.js — keep the two in sync.
+ */
+export function resolveCutoffForDate(
+  config: WorkConfig | null | undefined,
+  businessDate: string | Date | null | undefined
+): number {
+  const fallback = config?.nightShiftCutoffHour ?? DEFAULT_CUTOFF_HOUR;
+
+  const history = config?.cutoffHistory;
+  if (!Array.isArray(history) || history.length === 0) return fallback;
+
+  const target = normalizeBusinessDate(businessDate);
+  if (!target) return fallback;
+
+  const sorted = [...history].sort(
+    (a, b) => new Date(a.effectiveFrom).getTime() - new Date(b.effectiveFrom).getTime()
+  );
+
+  // Days that predate every entry fall back to the oldest known value.
+  let resolved = sorted[0];
+  for (const entry of sorted) {
+    if (new Date(entry.effectiveFrom).getTime() <= target.getTime()) {
+      resolved = entry;
+    } else {
+      break;
+    }
+  }
+
+  return resolved.cutoffHour;
+}
+
+/**
+ * The cutoff in force right now.
+ *
+ * Two passes: you need a cutoff to know which business day it currently is, and the business
+ * day to resolve the cutoff. It only matters on a changeover morning, when the hours between
+ * midnight and the old cutoff still belong to the previous business day.
+ */
+export function getCurrentCutoff(config: WorkConfig | null | undefined): number {
+  const candidate = resolveCutoffForDate(config, getCurrentTargetDateString());
+  return resolveCutoffForDate(config, getLogicalShiftDate(candidate));
+}
 
 /**
  * Helper to get a Date object representing the current time shifted to target timezone
@@ -52,7 +140,7 @@ export function formatCurrentDateLabel(): string {
  * Returns the day-of-week name (lowercase) for the current date in the app's timezone.
  * e.g., "saturday"
  */
-export function getCurrentTargetDayName(cutoffHour: number = 7): string {
+export function getCurrentTargetDayName(cutoffHour: number): string {
   const dateStr = getLogicalShiftDate(cutoffHour);
   const date = new Date(dateStr + "T12:00:00"); // noon to avoid timezone edge
   return date.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
@@ -63,7 +151,7 @@ export function getCurrentTargetDayName(cutoffHour: number = 7): string {
  * If the current time is before the cutoff (e.g., 7 AM),
  * the portal still shows YESTERDAY's date.
  */
-export function getLogicalShiftDate(cutoffHour: number = 7): string {
+export function getLogicalShiftDate(cutoffHour: number): string {
   const target = getCurrentTargetTime();
   if (target.getUTCHours() < cutoffHour) {
     target.setUTCDate(target.getUTCDate() - 1);
@@ -78,7 +166,7 @@ export function getLogicalShiftDate(cutoffHour: number = 7): string {
  * Returns whether we're currently in the "extended" period
  * (after midnight but before cutoff), useful for UI labeling.
  */
-export function isInExtendedPeriod(cutoffHour: number = 7): boolean {
+export function isInExtendedPeriod(cutoffHour: number): boolean {
   return getCurrentTargetTime().getUTCHours() < cutoffHour;
 }
 
@@ -94,7 +182,7 @@ export function calculateHoursBetween(
   checkIn: string,
   checkOut: string,
   isNightShift: boolean = false,
-  cutoffHour: number = 7
+  cutoffHour: number
 ): number {
   if (!checkIn || !checkOut) return 0;
   const [inH, inM] = checkIn.split(":").map(Number);
@@ -158,9 +246,9 @@ export function formatLogicalDateLabel(dateStr: string): string {
 export function combineDateAndTime(
   recordDate: string,
   time: string | null,
-  referenceCheckIn?: string | null,
-  isNightShift: boolean = false,
-  cutoffHour: number = 7
+  referenceCheckIn: string | null | undefined,
+  isNightShift: boolean,
+  cutoffHour: number
 ): string | null {
   if (!time) return null;
 
@@ -229,7 +317,7 @@ export function formatLocalTime12h(dateVal?: string | Date | null): string {
  * Checks if a time string is valid for a night shift.
  * Morning/AM times must be strictly before the cutoff hour.
  */
-export function isValidNightShiftTime(time: string | null, cutoffHour: number = 7): boolean {
+export function isValidNightShiftTime(time: string | null, cutoffHour: number): boolean {
   if (!time) return true;
   const [h] = time.split(":").map(Number);
   // AM hours (0 to 11) must be before cutoff
@@ -243,7 +331,7 @@ export function isValidNightShiftTime(time: string | null, cutoffHour: number = 
  * Checks if check-in time is within the day/night toggle range (12:00 AM to cutoffHour).
  * In 24h format, 12:00 AM is 00:00.
  */
-export function isCheckInInToggleRange(checkIn: string | null, cutoffHour: number = 7): boolean {
+export function isCheckInInToggleRange(checkIn: string | null, cutoffHour: number): boolean {
   if (!checkIn) return false;
   const [h] = checkIn.split(":").map(Number);
   return h >= 0 && h < cutoffHour;
@@ -253,7 +341,7 @@ export function validateSessionTimes(
   checkIn: string | null | undefined,
   checkOut: string | null | undefined,
   isNightShift: boolean = false,
-  cutoffHour: number = 7
+  cutoffHour: number
 ): string | null {
   // 1. RULE: Check-out without check-in is NOT allowed
   if (!checkIn && checkOut) {

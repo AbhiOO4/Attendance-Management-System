@@ -50,6 +50,7 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
 // TYPES
@@ -78,6 +79,8 @@ interface AttendanceSession {
   jobId?: string | null
 
   jobName?: string
+
+  jobCode?: string | null
 
   checkIn?: string | null
 
@@ -108,6 +111,8 @@ export interface AttendanceRecord {
   jobId?: string | null
 
   jobName?: string
+
+  jobCode?: string | null
 
   date: string
 
@@ -158,14 +163,25 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
   const [saving, setSaving] =
     useState(false)
 
-  const [config, setConfig] =
-    useState({
-      fullDayHours: 8,
-      halfDayHours: 4,
-      overtimeThreshold: 8,
-      nightShiftCutoffHour: 7,
-      breakDurationMinutes: 60,
-    })
+  const { config: workConfig, cutoffFor } = useWorkConfig()
+
+  const config = useMemo(
+    () => ({
+      fullDayHours: workConfig?.fullDayHours ?? 8,
+      halfDayHours: workConfig?.halfDayHours ?? 4,
+      overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
+      breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+    }),
+    [workConfig]
+  )
+
+  // The cutoff in force on THIS record's business day. Using today's cutoff instead would
+  // reject a record that was perfectly legal when it was written (e.g. a 06:30 night
+  // check-out created under a 7 AM cutoff, after an admin lowers the cutoff to 4 AM).
+  const recordCutoff = useMemo(
+    () => cutoffFor(record?.date),
+    [cutoffFor, record?.date]
+  )
 
 
 const [deleteDialogOpen, setDeleteDialogOpen] =
@@ -262,7 +278,6 @@ const [sessionToDelete, setSessionToDelete] =
 
   useEffect(() => {
     fetchSites()
-    fetchConfig()
   }, [])
 
   // --------------------------------------------------
@@ -274,31 +289,6 @@ const [sessionToDelete, setSessionToDelete] =
       const res = await api.get("/api/site")
 
       setSites(res.data || [])
-    } catch (error) {
-      console.log(error)
-    }
-  }
-
-  const fetchConfig = async () => {
-    try {
-      const res = await api.get(
-        "/api/config"
-      )
-
-      setConfig({
-        fullDayHours:
-          res.data.data.fullDayHours,
-        halfDayHours:
-          res.data.data.halfDayHours,
-        overtimeThreshold:
-          res.data.data
-            .overtimeThreshold,
-        nightShiftCutoffHour:
-          res.data.data.nightShiftCutoffHour ?? 7,
-        breakDurationMinutes:
-          res.data.data.breakDurationMinutes ?? 60,
-      })
-
     } catch (error) {
       console.log(error)
     }
@@ -435,11 +425,11 @@ const [sessionToDelete, setSessionToDelete] =
     let nextIsNight = false
     if (checkInVal) {
       const [inH] = checkInVal.split(":").map(Number)
-      const isDayOnlyCheckIn = inH >= config.nightShiftCutoffHour && inH < 12 // 7 AM to 12 PM
+      const isDayOnlyCheckIn = inH >= recordCutoff && inH < 12 // 7 AM to 12 PM
       if (originalIsNight) {
         nextIsNight = !isDayOnlyCheckIn
       } else {
-        const inRange = inH >= 0 && inH < config.nightShiftCutoffHour
+        const inRange = inH >= 0 && inH < recordCutoff
         const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
         nextIsNight = inRange || crossesMidnight
       }
@@ -450,8 +440,8 @@ const [sessionToDelete, setSessionToDelete] =
     updated[index].isNightShift = nextIsNight
 
     // Combine date and time
-    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, config.nightShiftCutoffHour) : null
-    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, config.nightShiftCutoffHour) : null
+    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, recordCutoff) : null
+    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, recordCutoff) : null
     updated[index].workedHours = calculateWorkedHours(
       updated[index].checkIn,
       updated[index].checkOut
@@ -587,7 +577,7 @@ const [sessionToDelete, setSessionToDelete] =
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const err = validateSessionTimes(inTime, outTime, session.isNightShift, config.nightShiftCutoffHour)
+      const err = validateSessionTimes(inTime, outTime, session.isNightShift, recordCutoff)
       if (err) {
         errors[index] = err
         hasError = true
