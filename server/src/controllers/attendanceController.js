@@ -190,12 +190,35 @@ async function checkHolidayForDate(dateObj) {
 }
 
 /**
+ * Cutoff resolver for one business day, per SESSION-SITE. Cutoffs are per-site (derived
+ * from each site's default shift times — see utils/siteCutoff.js), and a record can hold
+ * sessions at several sites, so each session must be interpreted with its own site's
+ * cutoff. Returns `(siteId) => cutoffHour`; the global config value for `businessDate` is
+ * the fallback for legacy/null siteIds.
+ */
+async function buildSiteCutoffResolver(siteIds, businessDate, workConfig, dbSession = null) {
+  // siteIds = null → resolve for every site (one small query; used by paths where the
+  // full set of session sites isn't known upfront).
+  const ids = siteIds ? [...new Set(siteIds.filter(Boolean).map(String))] : null;
+  let query = Site.find(ids ? { _id: { $in: ids } } : {}).select('nightShiftCutoffHour cutoffHistory');
+  if (dbSession) query = query.session(dbSession);
+  const sites = ids && ids.length === 0 ? [] : await query;
+  const map = new Map(sites.map((s) => [s._id.toString(), resolveCutoffForDate(s, businessDate)]));
+  const fallback = resolveCutoffForDate(workConfig, businessDate);
+  return (siteId) => {
+    const resolved = siteId ? map.get(siteId.toString()) : undefined;
+    return resolved !== undefined ? resolved : fallback;
+  };
+}
+
+/**
  * Automatically sets the check-out time of a previous session at a different site
  * to the check-in time of the current session, if the previous session is check-in only.
  *
- * `cutoffHour` must already be resolved for the attendance record's business day.
+ * `cutoffForSite` is a resolver from buildSiteCutoffResolver for the record's business
+ * day: the closed session is re-classified (day vs night) with ITS OWN site's cutoff.
  */
-function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffHour) {
+function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffForSite) {
   if (!Array.isArray(sessions) || sessions.length <= 1) return sessions;
 
   // 1. Sort sessions chronologically by checkIn time. Empty check-ins go last.
@@ -222,8 +245,8 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffHo
     }
   }
 
-  if (typeof cutoffHour !== "number") {
-    throw new Error("autoClosePreviousSiteSessions requires a cutoffHour resolved for the record's date");
+  if (typeof cutoffForSite !== "function") {
+    throw new Error("autoClosePreviousSiteSessions requires a per-site cutoff resolver for the record's date");
   }
 
   // 2. Process sessions
@@ -250,9 +273,9 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffHo
         if (workedHours < 0) workedHours = 0;
         prev.workedHours = Number(workedHours.toFixed(2));
 
-        // Recalculate isNightShift for prev session
+        // Recalculate isNightShift for prev session, using ITS OWN site's cutoff
         let sessionIsNight = prev.isNightShift || false;
-        if (isEarlyMorningCheckIn(toLocalTimeString(prev.checkIn, offsetVal), cutoffHour)) {
+        if (isEarlyMorningCheckIn(toLocalTimeString(prev.checkIn, offsetVal), cutoffForSite(prev.siteId))) {
           sessionIsNight = true;
         }
 
@@ -1006,6 +1029,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       overtimeThreshold,
     } = workConfig
 
+    // Cutoffs are per-site: sessions in this submission (and stored sessions from other
+    // sites on the same records) must each be interpreted with their own site's cutoff.
+    const cutoffForSite = await buildSiteCutoffResolver(null, date, workConfig, session);
+
     const processedRecords = []
     const isHolidayResolved = await checkHolidayForDate(attendanceDate);
 
@@ -1081,7 +1108,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
-        const cutoffHour = resolveCutoffForDate(workConfig, date)
+        const cutoffHour = cutoffForSite(finalSiteId)
 
         let sessionIsNight = false;
         if (checkIn) {
@@ -1171,7 +1198,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, resolveCutoffForDate(workConfig, date));
+      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, cutoffForSite);
 
       // -----------------------------
       // SORT ALL SESSIONS
@@ -1871,6 +1898,9 @@ export const bulkEditAttendance = async (
       overtimeThreshold,
     } = workConfig;
 
+    // Cutoffs are per-site: sessions on these records may span several sites.
+    const cutoffForSite = await buildSiteCutoffResolver(null, attendanceDate, workConfig, session);
+
     const processedRecords = [];
     const isHolidayResolved = await checkHolidayForDate(attendanceDate);
 
@@ -1948,7 +1978,7 @@ export const bulkEditAttendance = async (
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, resolveCutoffForDate(workConfig, attendanceDate));
+      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, cutoffForSite);
       attendanceDoc.sessions = closedSessions;
 
       // RECALCULATE TOTAL HOURS, STATUS & OT
@@ -2094,11 +2124,13 @@ export const updateAttendance = async (req, res) => {
 
     if (Array.isArray(sessions)) {
       // The cutoff in force on THIS record's business day — not today's. A record written
-      // under an old cutoff must stay editable after the cutoff changes.
-      const cutoffHour = resolveCutoffForDate(workConfig, attendance.date);
+      // under an old cutoff must stay editable after the cutoff changes. Cutoffs are
+      // per-site, so each session resolves through its own site's history.
+      const cutoffForSite = await buildSiteCutoffResolver(null, attendance.date, workConfig);
 
       // Validate sessions first
       for (const session of sessions) {
+        const cutoffHour = cutoffForSite(session.siteId);
         // Determine if night shift automatically
         let sessionIsNight = session.isNightShift || false;
         if (session.checkIn) {
@@ -2143,7 +2175,7 @@ export const updateAttendance = async (req, res) => {
           let sessionIsNight = session.isNightShift || false;
 
           if (session.checkIn) {
-            if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffHour)) {
+            if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffForSite(session.siteId))) {
               sessionIsNight = true;
             }
 
@@ -2247,7 +2279,7 @@ export const updateAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, resolveCutoffForDate(workConfig, attendance.date));
+      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, cutoffForSite);
 
       // -----------------------------
       // Sort by checkIn
@@ -3417,15 +3449,16 @@ export const backfillAttendance = async (req, res) => {
 
     const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
 
-    // Backfilling a past day must use the cutoff that was in force on THAT day, or the
-    // check-out gets combined onto the wrong calendar day relative to its neighbours.
-    const cutoffHour = resolveCutoffForDate(workConfig, date);
-
     // Validate and build sessions
     if (!Array.isArray(sessions)) {
       return res.status(400).json({ success: false, message: 'sessions must be an array' });
     }
 
+    // Backfill is the deliberate CUTOFF-FREE path: the admin is recording what actually
+    // happened on an explicit past day, so times are combined literally with that day
+    // (cutoffHour: 0 = no early-morning window; a check-out earlier than its check-in
+    // still bumps to the next calendar day). The cutoff-window rules are replaced by the
+    // direct timestamp-overlap check against the neighbouring days' records below.
     const builtSessions = [];
 
     for (const session of sessions) {
@@ -3435,30 +3468,22 @@ export const backfillAttendance = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Every session must have a site selected' });
       }
 
-      let sessionIsNight = false;
-      if (checkIn) {
-        const [inH, inM] = checkIn.split(':').map(Number);
-        if (isEarlyMorningCheckIn(checkIn, cutoffHour)) {
-          sessionIsNight = true;
-        }
-        if (checkOut) {
-          const [outH, outM] = checkOut.split(':').map(Number);
-          if ((outH * 60 + outM) < (inH * 60 + inM)) {
-            sessionIsNight = true;
-          }
-        }
+      if (!checkIn && checkOut) {
+        return res.status(400).json({ success: false, message: 'Check-out cannot exist without check-in' });
       }
 
-      const boundsError = validateSessionTimes(checkIn, checkOut, sessionIsNight, cutoffHour);
-      if (boundsError) {
-        return res.status(400).json({ success: false, message: boundsError });
+      let sessionIsNight = false;
+      if (checkIn && checkOut) {
+        const [inH, inM] = checkIn.split(':').map(Number);
+        const [outH, outM] = checkOut.split(':').map(Number);
+        sessionIsNight = (outH * 60 + outM) < (inH * 60 + inM);
       }
 
       let workedHours = 0;
-      const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour, timezoneOffset };
+      const combineOpts = { isNightShift: false, cutoffHour: 0, timezoneOffset };
 
-      const checkInDate = checkIn ? combineDateAndTime(date, checkIn, cutoffOpts) : null;
-      const checkOutDate = checkOut ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...cutoffOpts }) : null;
+      const checkInDate = checkIn ? combineDateAndTime(date, checkIn, combineOpts) : null;
+      const checkOutDate = checkOut ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...combineOpts }) : null;
 
       if (checkInDate && checkOutDate) {
         workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
@@ -3522,6 +3547,52 @@ export const backfillAttendance = async (req, res) => {
             }
           },
         });
+      }
+    }
+
+    // Since backfill skips the cutoff-window rules, this is the guard that keeps a
+    // backfilled day from claiming real hours the SAME employee's neighbouring days'
+    // records already cover — that would silently pay the same hours twice.
+    {
+      let offsetVal = -330;
+      if (timezoneOffset !== null && timezoneOffset !== undefined) {
+        const parsed = parseInt(timezoneOffset, 10);
+        if (!isNaN(parsed)) offsetVal = parsed;
+      }
+
+      const prevDate = new Date(attendanceDate);
+      prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+      const nextDate = new Date(attendanceDate);
+      nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+
+      const neighbours = await Attendance.find({
+        employee: employeeMongoId,
+        date: { $in: [prevDate, nextDate] },
+      }).select('date sessions.checkIn sessions.checkOut').lean();
+
+      for (const neighbour of neighbours) {
+        for (const s of neighbour.sessions || []) {
+          if (!s.checkIn || !s.checkOut) continue; // open sessions have no interval yet
+          const nStart = new Date(s.checkIn).getTime();
+          const nEnd = new Date(s.checkOut).getTime();
+
+          for (const built of validSessions) {
+            if (!built.checkOut) continue;
+            const bStart = new Date(built.checkIn).getTime();
+            const bEnd = new Date(built.checkOut).getTime();
+
+            if (bStart < nEnd && bEnd > nStart) {
+              const neighbourDay = new Date(neighbour.date).toISOString().split('T')[0];
+              return res.status(400).json({
+                success: false,
+                message:
+                  `These times overlap a session already recorded for this employee on ` +
+                  `${neighbourDay} (${toLocalTimeString(s.checkIn, offsetVal)}–${toLocalTimeString(s.checkOut, offsetVal)}). ` +
+                  `The same hours cannot be paid twice.`,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -3845,14 +3916,16 @@ export const assignNightShift = async (req, res) => {
     const fullDayHours = workConfig?.fullDayHours ?? 8;
     const halfDayHours = workConfig?.halfDayHours ?? 4;
     const overtimeThreshold = workConfig?.overtimeThreshold ?? 8;
-    const cutoffHour = resolveCutoffForDate(workConfig, attendanceDate);
 
     // The night check-in is pre-filled at assignment time from the site's night
     // default (staff use their own staff-night default), replacing the old
     // auto-check-in cron.
     const siteDoc = await Site.findById(siteId)
-      .select("nightDefaultCheckIn staffNightDefaultCheckIn")
+      .select("nightDefaultCheckIn staffNightDefaultCheckIn nightShiftCutoffHour cutoffHistory")
       .session(dbSession);
+
+    // Cutoffs are per-site: interpret the pre-filled check-in with THIS site's cutoff.
+    const cutoffHour = resolveCutoffForDate(siteDoc || workConfig, attendanceDate);
 
     let processedCount = 0;
 

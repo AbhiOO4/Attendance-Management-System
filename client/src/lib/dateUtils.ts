@@ -4,8 +4,10 @@
  *
  * NOTE: every cutoffHour parameter below is REQUIRED, deliberately. The cutoff is baked into
  * each attendance record's stored check-in/out timestamps at write time, so a record must be
- * interpreted with the cutoff that was in force on ITS OWN business day — not today's. Get it
- * from useWorkConfig(): cutoffFor(record.date) for a specific record, currentCutoff for "now".
+ * interpreted with the cutoff that was in force on ITS OWN business day — not today's.
+ * Cutoffs are PER-SITE: resolve from the relevant Site doc (it carries nightShiftCutoffHour +
+ * cutoffHistory) via getCurrentCutoff(site) / resolveCutoffForDate(site, record.date).
+ * useWorkConfig()'s currentCutoff/cutoffFor are only for pages with no single site in scope.
  * A default here would silently reinterpret old records after an admin changes the cutoff.
  */
 
@@ -18,11 +20,19 @@ export const APP_OFFSET = (() => {
   return -330; // Fallback to IST
 })();
 
-export const DEFAULT_CUTOFF_HOUR = 7;
-
 export type CutoffEntry = {
   cutoffHour: number;
   effectiveFrom: string | Date;
+};
+
+/**
+ * Anything carrying an effective-dated cutoff. Cutoffs are PER-SITE (each Site doc holds
+ * its own machine-derived history); the global WorkConfig still satisfies this shape but
+ * is only the fallback for consumers with no single site in scope.
+ */
+export type CutoffSource = {
+  nightShiftCutoffHour?: number;
+  cutoffHistory?: CutoffEntry[];
 };
 
 export type WorkConfig = {
@@ -60,10 +70,12 @@ export function normalizeBusinessDate(dateLike: string | Date | null | undefined
  * Mirrors server/src/utils/cutoff.js — keep the two in sync.
  */
 export function resolveCutoffForDate(
-  config: WorkConfig | null | undefined,
+  config: CutoffSource | null | undefined,
   businessDate: string | Date | null | undefined
 ): number {
-  const fallback = config?.nightShiftCutoffHour ?? DEFAULT_CUTOFF_HOUR;
+  // A doc with neither history nor mirror falls back to 0: midnight boundary, plain
+  // calendar days (the derived value for a site with no night default check-out).
+  const fallback = config?.nightShiftCutoffHour ?? 0;
 
   const history = config?.cutoffHistory;
   if (!Array.isArray(history) || history.length === 0) return fallback;
@@ -95,7 +107,7 @@ export function resolveCutoffForDate(
  * day to resolve the cutoff. It only matters on a changeover morning, when the hours between
  * midnight and the old cutoff still belong to the previous business day.
  */
-export function getCurrentCutoff(config: WorkConfig | null | undefined): number {
+export function getCurrentCutoff(config: CutoffSource | null | undefined): number {
   const candidate = resolveCutoffForDate(config, getCurrentTargetDateString());
   return resolveCutoffForDate(config, getLogicalShiftDate(candidate));
 }
@@ -400,6 +412,67 @@ export function validateSessionTimes(
   }
 
   return null;
+}
+
+/**
+ * Derive a site's business-day cutoff from its default shift times.
+ * EXACT mirror of server/src/utils/siteCutoff.js deriveSiteCutoff — keep the two in sync.
+ *
+ * - nightEnd = latest night default check-out, rounded UP to the next whole hour.
+ * - dayStart = earliest day default check-in, floored to a whole hour.
+ * - Valid cutoff range is [nightEnd, dayStart]; the midpoint is always safe.
+ *
+ * Returns { cutoffHour } or { conflict } with a human-readable message.
+ */
+export type SiteDefaultTimes = {
+  defaultCheckIn?: string;
+  staffDefaultCheckIn?: string;
+  nightDefaultCheckOut?: string;
+  staffNightDefaultCheckOut?: string;
+};
+
+export function deriveCutoffFromDefaults(
+  times: SiteDefaultTimes
+): { cutoffHour: number; conflict?: undefined } | { conflict: string; cutoffHour?: undefined } {
+  const toMin = (t?: string): number | null => {
+    if (!t) return null;
+    const [h, m] = t.split(":").map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+
+  const nightOuts = [times.nightDefaultCheckOut, times.staffNightDefaultCheckOut]
+    .map(toMin)
+    .filter((m): m is number => m !== null);
+  const dayIns = [times.defaultCheckIn, times.staffDefaultCheckIn]
+    .map(toMin)
+    .filter((m): m is number => m !== null);
+
+  const nightEnd = nightOuts.length ? Math.ceil(Math.max(...nightOuts) / 60) : null;
+  const dayStart = dayIns.length ? Math.floor(Math.min(...dayIns) / 60) : null;
+
+  if (nightEnd !== null && nightEnd > 12) {
+    return { conflict: "Night shift check-out must be at or before 12:00 (noon)." };
+  }
+
+  if (nightEnd !== null && dayStart !== null) {
+    if (nightEnd > dayStart) {
+      return {
+        conflict:
+          `These times are contradictory: the night shift runs until ${nightEnd}:00 but the ` +
+          `day shift starts at ${dayStart}:00 — the business-day boundary cannot sit between them.`,
+      };
+    }
+    return { cutoffHour: Math.floor((nightEnd + dayStart) / 2) };
+  }
+
+  if (nightEnd !== null) {
+    return { cutoffHour: nightEnd };
+  }
+
+  // No night default check-out (day-only site, or no times at all) → midnight boundary:
+  // the business day is the calendar day, with no early-morning window.
+  return { cutoffHour: 0 };
 }
 
 

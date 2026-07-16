@@ -25,6 +25,7 @@ connectDB()
 import employeeModel from "../models/empModel.js"
 import userModel from "../models/userModel.js";
 import workModel from "../models/workModel.js";
+import siteModel from "../models/siteModel.js";
 import jobTitleModel from "../models/jobTitleModel.js";
 import Attendance from "../models/attendanceModel.js";
 import {
@@ -377,6 +378,7 @@ const auditCutoffHistory = async () => {
     }
 
     console.log(`\nScanned ${records.length} records. Sessions the current history mis-interprets: ${problems.length}`);
+    console.log(`(Note: admin-backfilled records are deliberately cutoff-free and may appear here without being history bugs.)`);
     for (const p of problems) {
       console.log(`   ${p.date}  ${p.checkIn}→${p.checkOut ?? "—"}  (resolved cutoff ${p.resolvedCutoff}:00)  ${p.error}`);
     }
@@ -446,7 +448,128 @@ const setCutoffHistory = async (entries) => {
 
 // setCutoffHistory([
 //   { cutoffHour: 7, effectiveFrom: "1970-01-01" },
-//   { cutoffHour: 4, effectiveFrom: "2026-07-04" },
+//   { cutoffHour: 4, effectiveFrom: "2026-07-15" },
+// ]);
+
+// ---------------------------------------------------------------------------
+// PER-SITE CUTOFF HISTORY (retroactive repair)
+// ---------------------------------------------------------------------------
+//
+// Cutoffs are per-site now: each Site doc carries its own cutoffHistory, derived from its
+// default shift times (utils/siteCutoff.js) and seeded from the global history by the boot
+// migration (ensureSiteCutoffHistories). These are the per-site equivalents of the two
+// global helpers above — same audit/fix workflow, scoped to one site's records.
+
+const auditSiteCutoffHistories = async () => {
+  try {
+    const workConfig = await workModel.findOne({ type: "default" });
+    const sites = await siteModel.find({}).select("siteName nightShiftCutoffHour cutoffHistory");
+    const siteById = new Map(sites.map((s) => [s._id.toString(), s]));
+
+    for (const site of sites) {
+      console.log(`Site "${site.siteName}" cutoffHistory:`);
+      for (const e of site.cutoffHistory || []) {
+        console.log(`   ${e.cutoffHour}:00 from ${new Date(e.effectiveFrom).toISOString().slice(0, 10)}`);
+      }
+    }
+
+    const hhmm = (d) => (d ? toLocalTimeString(d) : null);
+
+    const records = await Attendance.find({ "sessions.0": { $exists: true } })
+      .select("date sessions")
+      .lean();
+
+    // Each session is interpreted with ITS OWN site's cutoff for the record's business day;
+    // sessions whose site is gone fall back to the global history.
+    const problemsBySite = new Map();
+    for (const record of records) {
+      for (const session of record.sessions) {
+        const site = session.siteId ? siteById.get(session.siteId.toString()) : null;
+        const cutoffHour = resolveCutoffForDate(site || workConfig, record.date);
+        const inStr = hhmm(session.checkIn);
+        const outStr = hhmm(session.checkOut);
+        const error = validateSessionTimes(inStr, outStr, session.isNightShift, cutoffHour);
+        if (error) {
+          const key = site ? site.siteName : "(unknown site)";
+          if (!problemsBySite.has(key)) problemsBySite.set(key, []);
+          problemsBySite.get(key).push({
+            date: new Date(record.date).toISOString().slice(0, 10),
+            checkIn: inStr,
+            checkOut: outStr,
+            resolvedCutoff: cutoffHour,
+            error,
+          });
+        }
+      }
+    }
+
+    const total = [...problemsBySite.values()].reduce((n, list) => n + list.length, 0);
+    console.log(`\nScanned ${records.length} records. Sessions the current histories mis-interpret: ${total}`);
+    console.log(`(Note: admin-backfilled records are deliberately cutoff-free and may appear here without being history bugs.)`);
+    for (const [siteName, problems] of problemsBySite) {
+      const lastBad = problems.map((p) => p.date).sort().pop();
+      console.log(`\n  Site "${siteName}" — ${problems.length} problem(s), last affected day ${lastBad}:`);
+      for (const p of problems) {
+        console.log(`     ${p.date}  ${p.checkIn}→${p.checkOut ?? "—"}  (resolved cutoff ${p.resolvedCutoff}:00)  ${p.error}`);
+      }
+      console.log(`     Fix with setSiteCutoffHistory("${siteName}", [...]) — the changed cutoff's effectiveFrom must be AFTER ${lastBad}.`);
+    }
+
+    process.exit(0);
+  } catch (error) {
+    console.error("Error auditing site cutoff histories:", error);
+    process.exit(1);
+  }
+};
+
+// auditSiteCutoffHistories();
+
+const setSiteCutoffHistory = async (siteName, entries) => {
+  try {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      console.log("Pass a site name and a non-empty array of { cutoffHour, effectiveFrom }.");
+      return process.exit(1);
+    }
+
+    const normalized = entries.map(({ cutoffHour, effectiveFrom }) => {
+      if (typeof cutoffHour !== "number" || cutoffHour < 0 || cutoffHour > 12) {
+        throw new Error(`cutoffHour must be a number 0-12, got: ${cutoffHour}`);
+      }
+      const date = normalizeBusinessDate(effectiveFrom);
+      if (!date) throw new Error(`Invalid effectiveFrom: ${effectiveFrom}`);
+      return { cutoffHour, effectiveFrom: date };
+    });
+
+    normalized.sort((a, b) => a.effectiveFrom.getTime() - b.effectiveFrom.getTime());
+
+    const site = await siteModel.findOne({ siteName });
+    if (!site) {
+      console.log(`No site named "${siteName}" found.`);
+      return process.exit(1);
+    }
+
+    site.cutoffHistory = normalized;
+    // Keep the denormalized field mirroring whichever entry is active right now.
+    site.nightShiftCutoffHour = getCurrentCutoff(site);
+    await site.save();
+
+    console.log(`Site "${siteName}" cutoffHistory set to:`);
+    for (const e of normalized) {
+      console.log(`   ${e.cutoffHour}:00 from ${e.effectiveFrom.toISOString().slice(0, 10)}`);
+    }
+    console.log(`Active cutoff is now ${site.nightShiftCutoffHour}:00.`);
+    console.log("NOTE: the next site-defaults edit re-derives the cutoff and schedules it for tomorrow.");
+    console.log("Re-run auditSiteCutoffHistories() to confirm 0 problems.");
+
+    process.exit(0);
+  } catch (error) {
+    console.error("Error setting site cutoff history:", error);
+    process.exit(1);
+  }
+};
+
+// setSiteCutoffHistory("Workshop Phase 7", [
+//   { cutoffHour: 7, effectiveFrom: "1970-01-01" },
 // ]);
 
 // recalculateExistingAttendance();

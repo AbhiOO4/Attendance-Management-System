@@ -16,6 +16,10 @@
 
 import { getAppOffsetMinutes, getTodayLocal } from "./timeLocal.js";
 
+// LEGACY-ONLY: the cutoff that governed all records before effective-dated histories
+// shipped. Used exclusively to seed migration history entries (ensureCutoffHistory /
+// seedHistoryFromGlobal); never as a live fallback — sites with no night default
+// check-out now derive 0 (midnight, see utils/siteCutoff.js).
 export const DEFAULT_CUTOFF_HOUR = 7;
 
 /**
@@ -45,9 +49,15 @@ export function normalizeBusinessDate(dateLike) {
 
 /**
  * The cutoff hour that was (or will be) in force on a given business day.
+ *
+ * Works on any doc shaped `{ nightShiftCutoffHour, cutoffHistory }` — cutoffs are per-site
+ * (Site docs carry their own derived history, see utils/siteCutoff.js), with the global
+ * WorkSchedule doc only used as a seed/fallback.
  */
 export function resolveCutoffForDate(workConfig, businessDate) {
-  const fallback = workConfig?.nightShiftCutoffHour ?? DEFAULT_CUTOFF_HOUR;
+  // Post-migration every doc has a history; a truly history-less doc falls back to its
+  // mirror field, and to 0 (midnight — plain calendar days) when even that is absent.
+  const fallback = workConfig?.nightShiftCutoffHour ?? 0;
 
   const history = workConfig?.cutoffHistory;
   if (!Array.isArray(history) || history.length === 0) return fallback;
@@ -106,13 +116,6 @@ export function isEarlyMorningCheckIn(timeStr, cutoffHour) {
   const [h] = timeStr.split(":").map(Number);
   if (Number.isNaN(h)) return false;
   return h >= 0 && h < cutoffHour;
-}
-
-function toMinutes(t) {
-  if (!t) return null;
-  const [h, m] = t.split(":").map(Number);
-  if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  return h * 60 + m;
 }
 
 /**
@@ -188,73 +191,7 @@ export function validateSessionTimes(checkIn, checkOut, isNightShift = false, cu
   return null;
 }
 
-/**
- * Check a site's default check-in/out times against a cutoff hour.
- *
- * Night defaults must straddle the cutoff (check-in after it, check-out before it) — otherwise
- * the auto check-in/out crons combine them onto the wrong calendar day. Shared by
- * siteController (validating an incoming site edit) and configController (refusing a cutoff
- * change that would invalidate existing sites).
- *
- * `times` may omit fields; only the ones present and non-empty are checked.
- * Returns [] when valid, or a list of human-readable messages.
- */
-export function validateSiteDefaultsAgainstCutoff(times, cutoffHour) {
-  const errors = [];
-  const cutoffMin = cutoffHour * 60;
-  const END_OF_DAY = 23 * 60 + 59;
-
-  const rules = [
-    {
-      field: "defaultCheckIn",
-      min: cutoffMin,
-      max: END_OF_DAY,
-      invalid: "Invalid day shift check-in time",
-      outOfRange: `Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`,
-    },
-    {
-      field: "nightDefaultCheckIn",
-      min: cutoffMin,
-      max: END_OF_DAY,
-      invalid: "Invalid night shift check-in time",
-      outOfRange: `Night shift check-in must be between ${cutoffHour}:00 and 23:59`,
-    },
-    {
-      field: "nightDefaultCheckOut",
-      min: 0,
-      max: cutoffMin,
-      invalid: "Invalid night shift check-out time",
-      outOfRange: `Night shift check-out must be between 00:00 and ${cutoffHour}:00`,
-    },
-    {
-      field: "staffNightDefaultCheckIn",
-      min: cutoffMin,
-      max: END_OF_DAY,
-      invalid: "Invalid staff night check-in time",
-      outOfRange: `Staff night check-in must be between ${cutoffHour}:00 and 23:59`,
-    },
-    {
-      field: "staffNightDefaultCheckOut",
-      min: 0,
-      max: cutoffMin,
-      invalid: "Invalid staff night check-out time",
-      outOfRange: `Staff night check-out must be between 00:00 and ${cutoffHour}:00`,
-    },
-  ];
-
-  for (const rule of rules) {
-    const value = times?.[rule.field];
-    if (value === undefined || value === null || value === "") continue;
-
-    const minutes = toMinutes(value);
-    if (minutes === null) {
-      errors.push(rule.invalid);
-      continue;
-    }
-    if (minutes < rule.min || minutes > rule.max) {
-      errors.push(rule.outOfRange);
-    }
-  }
-
-  return errors;
-}
+// NOTE: the old validateSiteDefaultsAgainstCutoff helper is gone. The cutoff is now
+// per-site and DERIVED from the site's default times (utils/siteCutoff.js), so site
+// defaults can no longer contradict "the" cutoff — only each other (see deriveSiteCutoff
+// and the cutoff-free sanity rules in siteController.updateSite).

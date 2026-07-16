@@ -15,8 +15,12 @@ import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import {
   getCurrentCutoff,
   resolveCutoffForDate,
-  validateSiteDefaultsAgainstCutoff,
+  LEGACY_CUTOFF_EPOCH,
 } from '../utils/cutoff.js'
+import {
+  deriveSiteCutoff,
+  applyDerivedCutoff,
+} from '../utils/siteCutoff.js'
 
 
 //Admin
@@ -33,7 +37,7 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut nightShiftCutoffHour cutoffHistory").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -123,6 +127,15 @@ export const createSite = async (req , res) => {
     try{
         const {siteName, locationDetails} = req.body
         const newSite = new siteModel({siteName, locationDetails})
+        // Seed the cutoff history at creation from the site's OWN derived cutoff — a new
+        // site has no past records to stay consistent with, so it doesn't inherit the
+        // global/legacy history. With no default times set yet this derives 0 (midnight):
+        // plain calendar days until a night default check-out is configured.
+        const derived = deriveSiteCutoff(newSite)
+        newSite.cutoffHistory = [
+            { cutoffHour: derived.conflict ? 0 : derived.cutoffHour, effectiveFrom: LEGACY_CUTOFF_EPOCH },
+        ]
+        newSite.nightShiftCutoffHour = getCurrentCutoff(newSite)
         await newSite.save()
         res.status(201).json(newSite)
     }
@@ -1294,9 +1307,9 @@ export const instaAddEmployee = async (req, res) => {
     }
 
     const todayStr = today.toISOString().split("T")[0]
-    const assignWorkConfig = await workModel.findOne()
+    // Cutoffs are per-site: interpret the check-in with THIS site's cutoff for today.
     const checkInDate = combineDateAndTimeLocal(todayStr, checkInTime, {
-      cutoffHour: resolveCutoffForDate(assignWorkConfig, todayStr),
+      cutoffHour: resolveCutoffForDate(site, todayStr),
     })
 
     // ----------------------------------
@@ -1831,9 +1844,6 @@ export const updateSite = async (req, res) => {
     }
 
     const workConfig = await workModel.findOne();
-    // Site defaults describe how the site operates from now on, so they are checked against
-    // the cutoff currently in force.
-    const cutoffHour = getCurrentCutoff(workConfig);
 
     const toMinutes = (t) => {
       if (!t) return null;
@@ -1842,22 +1852,52 @@ export const updateSite = async (req, res) => {
       return h * 60 + m;
     };
 
-    // --- CUTOFF-WINDOW VALIDATION ---
-    // Night defaults must straddle the cutoff (check-in after it, check-out before it), or the
-    // auto check-in/out crons combine them onto the wrong calendar day. Shared with
-    // configController, which refuses a cutoff change that would break existing sites.
-    const cutoffErrors = validateSiteDefaultsAgainstCutoff(
-      {
-        defaultCheckIn,
-        nightDefaultCheckIn,
-        nightDefaultCheckOut,
-        staffNightDefaultCheckIn,
-        staffNightDefaultCheckOut,
-      },
-      cutoffHour
-    );
-    if (cutoffErrors.length > 0) {
-      return res.status(400).json({ message: cutoffErrors[0] });
+    // --- NIGHT SHIFT SANITY VALIDATION (cutoff-independent) ---
+    // The site's cutoff is DERIVED from these times (utils/siteCutoff.js), so the old
+    // "must straddle the cutoff" check is gone. What remains are the absolute constraints
+    // validateSessionTimes enforces regardless of cutoff: night check-ins must be in the
+    // PM half (rule 4 rejects [cutoff, 12)), night check-outs in the AM half.
+    const effectiveTimes = {
+      defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn,
+      staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : site.staffDefaultCheckIn,
+      nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : site.nightDefaultCheckIn,
+      nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : site.nightDefaultCheckOut,
+      staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : site.staffNightDefaultCheckIn,
+      staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : site.staffNightDefaultCheckOut,
+    };
+
+    const NOON = 12 * 60;
+    for (const [field, label] of [
+      ["nightDefaultCheckIn", "Night shift check-in"],
+      ["staffNightDefaultCheckIn", "Staff night check-in"],
+    ]) {
+      const min = toMinutes(effectiveTimes[field]);
+      if (effectiveTimes[field] && min === null) {
+        return res.status(400).json({ message: `Invalid ${label.toLowerCase()} time` });
+      }
+      if (min !== null && min < NOON) {
+        return res.status(400).json({ message: `${label} must be 12:00 (noon) or later` });
+      }
+    }
+    for (const [field, label] of [
+      ["nightDefaultCheckOut", "Night shift check-out"],
+      ["staffNightDefaultCheckOut", "Staff night check-out"],
+    ]) {
+      const min = toMinutes(effectiveTimes[field]);
+      if (effectiveTimes[field] && min === null) {
+        return res.status(400).json({ message: `Invalid ${label.toLowerCase()} time` });
+      }
+      if (min !== null && min > NOON) {
+        return res.status(400).json({ message: `${label} must be at or before 12:00 (noon)` });
+      }
+    }
+
+    // --- CUTOFF DERIVATION ---
+    // The business-day boundary is derived from the effective times. A conflict here means
+    // the times themselves are contradictory (night shift ends after the day shift starts).
+    const derived = deriveSiteCutoff(effectiveTimes);
+    if (derived.conflict) {
+      return res.status(400).json({ message: derived.conflict });
     }
 
     // --- DAY SHIFT VALIDATION ---
@@ -1920,6 +1960,12 @@ export const updateSite = async (req, res) => {
     if (staffNightDefaultCheckIn !== undefined) site.staffNightDefaultCheckIn = staffNightDefaultCheckIn;
     if (staffNightDefaultCheckOut !== undefined) site.staffNightDefaultCheckOut = staffNightDefaultCheckOut;
 
+    // Record the derived cutoff, effective from TOMORROW's business day. Propagation below
+    // runs with this already-updated site doc, and that is correct by construction:
+    // resolveCutoffForDate(site, today/yesterday) still returns the cutoff active on those
+    // days — the new value only governs tomorrow onward.
+    const cutoffChange = applyDerivedCutoff(site, derived.cutoffHour);
+
     await site.save();
 
     // Propagate changes to today's attendance records if requested
@@ -1946,6 +1992,7 @@ export const updateSite = async (req, res) => {
         return res.status(200).json({
           ...site.toObject(),
           propagation,
+          cutoffChange,
         });
       } catch (propagationError) {
         console.error('Error propagating default changes:', propagationError);
@@ -1957,11 +2004,12 @@ export const updateSite = async (req, res) => {
             skipped: [],
             error: 'Failed to propagate changes to attendance records',
           },
+          cutoffChange,
         });
       }
     }
 
-    return res.status(200).json(site);
+    return res.status(200).json({ ...site.toObject(), cutoffChange });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Internal server error" });

@@ -24,7 +24,7 @@ import { resolveCutoffForDate } from '../utils/cutoff.js';
  * `staffIds` scopes which employees each mode touches: staff modes only fill
  * staff sessions; day/night modes exclude staff.
  */
-async function processSites(sites, dateStr, mode, workConfig, cutoffHour, staffIds = []) {
+async function processSites(sites, dateStr, mode, workConfig, staffIds = []) {
   const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
 
   const isNightMode = mode === 'night' || mode === 'staffnight';
@@ -35,6 +35,11 @@ async function processSites(sites, dateStr, mode, workConfig, cutoffHour, staffI
 
   for (const site of sites) {
     try {
+      // Cutoffs are per-site: resolve for the business day we're closing out (the night
+      // modes close YESTERDAY's records, which on a changeover day still belong to the
+      // site's previous cutoff).
+      const cutoffHour = resolveCutoffForDate(site, dateStr);
+
       let checkOutTimeStr;
       if (mode === 'night') checkOutTimeStr = site.nightDefaultCheckOut;
       else if (mode === 'staff') checkOutTimeStr = site.staffDefaultCheckOut;
@@ -211,26 +216,22 @@ async function runAutoCheckOut() {
       return;
     }
 
-    // Resolve the cutoff per target business day: the night modes close out YESTERDAY's
-    // records, which on a changeover day still belong to the previous cutoff.
-    const todayCutoff = resolveCutoffForDate(workConfig, todayStr);
-    const yesterdayCutoff = resolveCutoffForDate(workConfig, yesterdayStr);
     const staffIds = await getStaffEmployeeIds();
 
     if (daySites.length > 0) {
-      await processSites(daySites, todayStr, 'day', workConfig, todayCutoff, staffIds);
+      await processSites(daySites, todayStr, 'day', workConfig, staffIds);
     }
 
     if (nightSites.length > 0) {
-      await processSites(nightSites, yesterdayStr, 'night', workConfig, yesterdayCutoff, staffIds);
+      await processSites(nightSites, yesterdayStr, 'night', workConfig, staffIds);
     }
 
     if (staffSites.length > 0) {
-      await processSites(staffSites, todayStr, 'staff', workConfig, todayCutoff, staffIds);
+      await processSites(staffSites, todayStr, 'staff', workConfig, staffIds);
     }
 
     if (staffNightSites.length > 0) {
-      await processSites(staffNightSites, yesterdayStr, 'staffnight', workConfig, yesterdayCutoff, staffIds);
+      await processSites(staffNightSites, yesterdayStr, 'staffnight', workConfig, staffIds);
     }
   } catch (error) {
     console.error('[AutoCheckOut] Cron job error:', error);

@@ -70,7 +70,10 @@ const workScheduleSchema = new mongoose.Schema(
       required: true,
       min: 0,
       max: 12,
-      default: 7,
+      // 0 = midnight: plain calendar days. Machine-managed mirror — real values come from
+      // cutoffHistory via getCurrentCutoff(); pre-migration deployments carry their own
+      // stored value (historically 7).
+      default: 0,
     },
 
     // Effective-dated history of the cutoff hour, ascending by effectiveFrom.

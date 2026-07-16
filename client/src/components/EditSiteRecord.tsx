@@ -49,7 +49,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h, resolveCutoffForDate, type CutoffEntry } from "@/lib/dateUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -67,6 +67,9 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
+  // Per-site derived cutoff (machine-managed on the server)
+  nightShiftCutoffHour?: number
+  cutoffHistory?: CutoffEntry[]
 }
 
 interface AttendanceSession {
@@ -140,7 +143,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
   const [sessions, setSessions] = useState<AttendanceSession[]>([])
   const [saving, setSaving] = useState(false)
 
-  const { config: workConfig, cutoffFor } = useWorkConfig()
+  const { config: workConfig } = useWorkConfig()
 
   const config = useMemo(
     () => ({
@@ -152,10 +155,12 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     [workConfig]
   )
 
-  // The cutoff in force on this record's own business day — not today's.
+  // The cutoff in force on this record's own business day — not today's. Cutoffs are
+  // per-site: this dialog only edits ONE site's sessions, so resolve from the site prop
+  // (other sites' sessions are preserved and re-validated server-side per their own sites).
   const recordCutoff = useMemo(
-    () => cutoffFor(record?.date),
-    [cutoffFor, record?.date]
+    () => resolveCutoffForDate(site, record?.date),
+    [site, record?.date]
   )
 
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)

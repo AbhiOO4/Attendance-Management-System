@@ -8,7 +8,7 @@ import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
-import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h, getCurrentCutoff, deriveCutoffFromDefaults, normalizeBusinessDate, type CutoffEntry } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -116,6 +116,9 @@ interface Site {
   staffDefaultCheckOut?: string
   staffNightDefaultCheckIn?: string
   staffNightDefaultCheckOut?: string
+  // Per-site derived cutoff (machine-managed on the server, derived from the times above)
+  nightShiftCutoffHour?: number
+  cutoffHistory?: CutoffEntry[]
 }
 
 export interface AttendanceSession {
@@ -857,9 +860,20 @@ function SiteAttendance() {
   // This page always operates on the CURRENT business day, so the currently-active cutoff is
   // the right one. (Editing an existing record is different — see EditSiteRecord, which
   // resolves the cutoff from the record's own date.)
-  const { config: workConfig, currentCutoff: cutoffHour, loading: configLoading } = useWorkConfig()
+  const { config: workConfig, currentCutoff: globalCutoff, loading: configLoading } = useWorkConfig()
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
   const fullDayHours = workConfig?.fullDayHours ?? 8
+
+  const [site, setSite] = useState<Site | null>(null)
+
+  // Cutoffs are per-site (derived from the site's own default shift times). The global
+  // cutoff is only the pre-load placeholder: the page renders a spinner until initialize()
+  // finishes, and initialize() itself resolves the cutoff from the freshly fetched site doc
+  // rather than from this memo, so the placeholder never drives real UI.
+  const cutoffHour = useMemo(
+    () => (site ? getCurrentCutoff(site) : globalCutoff),
+    [site, globalCutoff]
+  )
 
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
   const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
@@ -910,8 +924,6 @@ function SiteAttendance() {
     breaksTaken?: number | null
   } | null>(null)
 
-
-  const [site, setSite] = useState<Site | null>(null)
 
   const [loading, setLoading] = useState(true)
 
@@ -1424,12 +1436,12 @@ function SiteAttendance() {
     }
   }
 
-  const checkAttendanceStatus = async () => {
+  const checkAttendanceStatus = async (targetDate?: string) => {
     try {
       const res = await api.post(
         `/api/site/${id}/check-pending`,
         {
-          date: today,
+          date: targetDate ?? today,
         }
       )
 
@@ -2128,8 +2140,19 @@ function SiteAttendance() {
         setIsDirty(true)
       }
 
-      // Remove propagation field before setting site state
-      const { propagation: _propagation, ...siteData } = updatedSite
+      // Surface a scheduled business-day boundary change (derived from the new times,
+      // effective tomorrow — today's records keep today's boundary).
+      if (updatedSite.cutoffChange) {
+        const { cutoffHour: nextCutoff, effectiveFrom } = updatedSite.cutoffChange
+        const fromDate = String(effectiveFrom).split("T")[0]
+        toast(
+          `Business-day boundary becomes ${nextCutoff}:00 from ${fromDate}; today's records keep the current boundary.`,
+          { icon: "🕒", duration: 6000 }
+        )
+      }
+
+      // Remove response-only fields before setting site state
+      const { propagation: _propagation, cutoffChange: _cutoffChange, ...siteData } = updatedSite
       setSite(siteData)
       setIsEditingDefaults(false)
       setUpdateDefaultsDialogOpen(false)
@@ -2148,14 +2171,11 @@ function SiteAttendance() {
       return h * 60 + m
     }
 
+    // The cutoff is DERIVED from these times now (mirror of the server's rules in
+    // siteController.updateSite), so the old "must straddle the cutoff" checks are gone.
+    // What remains: in < out ordering, plus the cutoff-independent night-shift bounds.
+
     // --- DAY SHIFT VALIDATION ---
-    if (editDefaultCheckIn) {
-      const [inH] = editDefaultCheckIn.split(":").map(Number)
-      if (inH < cutoffHour) {
-        toast.error(`Default check-in time cannot be before the night shift cutoff hour (${cutoffHour}:00 AM)`)
-        return
-      }
-    }
     if (editDefaultCheckIn && editDefaultCheckOut) {
       if (toMinutes(editDefaultCheckOut) <= toMinutes(editDefaultCheckIn)) {
         toast.error("Day shift check-out must be after check-in (before midnight)")
@@ -2163,20 +2183,15 @@ function SiteAttendance() {
       }
     }
 
-    // --- NIGHT SHIFT VALIDATION ---
-    if (editNightDefaultCheckIn) {
-      const inMin = toMinutes(editNightDefaultCheckIn)
-      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
-        toast.error(`Night shift check-in must be between ${cutoffHour}:00 and 23:59`)
-        return
-      }
+    // --- NIGHT SHIFT VALIDATION (cutoff-independent bounds) ---
+    const NOON = 12 * 60
+    if (editNightDefaultCheckIn && toMinutes(editNightDefaultCheckIn) < NOON) {
+      toast.error("Night shift check-in must be 12:00 (noon) or later")
+      return
     }
-    if (editNightDefaultCheckOut) {
-      const outMin = toMinutes(editNightDefaultCheckOut)
-      if (outMin < 0 || outMin > cutoffHour * 60) {
-        toast.error(`Night shift check-out must be between 00:00 and ${cutoffHour}:00`)
-        return
-      }
+    if (editNightDefaultCheckOut && toMinutes(editNightDefaultCheckOut) > NOON) {
+      toast.error("Night shift check-out must be at or before 12:00 (noon)")
+      return
     }
 
     // --- STAFF DAY SHIFT VALIDATION ---
@@ -2187,20 +2202,28 @@ function SiteAttendance() {
       }
     }
 
-    // --- STAFF NIGHT SHIFT VALIDATION (same windows as field night shift) ---
-    if (editStaffNightDefaultCheckIn) {
-      const inMin = toMinutes(editStaffNightDefaultCheckIn)
-      if (inMin < cutoffHour * 60 || inMin > 23 * 60 + 59) {
-        toast.error(`Staff night check-in must be between ${cutoffHour}:00 and 23:59`)
-        return
-      }
+    // --- STAFF NIGHT SHIFT VALIDATION (same bounds as field night shift) ---
+    if (editStaffNightDefaultCheckIn && toMinutes(editStaffNightDefaultCheckIn) < NOON) {
+      toast.error("Staff night check-in must be 12:00 (noon) or later")
+      return
     }
-    if (editStaffNightDefaultCheckOut) {
-      const outMin = toMinutes(editStaffNightDefaultCheckOut)
-      if (outMin < 0 || outMin > cutoffHour * 60) {
-        toast.error(`Staff night check-out must be between 00:00 and ${cutoffHour}:00`)
-        return
-      }
+    if (editStaffNightDefaultCheckOut && toMinutes(editStaffNightDefaultCheckOut) > NOON) {
+      toast.error("Staff night check-out must be at or before 12:00 (noon)")
+      return
+    }
+
+    // --- CUTOFF DERIVABILITY ---
+    // A conflict means the edited times are contradictory with each other (night shift
+    // running past the day shift start) — the same check the server enforces.
+    const derived = deriveCutoffFromDefaults({
+      defaultCheckIn: editDefaultCheckIn,
+      staffDefaultCheckIn: editStaffDefaultCheckIn,
+      nightDefaultCheckOut: editNightDefaultCheckOut,
+      staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
+    })
+    if (derived.conflict) {
+      toast.error(derived.conflict)
+      return
     }
 
     // Detect what changed
@@ -2218,6 +2241,33 @@ function SiteAttendance() {
     // No changes that need propagation, or drafts only — save directly
     await executeSaveDefaults(false)
   }
+
+  // Live view of the business-day boundary for the defaults dialog: the site's active
+  // value, what the currently edited times would derive, and any already-scheduled change.
+  const boundaryInfo = useMemo(() => {
+    const derived = deriveCutoffFromDefaults({
+      defaultCheckIn: editDefaultCheckIn,
+      staffDefaultCheckIn: editStaffDefaultCheckIn,
+      nightDefaultCheckOut: editNightDefaultCheckOut,
+      staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
+    })
+    const todayNorm = normalizeBusinessDate(today)
+    const pending = (site?.cutoffHistory || [])
+      .filter((e) => {
+        const d = normalizeBusinessDate(e.effectiveFrom)
+        return d && todayNorm && d.getTime() > todayNorm.getTime()
+      })
+      .pop()
+    return { active: cutoffHour, derived, pending }
+  }, [
+    editDefaultCheckIn,
+    editStaffDefaultCheckIn,
+    editNightDefaultCheckOut,
+    editStaffNightDefaultCheckOut,
+    site,
+    today,
+    cutoffHour,
+  ])
 
   // Sync all edit fields from the saved site values.
   const syncDefaultsFromSite = () => {
@@ -2550,13 +2600,16 @@ function SiteAttendance() {
       try {
         setLoading(true)
 
-        const [siteData, statusRes] = await Promise.all([
-          fetchSite(),
-          checkAttendanceStatus()
-        ])
+        // SERIALIZED on purpose: the cutoff is per-site, so the site doc must be fetched
+        // BEFORE anything that depends on "which business day is it" — checking pending
+        // status with the global cutoff's date would hit the wrong day whenever this
+        // site's cutoff diverges from it.
+        const siteData = await fetchSite()
 
-        const cutoffVal = cutoffHour
+        const cutoffVal = siteData ? getCurrentCutoff(siteData) : globalCutoff
         const calculatedDate = getLogicalShiftDate(cutoffVal)
+
+        const statusRes = await checkAttendanceStatus(calculatedDate)
 
         if (statusRes?.exists) {
           await fetchAttendance(calculatedDate)
@@ -2888,6 +2941,30 @@ function SiteAttendance() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Business-day boundary (derived, read-only) */}
+            <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+              <p>
+                <span className="font-semibold text-foreground">
+                  Business-day boundary: {boundaryInfo.active}:00
+                </span>{" "}
+                — derived automatically from the shift times above. Clock times before this
+                hour belong to the previous day's roster.
+              </p>
+              {boundaryInfo.derived.conflict ? (
+                <p className="text-destructive">{boundaryInfo.derived.conflict}</p>
+              ) : boundaryInfo.derived.cutoffHour !== boundaryInfo.active ? (
+                <p>
+                  Saving will change it to {boundaryInfo.derived.cutoffHour}:00 starting
+                  tomorrow; today's records keep {boundaryInfo.active}:00.
+                </p>
+              ) : boundaryInfo.pending && boundaryInfo.pending.cutoffHour !== boundaryInfo.active ? (
+                <p>
+                  Becomes {boundaryInfo.pending.cutoffHour}:00 from{" "}
+                  {String(boundaryInfo.pending.effectiveFrom).split("T")[0]}.
+                </p>
+              ) : null}
             </div>
 
           </div>

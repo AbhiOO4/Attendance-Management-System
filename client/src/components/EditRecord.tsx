@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import {
   Dialog,
@@ -49,7 +49,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h, resolveCutoffForDate, type CutoffEntry } from "@/lib/dateUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -67,6 +67,9 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
+  // Per-site derived cutoff (machine-managed on the server)
+  nightShiftCutoffHour?: number
+  cutoffHistory?: CutoffEntry[]
 }
 
 interface AttendanceSession {
@@ -177,10 +180,17 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
 
   // The cutoff in force on THIS record's business day. Using today's cutoff instead would
   // reject a record that was perfectly legal when it was written (e.g. a 06:30 night
-  // check-out created under a 7 AM cutoff, after an admin lowers the cutoff to 4 AM).
-  const recordCutoff = useMemo(
-    () => cutoffFor(record?.date),
-    [cutoffFor, record?.date]
+  // check-out created under a 7 AM cutoff, after the cutoff dropped to 4 AM).
+  // Cutoffs are per-site: each session resolves through its own site's history (from the
+  // fetched sites list); the global cutoffFor is only the fallback for legacy sessions
+  // whose site is gone.
+  const siteById = useMemo(() => new Map(sites.map((s) => [s._id, s])), [sites])
+  const cutoffForSession = useCallback(
+    (siteId?: string | null) => {
+      const s = siteId ? siteById.get(siteId) : null
+      return s ? resolveCutoffForDate(s, record?.date) : cutoffFor(record?.date)
+    },
+    [siteById, record?.date, cutoffFor]
   )
 
 
@@ -422,14 +432,15 @@ const [sessionToDelete, setSessionToDelete] =
     // Auto-detect and preserve night shift based on original session state, preventing keystroke pollution
     const originalSession = record?.sessions?.find((s: any) => s._id === updated[index]._id)
     const originalIsNight = originalSession?.isNightShift || false
+    const sessionCutoff = cutoffForSession(updated[index].siteId)
     let nextIsNight = false
     if (checkInVal) {
       const [inH] = checkInVal.split(":").map(Number)
-      const isDayOnlyCheckIn = inH >= recordCutoff && inH < 12 // 7 AM to 12 PM
+      const isDayOnlyCheckIn = inH >= sessionCutoff && inH < 12 // cutoff to 12 PM
       if (originalIsNight) {
         nextIsNight = !isDayOnlyCheckIn
       } else {
-        const inRange = inH >= 0 && inH < recordCutoff
+        const inRange = inH >= 0 && inH < sessionCutoff
         const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
         nextIsNight = inRange || crossesMidnight
       }
@@ -440,8 +451,8 @@ const [sessionToDelete, setSessionToDelete] =
     updated[index].isNightShift = nextIsNight
 
     // Combine date and time
-    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, recordCutoff) : null
-    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, recordCutoff) : null
+    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, sessionCutoff) : null
+    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, sessionCutoff) : null
     updated[index].workedHours = calculateWorkedHours(
       updated[index].checkIn,
       updated[index].checkOut
@@ -577,7 +588,7 @@ const [sessionToDelete, setSessionToDelete] =
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const err = validateSessionTimes(inTime, outTime, session.isNightShift, recordCutoff)
+      const err = validateSessionTimes(inTime, outTime, session.isNightShift, cutoffForSession(session.siteId))
       if (err) {
         errors[index] = err
         hasError = true

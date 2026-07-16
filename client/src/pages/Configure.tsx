@@ -114,7 +114,8 @@ export default function Configure() {
     overtimeThreshold: 8,
     overtimeRatePerHour: 0,
     weeklyHolidays: [],
-    nightShiftCutoffHour: 7,
+    // Machine-managed legacy mirror; 0 = midnight boundary. Never edited from this page.
+    nightShiftCutoffHour: 0,
     breakDurationMinutes: 60,
   });
 
@@ -125,20 +126,6 @@ export default function Configure() {
       ),
     [schedule.cutoffHistory]
   );
-
-  // Entries dated in the future haven't taken effect yet; the last one that has is active.
-  const { activeCutoff, pendingCutoff } = useMemo(() => {
-    const now = Date.now();
-    const active = [...cutoffHistory]
-      .reverse()
-      .find((e) => new Date(e.effectiveFrom).getTime() <= now);
-    const pending = cutoffHistory.find((e) => new Date(e.effectiveFrom).getTime() > now);
-    return {
-      activeCutoff: active?.cutoffHour ?? schedule.nightShiftCutoffHour,
-      pendingCutoff: pending ?? null,
-    };
-  }, [cutoffHistory, schedule.nightShiftCutoffHour]);
-
 
   const [holidayForm, setHolidayForm] = useState({
     date: "",
@@ -205,31 +192,26 @@ export default function Configure() {
   const updateSchedule = async () => {
     try {
       setUpdatingSchedule(true);
+      // The night-shift cutoff is per-site now (derived from each site's default shift
+      // times), so it is no longer part of this form's payload.
       const res = await api.patch("/api/config/update", {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
         overtimeThreshold: schedule.overtimeThreshold,
         overtimeRatePerHour: schedule.overtimeRatePerHour,
         weeklyHolidays: schedule.weeklyHolidays,
-        nightShiftCutoffHour: schedule.nightShiftCutoffHour,
         breakDurationMinutes: schedule.breakDurationMinutes,
       });
 
-      // Pull the saved doc back: a cutoff change is recorded in cutoffHistory with an
-      // effective date rather than applied immediately, so the form must re-render from
-      // what the server actually stored.
       if (res.data?.data) setSchedule(res.data.data);
       await refreshConfig();
 
-      // The server explains when a cutoff change takes effect — show that, not a generic
-      // success message.
       toast.success(res.data?.message || "Work schedule updated successfully");
     } catch (err: any) {
-      // A rejected cutoff change names the sites whose night defaults would break.
-      toast.error(
-        err?.response?.data?.message || "Failed to update work schedule",
-        { duration: 8000 }
-      );
+      const body = err?.response?.data;
+      toast.error(body?.message || "Failed to update work schedule", {
+        duration: 8000,
+      });
       fetchSchedule();
     } finally {
       setUpdatingSchedule(false);
@@ -588,7 +570,7 @@ export default function Configure() {
               </div>
             </div>
 
-            {/* NIGHT SHIFT SETTINGS */}
+            {/* NIGHT SHIFT SETTINGS (read-only — cutoffs are per-site now) */}
             <div className="space-y-4">
               <div>
                 <h3 className="font-medium flex items-center gap-2">
@@ -596,62 +578,35 @@ export default function Configure() {
                 </h3>
 
                 <p className="text-sm text-muted-foreground">
-                  Configure when the "logical business day" ends for night shift workers.
+                  The business-day boundary (night shift cutoff) is per-site now.
                 </p>
               </div>
 
-              <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    Night Shift Cutoff Hour
-                  </label>
-
-                  <Input
-                    type="number"
-                    min={0}
-                    max={12}
-                    value={schedule.nightShiftCutoffHour}
-                    onChange={(e) =>
-                      setSchedule({
-                        ...schedule,
-                        nightShiftCutoffHour: Number(e.target.value),
-                      })
-                    }
-                  />
-
-                  <p className="text-xs text-muted-foreground">
-                    Business day extends until this hour (0–12). Times before this cutoff
-                    are credited to the previous day. Default: 7 (7:00 AM).
-                  </p>
-
-                  <p className="text-xs text-muted-foreground">
-                    A change takes effect from the next business day. Attendance already
-                    recorded keeps the cutoff it was created under, so past records stay
-                    editable and keep their hours.
-                  </p>
-                </div>
-
-                {pendingCutoff && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Scheduled change</label>
-                    <p className="text-sm">
-                      Cutoff becomes{" "}
-                      <span className="font-semibold">{pendingCutoff.cutoffHour}:00</span> on{" "}
-                      <span className="font-semibold">
-                        {formatCutoffDate(pendingCutoff.effectiveFrom)}
-                      </span>
-                      .
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Currently active: {activeCutoff}:00
-                    </p>
-                  </div>
-                )}
+              <div className="rounded-md border bg-muted/20 p-4 space-y-2">
+                <p className="text-sm">
+                  Each site's cutoff is <span className="font-medium">derived automatically
+                  from its default shift times</span> — it sits between the site's night
+                  shift check-out and day shift check-in, so it can never conflict with
+                  them. You can see (and influence) it in each site's{" "}
+                  <span className="font-medium">Edit Default Shift Times</span> dialog on
+                  the Site Attendance page.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  A change takes effect from the next business day. Attendance already
+                  recorded keeps the cutoff it was created under, so past records stay
+                  editable and keep their hours.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  A site with no night shift check-out uses midnight (0:00) — its business
+                  day is simply the calendar day, and it doesn't do night shifts.
+                </p>
               </div>
 
               {cutoffHistory.length > 0 && (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Cutoff history</label>
+                  <label className="text-sm font-medium">
+                    Global cutoff history (pre-per-site legacy record)
+                  </label>
                   <ul className="space-y-1">
                     {cutoffHistory.map((entry, i) => (
                       <li

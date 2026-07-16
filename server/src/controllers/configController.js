@@ -1,13 +1,16 @@
 import workModel from '../models/workModel.js'
 import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
-import { getDateLocal } from '../utils/timeLocal.js';
 import {
   getCurrentCutoff,
-  normalizeBusinessDate,
-  validateSiteDefaultsAgainstCutoff,
   LEGACY_CUTOFF_EPOCH,
+  DEFAULT_CUTOFF_HOUR,
 } from '../utils/cutoff.js';
+import {
+  deriveSiteCutoff,
+  applyDerivedCutoff,
+  seedHistoryFromGlobal,
+} from '../utils/siteCutoff.js';
 
 /**
  * Seed cutoffHistory for a config that predates effective-dating.
@@ -32,6 +35,63 @@ export const ensureCutoffHistory = async () => {
   console.log(
     `[Config] Seeded cutoffHistory with the current cutoff (${schedule.nightShiftCutoffHour}:00)`
   );
+};
+
+/**
+ * Per-site cutoff maintenance. Idempotent — called on boot, after
+ * initializePermanentSite() and ensureCutoffHistory().
+ *
+ * Two passes over every site (including inactive/completed/deleted ones — their
+ * historical records are still read):
+ * 1. MIGRATION: a site with an empty cutoffHistory gets a COPY of the global history,
+ *    because the global cutoff is what actually governed that site's past records.
+ * 2. RE-DERIVE: the site's cutoff is re-derived from its default times on EVERY boot,
+ *    not just at seeding — when the derivation rule changes (e.g. day-only sites now
+ *    derive 0/midnight), existing sites pick it up here. applyDerivedCutoff schedules
+ *    the change effective TOMORROW, so past days keep the cutoff their records were
+ *    written under. Sites with contradictory default times keep their current value
+ *    and are logged — boot never fails.
+ */
+export const ensureSiteCutoffHistories = async () => {
+  const schedule = await workModel.findOne({ type: "default" });
+  const sites = await siteModel.find({});
+
+  for (const site of sites) {
+    const needsSeed = !Array.isArray(site.cutoffHistory) || site.cutoffHistory.length === 0;
+    if (needsSeed) {
+      site.cutoffHistory = seedHistoryFromGlobal(schedule, LEGACY_CUTOFF_EPOCH, DEFAULT_CUTOFF_HOUR);
+      site.nightShiftCutoffHour = getCurrentCutoff(site);
+    }
+
+    const derived = deriveSiteCutoff(site);
+    if (derived.conflict) {
+      console.warn(
+        `[Config] Site "${site.siteName}" has contradictory default times; kept the ` +
+        `current cutoff (${site.nightShiftCutoffHour}:00). ${derived.conflict}`
+      );
+      if (needsSeed) await site.save();
+      continue;
+    }
+
+    const historyBefore = JSON.stringify(site.cutoffHistory);
+    const change = applyDerivedCutoff(site, derived.cutoffHour);
+    const historyChanged = JSON.stringify(site.cutoffHistory) !== historyBefore;
+
+    if (needsSeed || historyChanged) {
+      await site.save();
+    }
+    if (needsSeed) {
+      console.log(
+        `[Config] Seeded cutoff history for site "${site.siteName}" ` +
+        `(active ${site.nightShiftCutoffHour}:00, derived ${derived.cutoffHour}:00)`
+      );
+    } else if (change) {
+      console.log(
+        `[Config] Site "${site.siteName}": derived cutoff ${change.cutoffHour}:00 scheduled ` +
+        `effective ${new Date(change.effectiveFrom).toISOString().split("T")[0]}`
+      );
+    }
+  }
 };
 
 
@@ -111,77 +171,11 @@ export const updateWorkSchedule = async (req, res) => {
         weeklyHolidays;
     }
 
-    let cutoffChange = null;
-
-    if (nightShiftCutoffHour !== undefined) {
-      if (nightShiftCutoffHour < 0 || nightShiftCutoffHour > 12) {
-        return res.status(400).json({
-          success: false,
-          message: "Night shift cutoff hour must be between 0 and 12",
-        });
-      }
-
-      // A change can only take effect from TOMORROW's business day: the cutoff is baked into
-      // every stored check-in/out Date, so records already written today must keep the cutoff
-      // they were combined and validated with.
-      const effectiveFrom = normalizeBusinessDate(getDateLocal(1));
-      const isPending = (entry) =>
-        normalizeBusinessDate(entry.effectiveFrom).getTime() >= effectiveFrom.getTime();
-
-      const history = [...(schedule.cutoffHistory || [])];
-      const activeCutoff = getCurrentCutoff(schedule);
-      const pending = history.find(isPending);
-
-      // What the cutoff would become if we left things alone — an already-scheduled change
-      // counts, otherwise it's just today's value.
-      const scheduledCutoff = pending ? pending.cutoffHour : activeCutoff;
-
-      if (nightShiftCutoffHour !== scheduledCutoff) {
-        if (nightShiftCutoffHour === activeCutoff) {
-          // Reverting to the active value: drop the scheduled change rather than scheduling a
-          // second one, otherwise the pending entry would still flip the cutoff tomorrow.
-          schedule.cutoffHistory = history.filter((entry) => !isPending(entry));
-        } else {
-          // A cutoff the sites' default times don't straddle would make the auto check-in/out
-          // crons stamp times onto the wrong calendar day. Refuse, and name the sites to fix.
-          const sites = await siteModel.find({
-            isActive: true,
-            isDeleted: { $ne: true },
-          });
-
-          const conflicts = sites
-            .map((site) => ({
-              siteName: site.siteName,
-              errors: validateSiteDefaultsAgainstCutoff(site, nightShiftCutoffHour),
-            }))
-            .filter((s) => s.errors.length > 0);
-
-          if (conflicts.length > 0) {
-            return res.status(400).json({
-              success: false,
-              message:
-                `Cannot set the cutoff to ${nightShiftCutoffHour}:00 — the default shift times on ` +
-                `${conflicts.length} site(s) would fall outside it. Update these sites first: ` +
-                conflicts.map((c) => c.siteName).join(", "),
-              data: { conflicts },
-            });
-          }
-
-          // Replace (don't stack) an existing scheduled change — an admin changing their mind
-          // before it takes effect.
-          const next = history.filter((entry) => !isPending(entry));
-          next.push({ cutoffHour: nightShiftCutoffHour, effectiveFrom });
-          next.sort(
-            (a, b) =>
-              normalizeBusinessDate(a.effectiveFrom).getTime() -
-              normalizeBusinessDate(b.effectiveFrom).getTime()
-          );
-
-          schedule.cutoffHistory = next;
-          cutoffChange = { cutoffHour: nightShiftCutoffHour, effectiveFrom };
-        }
-      }
-    }
+    // The cutoff hour is per-site now, derived from each site's default shift times
+    // (utils/siteCutoff.js). The global value only remains as a seed/fallback for sites
+    // with no times. An incoming nightShiftCutoffHour is deliberately IGNORED — not
+    // rejected — so stale PWA clients that still send it can keep saving the other fields.
+    void nightShiftCutoffHour;
 
     if (breakDurationMinutes !== undefined) {
       if (breakDurationMinutes < 0 || breakDurationMinutes > 480) {
@@ -225,11 +219,7 @@ export const updateWorkSchedule = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: cutoffChange
-        ? `Work schedule updated. The ${cutoffChange.cutoffHour}:00 cutoff takes effect from ` +
-          `${cutoffChange.effectiveFrom.toISOString().split("T")[0]}; existing records keep the ` +
-          `cutoff they were created under.`
-        : "Work schedule updated successfully",
+      message: "Work schedule updated successfully",
       data: updatedSchedule,
     });
   } catch (error) {

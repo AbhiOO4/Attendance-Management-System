@@ -42,7 +42,7 @@ import {
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -103,7 +103,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   const [overlapIndexes, setOverlapIndexes] = useState<number[]>([])
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [sessionToDelete, setSessionToDelete] = useState<number | null>(null)
-  const { config: workConfig, cutoffFor } = useWorkConfig()
+  const { config: workConfig } = useWorkConfig()
 
   const config = useMemo(
     () => ({
@@ -114,10 +114,6 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     }),
     [workConfig]
   )
-
-  // Backfilling a past day must combine and validate times with the cutoff that was in force
-  // on THAT day, so the new record is consistent with the ones already on it.
-  const recordCutoff = useMemo(() => cutoffFor(date), [cutoffFor, date])
 
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
 
@@ -235,19 +231,17 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
       const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-      let nextIsNight = false
-      if (checkInVal) {
-        const [inH] = checkInVal.split(":").map(Number)
-        const inRange = inH >= 0 && inH < recordCutoff
-        const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
-        nextIsNight = inRange || crossesMidnight
-      }
+      // Backfill is the deliberate cutoff-free path: times are combined literally with the
+      // day being backfilled (cutoff 0 = no early-morning window; a check-out earlier than
+      // its check-in still bumps to the next calendar day). Night shift = cross-midnight.
+      const nextIsNight = checkInVal && checkOutVal
+        ? isCrossMidnight(checkInVal, checkOutVal, false)
+        : false
 
       updated[index].isNightShift = nextIsNight
 
-      // Combine date and time
-      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, nextIsNight, recordCutoff) : null
-      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, nextIsNight, recordCutoff) : null
+      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, false, 0) : null
+      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, false, 0) : null
       updated[index].workedHours = calculateWorkedHours(
         updated[index].checkIn,
         updated[index].checkOut
@@ -356,15 +350,16 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       return
     }
 
-    // Validate times using helper
+    // Cutoff-free: the only structural rule left is that a check-out needs a check-in.
+    // Cross-day double-pay is caught by the server's overlap check against the
+    // neighbouring days' records.
     let hasError = false
     const errors: Record<number, string> = {}
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const err = validateSessionTimes(inTime, outTime, session.isNightShift, recordCutoff)
-      if (err) {
-        errors[index] = err
+      if (!inTime && outTime) {
+        errors[index] = "Check-out cannot exist without check-in"
         hasError = true
       }
     })

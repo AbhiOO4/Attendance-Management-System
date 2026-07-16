@@ -12,24 +12,27 @@ import { useLocation } from "react-router-dom"
 import { api } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
 import {
-  DEFAULT_CUTOFF_HOUR,
   getCurrentCutoff,
   resolveCutoffForDate,
   type WorkConfig,
 } from "@/lib/dateUtils"
 
 /**
- * Single source of the work schedule for the whole app.
+ * Single source of the work schedule for the whole app (pay numbers, holidays, breaks).
  *
- * Previously every component fetched /api/config into its own useState and fell back to a
- * hardcoded cutoff of 7 (one fell back to 0). That made the cutoff a per-component guess.
- * It is now fetched once here, and — critically — exposed as TWO different accessors:
+ * CUTOFFS ARE PER-SITE NOW: each Site doc carries its own machine-derived
+ * nightShiftCutoffHour + cutoffHistory (derived from the site's default shift times).
+ * Site-scoped code must resolve from the site doc via dateUtils:
+ *   getCurrentCutoff(site)                    — "now" questions for that site
+ *   resolveCutoffForDate(site, record.date)   — reading/validating an existing record
  *
- *   cutoffFor(date)  the cutoff in force on a specific record's business day. Use this
- *                    whenever you are reading, validating or editing an existing record;
- *                    its stored timestamps were combined under that day's cutoff.
- *   currentCutoff    the cutoff in force right now. Use this only for "what is today's
- *                    business day" questions (rosters, banners, marking today's attendance).
+ * The two accessors here remain ONLY for (a) pages with no single site in scope
+ * (MarkAttendance's site list, DashBoard's date label — an approximation when site cutoffs
+ * diverge; the authoritative view is SiteAttendance) and (b) fallbacks while a site doc is
+ * loading or for legacy sessions whose site is gone:
+ *
+ *   cutoffFor(date)  the GLOBAL fallback cutoff for a specific business day.
+ *   currentCutoff    the GLOBAL fallback cutoff in force right now.
  */
 type WorkConfigContextType = {
   config: WorkConfig | null
@@ -42,8 +45,10 @@ type WorkConfigContextType = {
 const WorkConfigContext = createContext<WorkConfigContextType>({
   config: null,
   loading: true,
-  currentCutoff: DEFAULT_CUTOFF_HOUR,
-  cutoffFor: () => DEFAULT_CUTOFF_HOUR,
+  // Pre-fetch placeholder: 0 = midnight boundary (no early-morning window). Real values
+  // always come from the fetched config/site docs.
+  currentCutoff: 0,
+  cutoffFor: () => 0,
   refreshConfig: async () => null,
 })
 

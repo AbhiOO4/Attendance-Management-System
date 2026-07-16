@@ -1,7 +1,6 @@
 import cron from 'node-cron';
 import Site from '../models/siteModel.js';
 import Attendance from '../models/attendanceModel.js';
-import workModel from '../models/workModel.js';
 import {
   getCurrentLocalTime,
   getTodayLocal,
@@ -32,16 +31,16 @@ async function runAutoCheckIn() {
 
     if (matchingSites.length === 0) return;
 
-    const workConfig = await workModel.findOne();
-    // The records being filled are dated todayStr, so use that day's cutoff.
-    const cutoffHour = resolveCutoffForDate(workConfig, todayStr);
-
     const todayDate = new Date(todayStr);
     todayDate.setUTCHours(0, 0, 0, 0);
 
     for (const site of matchingSites) {
       try {
         if (!site.nightDefaultCheckIn) continue;
+
+        // Cutoffs are per-site: the records being filled are dated todayStr, so use this
+        // site's cutoff for that day.
+        const cutoffHour = resolveCutoffForDate(site, todayStr);
 
         // Today's records that have a session at this site
         const records = await Attendance.find({

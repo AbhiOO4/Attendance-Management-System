@@ -114,19 +114,22 @@ function skippedEntry(record, reason, field) {
 /**
  * Propagate default value changes to matching attendance records.
  *
- * @param {Object}  site          - The site document (already saved with new values)
+ * @param {Object}  site          - The site document (already saved with new values,
+ *                                  including its cutoffHistory — cutoffs are per-site)
  * @param {Object}  prevDefaults  - Previous default values before the change
  * @param {Object}  newDefaults   - New default values (same shape as prevDefaults)
- * @param {Object}  workConfig    - Work schedule config (fullDayHours, halfDayHours,
- *                                  overtimeThreshold, nightShiftCutoffHour)
+ * @param {Object}  workConfig    - Work schedule config, used only for the pay numbers
+ *                                  (fullDayHours, halfDayHours, overtimeThreshold)
  *
  * @returns {Object} { updated: number, skipped: Array<{ employeeId, employeeName, reason, field }> }
  */
 export async function propagateDefaultChanges(site, prevDefaults, newDefaults, workConfig) {
   // Deciding WHICH day to propagate onto is a "now" question (are we in the extended
-  // period?), so it uses the currently-active cutoff. Combining a time ONTO that day is a
-  // per-day question, and is resolved separately below once the target date is known.
-  const currentCutoff = getCurrentCutoff(workConfig);
+  // period?), so it uses the site's currently-active cutoff. Combining a time ONTO that day
+  // is a per-day question, and is resolved separately below once the target date is known.
+  // Note: `site` may already carry a freshly derived cutoff entry, but that entry is
+  // effective from TOMORROW, so today's/yesterday's resolution below is unaffected.
+  const currentCutoff = getCurrentCutoff(site);
   const fullDayHours = (workConfig && workConfig.fullDayHours) || 8;
   const halfDayHours = (workConfig && workConfig.halfDayHours) || 4;
   const overtimeThreshold = (workConfig && workConfig.overtimeThreshold) || 8;
@@ -173,7 +176,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
 
     // The cutoff in force on the day we're actually writing to — on a changeover morning
     // the night check-out target is yesterday, which may still be on the old cutoff.
-    const cutoffHour = resolveCutoffForDate(workConfig, targetDateStr);
+    const cutoffHour = resolveCutoffForDate(site, targetDateStr);
 
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);
