@@ -1,6 +1,6 @@
 import { api } from "@/lib/api"
 import { useEffect, useMemo, useState } from "react"
-import { getLogicalShiftDate, isInExtendedPeriod, formatLogicalDateLabel, formatCurrentDateLabel } from "@/lib/dateUtils"
+import { getLogicalShiftDate, formatCurrentDateLabel } from "@/lib/dateUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
 import { Card, CardContent } from "@/components/ui/card"
@@ -35,7 +35,6 @@ function MarkAttendance() {
   // This page only ever deals with today's roster, so the currently-active cutoff applies.
   const { currentCutoff: cutoffHour, loading: configLoading } = useWorkConfig()
   const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
-  const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
 
   const formattedDate = formatCurrentDateLabel()
 
@@ -110,29 +109,6 @@ function MarkAttendance() {
             </Link>
           </Button>
         </div>
-
-        {extendedPeriod && (
-          <div className="night-shift-banner" style={{
-            background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
-            color: "#e0e0ff",
-            padding: "12px 16px",
-            borderRadius: "8px",
-            marginBottom: "16px",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            fontSize: "14px",
-            border: "1px solid rgba(100, 100, 255, 0.2)",
-          }}>
-            <span style={{ fontSize: "20px" }}>🌙</span>
-            <div>
-              <strong>Logging for {formatLogicalDateLabel(today)} (Night Shift)</strong>
-              <div style={{ fontSize: "12px", opacity: 0.8, marginTop: "2px" }}>
-                The portal is showing the previous day's roster because it's before {cutoffHour}:00 AM.
-              </div>
-            </div>
-          </div>
-        )}
 
         {sites.length === 0 ? (
           <div className="rounded-xl border bg-background p-10 text-center text-muted-foreground">
