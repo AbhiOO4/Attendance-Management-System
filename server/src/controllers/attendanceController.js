@@ -14,6 +14,8 @@ import { getStaffEmployeeIds } from '../utils/collar.js';
 import { combineDateAndTimeLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { resolveCutoffForDate, isEarlyMorningCheckIn, validateSessionTimes } from '../utils/cutoff.js';
+import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { computeOvertimeRate } from '../utils/payMath.js';
 
 
 // --- NIGHT SHIFT HELPERS ---
@@ -153,7 +155,9 @@ function detectCrossedMidnight(sessions, timezoneOffset = null) {
 }
 
 /**
- * Resolves whether a given date is a holiday (either custom public holiday or weekly holiday).
+ * Resolves whether a given date is a holiday and why.
+ * @returns {Promise<{isHoliday: boolean, reason: "weekly"|"public"|null}>}
+ *          "public" = CustomHoliday doc (incl. manually declared); "weekly" = WorkSchedule.weeklyHolidays.
  */
 async function checkHolidayForDate(dateObj) {
   const targetDate = new Date(dateObj);
@@ -173,7 +177,7 @@ async function checkHolidayForDate(dateObj) {
   });
 
   if (customHoliday) {
-    return true;
+    return { isHoliday: true, reason: "public" };
   }
 
   // 2. Check WorkSchedule / weeklyHolidays
@@ -182,11 +186,11 @@ async function checkHolidayForDate(dateObj) {
     const weeklyHolidays = workConfig.weeklyHolidays || [];
     const dayName = targetDate.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase();
     if (weeklyHolidays.includes(dayName)) {
-      return true;
+      return { isHoliday: true, reason: "weekly" };
     }
   }
 
-  return false;
+  return { isHoliday: false, reason: null };
 }
 
 /**
@@ -298,51 +302,6 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffFo
   return sorted;
 }
 
-
-
-// --- BREAK / HOURS HELPER ---
-
-/**
- * Computes net work hours, attendance status, and overtime from raw session hours.
- *
- * Design rules:
- *  1. STATUS   — determined from RAW hours (break-agnostic) to prevent edge-case demotions.
- *  2. BREAKS   — proportional: floor(raw / fullDayHours) per day, unless supervisor overrides.
- *  3. NET HRS  — raw minus total break deduction (never below 0).
- *  4. OVERTIME — calculated on NET hours against overtimeThreshold.
- *
- * @param {number}      rawHours    Sum of all session workedHours
- * @param {object}      workConfig  WorkSchedule document (needs fullDayHours, halfDayHours,
- *                                  overtimeThreshold, breakDurationMinutes)
- * @param {number|null} breaksTaken null = auto; 0+ = supervisor override
- * @returns {{ netWorkHours, status, overtimeHours, breaksApplied }}
- */
-function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null) {
-  const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
-  const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
-
-  // STEP 1 – Status from raw hours (never affected by break deduction)
-  let status = 'absent';
-  if (rawHours >= fullDayHours)       status = 'fullday';
-  else if (rawHours >= halfDayHours)  status = 'halfday';
-
-  // STEP 2 – Number of breaks to apply
-  const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
-  const breaksApplied = (breaksTaken !== null && breaksTaken !== undefined && breaksTaken >= 0)
-    ? breaksTaken
-    : autoBreaks;
-  const totalBreakHours = breaksApplied * breakDurationHours;
-
-  // STEP 3 – Net work hours (floor at 0)
-  const netWorkHours = Number(Math.max(rawHours - totalBreakHours, 0).toFixed(2));
-
-  // STEP 4 – Overtime on net hours
-  const overtimeHours = netWorkHours > overtimeThreshold
-    ? Number((netWorkHours - overtimeThreshold).toFixed(2))
-    : 0;
-
-  return { netWorkHours, status, overtimeHours, breaksApplied };
-}
 
 
 // --- ADMINS ---
@@ -503,12 +462,12 @@ export const monthlyReport = async (req, res) => {
           // Holiday work:
           // - Ignore status
           // - No payable day
-          // - Entire worked hours are OT
+          // - holidayHours (public → net hours; weekly → flat 15/10) paid at OT rate
           if (record.isHoliday) {
             holidayRecords += 1;
 
             overtimeHours +=
-              record.totalWorkHours || 0;
+              record.holidayHours || 0;
 
             continue;
           }
@@ -540,9 +499,14 @@ export const monthlyReport = async (req, res) => {
         const normalPay =
           payableDays * dailySalary;
 
+        // OT (and holiday hours, folded in above) is priced off this employee's own
+        // salary — see utils/payMath.js.
         const overtimePay =
           overtimeHours *
-          workConfig.overtimeRatePerHour;
+          computeOvertimeRate(
+            employee.monthlySalary,
+            workConfig
+          );
 
         const salary =
           normalPay + overtimePay;
@@ -932,7 +896,15 @@ export const toggleHolidayStatus = async (req, res) => {
       }).session(session)
     }
 
-    // Update all attendance records for that day
+    // Update all attendance records for that day. Manual declaration is always a
+    // PUBLIC holiday (weekly holidays can't be toggled — guarded above), so
+    // holidayHours = net worked hours and overtime is zeroed. Removing the holiday
+    // restores overtime from the stored net hours. Aggregation-pipeline update so
+    // per-record totals can be derived in one bulk write.
+    const overtimeThreshold = (await workModel.findOne({ type: "default" })
+      .select("overtimeThreshold")
+      .session(session))?.overtimeThreshold ?? 0
+
     const result = await Attendance.updateMany(
       {
         date: {
@@ -940,11 +912,39 @@ export const toggleHolidayStatus = async (req, res) => {
           $lte: endOfDay,
         },
       },
-      {
-        $set: {
-          isHoliday,
-        },
-      }
+      isHoliday
+        ? [
+            {
+              $set: {
+                isHoliday: true,
+                holidayReason: "public",
+                holidayHours: { $ifNull: ["$totalWorkHours", 0] },
+                overtimeHours: 0,
+              },
+            },
+          ]
+        : [
+            {
+              $set: {
+                isHoliday: false,
+                holidayReason: null,
+                holidayHours: 0,
+                overtimeHours: {
+                  $round: [
+                    {
+                      $max: [
+                        { $subtract: [{ $ifNull: ["$totalWorkHours", 0] }, overtimeThreshold] },
+                        0,
+                      ],
+                    },
+                    2,
+                  ],
+                },
+              },
+            },
+          ],
+      // Mongoose requires this opt-in to accept an aggregation pipeline update
+      { updatePipeline: true }
     ).session(session)
 
     await session.commitTransaction();
@@ -1034,7 +1034,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     const cutoffForSite = await buildSiteCutoffResolver(null, date, workConfig, session);
 
     const processedRecords = []
-    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
+    const holidayInfo = await checkHolidayForDate(attendanceDate);
 
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
@@ -1071,7 +1071,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           siteId,
           jobId: jobId || null,
           markedBy,
-          isHoliday: isHolidayResolved,
+          isHoliday: holidayInfo.isHoliday,
+          holidayReason: holidayInfo.reason,
           status: "absent",
           sessions: [],
         })
@@ -1292,10 +1293,11 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         ? breaksTaken
         : (attendanceDoc.breaksTaken ?? null)
 
-      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
         workConfig,
-        effectiveBreaksTaken
+        effectiveBreaksTaken,
+        holidayInfo
       )
 
       attendanceDoc.totalWorkHours = netWorkHours
@@ -1304,7 +1306,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       if (breaksTaken !== undefined) {
         attendanceDoc.breaksTaken = breaksTaken
       }
-      attendanceDoc.isHoliday = isHolidayResolved
+      attendanceDoc.isHoliday = holidayInfo.isHoliday
+      attendanceDoc.holidayReason = holidayInfo.reason
+      attendanceDoc.holidayHours = holidayHours
       // Soft: pass through the requested value; the pre-save hook force-clears it
       // if any session (this site or another) turns out to be filled.
       attendanceDoc.isSickLeave = !!isSickLeave
@@ -1492,6 +1496,10 @@ export const getSiteAttendance = async (req, res) => {
 
           isHoliday: "$isHoliday",
 
+          holidayReason: "$holidayReason",
+
+          holidayHours: "$holidayHours",
+
           isSickLeave: "$isSickLeave",
 
           employee: "$employee._id",
@@ -1567,10 +1575,13 @@ export const getSiteAttendance = async (req, res) => {
 
     const isHoliday =
       result.length > 0 ? (result[0].isHoliday ?? false) : false
+    const holidayReason =
+      result.length > 0 ? (result[0].holidayReason ?? null) : null
 
     return res.status(200).json({
       totalRecords: result.length,
       isHoliday,
+      holidayReason,
       data: result,
     })
   } catch (error) {
@@ -1744,6 +1755,10 @@ export const getAttendanceRecords = async (req, res) => {
 
         isHoliday: record.isHoliday,
 
+        holidayReason: record.holidayReason || null,
+
+        holidayHours: record.holidayHours || 0,
+
         isSickLeave: record.isSickLeave || false,
 
         totalWorkHours:
@@ -1799,11 +1814,17 @@ export const getAttendanceRecords = async (req, res) => {
       formattedRecords.length > 0
         ? formattedRecords[0].isHoliday
         : false;
+    const holidayReason =
+      formattedRecords.length > 0
+        ? formattedRecords[0].holidayReason
+        : null;
 
     return res.status(200).json({
       success: true,
 
       isHoliday,
+
+      holidayReason,
 
       pagination: {
         currentPage: page,
@@ -1902,7 +1923,7 @@ export const bulkEditAttendance = async (
     const cutoffForSite = await buildSiteCutoffResolver(null, attendanceDate, workConfig, session);
 
     const processedRecords = [];
-    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
+    const holidayInfo = await checkHolidayForDate(attendanceDate);
 
     // PROCESS EACH EMPLOYEE
     for (const entry of attendance) {
@@ -1991,10 +2012,11 @@ export const bulkEditAttendance = async (
         ? breaksTaken
         : (attendanceDoc.breaksTaken ?? null);
 
-      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
         workConfig,
-        effectiveBreaksTaken
+        effectiveBreaksTaken,
+        holidayInfo
       );
 
       // UPDATE DOC
@@ -2004,7 +2026,9 @@ export const bulkEditAttendance = async (
       if (breaksTaken !== undefined) {
         attendanceDoc.breaksTaken = breaksTaken;
       }
-      attendanceDoc.isHoliday = isHolidayResolved;
+      attendanceDoc.isHoliday = holidayInfo.isHoliday;
+      attendanceDoc.holidayReason = holidayInfo.reason;
+      attendanceDoc.holidayHours = holidayHours;
       if (isSickLeave !== undefined) {
         // Soft: the pre-save hook clears it if the resulting session is filled.
         attendanceDoc.isSickLeave = !!isSickLeave;
@@ -2405,14 +2429,18 @@ export const updateAttendance = async (req, res) => {
         ? breaksTaken
         : (attendance.breaksTaken ?? null);
 
-      const { netWorkHours, status: computedStatus, overtimeHours } = computeAttendanceTotals(
+      // Holiday state is fixed by the record's date — reuse the stored values so
+      // editing hours on a holiday recomputes holidayHours correctly.
+      const { netWorkHours, status: computedStatus, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
         workConfig,
-        effectiveBreaksTaken
+        effectiveBreaksTaken,
+        { isHoliday: attendance.isHoliday, reason: attendance.holidayReason }
       );
 
       attendance.totalWorkHours = netWorkHours;
       attendance.overtimeHours = overtimeHours;
+      attendance.holidayHours = holidayHours;
       attendance.status = computedStatus;
       if (breaksTaken !== undefined) {
         attendance.breaksTaken = breaksTaken;
@@ -2521,6 +2549,12 @@ export const updateAttendance = async (req, res) => {
 
       isHoliday:
         updatedAttendance.isHoliday,
+
+      holidayReason:
+        updatedAttendance.holidayReason || null,
+
+      holidayHours:
+        updatedAttendance.holidayHours || 0,
 
       isSickLeave:
         updatedAttendance.isSickLeave || false,
@@ -2729,6 +2763,12 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         isHoliday:
           record.isHoliday,
+
+        holidayReason:
+          record.holidayReason || null,
+
+        holidayHours:
+          record.holidayHours || 0,
 
         isSickLeave:
           record.isSickLeave || false,
@@ -2946,6 +2986,10 @@ export const getAttendanceById = async (req, res) => {
 
           isHoliday: "$isHoliday",
 
+          holidayReason: "$holidayReason",
+
+          holidayHours: "$holidayHours",
+
           totalWorkHours:
             "$totalWorkHours",
 
@@ -3132,6 +3176,28 @@ export const addSessionToAttendance = async (
       workedHours: 0,
       markedBy: req.user.id,
     })
+
+    // Recompute totals so holidayHours/overtime stay consistent with the
+    // record's stored holiday state.
+    const workConfig = await workModel.findOne({ type: "default" })
+    if (workConfig) {
+      const rawHours = attendance.sessions.reduce(
+        (sum, s) => sum + (s.workedHours || 0),
+        0
+      )
+
+      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        attendance.breaksTaken ?? null,
+        { isHoliday: attendance.isHoliday, reason: attendance.holidayReason }
+      )
+
+      attendance.totalWorkHours = netWorkHours
+      attendance.status = status
+      attendance.overtimeHours = overtimeHours
+      attendance.holidayHours = holidayHours
+    }
 
     await attendance.save()
 
@@ -3599,10 +3665,13 @@ export const backfillAttendance = async (req, res) => {
     // Totals
     const rawHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
 
-    const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+    const holidayInfo = await checkHolidayForDate(attendanceDate);
+
+    const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
       rawHours,
       workConfig,
-      breaksTaken
+      breaksTaken,
+      holidayInfo
     );
 
     const hasCrossedMidnight = detectCrossedMidnight(builtSessions, timezoneOffset);
@@ -3614,15 +3683,15 @@ export const backfillAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Could not determine a site for this record. Add at least one session with a site.' });
     }
 
-    const isHolidayResolved = await checkHolidayForDate(attendanceDate);
-
     const newAttendance = new Attendance({
       employee: employeeMongoId,
       date: attendanceDate,
       siteId: primarySiteId,
       jobId: builtSessions.length > 0 ? (builtSessions[0].jobId || null) : null,
       markedBy,
-      isHoliday: isHolidayResolved,
+      isHoliday: holidayInfo.isHoliday,
+      holidayReason: holidayInfo.reason,
+      holidayHours,
       isSickLeave: !!isSickLeave,
       status,
       totalWorkHours: netWorkHours,
@@ -3659,6 +3728,8 @@ export const backfillAttendance = async (req, res) => {
       date: record.date,
       status: record.status,
       isHoliday: record.isHoliday,
+      holidayReason: record.holidayReason || null,
+      holidayHours: record.holidayHours || 0,
       isSickLeave: record.isSickLeave || false,
       totalWorkHours: record.totalWorkHours,
       overtimeHours: record.overtimeHours,
@@ -4044,15 +4115,17 @@ export const assignNightShift = async (req, res) => {
         0
       );
 
-      const { netWorkHours, status, overtimeHours } = computeAttendanceTotals(
+      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
         workConfig,
-        attendanceDoc.breaksTaken ?? null
+        attendanceDoc.breaksTaken ?? null,
+        { isHoliday: attendanceDoc.isHoliday, reason: attendanceDoc.holidayReason }
       );
 
       attendanceDoc.totalWorkHours = netWorkHours;
       attendanceDoc.status = status;
       attendanceDoc.overtimeHours = overtimeHours;
+      attendanceDoc.holidayHours = holidayHours;
 
 
       // Document-level night shift detection

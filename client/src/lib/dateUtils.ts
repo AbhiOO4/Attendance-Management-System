@@ -39,7 +39,8 @@ export type WorkConfig = {
   fullDayHours: number;
   halfDayHours: number;
   overtimeThreshold: number;
-  overtimeRatePerHour: number;
+  overtimeMultiplier: number;
+  monthlyHoursDivisor: number;
   weeklyHolidays: string[];
   nightShiftCutoffHour: number;
   breakDurationMinutes: number;

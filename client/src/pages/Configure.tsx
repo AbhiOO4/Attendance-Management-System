@@ -44,7 +44,8 @@ type WorkSchedule = {
   fullDayHours: number;
   halfDayHours: number;
   overtimeThreshold: number;
-  overtimeRatePerHour: number;
+  overtimeMultiplier: number;
+  monthlyHoursDivisor: number;
   weeklyHolidays: string[];
   nightShiftCutoffHour: number;
   breakDurationMinutes: number;
@@ -112,7 +113,8 @@ export default function Configure() {
     fullDayHours: 8,
     halfDayHours: 4,
     overtimeThreshold: 8,
-    overtimeRatePerHour: 0,
+    overtimeMultiplier: 1.25,
+    monthlyHoursDivisor: 240,
     weeklyHolidays: [],
     // Machine-managed legacy mirror; 0 = midnight boundary. Never edited from this page.
     nightShiftCutoffHour: 0,
@@ -198,7 +200,8 @@ export default function Configure() {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
         overtimeThreshold: schedule.overtimeThreshold,
-        overtimeRatePerHour: schedule.overtimeRatePerHour,
+        overtimeMultiplier: schedule.overtimeMultiplier,
+        monthlyHoursDivisor: schedule.monthlyHoursDivisor,
         weeklyHolidays: schedule.weeklyHolidays,
         breakDurationMinutes: schedule.breakDurationMinutes,
       });
@@ -468,25 +471,53 @@ export default function Configure() {
                   </p>
                 </div>
 
-                {/* OT RATE */}
+                {/* OT MULTIPLIER */}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">
-                    OT Rate Per Hour
+                    OT Rate Multiplier
                   </label>
 
                   <Input
                     type="number"
-                    value={schedule.overtimeRatePerHour}
+                    min={0}
+                    step={0.05}
+                    value={schedule.overtimeMultiplier}
                     onChange={(e) =>
                       setSchedule({
                         ...schedule,
-                        overtimeRatePerHour: Number(e.target.value),
+                        overtimeMultiplier: Number(e.target.value),
                       })
                     }
                   />
 
                   <p className="text-xs text-muted-foreground">
-                    Overtime pay amount per hour.
+                    Overtime is paid at this multiple of the employee's normal hourly rate.
+                    e.g. 1.25 = 125%.
+                  </p>
+                </div>
+
+                {/* MONTHLY HOURS */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Monthly Hours
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={schedule.monthlyHoursDivisor}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        monthlyHoursDivisor: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Hours per month used to derive an employee's normal hourly rate from
+                    their monthly salary.
                   </p>
                 </div>
 

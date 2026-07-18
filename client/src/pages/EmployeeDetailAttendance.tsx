@@ -45,6 +45,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -74,6 +75,9 @@ interface Employee {
 
   isActive: boolean
 }
+
+const round2 = (value: number) =>
+  Math.round(value * 100) / 100
 
 const getDisplayStatus = (record: AttendanceRecord) => {
   if (record.isSickLeave) {
@@ -180,7 +184,25 @@ function EmployeeAttendanceDetail() {
 
       const worksheet =
         workbook.addWorksheet(
-          "Attendance"
+          "Attendance",
+          {
+            pageSetup: {
+              paperSize: 9, // A4
+              orientation: "landscape",
+              fitToPage: true,
+              fitToWidth: 1,
+              fitToHeight: 0,
+              horizontalCentered: true,
+              margins: {
+                left: 0.3,
+                right: 0.3,
+                top: 0.4,
+                bottom: 0.4,
+                header: 0.2,
+                footer: 0.2,
+              },
+            },
+          }
         )
 
       // --------------------------
@@ -201,15 +223,15 @@ function EmployeeAttendanceDetail() {
       })
 
       worksheet.addImage(logoId, {
-        tl: { col: 7, row: 0 },
-        ext: { width: 80, height: 80 },
+        tl: { col: 9.6, row: 0 },
+        ext: { width: 64, height: 64 },
       })
 
       // --------------------------
       // COMPANY NAME
       // --------------------------
 
-      worksheet.mergeCells("A1:G1")
+      worksheet.mergeCells("A1:K1")
       worksheet.getRow(1).height = 30
 
       const companyCell = worksheet.getCell("A1")
@@ -224,7 +246,7 @@ function EmployeeAttendanceDetail() {
       // SUBTITLE
       // --------------------------
 
-      worksheet.mergeCells("A2:G2")
+      worksheet.mergeCells("A2:K2")
       worksheet.getRow(2).height = 22
 
       const subtitleCell = worksheet.getCell("A2")
@@ -241,21 +263,57 @@ function EmployeeAttendanceDetail() {
 
       worksheet.addRow([])
 
-      worksheet.addRow([
-        "Name",
-        employee?.name || "-",
-        "",
-        "",
-        "Employee ID",
-        employee?.employeeId || "-",
-      ])
+      const addInfoRow = (
+        leftLabel: string,
+        leftValue: string,
+        rightLabel: string,
+        rightValue: string
+      ) => {
+        const row = worksheet.addRow([
+          leftLabel,
+          "",
+          leftValue,
+          "",
+          "",
+          rightLabel,
+          "",
+          "",
+          rightValue,
+        ])
 
-      worksheet.addRow([
-        "Job Title",
+        row.height = 18
+
+        const r = row.number
+        worksheet.mergeCells(r, 1, r, 2) // label
+        worksheet.mergeCells(r, 3, r, 5) // value
+        worksheet.mergeCells(r, 6, r, 8) // label
+        worksheet.mergeCells(r, 9, r, 11) // value
+
+        ;[1, 6].forEach((col) => {
+          row.getCell(col).font = { bold: true, size: 10 }
+        })
+        ;[3, 9].forEach((col) => {
+          row.getCell(col).font = { size: 10 }
+        })
+        ;[1, 3, 6, 9].forEach((col) => {
+          row.getCell(col).alignment = {
+            horizontal: "left",
+            vertical: "middle",
+          }
+        })
+      }
+
+      addInfoRow(
+        "Name:",
+        employee?.name || "-",
+        "Employee ID:",
+        employee?.employeeId || "-"
+      )
+
+      addInfoRow(
+        "Job Title:",
         employee?.jobTitle || "-",
-        "",
-        "",
-        "Month",
+        "Month:",
         `${new Date(
           Number(year),
           Number(month) - 1
@@ -264,8 +322,8 @@ function EmployeeAttendanceDetail() {
           {
             month: "long",
           }
-        )} ${year}`,
-      ])
+        )} ${year}`
+      )
 
       worksheet.addRow([])
 
@@ -283,12 +341,15 @@ function EmployeeAttendanceDetail() {
           "Break",
           "Total\nHours",
           "OT\nHours",
+          "Holiday\nHours",
           "Status",
+          "Sick\nLeave",
         ])
 
       headerRow.eachCell((cell) => {
         cell.font = {
           bold: true,
+          size: 8,
         }
 
         cell.alignment = {
@@ -327,8 +388,59 @@ function EmployeeAttendanceDetail() {
 
       let currentRow = 8
 
-      sortedAttendance.forEach(
-        (record, index) => {
+      exportDays.forEach(
+        ({ date, record }, index) => {
+          const shortDate =
+            date.toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 3)
+            + " " + date.getDate()
+
+          if (!record) {
+            const emptyRow = worksheet.addRow([
+              shortDate,
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+              "",
+            ])
+
+            for (let col = 1; col <= 11; col++) {
+              const cell = emptyRow.getCell(col)
+
+              cell.font = { size: 8 }
+
+              cell.alignment = {
+                horizontal: "center",
+                vertical: "middle",
+                wrapText: true,
+              }
+
+              cell.border = {
+                top: { style: "thin" },
+                left: { style: "thin" },
+                bottom: { style: "thin" },
+                right: { style: "thin" },
+              }
+
+              if (index % 2 !== 0) {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "D6F7DC" },
+                }
+              }
+            }
+
+            currentRow++
+
+            return
+          }
+
           const sessions =
             record.sessions.length > 0
               ? record.sessions
@@ -345,10 +457,6 @@ function EmployeeAttendanceDetail() {
               const breakCount = record.breaksTaken !== null && record.breaksTaken !== undefined
                 ? record.breaksTaken
                 : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours)
-
-              const d = new Date(record.date)
-              const shortDate = d.toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 3)
-                + " " + d.getDate()
 
               const row =
                 worksheet.addRow([
@@ -383,13 +491,27 @@ function EmployeeAttendanceDetail() {
                     : "",
 
                   sessionIndex === 0
+                    ? (record.isHoliday
+                        ? Math.round((record.holidayHours || 0) * 100) / 100
+                        : "-")
+                    : "",
+
+                  sessionIndex === 0
                     ? (getDisplayStatus(record) === "sick"
                         ? "Sick Leave"
                         : getDisplayStatus(record))
                     : "",
+
+                  sessionIndex === 0
+                    ? (record.isSickLeave ? "Yes" : "-")
+                    : "",
                 ])
 
               row.eachCell((cell) => {
+                cell.font = {
+                  size: 8,
+                }
+
                 cell.alignment = {
                   horizontal:
                     "center",
@@ -443,7 +565,9 @@ function EmployeeAttendanceDetail() {
               6, // Break
               7, // Total Hours
               8, // OT Hours
-              9, // Status
+              9, // Holiday Hours
+              10, // Status
+              11, // Sick Leave
             ].forEach((col) => {
               worksheet.mergeCells(
                 startRow,
@@ -457,11 +581,125 @@ function EmployeeAttendanceDetail() {
       )
 
       // --------------------------
+      // TOTALS
+      // --------------------------
+
+      const totalsRow = worksheet.addRow([
+        "TOTALS",
+        "",
+        "",
+        "",
+        "",
+        "",
+        round2(totals.totalHours),
+        round2(totals.otHours),
+        round2(totals.holidayHours),
+        "",
+        "",
+      ])
+
+      worksheet.mergeCells(
+        totalsRow.number,
+        1,
+        totalsRow.number,
+        6
+      )
+
+      totalsRow.eachCell((cell) => {
+        cell.font = {
+          bold: true,
+          size: 8,
+        }
+
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+        }
+
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: "B7EBC4",
+          },
+        }
+
+        cell.border = {
+          top: {
+            style: "thin",
+          },
+          left: {
+            style: "thin",
+          },
+          bottom: {
+            style: "thin",
+          },
+          right: {
+            style: "thin",
+          },
+        }
+      })
+
+      // --------------------------
+      // SIGNATURES
+      // --------------------------
+
+      worksheet.addRow([])
+
+      const signatureLabels = [
+        "Employee Signature",
+        "Supervisor Signature",
+        "Manager Signature",
+      ]
+
+      signatureLabels.forEach((label) => {
+        const signatureRow =
+          worksheet.addRow([
+            `${label}: ______________________`,
+            "",
+            "",
+            "Date: ____________________",
+          ])
+
+        signatureRow.height = 24
+
+        worksheet.mergeCells(
+          signatureRow.number,
+          1,
+          signatureRow.number,
+          3
+        )
+
+        worksheet.mergeCells(
+          signatureRow.number,
+          4,
+          signatureRow.number,
+          6
+        )
+
+        ;[1, 4].forEach((col) => {
+          const cell =
+            signatureRow.getCell(col)
+
+          cell.font = {
+            size: 8,
+          }
+
+          cell.alignment = {
+            horizontal: "left",
+            vertical: "middle",
+          }
+        })
+
+        worksheet.addRow([])
+      })
+
+      // --------------------------
       // COLUMN WIDTHS
       // --------------------------
 
-      //          Date  Site  ChkIn ChkOut Worked Break Total  OT   Status
-      const colWidths = [10, 16, 11, 11, 12, 8, 10, 9, 12]
+      //          Date Site ChkIn ChkOut Worked Break Total OT Holiday Status Sick
+      const colWidths = [8, 13, 9, 9, 8, 6, 7, 6, 8, 9, 7]
       worksheet.columns =
         worksheet.columns.map(
           (column, index) => ({
@@ -469,17 +707,6 @@ function EmployeeAttendanceDetail() {
             width: colWidths[index] || 10,
           })
         )
-
-      // --------------------------
-      // FREEZE HEADER
-      // --------------------------
-
-      worksheet.views = [
-        {
-          state: "frozen",
-          ySplit: 7,
-        },
-      ]
 
       // --------------------------
       // DOWNLOAD
@@ -531,6 +758,63 @@ function EmployeeAttendanceDetail() {
         }
       )
     }, [attendance, sortOrder])
+
+  // Every day of the selected month, with its record if one exists — days with no
+  // record become a date-only row in the export.
+  const exportDays = useMemo(() => {
+    const monthIndex = Number(month) - 1
+    const yearNumber = Number(year)
+
+    const byDay = new Map<number, AttendanceRecord>()
+
+    attendance.forEach((record) => {
+      const d = new Date(record.date)
+
+      if (
+        d.getFullYear() === yearNumber &&
+        d.getMonth() === monthIndex
+      ) {
+        byDay.set(d.getDate(), record)
+      }
+    })
+
+    const daysInMonth = new Date(
+      yearNumber,
+      monthIndex + 1,
+      0
+    ).getDate()
+
+    const days = Array.from(
+      { length: daysInMonth },
+      (_, i) => ({
+        date: new Date(yearNumber, monthIndex, i + 1),
+        record: byDay.get(i + 1) || null,
+      })
+    )
+
+    return sortOrder === "asc" ? days : days.reverse()
+  }, [attendance, month, year, sortOrder])
+
+  const totals = useMemo(() => {
+    return attendance.reduce(
+      (acc, record) => {
+        acc.totalHours += record.totalWorkHours || 0
+
+        acc.otHours += record.overtimeHours || 0
+
+        if (record.isHoliday) {
+          acc.holidayHours += record.holidayHours || 0
+        }
+
+        return acc
+      },
+      {
+        totalHours: 0,
+        otHours: 0,
+        holidayHours: 0,
+      }
+    )
+  }, [attendance])
 
   const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
@@ -706,9 +990,13 @@ function EmployeeAttendanceDetail() {
 
                     <TableHead>Status</TableHead>
 
+                    <TableHead>Sick Leave</TableHead>
+
                     <TableHead>Total Hours</TableHead>
 
                     <TableHead>OT Hours</TableHead>
+
+                    <TableHead>Holiday Hours</TableHead>
 
                     <TableHead>Breaks</TableHead>
 
@@ -722,7 +1010,7 @@ function EmployeeAttendanceDetail() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={14}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -733,7 +1021,7 @@ function EmployeeAttendanceDetail() {
                   ) : sortedAttendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={14}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
@@ -848,6 +1136,16 @@ function EmployeeAttendanceDetail() {
                                       sessions.length
                                     }
                                   >
+                                    {record.isSickLeave
+                                      ? "Yes"
+                                      : "-"}
+                                  </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
                                     {
                                       record.totalWorkHours
                                     }{" "}
@@ -865,6 +1163,16 @@ function EmployeeAttendanceDetail() {
                                         : record.overtimeHours
                                     }{" "}
                                     hrs
+                                  </TableCell>
+
+                                  <TableCell
+                                    rowSpan={
+                                      sessions.length
+                                    }
+                                  >
+                                    {record.isHoliday
+                                      ? `${Math.round((record.holidayHours || 0) * 100) / 100} hrs`
+                                      : "-"}
                                   </TableCell>
 
                                   <TableCell
@@ -910,6 +1218,33 @@ function EmployeeAttendanceDetail() {
                     )
                   )}
                 </TableBody>
+
+                {!loading && sortedAttendance.length > 0 && (
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell
+                        colSpan={9}
+                        className="text-right"
+                      >
+                        Totals
+                      </TableCell>
+
+                      <TableCell>
+                        {round2(totals.totalHours)} hrs
+                      </TableCell>
+
+                      <TableCell>
+                        {round2(totals.otHours)} hrs
+                      </TableCell>
+
+                      <TableCell>
+                        {round2(totals.holidayHours)} hrs
+                      </TableCell>
+
+                      <TableCell colSpan={2} />
+                    </TableRow>
+                  </TableFooter>
+                )}
               </Table>
             </div>
           </CardContent>

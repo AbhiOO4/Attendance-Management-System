@@ -43,6 +43,7 @@ import {
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { isCrossMidnight, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -117,6 +118,14 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
 
+  // Holiday state of the day being backfilled. No record exists yet, so this is
+  // resolved per date: a CustomHoliday wins ("public"), else a weeklyHolidays
+  // weekday match ("weekly") — same priority as the server's checkHolidayForDate.
+  // The server recomputes on save and stays the source of truth.
+  const [holidayInfo, setHolidayInfo] = useState<{ isHoliday: boolean; reason: HolidayReason }>({
+    isHoliday: false,
+    reason: null,
+  })
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const isDirty = sessions.length > 0
@@ -149,6 +158,50 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   useEffect(() => {
     fetchSites()
   }, [])
+
+  // Resolve the backfill date's holiday status whenever the modal opens.
+  useEffect(() => {
+    if (!open || !date) return
+
+    let cancelled = false
+
+    const resolveHoliday = async () => {
+      try {
+        // 1. Custom/public holiday wins (mirrors server priority)
+        const res = await api.get("/api/config/custom-holidays/check", {
+          params: { date },
+        })
+        if (cancelled) return
+        if (res.data?.isHoliday) {
+          setHolidayInfo({ isHoliday: true, reason: "public" })
+          return
+        }
+      } catch (error) {
+        console.log(error)
+      }
+
+      if (cancelled) return
+
+      // 2. Weekly holiday from the work schedule
+      const weeklyHolidays = workConfig?.weeklyHolidays || []
+      const [year, month, day] = date.split("-").map(Number)
+      const dayName = new Date(year, month - 1, day)
+        .toLocaleDateString("en-US", { weekday: "long" })
+        .toLowerCase()
+
+      if (weeklyHolidays.includes(dayName)) {
+        setHolidayInfo({ isHoliday: true, reason: "weekly" })
+      } else {
+        setHolidayInfo({ isHoliday: false, reason: null })
+      }
+    }
+
+    resolveHoliday()
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, date, workConfig])
 
   // --------------------------------------------------
   // FETCHERS
@@ -207,9 +260,16 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   }, [rawHours, config.fullDayHours, config.halfDayHours])
 
   const overtimeHours = useMemo(() => {
+    // No overtime on holidays — only holiday hours are credited.
+    if (holidayInfo.isHoliday) return 0
     if (totalWorkHours <= config.overtimeThreshold) return 0
     return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [totalWorkHours, config.overtimeThreshold])
+  }, [holidayInfo.isHoliday, totalWorkHours, config.overtimeThreshold])
+
+  const holidayHours = useMemo(() => {
+    if (!holidayInfo.isHoliday) return 0
+    return computeHolidayHours(totalWorkHours, status, holidayInfo.reason)
+  }, [holidayInfo, totalWorkHours, status])
 
 
   // --------------------------------------------------
@@ -706,6 +766,23 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
               <p className="text-sm text-muted-foreground">Overtime Hours</p>
               <p className="text-3xl font-bold">{overtimeHours} hrs</p>
             </div>
+            {holidayInfo.isHoliday && (
+              <>
+                <Separator />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-muted-foreground">Holiday Hours</p>
+                    <Badge
+                      variant="secondary"
+                      className="bg-yellow-100 text-yellow-800 border-yellow-300 text-xs"
+                    >
+                      {holidayInfo.reason === "weekly" ? "Weekly Holiday" : "Public Holiday"}
+                    </Badge>
+                  </div>
+                  <p className="text-3xl font-bold">{holidayHours} hrs</p>
+                </div>
+              </>
+            )}
             <Separator />
             <div>
               <p className="text-sm text-muted-foreground">Attendance Status</p>

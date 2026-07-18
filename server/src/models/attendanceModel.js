@@ -107,6 +107,26 @@ const attendanceSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Why the day is a holiday: a recurring weekly holiday (WorkSchedule.weeklyHolidays)
+    // or a one-off public holiday (CustomHoliday, incl. manually declared days).
+    // Only meaningful when isHoliday is true; null otherwise.
+    holidayReason: {
+      type: String,
+      enum: {
+        values: ["weekly", "public"],
+        message: "{VALUE} is not a valid holiday reason",
+      },
+      default: null,
+    },
+
+    // Hours credited for working on a holiday (paid at the OT rate by the
+    // monthly report). public → net worked hours; weekly → flat 15 (fullday)
+    // or 10 (halfday). Always 0 when isHoliday is false.
+    holidayHours: {
+      type: Number,
+      default: 0,
+    },
+
     // Marks the day as sick leave. Purely an annotation of *why* an absent
     // day is absent — it has no effect on pay. Enforced invariant (see the
     // pre-save hook below): can only be true when every session is empty

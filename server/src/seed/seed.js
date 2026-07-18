@@ -35,6 +35,8 @@ import {
   validateSessionTimes,
 } from "../utils/cutoff.js";
 import { toLocalTimeString } from "../utils/timeLocal.js";
+import { computeAttendanceTotals } from "../utils/attendanceMath.js";
+import customHolidayModel from "../models/holidayModel.js";
 
 
 const seeWorkSchedule = async () => {
@@ -47,7 +49,8 @@ const seeWorkSchedule = async () => {
       halfDayHours: 4,
 
       overtimeThreshold: 8,
-      overtimeRatePerHour: 0,
+      overtimeMultiplier: 1.25,
+      monthlyHoursDivisor: 240,
 
       weeklyHolidays: ["friday"],
     })
@@ -277,8 +280,28 @@ const recalculateExistingAttendance = async () => {
       console.log("No default work config found.");
       return;
     }
-    const { fullDayHours, overtimeThreshold } = workConfig;
-    const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
+
+    // Resolve holiday reasons the same way checkHolidayForDate does:
+    // a CustomHoliday doc wins ("public"), else a weeklyHolidays weekday match
+    // ("weekly"). Preload all custom holiday days for one lookup per record.
+    const weeklyHolidays = workConfig.weeklyHolidays || [];
+    const customHolidays = await customHolidayModel.find().select("date").lean();
+    const customHolidayDays = new Set(
+      customHolidays.map((h) => new Date(h.date).toISOString().slice(0, 10))
+    );
+
+    const resolveHolidayReason = (record) => {
+      if (!record.isHoliday) return null;
+      const day = new Date(record.date);
+      if (customHolidayDays.has(day.toISOString().slice(0, 10))) return "public";
+      const dayName = day
+        .toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })
+        .toLowerCase();
+      if (weeklyHolidays.includes(dayName)) return "weekly";
+      // isHoliday=true with no matching source (e.g. a weekly holiday removed
+      // from config after the fact): treat as a declared public holiday.
+      return "public";
+    };
 
     const records = await Attendance.find();
     console.log(`Found ${records.length} attendance records to recalculate.`);
@@ -288,16 +311,20 @@ const recalculateExistingAttendance = async () => {
       // Calculate raw work hours from sessions
       const rawHours = record.sessions.reduce((total, session) => total + (session.workedHours || 0), 0);
 
-      const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
-      const breaksApplied = (record.breaksTaken !== null && record.breaksTaken !== undefined)
-        ? record.breaksTaken
-        : autoBreaks;
+      const holidayReason = resolveHolidayReason(record);
 
-      const netWorkHours = Math.max(rawHours - (breaksApplied * breakDurationHours), 0);
-      const overtimeHours = netWorkHours > overtimeThreshold ? Number((netWorkHours - overtimeThreshold).toFixed(2)) : 0;
+      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+        rawHours,
+        workConfig,
+        record.breaksTaken ?? null,
+        { isHoliday: record.isHoliday, reason: holidayReason }
+      );
 
-      record.totalWorkHours = Number(netWorkHours.toFixed(2));
+      record.totalWorkHours = netWorkHours;
+      record.status = status;
       record.overtimeHours = overtimeHours;
+      record.holidayReason = holidayReason;
+      record.holidayHours = holidayHours;
       record.breaksTaken = record.breaksTaken ?? null;
 
       await record.save();

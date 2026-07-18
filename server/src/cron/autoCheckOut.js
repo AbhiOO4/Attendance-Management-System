@@ -12,6 +12,7 @@ import {
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
 import { resolveCutoffForDate } from '../utils/cutoff.js';
+import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 
 /**
  * Fill checkOut for matching sessions of a set of sites on a given date.
@@ -25,8 +26,6 @@ import { resolveCutoffForDate } from '../utils/cutoff.js';
  * staff sessions; day/night modes exclude staff.
  */
 async function processSites(sites, dateStr, mode, workConfig, staffIds = []) {
-  const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
-
   const isNightMode = mode === 'night' || mode === 'staffnight';
   const isStaffMode = mode === 'staff' || mode === 'staffnight';
 
@@ -119,27 +118,25 @@ async function processSites(sites, dateStr, mode, workConfig, staffIds = []) {
         }
 
         if (recordModified) {
-          // Recalculate totals for the entire attendance record
-          const totalWorkHours = record.sessions.reduce(
+          // Recalculate totals for the entire attendance record via the shared
+          // pay-math helper (breaks, OT, holiday hours all consistent with the
+          // controller's save paths).
+          const rawHours = record.sessions.reduce(
             (sum, s) => sum + (s.workedHours || 0),
             0
           );
 
-          let status = 'absent';
-          if (totalWorkHours >= fullDayHours) {
-            status = 'fullday';
-          } else if (totalWorkHours >= halfDayHours) {
-            status = 'halfday';
-          }
+          const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+            rawHours,
+            workConfig,
+            record.breaksTaken ?? null,
+            { isHoliday: record.isHoliday, reason: record.holidayReason }
+          );
 
-          let overtimeHours = 0;
-          if (totalWorkHours > overtimeThreshold) {
-            overtimeHours = totalWorkHours - overtimeThreshold;
-          }
-
-          record.totalWorkHours = totalWorkHours;
+          record.totalWorkHours = netWorkHours;
           record.status = status;
           record.overtimeHours = overtimeHours;
+          record.holidayHours = holidayHours;
 
           await record.save();
           updatedCount++;

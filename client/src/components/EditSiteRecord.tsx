@@ -50,6 +50,7 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h, resolveCutoffForDate, type CutoffEntry } from "@/lib/dateUtils"
+import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -116,6 +117,10 @@ export interface AttendanceRecord {
   status: "fullday" | "halfday" | "absent"
 
   isHoliday?: boolean
+
+  holidayReason?: HolidayReason
+
+  holidayHours?: number
 
   totalWorkHours: number
 
@@ -291,9 +296,23 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
   }, [rawHours, breaksApplied, config.breakDurationMinutes])
 
   const overtimeHours = useMemo(() => {
+    // No overtime on holidays — only holiday hours are credited.
+    if (record?.isHoliday) return 0
     if (totalWorkHours <= config.overtimeThreshold) return 0
     return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [totalWorkHours, config.overtimeThreshold])
+  }, [record?.isHoliday, totalWorkHours, config.overtimeThreshold])
+
+  const holidayHours = useMemo(() => {
+    if (!record?.isHoliday) return 0
+    // Raw-hours status (fullday/halfday/absent), matching the server's calc.
+    const rawStatus =
+      rawHours >= config.fullDayHours
+        ? "fullday"
+        : rawHours >= config.halfDayHours
+          ? "halfday"
+          : "absent"
+    return computeHolidayHours(totalWorkHours, rawStatus, record?.holidayReason ?? null)
+  }, [record?.isHoliday, record?.holidayReason, rawHours, totalWorkHours, config.fullDayHours, config.halfDayHours])
 
   const currentSiteSessions = useMemo(() =>
     sessions
@@ -806,6 +825,20 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Overtime</span>
                 <span className="text-lg font-bold">{overtimeHours} hrs</span>
+              </div>
+            )}
+            {record?.isHoliday && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  Holiday Hours
+                  <Badge
+                    variant="secondary"
+                    className="bg-yellow-100 text-yellow-800 border-yellow-300 text-xs font-normal"
+                  >
+                    {record.holidayReason === "weekly" ? "Weekly" : "Public"}
+                  </Badge>
+                </span>
+                <span className="text-lg font-bold">{holidayHours} hrs</span>
               </div>
             )}
           </div>

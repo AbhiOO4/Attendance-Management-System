@@ -61,8 +61,9 @@ and never sees the token. Key pieces:
   `isHoliday`, `isSickLeave`, and night-shift fields. A pre-save hook enforces the
   invariant that `isSickLeave` is only valid when no session has any check-in/out.
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
-  `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `overtimeRatePerHour`,
-  `weeklyHolidays`, `nightShiftCutoffHour`, `breakDurationMinutes`.
+  `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `overtimeMultiplier`,
+  `monthlyHoursDivisor`, `weeklyHolidays`, `nightShiftCutoffHour`,
+  `breakDurationMinutes`.
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
   attendance locks that site/day; only an admin can unlock it for editing.
 - **Holiday** (`holidayModel.js`), **JobTitle** (`jobTitleModel.js`).
@@ -74,15 +75,30 @@ logic; `attendanceController.js` is by far the largest and holds the core payrol
 Route ordering matters: specific paths are declared before `/:id`-style wildcards.
 
 ### Payroll / hours calculation (the domain core)
-`computeAttendanceTotals(rawHours, workConfig, breaksTaken)` in
-`attendanceController.js` is the single source of truth for pay math:
+`computeAttendanceTotals(rawHours, workConfig, breaksTaken, holidayInfo)` in
+`server/src/utils/attendanceMath.js` is the single source of truth for pay math
+(used by the controller, crons, default propagation, and the seed recalc script):
 1. **Status** is derived from RAW session hours (break-agnostic) to avoid demotions.
 2. **Breaks** are proportional — `floor(rawHours / fullDayHours)` breaks by default,
    each worth `breakDurationMinutes`, unless a supervisor overrides `breaksTaken`.
 3. **Net hours** = raw − total break deduction (floored at 0).
-4. **Overtime** = net hours over `overtimeThreshold`.
+4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
+5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): public
+   holiday → net hours; weekly holiday → flat `WEEKLY_HOLIDAY_HOURS` credit
+   (15 fullday / 10 halfday). The monthly report pays `holidayHours` at the OT
+   rate with no payable day. The client mirrors this in
+   `client/src/lib/attendanceUtils.ts` — keep the constants in sync.
 Any change to this formula requires re-running the recalculation script in
 `seed/seed.js` against existing records.
+
+**Pay rates** (`server/src/utils/payMath.js`) are RELATIVE to each employee — there
+is no flat company-wide OT rate. `computeOvertimeRate` derives it per employee:
+`(monthlySalary / monthlyHoursDivisor) × overtimeMultiplier` (defaults 240 / 1.25,
+both configurable). The monthly report is the only consumer; it prices both
+`overtimeHours` and `holidayHours` at this rate. An employee with no `monthlySalary`
+earns no OT pay. Pay is computed on READ, so a rate change re-prices past months —
+no recalculation script needed, unlike the hours math above. Note `SALARY_DIVISOR = 26`
+in the report is a separate thing: payable DAYS → daily salary.
 
 ### Time zones & night shifts (subtle — read carefully)
 All timestamps are stored in UTC but the app operates in a single configured

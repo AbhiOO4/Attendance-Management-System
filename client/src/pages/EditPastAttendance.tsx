@@ -109,6 +109,10 @@ export interface AttendanceRecord {
 
   isHoliday: boolean
 
+  holidayReason?: "weekly" | "public" | null
+
+  holidayHours?: number
+
   totalWorkHours: number
 
   overtimeHours: number
@@ -642,6 +646,10 @@ function EditPastAttendance() {
                     </TableHead>
 
                     <TableHead>
+                      Holiday Hours
+                    </TableHead>
+
+                    <TableHead>
                       Breaks
                     </TableHead>
 
@@ -656,7 +664,7 @@ function EditPastAttendance() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={13}
+                        colSpan={14}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -667,7 +675,7 @@ function EditPastAttendance() {
                   ) : attendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={13}
+                        colSpan={14}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
@@ -796,6 +804,14 @@ function EditPastAttendance() {
                                           : record.overtimeHours
                                       }{" "}
                                       hrs
+                                    </TableCell>
+
+                                    <TableCell
+                                      rowSpan={sessions.length}
+                                    >
+                                      {record.isHoliday
+                                        ? `${Math.round((record.holidayHours || 0) * 100) / 100} hrs`
+                                        : "-"}
                                     </TableCell>
 
                                     <TableCell

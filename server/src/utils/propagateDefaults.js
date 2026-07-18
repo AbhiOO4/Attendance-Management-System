@@ -35,6 +35,7 @@ import {
   getAppOffsetMinutes,
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
+import { computeAttendanceTotals } from './attendanceMath.js';
 import { getStaffEmployeeIds } from './collar.js';
 import { getCurrentCutoff, resolveCutoffForDate } from './cutoff.js';
 
@@ -381,27 +382,24 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
       }
 
       if (recordModified) {
-        // Recalculate record-level totals
-        const totalWorkHours = record.sessions.reduce(
+        // Recalculate record-level totals via the shared pay-math helper
+        // (breaks, OT, holiday hours all consistent with the controller).
+        const rawHours = record.sessions.reduce(
           (sum, s) => sum + (s.workedHours || 0),
           0
         );
 
-        let status = 'absent';
-        if (totalWorkHours >= fullDayHours) {
-          status = 'fullday';
-        } else if (totalWorkHours >= halfDayHours) {
-          status = 'halfday';
-        }
+        const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+          rawHours,
+          { fullDayHours, halfDayHours, overtimeThreshold, breakDurationMinutes: (workConfig && workConfig.breakDurationMinutes) || 0 },
+          record.breaksTaken ?? null,
+          { isHoliday: record.isHoliday, reason: record.holidayReason }
+        );
 
-        let overtimeHours = 0;
-        if (totalWorkHours > overtimeThreshold) {
-          overtimeHours = totalWorkHours - overtimeThreshold;
-        }
-
-        record.totalWorkHours = totalWorkHours;
+        record.totalWorkHours = netWorkHours;
         record.status = status;
         record.overtimeHours = overtimeHours;
+        record.holidayHours = holidayHours;
 
         await record.save();
         totalUpdated++;

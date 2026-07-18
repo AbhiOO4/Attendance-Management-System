@@ -50,6 +50,7 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h, resolveCutoffForDate, type CutoffEntry } from "@/lib/dateUtils"
+import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -122,6 +123,10 @@ export interface AttendanceRecord {
   status?: "fullday" | "halfday" | "absent"
 
   isHoliday?: boolean
+
+  holidayReason?: HolidayReason
+
+  holidayHours?: number
 
   totalWorkHours: number
 
@@ -358,6 +363,9 @@ const [sessionToDelete, setSessionToDelete] =
   }, [rawHours, breaksApplied, config.breakDurationMinutes])
 
   const overtimeHours = useMemo(() => {
+    // No overtime on holidays — only holiday hours are credited.
+    if (record?.isHoliday) return 0
+
     if (
       totalWorkHours <=
       config.overtimeThreshold
@@ -371,8 +379,31 @@ const [sessionToDelete, setSessionToDelete] =
       ).toFixed(2)
     )
   }, [
+    record?.isHoliday,
     totalWorkHours,
     config.overtimeThreshold,
+  ])
+
+  const holidayHours = useMemo(() => {
+    if (!record?.isHoliday) return 0
+
+    // The holiday calc uses the raw-hours status (fullday/halfday/absent),
+    // matching the server — not display statuses like "sick"/"pending".
+    const rawStatus =
+      rawHours >= config.fullDayHours
+        ? "fullday"
+        : rawHours >= config.halfDayHours
+          ? "halfday"
+          : "absent"
+
+    return computeHolidayHours(totalWorkHours, rawStatus, record?.holidayReason ?? null)
+  }, [
+    record?.isHoliday,
+    record?.holidayReason,
+    rawHours,
+    totalWorkHours,
+    config.fullDayHours,
+    config.halfDayHours,
   ])
 
   const status = useMemo(() => {
@@ -1074,6 +1105,33 @@ const [sessionToDelete, setSessionToDelete] =
                 {overtimeHours} hrs
               </p>
             </div>
+
+            {record?.isHoliday && (
+              <>
+                <Separator />
+
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-muted-foreground">
+                      Holiday Hours
+                    </p>
+
+                    <Badge
+                      variant="secondary"
+                      className="bg-yellow-100 text-yellow-800 border-yellow-300 text-xs"
+                    >
+                      {record.holidayReason === "weekly"
+                        ? "Weekly Holiday"
+                        : "Public Holiday"}
+                    </Badge>
+                  </div>
+
+                  <p className="text-3xl font-bold">
+                    {holidayHours} hrs
+                  </p>
+                </div>
+              </>
+            )}
 
             <Separator />
 
