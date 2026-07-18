@@ -599,6 +599,6 @@ const setSiteCutoffHistory = async (siteName, entries) => {
 //   { cutoffHour: 7, effectiveFrom: "1970-01-01" },
 // ]);
 
-// recalculateExistingAttendance();
+recalculateExistingAttendance();
 
 

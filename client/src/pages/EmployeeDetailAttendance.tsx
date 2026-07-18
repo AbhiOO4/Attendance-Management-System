@@ -191,7 +191,7 @@ function EmployeeAttendanceDetail() {
               orientation: "landscape",
               fitToPage: true,
               fitToWidth: 1,
-              fitToHeight: 0,
+              fitToHeight: 1,
               horizontalCentered: true,
               margins: {
                 left: 0.3,
@@ -223,7 +223,7 @@ function EmployeeAttendanceDetail() {
       })
 
       worksheet.addImage(logoId, {
-        tl: { col: 9.6, row: 0 },
+        tl: { col: 10.6, row: 0 },
         ext: { width: 64, height: 64 },
       })
 
@@ -231,7 +231,7 @@ function EmployeeAttendanceDetail() {
       // COMPANY NAME
       // --------------------------
 
-      worksheet.mergeCells("A1:K1")
+      worksheet.mergeCells("A1:L1")
       worksheet.getRow(1).height = 30
 
       const companyCell = worksheet.getCell("A1")
@@ -246,7 +246,7 @@ function EmployeeAttendanceDetail() {
       // SUBTITLE
       // --------------------------
 
-      worksheet.mergeCells("A2:K2")
+      worksheet.mergeCells("A2:L2")
       worksheet.getRow(2).height = 22
 
       const subtitleCell = worksheet.getCell("A2")
@@ -275,8 +275,8 @@ function EmployeeAttendanceDetail() {
           leftValue,
           "",
           "",
-          rightLabel,
           "",
+          rightLabel,
           "",
           rightValue,
         ])
@@ -285,17 +285,17 @@ function EmployeeAttendanceDetail() {
 
         const r = row.number
         worksheet.mergeCells(r, 1, r, 2) // label
-        worksheet.mergeCells(r, 3, r, 5) // value
-        worksheet.mergeCells(r, 6, r, 8) // label
-        worksheet.mergeCells(r, 9, r, 11) // value
+        worksheet.mergeCells(r, 3, r, 6) // value
+        worksheet.mergeCells(r, 7, r, 8) // label
+        worksheet.mergeCells(r, 9, r, 12) // value
 
-        ;[1, 6].forEach((col) => {
+        ;[1, 7].forEach((col) => {
           row.getCell(col).font = { bold: true, size: 10 }
         })
         ;[3, 9].forEach((col) => {
           row.getCell(col).font = { size: 10 }
         })
-        ;[1, 3, 6, 9].forEach((col) => {
+        ;[1, 3, 7, 9].forEach((col) => {
           row.getCell(col).alignment = {
             horizontal: "left",
             vertical: "middle",
@@ -335,6 +335,7 @@ function EmployeeAttendanceDetail() {
         worksheet.addRow([
           "Date",
           "Site\nName",
+          "Job\nNo",
           "Check\nIn",
           "Check\nOut",
           "Worked\nHours",
@@ -362,7 +363,7 @@ function EmployeeAttendanceDetail() {
           type: "pattern",
           pattern: "solid",
           fgColor: {
-            argb: "D9F7E0",
+            argb: "81C784",
           },
         }
 
@@ -394,6 +395,9 @@ function EmployeeAttendanceDetail() {
             date.toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 3)
             + " " + date.getDate()
 
+          // Fridays get a darker fill so they stand out on B&W printouts.
+          const isFriday = date.getDay() === 5
+
           if (!record) {
             const emptyRow = worksheet.addRow([
               shortDate,
@@ -407,9 +411,10 @@ function EmployeeAttendanceDetail() {
               "",
               "",
               "",
+              "",
             ])
 
-            for (let col = 1; col <= 11; col++) {
+            for (let col = 1; col <= 12; col++) {
               const cell = emptyRow.getCell(col)
 
               cell.font = { size: 8 }
@@ -427,7 +432,13 @@ function EmployeeAttendanceDetail() {
                 right: { style: "thin" },
               }
 
-              if (index % 2 !== 0) {
+              if (isFriday) {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "4CAF50" },
+                }
+              } else if (index % 2 !== 0) {
                 cell.fill = {
                   type: "pattern",
                   pattern: "solid",
@@ -465,6 +476,9 @@ function EmployeeAttendanceDetail() {
                     : "",
 
                   session?.siteName ||
+                  "-",
+
+                  session?.jobCode ||
                   "-",
 
                   session?.checkIn
@@ -535,7 +549,15 @@ function EmployeeAttendanceDetail() {
                   },
                 }
 
-                if (index % 2 !== 0) {
+                if (isFriday) {
+                  cell.fill = {
+                    type: "pattern",
+                    pattern: "solid",
+                    fgColor: {
+                      argb: "4CAF50",
+                    },
+                  }
+                } else if (index % 2 !== 0) {
                   cell.fill = {
                     type: "pattern",
                     pattern: "solid",
@@ -562,12 +584,12 @@ function EmployeeAttendanceDetail() {
           ) {
             ;[
               1, // Date
-              6, // Break
-              7, // Total Hours
-              8, // OT Hours
-              9, // Holiday Hours
-              10, // Status
-              11, // Sick Leave
+              7, // Break
+              8, // Total Hours
+              9, // OT Hours
+              10, // Holiday Hours
+              11, // Status
+              12, // Sick Leave
             ].forEach((col) => {
               worksheet.mergeCells(
                 startRow,
@@ -591,6 +613,7 @@ function EmployeeAttendanceDetail() {
         "",
         "",
         "",
+        "",
         round2(totals.totalHours),
         round2(totals.otHours),
         round2(totals.holidayHours),
@@ -602,7 +625,7 @@ function EmployeeAttendanceDetail() {
         totalsRow.number,
         1,
         totalsRow.number,
-        6
+        7
       )
 
       totalsRow.eachCell((cell) => {
@@ -620,7 +643,7 @@ function EmployeeAttendanceDetail() {
           type: "pattern",
           pattern: "solid",
           fgColor: {
-            argb: "B7EBC4",
+            argb: "66BB6A",
           },
         }
 
@@ -698,8 +721,8 @@ function EmployeeAttendanceDetail() {
       // COLUMN WIDTHS
       // --------------------------
 
-      //          Date Site ChkIn ChkOut Worked Break Total OT Holiday Status Sick
-      const colWidths = [8, 13, 9, 9, 8, 6, 7, 6, 8, 9, 7]
+      //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status Sick
+      const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 9, 7]
       worksheet.columns =
         worksheet.columns.map(
           (column, index) => ({
@@ -1060,16 +1083,16 @@ function EmployeeAttendanceDetail() {
                                       sessions.length
                                     }
                                   >
-                                    {new Date(
-                                      record.date
-                                    ).toLocaleDateString(
-                                      "en-IN",
-                                      {
-                                        day: "2-digit",
-                                        month: "short",
-                                        year: "numeric",
-                                      }
-                                    )}
+                                    {(() => {
+                                      const d = new Date(record.date)
+                                      return (
+                                        d.toLocaleDateString("en-IN", {
+                                          weekday: "short",
+                                        }).slice(0, 3) +
+                                        " " +
+                                        d.getDate()
+                                      )
+                                    })()}
                                   </TableCell>
                                 </>
                               )}
