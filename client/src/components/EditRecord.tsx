@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import {
   Dialog,
@@ -49,7 +49,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimes, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h, resolveCutoffForDate, type CutoffEntry } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
@@ -68,9 +68,6 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
-  // Per-site derived cutoff (machine-managed on the server)
-  nightShiftCutoffHour?: number
-  cutoffHistory?: CutoffEntry[]
 }
 
 interface AttendanceSession {
@@ -171,7 +168,7 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
   const [saving, setSaving] =
     useState(false)
 
-  const { config: workConfig, cutoffFor } = useWorkConfig()
+  const { config: workConfig } = useWorkConfig()
 
   const config = useMemo(
     () => ({
@@ -183,20 +180,6 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
     [workConfig]
   )
 
-  // The cutoff in force on THIS record's business day. Using today's cutoff instead would
-  // reject a record that was perfectly legal when it was written (e.g. a 06:30 night
-  // check-out created under a 7 AM cutoff, after the cutoff dropped to 4 AM).
-  // Cutoffs are per-site: each session resolves through its own site's history (from the
-  // fetched sites list); the global cutoffFor is only the fallback for legacy sessions
-  // whose site is gone.
-  const siteById = useMemo(() => new Map(sites.map((s) => [s._id, s])), [sites])
-  const cutoffForSession = useCallback(
-    (siteId?: string | null) => {
-      const s = siteId ? siteById.get(siteId) : null
-      return s ? resolveCutoffForDate(s, record?.date) : cutoffFor(record?.date)
-    },
-    [siteById, record?.date, cutoffFor]
-  )
 
 
 const [deleteDialogOpen, setDeleteDialogOpen] =
@@ -460,30 +443,16 @@ const [sessionToDelete, setSessionToDelete] =
     const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
     const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-    // Auto-detect and preserve night shift based on original session state, preventing keystroke pollution
-    const originalSession = record?.sessions?.find((s: any) => s._id === updated[index]._id)
-    const originalIsNight = originalSession?.isNightShift || false
-    const sessionCutoff = cutoffForSession(updated[index].siteId)
-    let nextIsNight = false
-    if (checkInVal) {
-      const [inH] = checkInVal.split(":").map(Number)
-      const isDayOnlyCheckIn = inH >= sessionCutoff && inH < 12 // cutoff to 12 PM
-      if (originalIsNight) {
-        nextIsNight = !isDayOnlyCheckIn
-      } else {
-        const inRange = inH >= 0 && inH < sessionCutoff
-        const crossesMidnight = checkOutVal ? isCrossMidnight(checkInVal, checkOutVal, false) : false
-        nextIsNight = inRange || crossesMidnight
-      }
-    } else {
-      nextIsNight = originalIsNight
-    }
+    // Cutoff-free (cutoff redesign): derive day offsets from the raw times — a check-out
+    // that reads earlier than the check-in rolls to the next day. No cutoff, so an 08:00
+    // night check-out is placed correctly instead of clamping worked hours to 0.
+    const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInVal, checkOutVal)
 
-    updated[index].isNightShift = nextIsNight
+    updated[index].isNightShift = checkInNextDay || checkOutNextDay
 
-    // Combine date and time
-    updated[index].checkIn = checkInVal ? combineDateAndTime(record?.date || "", checkInVal, undefined, nextIsNight, sessionCutoff) : null
-    updated[index].checkOut = checkOutVal ? combineDateAndTime(record?.date || "", checkOutVal, checkInVal, nextIsNight, sessionCutoff) : null
+    // Combine date and time from the offsets
+    updated[index].checkIn = checkInVal ? combineFromOffset(record?.date || "", checkInVal, checkInNextDay) : null
+    updated[index].checkOut = checkOutVal ? combineFromOffset(record?.date || "", checkOutVal, checkOutNextDay) : null
     updated[index].workedHours = calculateWorkedHours(
       updated[index].checkIn,
       updated[index].checkOut
@@ -619,7 +588,8 @@ const [sessionToDelete, setSessionToDelete] =
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const err = validateSessionTimes(inTime, outTime, session.isNightShift, cutoffForSession(session.siteId))
+      const { checkInNextDay, checkOutNextDay } = deriveOffsets(inTime, outTime)
+      const err = validateSessionTimesV2(inTime, outTime, checkInNextDay, checkOutNextDay)
       if (err) {
         errors[index] = err
         hasError = true

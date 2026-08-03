@@ -6,12 +6,13 @@ import {
   getCurrentLocalTime,
   getTodayLocal,
   getDateLocal,
-  combineDateAndTimeLocal,
+  combineFromOffset,
+  deriveOffsets,
   toLocalTimeString,
+  MAX_SHIFT_HOURS,
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
-import { resolveCutoffForDate } from '../utils/cutoff.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 
 /**
@@ -34,11 +35,6 @@ async function processSites(sites, dateStr, mode, workConfig, staffIds = []) {
 
   for (const site of sites) {
     try {
-      // Cutoffs are per-site: resolve for the business day we're closing out (the night
-      // modes close YESTERDAY's records, which on a changeover day still belong to the
-      // site's previous cutoff).
-      const cutoffHour = resolveCutoffForDate(site, dateStr);
-
       let checkOutTimeStr;
       if (mode === 'night') checkOutTimeStr = site.nightDefaultCheckOut;
       else if (mode === 'staff') checkOutTimeStr = site.staffDefaultCheckOut;
@@ -85,18 +81,17 @@ async function processSites(sites, dateStr, mode, workConfig, staffIds = []) {
             }
           }
 
-          const checkOutDate = combineDateAndTimeLocal(dateStr, checkOutTimeStr, {
-            referenceCheckIn: checkInTimeStr,
-            isNightShift: isNight,
-            cutoffHour,
-          });
+          // Cutoff-free: the check-out rolls to the next day exactly when it reads earlier
+          // than the check-in. The stored check-in's own offset carries through unchanged.
+          const { checkOutNextDay } = deriveOffsets(checkInTimeStr, checkOutTimeStr, !!session.checkInNextDay);
+          const checkOutDate = combineFromOffset(dateStr, checkOutTimeStr, checkOutNextDay);
 
           // Worked hours must be valid (check-in chronologically before check-out)
           const workedHours =
             (checkOutDate.getTime() - new Date(session.checkIn).getTime()) /
             (1000 * 60 * 60);
 
-          if (!(workedHours > 0 && workedHours <= 24)) continue;
+          if (!(workedHours > 0 && workedHours <= MAX_SHIFT_HOURS)) continue;
 
           // In-memory dry-run overlap check against the record's other sessions
           const candidate = record.sessions.map((s) =>

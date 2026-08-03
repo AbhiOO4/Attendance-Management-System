@@ -4,10 +4,9 @@ import Attendance from '../models/attendanceModel.js';
 import {
   getCurrentLocalTime,
   getTodayLocal,
-  combineDateAndTimeLocal,
+  combineFromOffset,
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
-import { resolveCutoffForDate } from '../utils/cutoff.js';
 
 /**
  * Run the auto check-in process for night shifts.
@@ -38,10 +37,6 @@ async function runAutoCheckIn() {
       try {
         if (!site.nightDefaultCheckIn) continue;
 
-        // Cutoffs are per-site: the records being filled are dated todayStr, so use this
-        // site's cutoff for that day.
-        const cutoffHour = resolveCutoffForDate(site, todayStr);
-
         // Today's records that have a session at this site
         const records = await Attendance.find({
           date: todayDate,
@@ -64,10 +59,12 @@ async function runAutoCheckIn() {
               !session.checkIn &&
               !session.checkOut
             ) {
-              const checkInDate = combineDateAndTimeLocal(
+              // Cutoff-free: a night check-in default is an evening time, so it belongs
+              // to the record's own business day (offset 0).
+              const checkInDate = combineFromOffset(
                 todayStr,
                 site.nightDefaultCheckIn,
-                { isNightShift: true, cutoffHour }
+                false
               );
 
               // In-memory dry-run overlap check against the record's other sessions

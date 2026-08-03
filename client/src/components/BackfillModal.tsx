@@ -42,7 +42,7 @@ import {
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { isCrossMidnight, combineDateAndTime, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, combineFromOffset, deriveOffsets, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
@@ -291,17 +291,14 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
       const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-      // Backfill is the deliberate cutoff-free path: times are combined literally with the
-      // day being backfilled (cutoff 0 = no early-morning window; a check-out earlier than
-      // its check-in still bumps to the next calendar day). Night shift = cross-midnight.
-      const nextIsNight = checkInVal && checkOutVal
-        ? isCrossMidnight(checkInVal, checkOutVal, false)
-        : false
+      // Times combine literally with the day being backfilled; a check-out earlier than its
+      // check-in rolls to the next calendar day (the standard offset rule).
+      const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInVal, checkOutVal)
 
-      updated[index].isNightShift = nextIsNight
+      updated[index].isNightShift = checkInNextDay || checkOutNextDay
 
-      updated[index].checkIn = checkInVal ? combineDateAndTime(date, checkInVal, undefined, false, 0) : null
-      updated[index].checkOut = checkOutVal ? combineDateAndTime(date, checkOutVal, checkInVal, false, 0) : null
+      updated[index].checkIn = checkInVal ? combineFromOffset(date, checkInVal, checkInNextDay) : null
+      updated[index].checkOut = checkOutVal ? combineFromOffset(date, checkOutVal, checkOutNextDay) : null
       updated[index].workedHours = calculateWorkedHours(
         updated[index].checkIn,
         updated[index].checkOut

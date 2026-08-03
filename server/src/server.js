@@ -17,7 +17,7 @@ app.use(
 import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
 import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
-import { ensureCutoffHistory, ensureSiteCutoffHistories, ensureOvertimePayFields } from './controllers/configController.js'
+import { ensureOvertimePayFields } from './controllers/configController.js'
 // Night check-in is now pre-filled when a night shift is assigned (see
 // assignNightShift), so the auto check-in cron is no longer scheduled.
 
@@ -67,10 +67,6 @@ const initializePermanentSite = async () => {
 
 connectDB().then(async () => {
     await initializePermanentSite();
-    await ensureCutoffHistory();
-    // Order matters: the permanent site must exist and the global history must be seeded
-    // before sites copy it.
-    await ensureSiteCutoffHistories();
     await ensureOvertimePayFields();
     startAutoCheckOutCron();
     app.listen(process.env.PORT || 3000, () => {

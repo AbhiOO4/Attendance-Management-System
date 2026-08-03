@@ -11,44 +11,24 @@ import { useLocation } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
-import {
-  getCurrentCutoff,
-  resolveCutoffForDate,
-  type WorkConfig,
-} from "@/lib/dateUtils"
+import { type WorkConfig } from "@/lib/dateUtils"
 
 /**
  * Single source of the work schedule for the whole app (pay numbers, holidays, breaks).
  *
- * CUTOFFS ARE PER-SITE NOW: each Site doc carries its own machine-derived
- * nightShiftCutoffHour + cutoffHistory (derived from the site's default shift times).
- * Site-scoped code must resolve from the site doc via dateUtils:
- *   getCurrentCutoff(site)                    — "now" questions for that site
- *   resolveCutoffForDate(site, record.date)   — reading/validating an existing record
- *
- * The two accessors here remain ONLY for (a) pages with no single site in scope
- * (MarkAttendance's site list, DashBoard's date label — an approximation when site cutoffs
- * diverge; the authoritative view is SiteAttendance) and (b) fallbacks while a site doc is
- * loading or for legacy sessions whose site is gone:
- *
- *   cutoffFor(date)  the GLOBAL fallback cutoff for a specific business day.
- *   currentCutoff    the GLOBAL fallback cutoff in force right now.
+ * There is no business-day cutoff hour any more: a record's business day IS its
+ * `Attendance.date`, and cross-midnight is an explicit per-session day offset. Nothing
+ * here needs to resolve a boundary hour.
  */
 type WorkConfigContextType = {
   config: WorkConfig | null
   loading: boolean
-  currentCutoff: number
-  cutoffFor: (businessDate: string | Date | null | undefined) => number
   refreshConfig: () => Promise<WorkConfig | null>
 }
 
 const WorkConfigContext = createContext<WorkConfigContextType>({
   config: null,
   loading: true,
-  // Pre-fetch placeholder: 0 = midnight boundary (no early-morning window). Real values
-  // always come from the fetched config/site docs.
-  currentCutoff: 0,
-  cutoffFor: () => 0,
   refreshConfig: async () => null,
 })
 
@@ -76,8 +56,7 @@ export const WorkConfigProvider = ({
       setConfig(next)
       return next
     } catch {
-      // Keep the last-known config on a transient failure: a null cutoff history would
-      // silently collapse every date onto the current cutoff.
+      // Keep the last-known config on a transient failure rather than dropping to null.
       return config
     } finally {
       inFlight.current = false
@@ -98,9 +77,8 @@ export const WorkConfigProvider = ({
   }, [user])
 
   // Revalidate on navigation and when the tab regains focus. The work schedule is a
-  // singleton an admin can change at any time, and the cutoff history it carries decides how
-  // every past record is validated — a tab holding a stale copy would reject edits that are
-  // actually legal (or accept ones that aren't).
+  // singleton an admin can change at any time, and its pay numbers drive hours/OT display —
+  // a tab holding a stale copy would show wrong totals.
   useEffect(() => {
     if (!user) return
     refreshConfig()
@@ -127,8 +105,6 @@ export const WorkConfigProvider = ({
     () => ({
       config,
       loading,
-      currentCutoff: getCurrentCutoff(config),
-      cutoffFor: (businessDate) => resolveCutoffForDate(config, businessDate),
       refreshConfig,
     }),
     [config, loading, refreshConfig]

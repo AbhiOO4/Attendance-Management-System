@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { deriveRawOffsetFields } from "../utils/timeLocal.js";
 
 const attendanceSessionSchema = new mongoose.Schema(
   {
@@ -13,12 +14,41 @@ const attendanceSessionSchema = new mongoose.Schema(
       ref: "Job",
     },
 
+    // Absolute UTC instants. As of the cutoff redesign these are a DERIVED CACHE
+    // recomputed from date + raw{CheckIn,CheckOut} + {checkIn,checkOut}NextDay on
+    // every write; the raw fields + offsets below are the source of truth. Kept
+    // because sorting / overlap / hours math read an absolute instant.
     checkIn: {
       type: Date,
     },
 
     checkOut: {
       type: Date,
+    },
+
+    // Source of truth (cutoff redesign): the times exactly as entered ("HH:mm"),
+    // plus a per-endpoint day offset from the record's business day (Attendance.date).
+    // A punch is on `date` when its NextDay flag is false, or on `date + 1` when true.
+    // This makes cross-midnight an explicit fact instead of inferring it from a
+    // global cutoff hour. Optional during migration; populated on every write.
+    rawCheckIn: {
+      type: String,
+      default: null,
+    },
+
+    rawCheckOut: {
+      type: String,
+      default: null,
+    },
+
+    checkInNextDay: {
+      type: Boolean,
+      default: false,
+    },
+
+    checkOutNextDay: {
+      type: Boolean,
+      default: false,
     },
 
     workedHours: {
@@ -191,6 +221,23 @@ attendanceSchema.pre("save", async function () {
     this.sessions.some((s) => s && (s.checkIn || s.checkOut))
   ) {
     this.isSickLeave = false;
+  }
+
+  // Cutoff redesign — stamp each session's source-of-truth raw times + day offsets
+  // from its already-computed absolute Dates + this record's business day. Derived
+  // from the Dates so it stays consistent with whatever produced them, and — like the
+  // sick-leave invariant above — covers every write path because they all go through
+  // .save(). (Phase 4 inverts this: raw+offset become the input and Dates the output.)
+  if (Array.isArray(this.sessions)) {
+    for (const s of this.sessions) {
+      if (!s) continue;
+      const { rawCheckIn, rawCheckOut, checkInNextDay, checkOutNextDay } =
+        deriveRawOffsetFields(this.date, s.checkIn, s.checkOut);
+      s.rawCheckIn = rawCheckIn;
+      s.rawCheckOut = rawCheckOut;
+      s.checkInNextDay = checkInNextDay;
+      s.checkOutNextDay = checkOutNextDay;
+    }
   }
 });
 

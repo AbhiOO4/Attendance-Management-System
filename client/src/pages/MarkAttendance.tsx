@@ -1,6 +1,6 @@
 import { api } from "@/lib/api"
 import { useEffect, useMemo, useState } from "react"
-import { getLogicalShiftDate, formatCurrentDateLabel } from "@/lib/dateUtils"
+import { getCurrentTargetDateString, formatCurrentDateLabel } from "@/lib/dateUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
 import { Card, CardContent } from "@/components/ui/card"
@@ -32,9 +32,9 @@ function MarkAttendance() {
   const [attendanceStatus, setAttendanceStatus] =
     useState<SiteAttendanceStatus>({})
 
-  // This page only ever deals with today's roster, so the currently-active cutoff applies.
-  const { currentCutoff: cutoffHour, loading: configLoading } = useWorkConfig()
-  const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
+  // This page only ever deals with today's roster — the plain calendar day.
+  const { loading: configLoading } = useWorkConfig()
+  const today = useMemo(() => getCurrentTargetDateString(), [])
 
   const formattedDate = formatCurrentDateLabel()
 
@@ -74,11 +74,10 @@ function MarkAttendance() {
   }
 
   useEffect(() => {
-    // Wait for the config: the logical business day depends on the cutoff.
     if (configLoading) return
-    fetchSites(getLogicalShiftDate(cutoffHour))
+    fetchSites(today)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configLoading, cutoffHour])
+  }, [configLoading, today])
 
   if (loading) {
     return (

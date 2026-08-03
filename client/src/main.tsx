@@ -44,8 +44,8 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AuthProvider>
       <BrowserRouter>
-        {/* Inside the router: WorkConfigProvider refetches the cutoff history on navigation,
-            so a long-lived tab can't validate against a stale work schedule. */}
+        {/* Inside the router: WorkConfigProvider refetches the work schedule on navigation,
+            so a long-lived tab can't compute hours from stale pay settings. */}
         <WorkConfigProvider>
           <ThemeProvider
             attribute="class"

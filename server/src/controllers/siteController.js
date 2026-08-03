@@ -10,17 +10,8 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
-import { combineDateAndTimeLocal } from '../utils/timeLocal.js'
+import { combineFromOffset } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
-import {
-  getCurrentCutoff,
-  resolveCutoffForDate,
-  LEGACY_CUTOFF_EPOCH,
-} from '../utils/cutoff.js'
-import {
-  deriveSiteCutoff,
-  applyDerivedCutoff,
-} from '../utils/siteCutoff.js'
 
 
 //Admin
@@ -37,7 +28,7 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut nightShiftCutoffHour cutoffHistory").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -127,15 +118,6 @@ export const createSite = async (req , res) => {
     try{
         const {siteName, locationDetails} = req.body
         const newSite = new siteModel({siteName, locationDetails})
-        // Seed the cutoff history at creation from the site's OWN derived cutoff — a new
-        // site has no past records to stay consistent with, so it doesn't inherit the
-        // global/legacy history. With no default times set yet this derives 0 (midnight):
-        // plain calendar days until a night default check-out is configured.
-        const derived = deriveSiteCutoff(newSite)
-        newSite.cutoffHistory = [
-            { cutoffHour: derived.conflict ? 0 : derived.cutoffHour, effectiveFrom: LEGACY_CUTOFF_EPOCH },
-        ]
-        newSite.nightShiftCutoffHour = getCurrentCutoff(newSite)
         await newSite.save()
         res.status(201).json(newSite)
     }
@@ -1307,10 +1289,8 @@ export const instaAddEmployee = async (req, res) => {
     }
 
     const todayStr = today.toISOString().split("T")[0]
-    // Cutoffs are per-site: interpret the check-in with THIS site's cutoff for today.
-    const checkInDate = combineDateAndTimeLocal(todayStr, checkInTime, {
-      cutoffHour: resolveCutoffForDate(site, todayStr),
-    })
+    // Cutoff-free: a check-in time belongs to the record's own business day (offset 0).
+    const checkInDate = combineFromOffset(todayStr, checkInTime, false)
 
     // ----------------------------------
     // OVERLAP CHECK & AUTO-CLOSE
@@ -1852,11 +1832,10 @@ export const updateSite = async (req, res) => {
       return h * 60 + m;
     };
 
-    // --- NIGHT SHIFT SANITY VALIDATION (cutoff-independent) ---
-    // The site's cutoff is DERIVED from these times (utils/siteCutoff.js), so the old
-    // "must straddle the cutoff" check is gone. What remains are the absolute constraints
-    // validateSessionTimes enforces regardless of cutoff: night check-ins must be in the
-    // PM half (rule 4 rejects [cutoff, 12)), night check-outs in the AM half.
+    // --- NIGHT SHIFT SANITY VALIDATION ---
+    // Absolute constraints only: a night DEFAULT check-in must be in the PM half and a
+    // night DEFAULT check-out in the AM half. These bound the site's default times; actual
+    // sessions are free-form and validated by ordering + duration (utils/timeLocal.js).
     const effectiveTimes = {
       defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn,
       staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : site.staffDefaultCheckIn,
@@ -1892,13 +1871,10 @@ export const updateSite = async (req, res) => {
       }
     }
 
-    // --- CUTOFF DERIVATION ---
-    // The business-day boundary is derived from the effective times. A conflict here means
-    // the times themselves are contradictory (night shift ends after the day shift starts).
-    const derived = deriveSiteCutoff(effectiveTimes);
-    if (derived.conflict) {
-      return res.status(400).json({ message: derived.conflict });
-    }
+    // NOTE: there is no business-day "cutoff" any more — a site's day and night default
+    // windows may overlap freely (a 06:00 day start alongside an 08:00 night end), because
+    // cross-midnight is recorded per session as an explicit day offset rather than inferred
+    // from a global hour. Only the absolute per-shift sanity rules below still apply.
 
     // --- DAY SHIFT VALIDATION ---
     // Resolve the effective day times (incoming value overrides stored value)
@@ -1960,12 +1936,6 @@ export const updateSite = async (req, res) => {
     if (staffNightDefaultCheckIn !== undefined) site.staffNightDefaultCheckIn = staffNightDefaultCheckIn;
     if (staffNightDefaultCheckOut !== undefined) site.staffNightDefaultCheckOut = staffNightDefaultCheckOut;
 
-    // Record the derived cutoff, effective from TOMORROW's business day. Propagation below
-    // runs with this already-updated site doc, and that is correct by construction:
-    // resolveCutoffForDate(site, today/yesterday) still returns the cutoff active on those
-    // days — the new value only governs tomorrow onward.
-    const cutoffChange = applyDerivedCutoff(site, derived.cutoffHour);
-
     await site.save();
 
     // Propagate changes to today's attendance records if requested
@@ -1992,7 +1962,6 @@ export const updateSite = async (req, res) => {
         return res.status(200).json({
           ...site.toObject(),
           propagation,
-          cutoffChange,
         });
       } catch (propagationError) {
         console.error('Error propagating default changes:', propagationError);
@@ -2004,12 +1973,11 @@ export const updateSite = async (req, res) => {
             skipped: [],
             error: 'Failed to propagate changes to attendance records',
           },
-          cutoffChange,
         });
       }
     }
 
-    return res.status(200).json({ ...site.toObject(), cutoffChange });
+    return res.status(200).json({ ...site.toObject() });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Internal server error" });

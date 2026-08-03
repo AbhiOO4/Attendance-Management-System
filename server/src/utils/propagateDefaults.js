@@ -30,34 +30,32 @@ import {
   getCurrentLocalTime,
   getTodayLocal,
   getDateLocal,
-  combineDateAndTimeLocal,
+  combineFromOffset,
+  deriveOffsets,
   toLocalTimeString,
   getAppOffsetMinutes,
+  MAX_SHIFT_HOURS,
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
 import { computeAttendanceTotals } from './attendanceMath.js';
 import { getStaffEmployeeIds } from './collar.js';
-import { getCurrentCutoff, resolveCutoffForDate } from './cutoff.js';
 
 /**
- * Determine the logical target date for a given field change.
+ * Determine the target business day for a given field change.
  *
- * Night shift check-out targets:
- *   - yesterday's records if current local hour < cutoffHour (extended period)
- *   - today's records if current local hour >= cutoffHour
+ * A night shift's check-out lands the MORNING AFTER the record's own business day, so a
+ * night check-out default targets whichever business day's night shift is currently
+ * ending: in the morning that is yesterday's record, from noon onward it is today's.
+ * Noon is the same morning/afternoon boundary the carryover UI uses.
  *
  * All other fields target today's records.
  */
-function getTargetDate(field, cutoffHour) {
+function getTargetDate(field) {
   if (field === 'nightDefaultCheckOut' || field === 'staffNightDefaultCheckOut') {
-    // Get current local hour
     const offset = getAppOffsetMinutes();
-    const now = new Date();
-    const localTime = new Date(now.getTime() - offset * 60 * 1000);
-    const currentHour = localTime.getUTCHours();
-
-    if (currentHour < cutoffHour) {
-      // Extended period: we're still in the previous business day
+    const localTime = new Date(Date.now() - offset * 60 * 1000);
+    if (localTime.getUTCHours() < 12) {
+      // Morning: the night shift ending now belongs to yesterday's record.
       return getDateLocal(-1);
     }
     return getTodayLocal();
@@ -115,8 +113,7 @@ function skippedEntry(record, reason, field) {
 /**
  * Propagate default value changes to matching attendance records.
  *
- * @param {Object}  site          - The site document (already saved with new values,
- *                                  including its cutoffHistory — cutoffs are per-site)
+ * @param {Object}  site          - The site document (already saved with new values)
  * @param {Object}  prevDefaults  - Previous default values before the change
  * @param {Object}  newDefaults   - New default values (same shape as prevDefaults)
  * @param {Object}  workConfig    - Work schedule config, used only for the pay numbers
@@ -125,12 +122,6 @@ function skippedEntry(record, reason, field) {
  * @returns {Object} { updated: number, skipped: Array<{ employeeId, employeeName, reason, field }> }
  */
 export async function propagateDefaultChanges(site, prevDefaults, newDefaults, workConfig) {
-  // Deciding WHICH day to propagate onto is a "now" question (are we in the extended
-  // period?), so it uses the site's currently-active cutoff. Combining a time ONTO that day
-  // is a per-day question, and is resolved separately below once the target date is known.
-  // Note: `site` may already carry a freshly derived cutoff entry, but that entry is
-  // effective from TOMORROW, so today's/yesterday's resolution below is unaffected.
-  const currentCutoff = getCurrentCutoff(site);
   const fullDayHours = (workConfig && workConfig.fullDayHours) || 8;
   const halfDayHours = (workConfig && workConfig.halfDayHours) || 4;
   const overtimeThreshold = (workConfig && workConfig.overtimeThreshold) || 8;
@@ -173,11 +164,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     const isCheckIn = isCheckInField(field);
     const transition =
       oldTimeStr && newTimeStr ? 'update' : oldTimeStr ? 'clear' : 'fill';
-    const targetDateStr = getTargetDate(field, currentCutoff);
-
-    // The cutoff in force on the day we're actually writing to — on a changeover morning
-    // the night check-out target is yesterday, which may still be on the old cutoff.
-    const cutoffHour = resolveCutoffForDate(site, targetDateStr);
+    const targetDateStr = getTargetDate(field);
 
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);
@@ -216,10 +203,9 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
             if (session.checkIn || session.checkOut) continue;
             if (session.manuallyCleared) continue;
 
-            const newCheckInDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
-              isNightShift: isNight,
-              cutoffHour,
-            });
+            // Cutoff-free: a check-in default (day or night) is a time on the record's
+            // own business day, so it always combines with offset 0.
+            const newCheckInDate = combineFromOffset(targetDateStr, newTimeStr, false);
 
             const candidate = record.sessions.map((s) =>
               s._id.toString() === session._id.toString()
@@ -256,10 +242,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
 
           // transition === 'update'
           const prevCheckIn = session.checkIn;
-          const newCheckInDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
-            isNightShift: isNight,
-            cutoffHour,
-          });
+          const newCheckInDate = combineFromOffset(targetDateStr, newTimeStr, false);
 
           const candidate = record.sessions.map((s) =>
             s._id.toString() === session._id.toString()
@@ -280,7 +263,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
               (new Date(session.checkOut).getTime() - newCheckInDate.getTime()) /
               (1000 * 60 * 60);
 
-            if (!(workedHours > 0 && workedHours <= 24)) {
+            if (!(workedHours > 0 && workedHours <= MAX_SHIFT_HOURS)) {
               allSkipped.push(skippedEntry(record, 'invalid_hours', field));
               session.checkIn = prevCheckIn; // revert
               continue;
@@ -297,11 +280,10 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
             if (!session.checkIn || session.checkOut) continue;
 
             const checkInTimeStr = toLocalTimeString(session.checkIn);
-            const newCheckOutDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
-              referenceCheckIn: checkInTimeStr,
-              isNightShift: isNight,
-              cutoffHour,
-            });
+            // Cutoff-free: the check-out rolls to the next day exactly when it reads
+            // earlier than the session's check-in.
+            const { checkOutNextDay: fillNextDay } = deriveOffsets(checkInTimeStr, newTimeStr, !!session.checkInNextDay);
+            const newCheckOutDate = combineFromOffset(targetDateStr, newTimeStr, fillNextDay);
 
             // Never pre-credit hours: only fill when the check-out time has
             // already passed (the cron handles the future case at that time).
@@ -311,7 +293,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
               (newCheckOutDate.getTime() - new Date(session.checkIn).getTime()) /
               (1000 * 60 * 60);
 
-            if (!(workedHours > 0 && workedHours <= 24)) {
+            if (!(workedHours > 0 && workedHours <= MAX_SHIFT_HOURS)) {
               allSkipped.push(skippedEntry(record, 'invalid_hours', field));
               continue;
             }
@@ -349,17 +331,14 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
           if (!session.checkIn) continue;
 
           const checkInTimeStr = toLocalTimeString(session.checkIn);
-          const newCheckOutDate = combineDateAndTimeLocal(targetDateStr, newTimeStr, {
-            referenceCheckIn: checkInTimeStr,
-            isNightShift: isNight,
-            cutoffHour,
-          });
+          const { checkOutNextDay: updNextDay } = deriveOffsets(checkInTimeStr, newTimeStr, !!session.checkInNextDay);
+          const newCheckOutDate = combineFromOffset(targetDateStr, newTimeStr, updNextDay);
 
           const workedHours =
             (newCheckOutDate.getTime() - new Date(session.checkIn).getTime()) /
             (1000 * 60 * 60);
 
-          if (!(workedHours > 0 && workedHours <= 24)) {
+          if (!(workedHours > 0 && workedHours <= MAX_SHIFT_HOURS)) {
             allSkipped.push(skippedEntry(record, 'invalid_hours', field));
             continue;
           }

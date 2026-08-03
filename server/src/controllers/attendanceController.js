@@ -11,76 +11,15 @@ import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
-import { combineDateAndTimeLocal } from '../utils/timeLocal.js';
-import { hasSessionOverlap } from '../utils/sessionOverlap.js';
-import { resolveCutoffForDate, isEarlyMorningCheckIn, validateSessionTimes } from '../utils/cutoff.js';
+import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS } from '../utils/timeLocal.js';
+import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { computeOvertimeRate } from '../utils/payMath.js';
 
 
-// --- NIGHT SHIFT HELPERS ---
-
-/**
- * Combines a date string ("YYYY-MM-DD") and time string ("HH:mm")
- * into a Date object.
- *
- * When isNightShift = true:
- *   Times < cutoffHour are placed on the NEXT calendar day.
- *   Times >= cutoffHour stay on the same calendar day (the evening).
- *
- * When isNightShift = false (default):
- *   If referenceCheckIn is provided and the time is earlier,
- *   the date is advanced by one day (auto cross-midnight detection).
- */
-function combineDateAndTime(dateStr, timeStr, { referenceCheckIn = null, isNightShift = false, cutoffHour, timezoneOffset = null } = {}) {
-  // No default: the cutoff must be resolved for the record's own business day
-  // (see utils/cutoff.js). Silently falling back to 7 would combine onto the wrong day.
-  if (typeof cutoffHour !== "number") {
-    throw new Error("combineDateAndTime requires a cutoffHour resolved for the record's date");
-  }
-
-  // If timezoneOffset is passed (e.g. "-330"), construct standard offset string like "+05:30"
-  let offsetStr = "";
-  let targetOffset = timezoneOffset;
-  if (targetOffset === null || targetOffset === undefined) {
-    targetOffset = process.env.APP_TIMEZONE_OFFSET;
-  }
-
-  if (targetOffset !== null && targetOffset !== undefined && targetOffset !== "") {
-    const offsetVal = parseInt(targetOffset, 10);
-    if (!isNaN(offsetVal)) {
-      const sign = offsetVal <= 0 ? "+" : "-";
-      const absMinutes = Math.abs(offsetVal);
-      const hours = String(Math.floor(absMinutes / 60)).padStart(2, "0");
-      const mins = String(absMinutes % 60).padStart(2, "0");
-      offsetStr = `${sign}${hours}:${mins}`;
-    }
-  }
-
-  if (!offsetStr) {
-    // Default to Indian Standard Time offset (+05:30) if not specified to prevent UTC shift when hosted
-    offsetStr = "+05:30";
-  }
-
-  const dt = new Date(`${dateStr}T${timeStr}:00${offsetStr}`);
-  const [h] = timeStr.split(":").map(Number);
-
-  if (isNightShift) {
-    // Night shift mode: AM times before cutoff → next day
-    if (h < cutoffHour) {
-      dt.setDate(dt.getDate() + 1);
-    }
-  } else if (referenceCheckIn) {
-    // Auto cross-midnight: checkOut < checkIn → next day
-    const [inH, inM] = referenceCheckIn.split(":").map(Number);
-    const [outH, outM] = timeStr.split(":").map(Number);
-    if (outH * 60 + outM < inH * 60 + inM) {
-      dt.setDate(dt.getDate() + 1);
-    }
-  }
-
-  return dt;
-}
+// --- SHIFT HELPERS ---
+// Combining a time onto a business day lives in utils/timeLocal.js (combineFromOffset /
+// deriveOffsets) — cross-midnight is an explicit per-session day offset, not a cutoff.
 
 function toLocalTimeString(dateVal, offsetVal) {
   if (!dateVal) return null;
@@ -194,35 +133,10 @@ async function checkHolidayForDate(dateObj) {
 }
 
 /**
- * Cutoff resolver for one business day, per SESSION-SITE. Cutoffs are per-site (derived
- * from each site's default shift times — see utils/siteCutoff.js), and a record can hold
- * sessions at several sites, so each session must be interpreted with its own site's
- * cutoff. Returns `(siteId) => cutoffHour`; the global config value for `businessDate` is
- * the fallback for legacy/null siteIds.
- */
-async function buildSiteCutoffResolver(siteIds, businessDate, workConfig, dbSession = null) {
-  // siteIds = null → resolve for every site (one small query; used by paths where the
-  // full set of session sites isn't known upfront).
-  const ids = siteIds ? [...new Set(siteIds.filter(Boolean).map(String))] : null;
-  let query = Site.find(ids ? { _id: { $in: ids } } : {}).select('nightShiftCutoffHour cutoffHistory');
-  if (dbSession) query = query.session(dbSession);
-  const sites = ids && ids.length === 0 ? [] : await query;
-  const map = new Map(sites.map((s) => [s._id.toString(), resolveCutoffForDate(s, businessDate)]));
-  const fallback = resolveCutoffForDate(workConfig, businessDate);
-  return (siteId) => {
-    const resolved = siteId ? map.get(siteId.toString()) : undefined;
-    return resolved !== undefined ? resolved : fallback;
-  };
-}
-
-/**
  * Automatically sets the check-out time of a previous session at a different site
  * to the check-in time of the current session, if the previous session is check-in only.
- *
- * `cutoffForSite` is a resolver from buildSiteCutoffResolver for the record's business
- * day: the closed session is re-classified (day vs night) with ITS OWN site's cutoff.
  */
-function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffForSite) {
+function autoClosePreviousSiteSessions(sessions, timezoneOffset = null) {
   if (!Array.isArray(sessions) || sessions.length <= 1) return sessions;
 
   // 1. Sort sessions chronologically by checkIn time. Empty check-ins go last.
@@ -249,10 +163,6 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffFo
     }
   }
 
-  if (typeof cutoffForSite !== "function") {
-    throw new Error("autoClosePreviousSiteSessions requires a per-site cutoff resolver for the record's date");
-  }
-
   // 2. Process sessions
   for (let i = 0; i < sorted.length; i++) {
     const current = sorted[i];
@@ -277,12 +187,10 @@ function autoClosePreviousSiteSessions(sessions, timezoneOffset = null, cutoffFo
         if (workedHours < 0) workedHours = 0;
         prev.workedHours = Number(workedHours.toFixed(2));
 
-        // Recalculate isNightShift for prev session, using ITS OWN site's cutoff
+        // Recalculate the cross-midnight flag cutoff-free: the closed session spans
+        // midnight when its check-out wall time reads earlier than its check-in. The
+        // pre-save hook re-derives the authoritative raw+offset from the Dates.
         let sessionIsNight = prev.isNightShift || false;
-        if (isEarlyMorningCheckIn(toLocalTimeString(prev.checkIn, offsetVal), cutoffForSite(prev.siteId))) {
-          sessionIsNight = true;
-        }
-
         const inStr = toLocalTimeString(prev.checkIn, offsetVal);
         const outStr = toLocalTimeString(prev.checkOut, offsetVal);
         if (inStr && outStr) {
@@ -1029,12 +937,17 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       overtimeThreshold,
     } = workConfig
 
-    // Cutoffs are per-site: sessions in this submission (and stored sessions from other
-    // sites on the same records) must each be interpreted with their own site's cutoff.
-    const cutoffForSite = await buildSiteCutoffResolver(null, date, workConfig, session);
-
     const processedRecords = []
     const holidayInfo = await checkHolidayForDate(attendanceDate);
+
+    // Cross-day guard: a session can extend past midnight, so it may collide with a session
+    // stored on an ADJACENT day's record (e.g. yesterday's night shift ending 08:00 vs a
+    // 06:00 start today). Prefetched once for the whole batch.
+    const crossDayConflict = await buildCrossDayOverlapChecker({
+      employeeIds: attendance.map((e) => e?.employee?._id).filter(Boolean),
+      date: attendanceDate,
+      dbSession: session,
+    });
 
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
@@ -1099,7 +1012,35 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       const updatedSessions = []
 
-      for (const sessionObj of sessions) {
+      // Sessions this record already holds at OTHER sites — part of the same physical
+      // timeline, so a site-switch continuation inherits their midnight crossing.
+      const otherSiteSessions =
+        attendanceDoc.sessions.filter(
+          (s) =>
+            s.siteId.toString() !==
+            siteId.toString()
+        )
+
+      // Cutoff-free (cutoff redesign): cross-midnight is an explicit per-session fact.
+      // Resolved as a MONOTONIC timeline over the record — the check-out rolls to the next
+      // day when it reads earlier than the check-in, and a session that would land before a
+      // crossing already made inherits it (19:00→01:00 then 01:00→08:00). An explicit
+      // client flag (checkInNextDay / checkOutNextDay) always wins, which is what expresses
+      // the two cases the clock cannot disambiguate: a standalone early-morning tail and
+      // shifts of 24h+.
+      const resolvedOffsets = resolveDayOffsets(
+        date,
+        sessions.map((s) => ({
+          rawCheckIn: s.checkIn,
+          rawCheckOut: s.checkOut,
+          checkInNextDay: s.checkInNextDay,
+          checkOutNextDay: s.checkOutNextDay,
+          startsAfterMidnight: s.startsAfterMidnight,
+        })),
+        otherSiteSessions
+      )
+
+      for (const [sessionIndex, sessionObj] of sessions.entries()) {
         const {
           siteId: sessionSiteId,
           job,
@@ -1109,59 +1050,28 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         } = sessionObj
 
         const finalSiteId = sessionSiteId || siteId
-        const cutoffHour = cutoffForSite(finalSiteId)
 
-        let sessionIsNight = false;
-        if (checkIn) {
-          const [inH, inM] = checkIn.split(":").map(Number);
-          if (isEarlyMorningCheckIn(checkIn, cutoffHour)) {
-            sessionIsNight = true;
-          }
-          if (checkOut) {
-            const [outH, outM] = checkOut.split(":").map(Number);
-            if ((outH * 60 + outM) < (inH * 60 + inM)) {
-              sessionIsNight = true;
-            }
-          }
-        }
+        const { checkInNextDay, checkOutNextDay } = resolvedOffsets[sessionIndex]
 
-        const boundsError = validateSessionTimes(checkIn, checkOut, sessionIsNight, cutoffHour);
+        const boundsError = validateSessionTimesV2(checkIn, checkOut, checkInNextDay, checkOutNextDay);
         if (boundsError) {
           throwValidationError(400, boundsError);
         }
 
+        const checkInDate = checkIn ? combineFromOffset(date, checkIn, checkInNextDay) : null
+        const checkOutDate = checkOut ? combineFromOffset(date, checkOut, checkOutNextDay) : null
+
         let workedHours = 0
-
         // VALID SESSION ONLY IF BOTH EXIST
-        if (checkIn && checkOut) {
-          const inTime = combineDateAndTime(date, checkIn, { isNightShift: sessionIsNight, cutoffHour, timezoneOffset })
-          const outTime = combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, isNightShift: sessionIsNight, cutoffHour, timezoneOffset })
-
-          if (
-            isNaN(inTime.getTime()) ||
-            isNaN(outTime.getTime())
-          ) {
+        if (checkInDate && checkOutDate) {
+          if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
             throwValidationError(400, "Invalid checkIn/checkOut");
           }
-
-          workedHours =
-            (outTime.getTime() - inTime.getTime()) /
-            (1000 * 60 * 60)
-
-          if (workedHours < 0 || workedHours > 24) {
+          workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60)
+          if (workedHours <= 0 || workedHours > MAX_SHIFT_HOURS) {
             throwValidationError(400, "Invalid shift duration");
           }
         }
-
-        const cutoffOpts = { isNightShift: sessionIsNight, cutoffHour, timezoneOffset }
-
-        const checkInDate = checkIn
-          ? combineDateAndTime(date, checkIn, cutoffOpts)
-          : null
-
-        const checkOutDate = checkOut
-          ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...cutoffOpts })
-          : null
 
         // RULE: checkIn only OR null/null → 0 hours
         updatedSessions.push({
@@ -1169,9 +1079,15 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           jobId: job?._id || null,
           checkIn: checkInDate,
           checkOut: checkOutDate,
+          rawCheckIn: checkIn || null,
+          rawCheckOut: checkOut || null,
+          checkInNextDay,
+          checkOutNextDay,
           workedHours: Number(workedHours.toFixed(2)),
           markedBy,
-          isNightShift: sessionIsNight,
+          // Retained for back-compat reads: a session "crosses midnight" when either
+          // endpoint lands on the next day. The pre-save hook re-derives raw+offset.
+          isNightShift: checkInNextDay || checkOutNextDay,
           // A filled check-in always clears the deliberate-absence flag.
           manuallyCleared: checkInDate ? false : !!manuallyCleared,
           // Carry the transfer source onto the session created for this site.
@@ -1184,13 +1100,6 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // MERGE WITH OTHER SITE SESSIONS
       // -----------------------------
 
-      const otherSiteSessions =
-        attendanceDoc.sessions.filter(
-          (s) =>
-            s.siteId.toString() !==
-            siteId.toString()
-        )
-
       const mergedSessions = [
         ...otherSiteSessions,
         ...updatedSessions,
@@ -1199,7 +1108,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset, cutoffForSite);
+      autoClosePreviousSiteSessions(mergedSessions, timezoneOffset);
 
       // -----------------------------
       // SORT ALL SESSIONS
@@ -1275,6 +1184,12 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             },
           });
         }
+      }
+
+      // Cross-day: the same real hours must not also be recorded on an adjacent day.
+      const neighbourConflict = crossDayConflict(empId, mergedSessions);
+      if (neighbourConflict) {
+        throwValidationError(400, crossDayOverlapMessage(neighbourConflict));
       }
 
       // -----------------------------
@@ -1919,9 +1834,6 @@ export const bulkEditAttendance = async (
       overtimeThreshold,
     } = workConfig;
 
-    // Cutoffs are per-site: sessions on these records may span several sites.
-    const cutoffForSite = await buildSiteCutoffResolver(null, attendanceDate, workConfig, session);
-
     const processedRecords = [];
     const holidayInfo = await checkHolidayForDate(attendanceDate);
 
@@ -1999,7 +1911,7 @@ export const bulkEditAttendance = async (
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset, cutoffForSite);
+      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset);
       attendanceDoc.sessions = closedSessions;
 
       // RECALCULATE TOTAL HOURS, STATUS & OT
@@ -2147,32 +2059,19 @@ export const updateAttendance = async (req, res) => {
     }
 
     if (Array.isArray(sessions)) {
-      // The cutoff in force on THIS record's business day — not today's. A record written
-      // under an old cutoff must stay editable after the cutoff changes. Cutoffs are
-      // per-site, so each session resolves through its own site's history.
-      const cutoffForSite = await buildSiteCutoffResolver(null, attendance.date, workConfig);
+      // The record's business day as YYYY-MM-DD — the anchor for offset-based combine.
+      const recordDateStr = new Date(attendance.date).toISOString().split("T")[0];
 
-      // Validate sessions first
+      // Validate sessions first (cutoff-free): pull each endpoint's raw HH:mm from the
+      // client-combined ISO Date, derive the day offsets from those times, and validate
+      // ordering + duration only. No site cutoff.
       for (const session of sessions) {
-        const cutoffHour = cutoffForSite(session.siteId);
-        // Determine if night shift automatically
-        let sessionIsNight = session.isNightShift || false;
-        if (session.checkIn) {
-          const inDate = new Date(session.checkIn);
-          if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffHour)) {
-            sessionIsNight = true;
-          }
-          if (session.checkOut) {
-            const outDate = new Date(session.checkOut);
-            if (outDate < inDate) {
-              sessionIsNight = true;
-            }
-          }
-        }
-
         const inStr = toLocalTimeString(session.checkIn, offsetVal);
         const outStr = toLocalTimeString(session.checkOut, offsetVal);
-        const boundsError = validateSessionTimes(inStr, outStr, sessionIsNight, cutoffHour);
+        const derivedOffsets = deriveOffsets(inStr, outStr, !!session.startsAfterMidnight);
+        const checkInNextDay = typeof session.checkInNextDay === 'boolean' ? session.checkInNextDay : derivedOffsets.checkInNextDay;
+        const checkOutNextDay = typeof session.checkOutNextDay === 'boolean' ? session.checkOutNextDay : derivedOffsets.checkOutNextDay;
+        const boundsError = validateSessionTimesV2(inStr, outStr, checkInNextDay, checkOutNextDay);
         if (boundsError) {
           return res.status(400).json({
             success: false,
@@ -2195,34 +2094,21 @@ export const updateAttendance = async (req, res) => {
             );
           }
 
+          // Cutoff-free: extract raw HH:mm from the client-combined ISO Dates, derive the
+          // day offsets, and recombine canonical Dates from the record's business day so
+          // the stored timestamp and the offset flags can never drift.
+          const inStr = toLocalTimeString(session.checkIn, offsetVal);
+          const outStr = toLocalTimeString(session.checkOut, offsetVal);
+          const derivedOffsets = deriveOffsets(inStr, outStr, !!session.startsAfterMidnight);
+          const checkInNextDay = typeof session.checkInNextDay === 'boolean' ? session.checkInNextDay : derivedOffsets.checkInNextDay;
+          const checkOutNextDay = typeof session.checkOutNextDay === 'boolean' ? session.checkOutNextDay : derivedOffsets.checkOutNextDay;
+
+          const checkInDate = session.checkIn ? combineFromOffset(recordDateStr, inStr, checkInNextDay) : null;
+          const checkOutDate = session.checkOut ? combineFromOffset(recordDateStr, outStr, checkOutNextDay) : null;
+
           let workedHours = 0;
-          let sessionIsNight = session.isNightShift || false;
-
-          if (session.checkIn) {
-            if (isEarlyMorningCheckIn(toLocalTimeString(session.checkIn, offsetVal), cutoffForSite(session.siteId))) {
-              sessionIsNight = true;
-            }
-
-            const checkIn = new Date(
-              session.checkIn
-            );
-
-            if (session.checkOut) {
-              const checkOut = new Date(
-                session.checkOut
-              );
-
-              // Handle cross-midnight: if checkOut is on the next day
-              if (checkOut < checkIn) {
-                checkOut.setDate(checkOut.getDate() + 1);
-                sessionIsNight = true;
-              }
-
-              workedHours =
-                (checkOut.getTime() -
-                  checkIn.getTime()) /
-                (1000 * 60 * 60);
-            }
+          if (checkInDate && checkOutDate) {
+            workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
           }
 
           // Match the existing stored session (by _id) so edit-only fields
@@ -2252,14 +2138,16 @@ export const updateAttendance = async (req, res) => {
             _id: session._id,
             siteId: session.siteId,
             jobId: session.jobId || null,
-            checkIn:
-              session.checkIn || null,
-            checkOut:
-              session.checkOut || null,
+            checkIn: checkInDate,
+            checkOut: checkOutDate,
+            rawCheckIn: inStr,
+            rawCheckOut: outStr,
+            checkInNextDay,
+            checkOutNextDay,
             workedHours: Number(
               workedHours.toFixed(2)
             ),
-            isNightShift: sessionIsNight,
+            isNightShift: checkInNextDay || checkOutNextDay,
             manuallyCleared,
             // Preserve the transfer source across edits (badge must survive
             // the destination supervisor filling in a check-out, etc.).
@@ -2303,7 +2191,7 @@ export const updateAttendance = async (req, res) => {
       // -----------------------------
       // AUTO CLOSE PREVIOUS SESSIONS
       // -----------------------------
-      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset, cutoffForSite);
+      combinedSessions = autoClosePreviousSiteSessions(combinedSessions, timezoneOffset);
 
       // -----------------------------
       // Sort by checkIn
@@ -2408,6 +2296,21 @@ export const updateAttendance = async (req, res) => {
             },
           });
         }
+      }
+
+      // Cross-day: an edited session can extend past midnight into a day whose record
+      // already covers those hours (e.g. closing a night shift at 08:00 when the next
+      // morning already has a 06:00 start). Guarded here as well as on submit.
+      const crossDayConflict = await buildCrossDayOverlapChecker({
+        employeeIds: [attendance.employee],
+        date: attendance.date,
+      });
+      const neighbourConflict = crossDayConflict(attendance.employee, combinedSessions);
+      if (neighbourConflict) {
+        return res.status(400).json({
+          success: false,
+          message: crossDayOverlapMessage(neighbourConflict),
+        });
       }
 
       attendance.sessions = combinedSessions;
@@ -3520,11 +3423,10 @@ export const backfillAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: 'sessions must be an array' });
     }
 
-    // Backfill is the deliberate CUTOFF-FREE path: the admin is recording what actually
-    // happened on an explicit past day, so times are combined literally with that day
-    // (cutoffHour: 0 = no early-morning window; a check-out earlier than its check-in
-    // still bumps to the next calendar day). The cutoff-window rules are replaced by the
-    // direct timestamp-overlap check against the neighbouring days' records below.
+    // Backfill records what actually happened on an explicit past day: times are combined
+    // literally with that day, and a check-out earlier than its check-in bumps to the next
+    // calendar day (the standard offset rule). Correctness is enforced by the direct
+    // timestamp-overlap check against the neighbouring days' records below.
     const builtSessions = [];
 
     for (const session of sessions) {
@@ -3538,22 +3440,16 @@ export const backfillAttendance = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Check-out cannot exist without check-in' });
       }
 
-      let sessionIsNight = false;
-      if (checkIn && checkOut) {
-        const [inH, inM] = checkIn.split(':').map(Number);
-        const [outH, outM] = checkOut.split(':').map(Number);
-        sessionIsNight = (outH * 60 + outM) < (inH * 60 + inM);
-      }
+      const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkIn, checkOut, !!session.startsAfterMidnight);
+      const sessionIsNight = checkInNextDay || checkOutNextDay;
 
       let workedHours = 0;
-      const combineOpts = { isNightShift: false, cutoffHour: 0, timezoneOffset };
-
-      const checkInDate = checkIn ? combineDateAndTime(date, checkIn, combineOpts) : null;
-      const checkOutDate = checkOut ? combineDateAndTime(date, checkOut, { referenceCheckIn: checkIn, ...combineOpts }) : null;
+      const checkInDate = checkIn ? combineFromOffset(date, checkIn, checkInNextDay) : null;
+      const checkOutDate = checkOut ? combineFromOffset(date, checkOut, checkOutNextDay) : null;
 
       if (checkInDate && checkOutDate) {
         workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
-        if (workedHours < 0 || workedHours > 24) {
+        if (workedHours <= 0 || workedHours > MAX_SHIFT_HOURS) {
           return res.status(400).json({ success: false, message: 'Invalid shift duration' });
         }
       }
@@ -3616,49 +3512,19 @@ export const backfillAttendance = async (req, res) => {
       }
     }
 
-    // Since backfill skips the cutoff-window rules, this is the guard that keeps a
-    // backfilled day from claiming real hours the SAME employee's neighbouring days'
-    // records already cover — that would silently pay the same hours twice.
+    // Keeps a backfilled day from claiming real hours the SAME employee's neighbouring
+    // days' records already cover — that would silently pay the same hours twice.
     {
-      let offsetVal = -330;
-      if (timezoneOffset !== null && timezoneOffset !== undefined) {
-        const parsed = parseInt(timezoneOffset, 10);
-        if (!isNaN(parsed)) offsetVal = parsed;
-      }
-
-      const prevDate = new Date(attendanceDate);
-      prevDate.setUTCDate(prevDate.getUTCDate() - 1);
-      const nextDate = new Date(attendanceDate);
-      nextDate.setUTCDate(nextDate.getUTCDate() + 1);
-
-      const neighbours = await Attendance.find({
-        employee: employeeMongoId,
-        date: { $in: [prevDate, nextDate] },
-      }).select('date sessions.checkIn sessions.checkOut').lean();
-
-      for (const neighbour of neighbours) {
-        for (const s of neighbour.sessions || []) {
-          if (!s.checkIn || !s.checkOut) continue; // open sessions have no interval yet
-          const nStart = new Date(s.checkIn).getTime();
-          const nEnd = new Date(s.checkOut).getTime();
-
-          for (const built of validSessions) {
-            if (!built.checkOut) continue;
-            const bStart = new Date(built.checkIn).getTime();
-            const bEnd = new Date(built.checkOut).getTime();
-
-            if (bStart < nEnd && bEnd > nStart) {
-              const neighbourDay = new Date(neighbour.date).toISOString().split('T')[0];
-              return res.status(400).json({
-                success: false,
-                message:
-                  `These times overlap a session already recorded for this employee on ` +
-                  `${neighbourDay} (${toLocalTimeString(s.checkIn, offsetVal)}–${toLocalTimeString(s.checkOut, offsetVal)}). ` +
-                  `The same hours cannot be paid twice.`,
-              });
-            }
-          }
-        }
+      const crossDayConflict = await buildCrossDayOverlapChecker({
+        employeeIds: [employeeMongoId],
+        date: attendanceDate,
+      });
+      const neighbourConflict = crossDayConflict(employeeMongoId, validSessions);
+      if (neighbourConflict) {
+        return res.status(400).json({
+          success: false,
+          message: crossDayOverlapMessage(neighbourConflict),
+        });
       }
     }
 
@@ -3992,11 +3858,8 @@ export const assignNightShift = async (req, res) => {
     // default (staff use their own staff-night default), replacing the old
     // auto-check-in cron.
     const siteDoc = await Site.findById(siteId)
-      .select("nightDefaultCheckIn staffNightDefaultCheckIn nightShiftCutoffHour cutoffHistory")
+      .select("nightDefaultCheckIn staffNightDefaultCheckIn")
       .session(dbSession);
-
-    // Cutoffs are per-site: interpret the pre-filled check-in with THIS site's cutoff.
-    const cutoffHour = resolveCutoffForDate(siteDoc || workConfig, attendanceDate);
 
     let processedCount = 0;
 
@@ -4012,8 +3875,10 @@ export const assignNightShift = async (req, res) => {
         : (siteDoc?.nightDefaultCheckIn || "");
 
       // Date object for the pre-filled check-in, or null if no default configured.
+      // Cutoff-free: a night check-in default is an evening time, so it belongs to the
+      // record's own business day (offset 0). No cutoff resolution.
       const prefillCheckIn = nightDefaultIn
-        ? combineDateAndTimeLocal(date, nightDefaultIn, { isNightShift: true, cutoffHour })
+        ? combineFromOffset(date, nightDefaultIn, false)
         : null;
 
       let attendanceDoc = await Attendance.findOne({

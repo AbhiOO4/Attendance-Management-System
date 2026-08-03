@@ -2,44 +2,9 @@ import workModel from '../models/workModel.js'
 import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
 import {
-  getCurrentCutoff,
-  LEGACY_CUTOFF_EPOCH,
-  DEFAULT_CUTOFF_HOUR,
-} from '../utils/cutoff.js';
-import {
-  deriveSiteCutoff,
-  applyDerivedCutoff,
-  seedHistoryFromGlobal,
-} from '../utils/siteCutoff.js';
-import {
   DEFAULT_OVERTIME_MULTIPLIER,
   DEFAULT_MONTHLY_HOURS_DIVISOR,
 } from '../utils/payMath.js';
-
-/**
- * Seed cutoffHistory for a config that predates effective-dating.
- *
- * Idempotent — called on boot. Asserts that the current cutoff has always applied, which is
- * true for any deployment that never changed it. If the cutoff HAS been changed before this
- * shipped, records written under the older value are already inconsistent and cannot be
- * recovered here; that needs a hand-written history plus a recalculation pass in seed/seed.js.
- */
-export const ensureCutoffHistory = async () => {
-  const schedule = await workModel.findOne({ type: "default" });
-  if (!schedule) return;
-  if (Array.isArray(schedule.cutoffHistory) && schedule.cutoffHistory.length > 0) return;
-
-  schedule.cutoffHistory = [
-    {
-      cutoffHour: schedule.nightShiftCutoffHour,
-      effectiveFrom: LEGACY_CUTOFF_EPOCH,
-    },
-  ];
-  await schedule.save();
-  console.log(
-    `[Config] Seeded cutoffHistory with the current cutoff (${schedule.nightShiftCutoffHour}:00)`
-  );
-};
 
 /**
  * Backfill the relative-OT pay fields onto a config that predates them, and drop the
@@ -79,64 +44,6 @@ export const ensureOvertimePayFields = async () => {
   if (hasLegacyRate) changes.push("dropped overtimeRatePerHour");
   console.log(`[Config] Relative-OT pay migration: ${changes.join(", ")}`);
 };
-
-/**
- * Per-site cutoff maintenance. Idempotent — called on boot, after
- * initializePermanentSite() and ensureCutoffHistory().
- *
- * Two passes over every site (including inactive/completed/deleted ones — their
- * historical records are still read):
- * 1. MIGRATION: a site with an empty cutoffHistory gets a COPY of the global history,
- *    because the global cutoff is what actually governed that site's past records.
- * 2. RE-DERIVE: the site's cutoff is re-derived from its default times on EVERY boot,
- *    not just at seeding — when the derivation rule changes (e.g. day-only sites now
- *    derive 0/midnight), existing sites pick it up here. applyDerivedCutoff schedules
- *    the change effective TOMORROW, so past days keep the cutoff their records were
- *    written under. Sites with contradictory default times keep their current value
- *    and are logged — boot never fails.
- */
-export const ensureSiteCutoffHistories = async () => {
-  const schedule = await workModel.findOne({ type: "default" });
-  const sites = await siteModel.find({});
-
-  for (const site of sites) {
-    const needsSeed = !Array.isArray(site.cutoffHistory) || site.cutoffHistory.length === 0;
-    if (needsSeed) {
-      site.cutoffHistory = seedHistoryFromGlobal(schedule, LEGACY_CUTOFF_EPOCH, DEFAULT_CUTOFF_HOUR);
-      site.nightShiftCutoffHour = getCurrentCutoff(site);
-    }
-
-    const derived = deriveSiteCutoff(site);
-    if (derived.conflict) {
-      console.warn(
-        `[Config] Site "${site.siteName}" has contradictory default times; kept the ` +
-        `current cutoff (${site.nightShiftCutoffHour}:00). ${derived.conflict}`
-      );
-      if (needsSeed) await site.save();
-      continue;
-    }
-
-    const historyBefore = JSON.stringify(site.cutoffHistory);
-    const change = applyDerivedCutoff(site, derived.cutoffHour);
-    const historyChanged = JSON.stringify(site.cutoffHistory) !== historyBefore;
-
-    if (needsSeed || historyChanged) {
-      await site.save();
-    }
-    if (needsSeed) {
-      console.log(
-        `[Config] Seeded cutoff history for site "${site.siteName}" ` +
-        `(active ${site.nightShiftCutoffHour}:00, derived ${derived.cutoffHour}:00)`
-      );
-    } else if (change) {
-      console.log(
-        `[Config] Site "${site.siteName}": derived cutoff ${change.cutoffHour}:00 scheduled ` +
-        `effective ${new Date(change.effectiveFrom).toISOString().split("T")[0]}`
-      );
-    }
-  }
-};
-
 
 export const getWorkSchedule = async (req, res) => {
   try {
@@ -229,10 +136,9 @@ export const updateWorkSchedule = async (req, res) => {
         weeklyHolidays;
     }
 
-    // The cutoff hour is per-site now, derived from each site's default shift times
-    // (utils/siteCutoff.js). The global value only remains as a seed/fallback for sites
-    // with no times. An incoming nightShiftCutoffHour is deliberately IGNORED — not
-    // rejected — so stale PWA clients that still send it can keep saving the other fields.
+    // The night-shift cutoff hour no longer exists: cross-midnight is recorded per session
+    // as an explicit day offset. An incoming nightShiftCutoffHour is deliberately IGNORED —
+    // not rejected — so stale PWA clients that still send it can keep saving other fields.
     void nightShiftCutoffHour;
 
     if (breakDurationMinutes !== undefined) {
@@ -267,10 +173,6 @@ export const updateWorkSchedule = async (req, res) => {
           "Overtime threshold cannot be less than full day hours",
       });
     }
-
-    // Keep the top-level field mirroring the cutoff that is ACTIVE right now — a change
-    // scheduled for tomorrow must not flip it today.
-    schedule.nightShiftCutoffHour = getCurrentCutoff(schedule);
 
     const updatedSchedule =
       await schedule.save();
@@ -459,7 +361,6 @@ const configController = {
     getAllHolidays,
     updateWorkSchedule,
     isHoliday,
-    ensureCutoffHistory,
     ensureOvertimePayFields
 
 }

@@ -12,7 +12,7 @@ import {
 } from "react-router-dom"
 
 import { api } from "@/lib/api"
-import { getLogicalShiftDate } from "@/lib/dateUtils"
+import { getCurrentTargetDateString } from "@/lib/dateUtils"
 
 import { Card } from "@/components/ui/card"
 
@@ -21,7 +21,6 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 
 import { useAuth } from "@/context/AuthContext"
-import { useWorkConfig } from "@/context/WorkConfigContext"
 
 import {
   Users,
@@ -98,9 +97,8 @@ interface OverviewResponse {
 function DashBoard() {
   const navigate = useNavigate()
   const { user } = useAuth()
-  const { currentCutoff } = useWorkConfig()
   const isSupervisor = user?.role === "supervisor"
-  const today = getLogicalShiftDate(currentCutoff)
+  const today = getCurrentTargetDateString()
 
   const [date, setDate] =
     useState(today)

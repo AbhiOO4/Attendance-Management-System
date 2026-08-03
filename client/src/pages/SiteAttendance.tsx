@@ -8,7 +8,7 @@ import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
-import { getLogicalShiftDate, isInExtendedPeriod, calculateHoursBetween, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, isCheckInInToggleRange, validateSessionTimes, combineDateAndTime as combineDateAndTimeLocal, toLocalTimeString as toTimeValue, formatLocalTime12h, getCurrentCutoff, deriveCutoffFromDefaults, normalizeBusinessDate, type CutoffEntry } from "@/lib/dateUtils"
+import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -116,9 +116,6 @@ interface Site {
   staffDefaultCheckOut?: string
   staffNightDefaultCheckIn?: string
   staffNightDefaultCheckOut?: string
-  // Per-site derived cutoff (machine-managed on the server, derived from the times above)
-  nightShiftCutoffHour?: number
-  cutoffHistory?: CutoffEntry[]
 }
 
 export interface AttendanceSession {
@@ -257,6 +254,37 @@ const isSessionNonEmpty = (session?: { checkIn?: string | null; checkOut?: strin
   return !!session?.checkIn || !!session?.checkOut
 }
 
+/**
+ * Blank the draft sessions of employees who still have an open shift from yesterday.
+ *
+ * An employee mid-carryover cannot also have started today, so today's row must be empty
+ * (absent) until the carryover is closed — the same rule the fresh-roster build applies.
+ * This covers the paths that bypass that build: a draft restored from localStorage, and the
+ * moment a carryover is closed. `manuallyCleared` stays false so this is treated as "not
+ * marked yet", not as a deliberate absence.
+ */
+const clearCarryoverSessions = (
+  records: DraftAttendanceRecord[],
+  carryoverIds: Set<string>
+): DraftAttendanceRecord[] => {
+  if (!carryoverIds || carryoverIds.size === 0) return records
+  return records.map((rec) =>
+    carryoverIds.has(String(rec.employee._id))
+      ? {
+          ...rec,
+          sessions: rec.sessions.map((s) => ({
+            ...s,
+            checkIn: "",
+            checkOut: "",
+            workedHours: 0,
+            isNightShift: false,
+            manuallyCleared: false,
+          })),
+        }
+      : rec
+  )
+}
+
 const isEmployeeAbsent = (
   sessions: Array<{ siteId: string; checkIn?: string | null; checkOut?: string | null }>,
   currentSiteId?: string
@@ -291,6 +319,24 @@ const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
     title={`Transferred from ${siteName}`}
   >
     Transferred from {siteName}
+  </Badge>
+)
+
+// Shown on an employee's today-row when they have an OPEN (un-checked-out) session on
+// yesterday's record for this site. Persists all day (the prominent pinned card above
+// the roster only shows before noon; this row badge is what remains after — and stays
+// clickable so a forgotten check-out can still be closed once the card is gone).
+const CarryoverBadge = ({ onClick }: { onClick?: () => void }) => (
+  <Badge
+    variant="secondary"
+    onClick={onClick}
+    className={cn(
+      "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4",
+      onClick && "cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-900/40"
+    )}
+    title="Open check-out from yesterday's night shift — click to close it"
+  >
+    ⏳ Carryover
   </Badge>
 )
 
@@ -429,6 +475,10 @@ interface DraftRowProps {
   overlap: OverlapError | null
   /** True when this row was just cleared and can be undone. */
   showUndo: boolean
+  /** True when this employee has an open (un-checked-out) session on yesterday's record. */
+  hasCarryover?: boolean
+  /** Opens yesterday's carryover record for this employee so its check-out can be filled. */
+  onOpenCarryover?: (employeeId: string) => void
   onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
   onToggleSick: (employeeId: string) => void
   onUpdateBreaks: (employeeId: string, value: number | null) => void
@@ -449,6 +499,8 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   fullDayHours,
   overlap,
   showUndo,
+  hasCarryover,
+  onOpenCarryover,
   onUpdateSession,
   onToggleSick,
   onUpdateBreaks,
@@ -486,6 +538,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               {record.transferredFrom && (
                 <TransferredFromBadge siteName={record.transferredFrom.name} />
               )}
+              {hasCarryover && <CarryoverBadge onClick={() => onOpenCarryover?.(record.employee._id)} />}
             </div>
 
             <p className="text-sm text-muted-foreground">
@@ -509,10 +562,26 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
           </div>
         </div>
 
+        {hasCarryover && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-2.5 space-y-2 dark:border-amber-800/50 dark:bg-amber-950/20">
+            <p className="text-[11px] text-amber-800 dark:text-amber-300">
+              This employee is still on yesterday's shift. Enter their check-out to unlock today.
+            </p>
+            <Button
+              size="sm"
+              className="w-full h-9 gap-1.5 bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={() => onOpenCarryover?.(record.employee._id)}
+            >
+              <Clock3 className="h-4 w-4" />
+              Check out yesterday's shift
+            </Button>
+          </div>
+        )}
+
         <Input
           type="time"
           value={session.checkIn}
-          disabled={!!record.isSickLeave}
+          disabled={!!record.isSickLeave || !!hasCarryover}
           onChange={(e) =>
             onUpdateSession(
               record.employee._id,
@@ -526,7 +595,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
         <Input
           type="time"
           value={session.checkOut}
-          disabled={!!record.isSickLeave}
+          disabled={!!record.isSickLeave || !!hasCarryover}
           onChange={(e) =>
             onUpdateSession(
               record.employee._id,
@@ -637,6 +706,8 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   fullDayHours,
   overlap,
   showUndo,
+  hasCarryover,
+  onOpenCarryover,
   onUpdateSession,
   onToggleSick,
   onUpdateBreaks,
@@ -674,6 +745,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 {record.transferredFrom && (
                   <TransferredFromBadge siteName={record.transferredFrom.name} />
                 )}
+                {hasCarryover && <CarryoverBadge onClick={() => onOpenCarryover?.(record.employee._id)} />}
               </div>
 
               <p className="text-sm text-muted-foreground">
@@ -694,7 +766,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
             value={
               session.checkIn
             }
-            disabled={!!record.isSickLeave}
+            disabled={!!record.isSickLeave || !!hasCarryover}
             onChange={(e) =>
               onUpdateSession(
                 record.employee._id,
@@ -704,6 +776,16 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
               )
             }
           />
+          {hasCarryover && (
+            <Button
+              size="sm"
+              className="mt-1.5 h-8 w-full gap-1.5 whitespace-nowrap bg-amber-600 hover:bg-amber-700 text-white text-xs"
+              onClick={() => onOpenCarryover?.(record.employee._id)}
+            >
+              <Clock3 className="h-3.5 w-3.5" />
+              Check out yesterday
+            </Button>
+          )}
         </TableCell>
 
         <TableCell>
@@ -712,7 +794,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
             value={
               session.checkOut
             }
-            disabled={!!record.isSickLeave}
+            disabled={!!record.isSickLeave || !!hasCarryover}
             onChange={(e) =>
               onUpdateSession(
                 record.employee._id,
@@ -857,28 +939,35 @@ function SiteAttendance() {
 
   const navigate = useNavigate()
 
-  // This page always operates on the CURRENT business day, so the currently-active cutoff is
-  // the right one. (Editing an existing record is different — see EditSiteRecord, which
-  // resolves the cutoff from the record's own date.)
-  const { config: workConfig, currentCutoff: globalCutoff, loading: configLoading } = useWorkConfig()
+  // This page always operates on the CURRENT business day, which is simply today's calendar
+  // date — a night shift that runs past midnight stays on the day it started, and is closed
+  // the next morning through the carryover flow below.
+  const { config: workConfig, loading: configLoading } = useWorkConfig()
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
   const fullDayHours = workConfig?.fullDayHours ?? 8
 
   const [site, setSite] = useState<Site | null>(null)
 
-  // Cutoffs are per-site (derived from the site's own default shift times). The global
-  // cutoff is only the pre-load placeholder: the page renders a spinner until initialize()
-  // finishes, and initialize() itself resolves the cutoff from the freshly fetched site doc
-  // rather than from this memo, so the placeholder never drives real UI.
-  const cutoffHour = useMemo(
-    () => (site ? getCurrentCutoff(site) : globalCutoff),
-    [site, globalCutoff]
-  )
-
-  const today = useMemo(() => getLogicalShiftDate(cutoffHour), [cutoffHour])
-  const extendedPeriod = useMemo(() => isInExtendedPeriod(cutoffHour), [cutoffHour])
+  const today = useMemo(() => getCurrentTargetDateString(), [])
 
   const formattedDate = formatCurrentDateLabel()
+
+  // ---- Carryover (cutoff redesign, Phase 5) ----
+  // Yesterday's records with an OPEN (checked-in, not checked-out) session for this site.
+  // Surfaced today so a supervisor can enter the real check-out; rolling one-day window.
+  const [carryoverRecords, setCarryoverRecords] = useState<AttendanceRecord[]>([])
+  // The prominent pinned card only shows before noon; after that the per-row badge remains.
+  const beforeNoon = getCurrentTargetTime().getUTCHours() < 12
+  const carryoverEmpIds = useMemo(
+    () => new Set(carryoverRecords.map((r) => String(r.employee))),
+    [carryoverRecords]
+  )
+  const yesterdayOf = (todayStr: string) => {
+    const [y, m, d] = todayStr.split("-").map(Number)
+    const dt = new Date(Date.UTC(y, m - 1, d))
+    dt.setUTCDate(dt.getUTCDate() - 1)
+    return dt.toISOString().split("T")[0]
+  }
 
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
 
@@ -1020,6 +1109,20 @@ function SiteAttendance() {
     setSelectedRecord(record)
     setEditOpen(true)
   }
+
+  // Open yesterday's carryover record for an employee (from the row badge) so its
+  // check-out can be filled. Stable across keystroke re-renders (depends only on the
+  // carryover set) so it doesn't defeat the memoized rows.
+  const handleOpenCarryover = useCallback(
+    (empId: string) => {
+      const rec = carryoverRecords.find((r) => String(r.employee) === String(empId))
+      if (rec) {
+        setSelectedRecord(rec)
+        setEditOpen(true)
+      }
+    },
+    [carryoverRecords]
+  )
 
   const handleRecordUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
@@ -1168,12 +1271,15 @@ function SiteAttendance() {
   // explicit collarType are treated as skilled.
   const [collarTab, setCollarTab] = useState<CollarType>("skilled")
 
-  const initializeAttendanceFromEmployees = async (siteData: Site, cutoffVal = cutoffHour) => {
+  const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
     try {
-      const activeToday = getLogicalShiftDate(cutoffVal)
+      const activeToday = today
       const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
       if (cached) {
-        setDraftAttendance(JSON.parse(cached))
+        // A draft cached BEFORE the carryover appeared can still hold an auto-prefilled
+        // check-in for an employee who is now mid-shift from yesterday. Strip those so a
+        // carryover employee always starts today clear (their row is locked anyway).
+        setDraftAttendance(clearCarryoverSessions(JSON.parse(cached), carryoverIds))
         setIsDirty(true)
         return
       }
@@ -1201,13 +1307,17 @@ function SiteAttendance() {
           const roleDefaultIn = isStaff
             ? (siteData.staffDefaultCheckIn || "")
             : (siteData.defaultCheckIn || "")
-          const defaultIn = hasPendingTransfer && emp.pendingTransferCheckIn
+          // Carryover employees default to ABSENT (empty) — they're still finishing
+          // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
+          const isCarryover = carryoverIds.has(emp._id)
+          const defaultIn = isCarryover
+            ? ""
+            : hasPendingTransfer && emp.pendingTransferCheckIn
             ? toTimeValue(emp.pendingTransferCheckIn)
             : roleDefaultIn
-          let isNightShift = false
-          if (defaultIn) {
-            isNightShift = isCheckInInToggleRange(defaultIn, cutoffVal)
-          }
+          // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
+          // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
+          const isNightShift = false
           return {
             employee: {
               _id: emp._id,
@@ -1260,10 +1370,9 @@ function SiteAttendance() {
 
   const [holidayReason, setHolidayReason] = useState("")
 
-  const checkHolidayStatus = async (targetDate?: string, currentCutoff?: number) => {
+  const checkHolidayStatus = async (targetDate?: string) => {
     try {
       const weeklyHolidays = workConfig?.weeklyHolidays || []
-      const activeCutoff = currentCutoff !== undefined ? currentCutoff : cutoffHour
 
       let todayDay = ""
       if (targetDate) {
@@ -1272,7 +1381,7 @@ function SiteAttendance() {
           .toLocaleDateString("en-US", { weekday: "long" })
           .toLowerCase()
       } else {
-        todayDay = getCurrentTargetDayName(activeCutoff)
+        todayDay = getCurrentTargetDayName()
       }
 
       if (
@@ -1289,7 +1398,7 @@ function SiteAttendance() {
         return
       }
 
-      const activeDateStr = targetDate || getLogicalShiftDate(activeCutoff)
+      const activeDateStr = targetDate || today
       const holidayRes =
         await api.get(
           "/api/config/custom-holidays/check",
@@ -1347,6 +1456,30 @@ function SiteAttendance() {
 
     } catch (error) {
       console.log(error)
+    }
+  }
+
+  // Fetch yesterday's OPEN sessions for this site (checked in, no check-out) — the
+  // carryover night shifts to surface today. Returns the set of employee ids so the
+  // draft build can skip auto-prefilling them (they default to absent). Rolling
+  // one-day window: only the day before `targetToday`.
+  const fetchCarryovers = async (targetToday: string = today): Promise<Set<string>> => {
+    try {
+      const prevDate = yesterdayOf(targetToday)
+      const res = await api.get<FetchedAttendance>("/api/attendance/reports/daily", {
+        params: { date: prevDate, siteId: id },
+      })
+      const open = (res.data.data || []).filter((rec) =>
+        rec.sessions?.some(
+          (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
+        )
+      )
+      setCarryoverRecords(open)
+      return new Set(open.map((r) => String(r.employee)))
+    } catch (error) {
+      console.log(error)
+      setCarryoverRecords([])
+      return new Set<string>()
     }
   }
 
@@ -1468,10 +1601,14 @@ function SiteAttendance() {
   }
 
   const calculateHours = useCallback(
-    (checkIn: string, checkOut: string, isNightShift: boolean = false) => {
-      return calculateHoursBetween(checkIn, checkOut, isNightShift, cutoffHour)
+    // Cutoff-free (cutoff redesign): hours from the raw times + derived day offsets, so a
+    // night check-out at/after the old cutoff (e.g. 07:00, 08:00) is no longer clamped to 0.
+    // isNightShift is accepted for call-site compatibility but no longer needed.
+    (checkIn: string, checkOut: string, _isNightShift: boolean = false) => {
+      const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkIn, checkOut)
+      return hoursFromOffset(checkIn, checkOut, checkInNextDay, checkOutNextDay)
     },
-    [cutoffHour]
+    []
   )
 
   const getSiteWorkedHours = (
@@ -1505,6 +1642,14 @@ function SiteAttendance() {
    const startInlineEdit = (
     record: AttendanceRecord
   ) => {
+    // Carryover lock: today's session can't be edited until yesterday's open shift is
+    // closed (the employee is still on yesterday's clock). Central guard covers every
+    // entry point (both Edit buttons + the localStorage restore).
+    if (carryoverEmpIds.has(record.employee)) {
+      toast("Close yesterday's open shift first — tap the ⏳ Carryover badge.", { icon: "🔒" })
+      return
+    }
+
     const session = record.sessions[0]
 
     setEditingRowId(record.attendanceId)
@@ -1534,9 +1679,12 @@ function SiteAttendance() {
   const saveInlineEdit = async (
     record: AttendanceRecord
   ) => {
-    const { checkIn, checkOut, isNightShift } = inlineEdit
+    const { checkIn, checkOut } = inlineEdit
 
-    const validationError = validateSessionTimes(checkIn, checkOut, isNightShift, cutoffHour);
+    // Cutoff-free validation: derive day offsets from the raw times (ordering + duration
+    // only). The server re-derives the authoritative offsets on save.
+    const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkIn, checkOut);
+    const validationError = validateSessionTimesV2(checkIn, checkOut, checkInNextDay, checkOutNextDay);
     if (validationError) {
       setInlineEditError(validationError);
       return;
@@ -1556,21 +1704,11 @@ function SiteAttendance() {
             _id: existing?._id,
             siteId: existing?.siteId ?? site?._id,
             jobId: existing?.jobId ?? null,
-            checkIn: combineDateAndTimeLocal(
-              record.date,
-              checkIn || null,
-              null,
-              isNightShift,
-              cutoffHour
-            ),
-            checkOut: combineDateAndTimeLocal(
-              record.date,
-              checkOut || null,
-              checkIn || null,
-              isNightShift,
-              cutoffHour
-            ),
-            isNightShift,
+            checkIn: combineFromOffset(record.date, checkIn || null, checkInNextDay),
+            checkOut: combineFromOffset(record.date, checkOut || null, checkOutNextDay),
+            checkInNextDay,
+            checkOutNextDay,
+            isNightShift: checkInNextDay || checkOutNextDay,
           },
         ],
         // Pass the inline edited breaksTaken
@@ -1651,46 +1789,13 @@ function SiteAttendance() {
         const sessions = [...record.sessions]
         const session = { ...sessions[sessionIndex], [field]: value }
 
-        // Rule check: checkout time cannot be > cutoffHour if checkin was before cutoffHour
-        if (session.checkIn && session.checkOut) {
-          const [inH, inM] = session.checkIn.split(":").map(Number)
-          const [outH, outM] = session.checkOut.split(":").map(Number)
-          if (inH >= 0 && inH < cutoffHour && outH * 60 + outM > cutoffHour * 60) {
-            toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) if checked in before ${cutoffHour}:00 AM.`)
-            if (field === "checkOut") {
-              session.checkOut = ""
-            } else {
-              session.checkIn = ""
-            }
-          } else {
-            const inMin = inH * 60 + inM
-            const outMin = outH * 60 + outM
-            if (outMin < inMin && outMin > cutoffHour * 60) {
-              toast.error(`Check-out time must be before or equal to the cutoff hour (${cutoffHour}:00 AM) for night shifts.`)
-              if (field === "checkOut") {
-                session.checkOut = ""
-              } else {
-                session.checkIn = ""
-              }
-            }
-          }
-        }
-
-        const prevIsNight = sessions[sessionIndex].isNightShift || false
-        let nextIsNightShift = false
-        if (session.checkIn) {
-          const [inH] = session.checkIn.split(":").map(Number)
-          const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-          if (prevIsNight) {
-            nextIsNightShift = !isDayOnlyCheckIn
-          } else {
-            const inRange = inH >= 0 && inH < cutoffHour
-            const crossesMidnight = session.checkOut ? isCrossMidnight(session.checkIn, session.checkOut, false) : false
-            nextIsNightShift = inRange || crossesMidnight
-          }
-        } else {
-          nextIsNightShift = prevIsNight
-        }
+        // No boundary rules: any pair of times is accepted. A check-out that reads earlier
+        // than the check-in simply means the shift crossed midnight (deriveOffsets), so a
+        // 06:00 day start and an 08:00 night end are both valid here.
+        const { checkInNextDay, checkOutNextDay } = deriveOffsets(session.checkIn, session.checkOut)
+        const nextIsNightShift = session.checkIn
+          ? checkInNextDay || checkOutNextDay
+          : sessions[sessionIndex].isNightShift || false
 
         // Deliberate-absence flag: typing a check-in clears it; manually
         // emptying the check-in sets it (same intent as the Absent button).
@@ -1724,7 +1829,7 @@ function SiteAttendance() {
     )
 
     setIsDirty(true)
-  }, [cutoffHour, calculateHours])
+  }, [calculateHours])
 
   // Draft: toggle sick leave locally. Turning it on clears the session times
   // (sick = empty session); the backend remains the arbiter on submit.
@@ -2140,19 +2245,8 @@ function SiteAttendance() {
         setIsDirty(true)
       }
 
-      // Surface a scheduled business-day boundary change (derived from the new times,
-      // effective tomorrow — today's records keep today's boundary).
-      if (updatedSite.cutoffChange) {
-        const { cutoffHour: nextCutoff, effectiveFrom } = updatedSite.cutoffChange
-        const fromDate = String(effectiveFrom).split("T")[0]
-        toast(
-          `Business-day boundary becomes ${nextCutoff}:00 from ${fromDate}; today's records keep the current boundary.`,
-          { icon: "🕒", duration: 6000 }
-        )
-      }
-
       // Remove response-only fields before setting site state
-      const { propagation: _propagation, cutoffChange: _cutoffChange, ...siteData } = updatedSite
+      const { propagation: _propagation, ...siteData } = updatedSite
       setSite(siteData)
       setIsEditingDefaults(false)
       setUpdateDefaultsDialogOpen(false)
@@ -2171,9 +2265,8 @@ function SiteAttendance() {
       return h * 60 + m
     }
 
-    // The cutoff is DERIVED from these times now (mirror of the server's rules in
-    // siteController.updateSite), so the old "must straddle the cutoff" checks are gone.
-    // What remains: in < out ordering, plus the cutoff-independent night-shift bounds.
+    // Mirror of the server's rules in siteController.updateSite: in < out ordering, plus
+    // absolute night-shift bounds. Day and night windows may overlap freely.
 
     // --- DAY SHIFT VALIDATION ---
     if (editDefaultCheckIn && editDefaultCheckOut) {
@@ -2212,20 +2305,6 @@ function SiteAttendance() {
       return
     }
 
-    // --- CUTOFF DERIVABILITY ---
-    // A conflict means the edited times are contradictory with each other (night shift
-    // running past the day shift start) — the same check the server enforces.
-    const derived = deriveCutoffFromDefaults({
-      defaultCheckIn: editDefaultCheckIn,
-      staffDefaultCheckIn: editStaffDefaultCheckIn,
-      nightDefaultCheckOut: editNightDefaultCheckOut,
-      staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
-    })
-    if (derived.conflict) {
-      toast.error(derived.conflict)
-      return
-    }
-
     // Detect what changed
     const changes = detectDefaultChanges()
 
@@ -2241,33 +2320,6 @@ function SiteAttendance() {
     // No changes that need propagation, or drafts only — save directly
     await executeSaveDefaults(false)
   }
-
-  // Live view of the business-day boundary for the defaults dialog: the site's active
-  // value, what the currently edited times would derive, and any already-scheduled change.
-  const boundaryInfo = useMemo(() => {
-    const derived = deriveCutoffFromDefaults({
-      defaultCheckIn: editDefaultCheckIn,
-      staffDefaultCheckIn: editStaffDefaultCheckIn,
-      nightDefaultCheckOut: editNightDefaultCheckOut,
-      staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
-    })
-    const todayNorm = normalizeBusinessDate(today)
-    const pending = (site?.cutoffHistory || [])
-      .filter((e) => {
-        const d = normalizeBusinessDate(e.effectiveFrom)
-        return d && todayNorm && d.getTime() > todayNorm.getTime()
-      })
-      .pop()
-    return { active: cutoffHour, derived, pending }
-  }, [
-    editDefaultCheckIn,
-    editStaffDefaultCheckIn,
-    editNightDefaultCheckOut,
-    editStaffNightDefaultCheckOut,
-    site,
-    today,
-    cutoffHour,
-  ])
 
   // Sync all edit fields from the saved site values.
   const syncDefaultsFromSite = () => {
@@ -2592,22 +2644,19 @@ function SiteAttendance() {
   }, [categoryFilter])
 
   useEffect(() => {
-    // Wait for WorkConfigProvider — initializing against the fallback cutoff would compute the
-    // wrong logical business day and seed the roster with wrong night-shift flags.
+    // Wait for WorkConfigProvider so the pay numbers are available before the roster renders.
     if (configLoading) return
 
     const initialize = async () => {
       try {
         setLoading(true)
 
-        // SERIALIZED on purpose: the cutoff is per-site, so the site doc must be fetched
-        // BEFORE anything that depends on "which business day is it" — checking pending
-        // status with the global cutoff's date would hit the wrong day whenever this
-        // site's cutoff diverges from it.
         const siteData = await fetchSite()
+        const calculatedDate = today
 
-        const cutoffVal = siteData ? getCurrentCutoff(siteData) : globalCutoff
-        const calculatedDate = getLogicalShiftDate(cutoffVal)
+        // Yesterday's open sessions — surfaced today, and used to skip auto-prefill for
+        // employees who are still finishing a carried-over shift.
+        const carryoverIds = await fetchCarryovers(calculatedDate)
 
         const statusRes = await checkAttendanceStatus(calculatedDate)
 
@@ -2615,8 +2664,8 @@ function SiteAttendance() {
           await fetchAttendance(calculatedDate)
         } else {
           await Promise.all([
-            checkHolidayStatus(calculatedDate, cutoffVal),
-            siteData ? initializeAttendanceFromEmployees(siteData, cutoffVal) : Promise.resolve()
+            checkHolidayStatus(calculatedDate),
+            siteData ? initializeAttendanceFromEmployees(siteData, carryoverIds) : Promise.resolve()
           ])
         }
 
@@ -2943,28 +2992,14 @@ function SiteAttendance() {
               </div>
             </div>
 
-            {/* Business-day boundary (derived, read-only) */}
-            <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+            {/* Night shifts are recorded on the day they START; their check-out is entered
+                the next morning through the carryover flow on the roster. */}
+            <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
               <p>
-                <span className="font-semibold text-foreground">
-                  Business-day boundary: {boundaryInfo.active}:00
-                </span>{" "}
-                — derived automatically from the shift times above. Clock times before this
-                hour belong to the previous day's roster.
+                A shift is recorded on the day it <span className="font-semibold text-foreground">starts</span>.
+                A night shift that runs past midnight stays on that day, and its check-out is
+                entered the next morning from the roster's pending check-out list.
               </p>
-              {boundaryInfo.derived.conflict ? (
-                <p className="text-destructive">{boundaryInfo.derived.conflict}</p>
-              ) : boundaryInfo.derived.cutoffHour !== boundaryInfo.active ? (
-                <p>
-                  Saving will change it to {boundaryInfo.derived.cutoffHour}:00 starting
-                  tomorrow; today's records keep {boundaryInfo.active}:00.
-                </p>
-              ) : boundaryInfo.pending && boundaryInfo.pending.cutoffHour !== boundaryInfo.active ? (
-                <p>
-                  Becomes {boundaryInfo.pending.cutoffHour}:00 from{" "}
-                  {String(boundaryInfo.pending.effectiveFrom).split("T")[0]}.
-                </p>
-              ) : null}
             </div>
 
           </div>
@@ -2991,29 +3026,8 @@ function SiteAttendance() {
         </DialogContent>
       </Dialog>
 
-      {/* NIGHT SHIFT BANNER */}
-      {extendedPeriod && (
-        <div className="night-shift-banner" style={{
-          background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
-          color: "#e0e0ff",
-          padding: "12px 16px",
-          borderRadius: "8px",
-          marginBottom: "16px",
-          display: "flex",
-          alignItems: "center",
-          gap: "10px",
-          fontSize: "14px",
-          border: "1px solid rgba(100, 100, 255, 0.2)",
-        }}>
-          <span style={{ fontSize: "20px" }}>🌙</span>
-          <div>
-            <strong>Logging for {formatLogicalDateLabel(today)} (Night Shift)</strong>
-            <div style={{ fontSize: "12px", opacity: 0.8, marginTop: "2px" }}>
-              The portal is showing the previous day's roster because it's before {cutoffHour}:00 AM.
-            </div>
-          </div>
-        </div>
-      )}
+      {/* The old "extended period" banner is gone: the roster is always today's calendar
+          day, and an unfinished night shift from yesterday surfaces as a carryover row. */}
 
 
 
@@ -3147,6 +3161,49 @@ function SiteAttendance() {
         </div>
       </div>
 
+      {beforeNoon && carryoverRecords.length > 0 && (
+        <Card className="mb-4 border-amber-300 dark:border-amber-800/50 bg-amber-50/40 dark:bg-amber-950/10">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2 text-amber-800 dark:text-amber-300">
+              <Clock3 className="h-4 w-4" />
+              Pending check-out · {formatLogicalDateLabel(yesterdayOf(today))}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              These employees have an open shift from yesterday. Enter their real check-out time before it's forgotten.
+            </p>
+            {carryoverRecords.map((rec) => {
+              const openSession = rec.sessions.find(
+                (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
+              )
+              return (
+                <div
+                  key={rec.attendanceId}
+                  className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{rec.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {rec.employeeId} • in {openSession?.checkIn ? formatLocalTime12h(openSession.checkIn) : "—"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 shrink-0 gap-1.5"
+                    onClick={() => openEditRecord(rec)}
+                  >
+                    <Clock3 className="h-4 w-4" />
+                    Check out
+                  </Button>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="pt-6">
 
@@ -3196,6 +3253,9 @@ function SiteAttendance() {
                               )}
                               {record.transferredFrom && (
                                 <TransferredFromBadge siteName={record.transferredFrom.name} />
+                              )}
+                              {carryoverEmpIds.has(record.employee) && (
+                                <CarryoverBadge onClick={() => handleOpenCarryover(record.employee)} />
                               )}
                             </div>
 
@@ -3311,25 +3371,13 @@ function SiteAttendance() {
                                 value={inlineEdit.checkIn}
                                onChange={(e) => {
                                   const val = e.target.value
-                                  const originalIsNight = record.sessions[0]?.isNightShift || false
-                                  let isNight = false
-                                  if (val) {
-                                    const [inH] = val.split(":").map(Number)
-                                    const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                    if (originalIsNight) {
-                                      isNight = !isDayOnlyCheckIn
-                                    } else {
-                                      const inRange = inH >= 0 && inH < cutoffHour
-                                      const crossesMidnight = inlineEdit.checkOut ? isCrossMidnight(val, inlineEdit.checkOut, false) : false
-                                      isNight = inRange || crossesMidnight
-                                    }
-                                  } else {
-                                    isNight = originalIsNight
-                                  }
+                                  // Cutoff-free: crosses midnight iff the check-out reads
+                                  // earlier than the check-in.
+                                  const { checkOutNextDay } = deriveOffsets(val, inlineEdit.checkOut)
                                   setInlineEdit((prev) => ({
                                     ...prev,
                                     checkIn: val,
-                                    isNightShift: isNight,
+                                    isNightShift: checkOutNextDay,
                                   }))
                                 }}
                               />
@@ -3345,25 +3393,11 @@ function SiteAttendance() {
                                 value={inlineEdit.checkOut}
                                 onChange={(e) => {
                                   const val = e.target.value
-                                  const originalIsNight = record.sessions[0]?.isNightShift || false
-                                  let isNight = false
-                                  if (inlineEdit.checkIn) {
-                                    const [inH] = inlineEdit.checkIn.split(":").map(Number)
-                                    const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                    if (originalIsNight) {
-                                      isNight = !isDayOnlyCheckIn
-                                    } else {
-                                      const inRange = inH >= 0 && inH < cutoffHour
-                                      const crossesMidnight = val ? isCrossMidnight(inlineEdit.checkIn, val, false) : false
-                                      isNight = inRange || crossesMidnight
-                                    }
-                                  } else {
-                                    isNight = originalIsNight
-                                  }
+                                  const { checkOutNextDay } = deriveOffsets(inlineEdit.checkIn, val)
                                   setInlineEdit((prev) => ({
                                     ...prev,
                                     checkOut: val,
-                                    isNightShift: isNight,
+                                    isNightShift: checkOutNextDay,
                                   }))
                                 }}
                               />
@@ -3477,7 +3511,17 @@ function SiteAttendance() {
                               ))}
                             </div>
 
-                            {complete ? (
+                            {carryoverEmpIds.has(record.employee) ? (
+                              // Carryover takes over the row's primary action: closing
+                              // yesterday's shift is the only thing to do here until done.
+                              <Button
+                                className="bg-amber-600 hover:bg-amber-700 text-white"
+                                onClick={() => handleOpenCarryover(record.employee)}
+                              >
+                                <Clock3 className="h-4 w-4 mr-2" />
+                                Check out yesterday
+                              </Button>
+                            ) : complete ? (
                               <Button
                                 variant="outline"
                                 onClick={() =>
@@ -3588,6 +3632,9 @@ function SiteAttendance() {
                                         {record.transferredFrom && (
                                           <TransferredFromBadge siteName={record.transferredFrom.name} />
                                         )}
+                                        {carryoverEmpIds.has(record.employee) && (
+                                          <CarryoverBadge onClick={() => handleOpenCarryover(record.employee)} />
+                                        )}
                                       </div>
 
                                       <p className="text-sm text-muted-foreground">
@@ -3611,25 +3658,13 @@ function SiteAttendance() {
                                     value={inlineEdit.checkIn}
                                     onChange={(e) => {
                                       const val = e.target.value
-                                      const originalIsNight = record.sessions[0]?.isNightShift || false
-                                      let isNight = false
-                                      if (val) {
-                                        const [inH] = val.split(":").map(Number)
-                                        const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                        if (originalIsNight) {
-                                          isNight = !isDayOnlyCheckIn
-                                        } else {
-                                          const inRange = inH >= 0 && inH < cutoffHour
-                                          const crossesMidnight = inlineEdit.checkOut ? isCrossMidnight(val, inlineEdit.checkOut, false) : false
-                                          isNight = inRange || crossesMidnight
-                                        }
-                                      } else {
-                                        isNight = originalIsNight
-                                      }
+                                      // Cutoff-free: crosses midnight iff the check-out
+                                      // reads earlier than the check-in.
+                                      const { checkOutNextDay } = deriveOffsets(val, inlineEdit.checkOut)
                                       setInlineEdit((prev) => ({
                                         ...prev,
                                         checkIn: val,
-                                        isNightShift: isNight,
+                                        isNightShift: checkOutNextDay,
                                       }))
                                     }}
                                   />
@@ -3653,25 +3688,11 @@ function SiteAttendance() {
                                       value={inlineEdit.checkOut}
                                       onChange={(e) => {
                                         const val = e.target.value
-                                        const originalIsNight = record.sessions[0]?.isNightShift || false
-                                        let isNight = false
-                                        if (inlineEdit.checkIn) {
-                                          const [inH] = inlineEdit.checkIn.split(":").map(Number)
-                                          const isDayOnlyCheckIn = inH >= cutoffHour && inH < 12 // 7 AM to 12 PM
-                                          if (originalIsNight) {
-                                            isNight = !isDayOnlyCheckIn
-                                          } else {
-                                            const inRange = inH >= 0 && inH < cutoffHour
-                                            const crossesMidnight = val ? isCrossMidnight(inlineEdit.checkIn, val, false) : false
-                                            isNight = inRange || crossesMidnight
-                                          }
-                                        } else {
-                                          isNight = originalIsNight
-                                        }
+                                        const { checkOutNextDay } = deriveOffsets(inlineEdit.checkIn, val)
                                         setInlineEdit((prev) => ({
                                           ...prev,
                                           checkOut: val,
-                                          isNightShift: isNight,
+                                          isNightShift: checkOutNextDay,
                                         }))
                                       }}
                                     />
@@ -3830,7 +3851,18 @@ function SiteAttendance() {
                                     </div>
                                   ) : (
                                     <div className="flex justify-end items-center gap-2">
-                                      {complete ? (
+                                      {carryoverEmpIds.has(record.employee) ? (
+                                        // Carryover takes over the row's primary action.
+                                        <Button
+                                          size="sm"
+                                          className="gap-1.5 whitespace-nowrap bg-amber-600 hover:bg-amber-700 text-white"
+                                          title="Enter yesterday's check-out to unlock today"
+                                          onClick={() => handleOpenCarryover(record.employee)}
+                                        >
+                                          <Clock3 className="h-4 w-4" />
+                                          Check out yesterday
+                                        </Button>
+                                      ) : complete ? (
                                         <Button
                                           size="sm"
                                           variant="outline"
@@ -3917,6 +3949,8 @@ function SiteAttendance() {
                       siteId={id}
                       breakDurationMinutes={breakDurationMinutes}
                       fullDayHours={fullDayHours}
+                      hasCarryover={carryoverEmpIds.has(record.employee._id)}
+                      onOpenCarryover={handleOpenCarryover}
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                       onUpdateSession={updateDraftSession}
@@ -3955,6 +3989,8 @@ function SiteAttendance() {
                         siteId={id}
                         breakDurationMinutes={breakDurationMinutes}
                         fullDayHours={fullDayHours}
+                        hasCarryover={carryoverEmpIds.has(record.employee._id)}
+                        onOpenCarryover={handleOpenCarryover}
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                         onUpdateSession={updateDraftSession}
@@ -3980,9 +4016,22 @@ function SiteAttendance() {
         onClose={() => setEditOpen(false)}
         attendanceId={selectedRecord?.attendanceId ?? null}
         site={site!}
-        onUpdated={(updatedRecord) =>
+        onUpdated={(updatedRecord) => {
+          const edited = selectedRecord
+          const wasCarryover =
+            !!edited && String(edited.date).slice(0, 10) !== today
           handleRecordUpdated(updatedRecord as AttendanceRecord)
-        }
+          // A carryover may have just been closed on yesterday's record — refresh the
+          // pending-checkout list so it drops off once its check-out is filled.
+          fetchCarryovers(today)
+          if (wasCarryover && edited) {
+            // Coming off a night shift, the employee starts today ABSENT rather than with a
+            // prefilled morning check-in — the supervisor marks them only if they do work.
+            setDraftAttendance((prev) =>
+              clearCarryoverSessions(prev, new Set([String(edited.employee)]))
+            )
+          }
+        }}
       />
 
       <BulkAssignNightShift

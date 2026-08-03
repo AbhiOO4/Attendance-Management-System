@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useWorkConfig } from "@/context/WorkConfigContext";
 import toast from "react-hot-toast";
@@ -35,11 +35,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type CutoffEntry = {
-  cutoffHour: number;
-  effectiveFrom: string;
-};
-
 type WorkSchedule = {
   fullDayHours: number;
   halfDayHours: number;
@@ -47,9 +42,7 @@ type WorkSchedule = {
   overtimeMultiplier: number;
   monthlyHoursDivisor: number;
   weeklyHolidays: string[];
-  nightShiftCutoffHour: number;
   breakDurationMinutes: number;
-  cutoffHistory?: CutoffEntry[];
 };
 
 
@@ -92,20 +85,6 @@ const getCurrentMonthYear = () => {
   };
 };
 
-const formatCutoffDate = (value: string) => {
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return value;
-  // The seeded legacy entry is an epoch sentinel, not a real changeover date.
-  if (d.getUTCFullYear() <= 1970) return "the beginning";
-  return d.toLocaleDateString("en-IN", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-};
-
 export default function Configure() {
   const { refreshConfig } = useWorkConfig();
 
@@ -116,18 +95,8 @@ export default function Configure() {
     overtimeMultiplier: 1.25,
     monthlyHoursDivisor: 240,
     weeklyHolidays: [],
-    // Machine-managed legacy mirror; 0 = midnight boundary. Never edited from this page.
-    nightShiftCutoffHour: 0,
     breakDurationMinutes: 60,
   });
-
-  const cutoffHistory = useMemo(
-    () =>
-      [...(schedule.cutoffHistory ?? [])].sort(
-        (a, b) => new Date(a.effectiveFrom).getTime() - new Date(b.effectiveFrom).getTime()
-      ),
-    [schedule.cutoffHistory]
-  );
 
   const [holidayForm, setHolidayForm] = useState({
     date: "",
@@ -601,7 +570,7 @@ export default function Configure() {
               </div>
             </div>
 
-            {/* NIGHT SHIFT SETTINGS (read-only — cutoffs are per-site now) */}
+            {/* NIGHT SHIFT SETTINGS (informational) */}
             <div className="space-y-4">
               <div>
                 <h3 className="font-medium flex items-center gap-2">
@@ -609,50 +578,25 @@ export default function Configure() {
                 </h3>
 
                 <p className="text-sm text-muted-foreground">
-                  The business-day boundary (night shift cutoff) is per-site now.
+                  Night shifts need no global configuration.
                 </p>
               </div>
 
               <div className="rounded-md border bg-muted/20 p-4 space-y-2">
                 <p className="text-sm">
-                  Each site's cutoff is <span className="font-medium">derived automatically
-                  from its default shift times</span> — it sits between the site's night
-                  shift check-out and day shift check-in, so it can never conflict with
-                  them. You can see (and influence) it in each site's{" "}
-                  <span className="font-medium">Edit Default Shift Times</span> dialog on
-                  the Site Attendance page.
+                  A shift is recorded on the day it{" "}
+                  <span className="font-medium">starts</span>. When a shift runs past
+                  midnight, its check-out is simply marked as belonging to the next day —
+                  so a site's day and night shift times can overlap freely and shifts of
+                  any length are supported.
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  A change takes effect from the next business day. Attendance already
-                  recorded keeps the cutoff it was created under, so past records stay
-                  editable and keep their hours.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  A site with no night shift check-out uses midnight (0:00) — its business
-                  day is simply the calendar day, and it doesn't do night shifts.
+                  A night shift left un-checked-out appears on the next day's roster for
+                  that site as a <span className="font-medium">carryover</span>, so the
+                  supervisor can enter the real check-out time before marking that
+                  employee for the new day.
                 </p>
               </div>
-
-              {cutoffHistory.length > 0 && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    Global cutoff history (pre-per-site legacy record)
-                  </label>
-                  <ul className="space-y-1">
-                    {cutoffHistory.map((entry, i) => (
-                      <li
-                        key={`${entry.effectiveFrom}-${i}`}
-                        className="text-xs text-muted-foreground"
-                      >
-                        <span className="font-medium text-foreground">
-                          {entry.cutoffHour}:00
-                        </span>{" "}
-                        — from {formatCutoffDate(entry.effectiveFrom)}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
             </div>
 
             {/* SAVE BUTTON */}

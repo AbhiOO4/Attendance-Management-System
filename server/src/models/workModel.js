@@ -71,44 +71,10 @@ const workScheduleSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Hour (0-12) when the "logical business day" ends.
-    // Times before this cutoff are treated as belonging to the previous day.
-    // Mirrors the currently-active entry of cutoffHistory. Read it through
-    // getCurrentCutoff()/resolveCutoffForDate() (utils/cutoff.js), never directly:
-    // a record must be interpreted with the cutoff in force on ITS OWN business day.
-    nightShiftCutoffHour: {
-      type: Number,
-      required: true,
-      min: 0,
-      max: 12,
-      // 0 = midnight: plain calendar days. Machine-managed mirror — real values come from
-      // cutoffHistory via getCurrentCutoff(); pre-migration deployments carry their own
-      // stored value (historically 7).
-      default: 0,
-    },
-
-    // Effective-dated history of the cutoff hour, ascending by effectiveFrom.
-    // Append-only: a change takes effect from tomorrow's business day, so records already
-    // written keep the cutoff their stored check-in/out Dates were combined with.
-    cutoffHistory: {
-      type: [
-        {
-          cutoffHour: {
-            type: Number,
-            required: true,
-            min: 0,
-            max: 12,
-          },
-          // UTC-midnight of the first business day this cutoff applies to.
-          effectiveFrom: {
-            type: Date,
-            required: true,
-          },
-          _id: false,
-        },
-      ],
-      default: [],
-    },
+    // NOTE: nightShiftCutoffHour / cutoffHistory were removed with the cutoff redesign.
+    // A session's business day is Attendance.date and cross-midnight is an explicit
+    // per-session day offset (rawCheckIn/rawCheckOut + checkInNextDay/checkOutNextDay),
+    // so no global business-day boundary hour exists any more.
 
     // Duration of a single break in minutes.
     // Total break deduction = floor(rawHours / fullDayHours) * breakDurationMinutes / 60

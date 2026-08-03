@@ -62,8 +62,7 @@ and never sees the token. Key pieces:
   invariant that `isSickLeave` is only valid when no session has any check-in/out.
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
   `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `overtimeMultiplier`,
-  `monthlyHoursDivisor`, `weeklyHolidays`, `nightShiftCutoffHour`,
-  `breakDurationMinutes`.
+  `monthlyHoursDivisor`, `weeklyHolidays`, `breakDurationMinutes`.
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
   attendance locks that site/day; only an admin can unlock it for editing.
 - **Holiday** (`holidayModel.js`), **JobTitle** (`jobTitleModel.js`).
@@ -109,13 +108,54 @@ centralized:
 - Client: `client/src/lib/dateUtils.ts` (`APP_OFFSET`) — also the source of the
   `X-Timezone-Offset` header set in `client/src/lib/api.ts`.
 
-There is a **"logical business day"** concept driven by `nightShiftCutoffHour`
-(default 7am): times before the cutoff belong to the *previous* calendar day, so a
-night shift spanning midnight is one attendance record. Cross-midnight is either
-explicit (`isNightShift`) or auto-detected (checkout time < checkin time). When
-touching any check-in/out, hours, or date handling, use the existing helpers
-(`combineDateAndTime*`, `calculateHoursBetween`, `getLogicalShiftDate`, etc.) rather
-than reimplementing offset math.
+**Business day = `Attendance.date`, and cross-midnight is an EXPLICIT per-session
+fact — there is no cutoff hour.** (A `nightShiftCutoffHour` used to define a
+"logical business day"; it was removed because a flexible workplace's day-start and
+night-end windows overlap, so no single hour can separate them.)
+
+Each session stores its times as entered plus a day offset from the record's
+business day:
+- `rawCheckIn` / `rawCheckOut` — `"HH:mm"` exactly as entered (source of truth)
+- `checkInNextDay` / `checkOutNextDay` — `false` = on `date`, `true` = on `date + 1`
+- `checkIn` / `checkOut` (Dates) are a DERIVED CACHE, recomputed from the above on
+  every write by the `pre("save")` hook in `attendanceModel.js` (which covers every
+  write path). `isNightShift` is retained only as a display convenience meaning
+  "either endpoint is next-day".
+
+Offsets are resolved per record by `resolveDayOffsets()` as a MONOTONIC timeline:
+`deriveOffsets()` rolls a check-out to the next day when its wall time reads earlier
+than the check-in, and any later session that would land before a crossing already
+made inherits it. That places a site-switch continuation automatically —
+`19:00→01:00` then `01:00→08:00` resolves to offsets `0/1` then `1/1`. It only rolls
+forward when the timeline actually crossed midnight, so `09:00→17:00` followed by
+`08:00→10:00` is left alone and reported as the overlap it probably is.
+
+Clients may send explicit `checkInNextDay`/`checkOutNextDay`, which always win. That
+is how the two cases nothing can infer are expressed: a STANDALONE early-morning tail
+(`01:00→08:00` with no earlier session to inherit from) and shifts of 24h+
+(`08:00→08:00`, where `out < in` is false). Both have toggles in `EditSiteRecord`.
+NOTE: never re-derive a stored check-in's offset from its times on edit — an
+early-morning session is indistinguishable from an ordinary morning shift and would
+silently jump back 24h.
+
+Validation is ordering + duration only (`MAX_SHIFT_HOURS = 26`); there are no boundary
+rules, so a 06:00 day start and an 08:00 night check-out both pass. Overlap is checked
+twice: within the record, and ACROSS days via `buildCrossDayOverlapChecker`
+(`utils/sessionOverlap.js`) on submit/edit/backfill — sessions extending past midnight
+live on different records, so the same hours could otherwise be paid twice.
+
+Use the existing helpers rather than reimplementing offset math — server
+`utils/timeLocal.js` (`combineFromOffset`, `deriveOffsets`, `hoursFromOffset`,
+`validateSessionTimesV2`, `deriveRawOffsetFields`) mirrored in client
+`lib/dateUtils.ts`; keep the two in sync.
+
+**Carryover:** a session left open (check-in, no check-out) on YESTERDAY's record
+surfaces on today's Site Attendance page — a pinned "pending check-out" card before
+noon, and a clickable ⏳ Carryover badge on the employee's row all day. Closing it
+writes to yesterday's record. Carryover employees are not auto-prefilled (they
+default to absent) and their today inputs are locked until it is closed. The window
+is a rolling one day; after that it is admin-only via edit-past. Nothing is
+auto-filled — an unclosed session stays incomplete by design.
 
 ### Cron jobs (`server/src/cron/`)
 Started on boot from `server.js`. `autoCheckOut.js` and `autoCheckIn.js` fill in
