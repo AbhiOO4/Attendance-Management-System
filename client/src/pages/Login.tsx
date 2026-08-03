@@ -30,7 +30,21 @@ function Login() {
         { withCredentials: true }
       )
 
-      await refreshUser()
+      // The credentials were accepted, but that only means the server SENT the session
+      // cookie — the browser may still have refused to store it (e.g. Samsung Internet's
+      // Smart Anti-Tracking, or Safari ITP, blocking a cross-site cookie). refreshUser()
+      // swallows its own error and returns null in that case, so it must be checked:
+      // navigating on a null user just bounces off ProtectedRoute back to the landing
+      // page, which looks like "login worked but nothing happened".
+      const nextUser = await refreshUser()
+
+      if (!nextUser) {
+        toast.error(
+          "Signed in, but your session could not be saved. Your browser may be blocking cookies for this site — allow cookies (or turn off tracking protection) for this site and try again.",
+          { duration: 8000 }
+        )
+        return
+      }
 
       toast.success("Login successful")
 
