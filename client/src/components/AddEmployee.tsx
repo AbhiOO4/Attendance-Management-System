@@ -34,9 +34,10 @@ type NewEmployee = {
   name: string
   employeeId: string
   jobTitle: string
-  currentSite: string 
+  currentSite: string
   monthlySalary: number
   employmentType: 'permanent' | 'temporary'
+  nationality: 'foreign' | 'omani'
 }
 
 type JobTitle = {
@@ -54,7 +55,7 @@ function AddEmployee({ onAdd, sites }: Props) {
 
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
 
-  const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0, employmentType: "permanent"})
+  const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0, employmentType: "permanent", nationality: "foreign"})
   const [salaryInput, setSalaryInput] = useState("")
 
   const fetchTitles = async () => {
@@ -102,6 +103,7 @@ function AddEmployee({ onAdd, sites }: Props) {
       currentSite: " ",
       monthlySalary: 0,
       employmentType: "permanent",
+      nationality: "foreign",
     })
     setSalaryInput("")
 
@@ -207,7 +209,21 @@ function AddEmployee({ onAdd, sites }: Props) {
             </SelectContent>
           </Select>
 
-
+          <Select
+            value={formData.nationality}
+            onValueChange={(value) => setFormData({
+              ...formData,
+              nationality: value as "foreign" | "omani"
+            })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Nationality" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="foreign">Foreign</SelectItem>
+              <SelectItem value="omani">Omani</SelectItem>
+            </SelectContent>
+          </Select>
 
           <Input
             type="number"

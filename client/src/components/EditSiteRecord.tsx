@@ -49,7 +49,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, formatOffsetDayLabel, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
@@ -491,11 +491,18 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     try {
       if (!record) return
 
-      const emptySession = sessions.find(
-        (s) => String(s.siteId) === String(site._id) && !s.checkIn
+      // A session with a check-out but no check-in is invalid. A FULLY-blank session
+      // (both times empty) is allowed on purpose — that's the deliberate "Absent" /
+      // cleared-session case (the server stores it with manuallyCleared and the
+      // employee reads as absent). It's the only way to undo a mistaken check-in on a
+      // single-session record, e.g. an unclosed carryover shift that should have been
+      // absent — the session can't be deleted (it's the site's only one), so clearing
+      // both times and saving is the escape hatch.
+      const danglingCheckout = sessions.find(
+        (s) => String(s.siteId) === String(site._id) && !s.checkIn && !!s.checkOut
       )
-      if (emptySession) {
-        toast.error("All sessions must have at least a check-in time. Remove empty sessions or fill in their check-in.")
+      if (danglingCheckout) {
+        toast.error("A check-out needs a check-in. Add a check-in, or clear both times to mark this session absent.")
         return
       }
 
@@ -743,7 +750,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
                 }`}
                 title="Toggle whether this shift STARTS on the next day (an after-midnight session recorded on this day)"
               >
-                {isNextDayInstant(session.checkIn, record?.date) ? "🌙 Starts next day (+1)" : "Starts same day"}
+                {isNextDayInstant(session.checkIn, record?.date)
+                  ? `🌙 Starts next day · ${formatOffsetDayLabel(record?.date, 1)}`
+                  : `Starts same day · ${formatOffsetDayLabel(record?.date, 0)}`}
               </button>
             )}
           </div>
@@ -766,7 +775,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
                 }`}
                 title="Toggle whether the check-out is on the next day (for 24h or after-midnight shifts)"
               >
-                {isNextDayInstant(session.checkOut, record?.date) ? "🌙 Check-out next day (+1)" : "Check-out same day"}
+                {isNextDayInstant(session.checkOut, record?.date)
+                  ? `🌙 Check-out next day · ${formatOffsetDayLabel(record?.date, 1)}`
+                  : `Check-out same day · ${formatOffsetDayLabel(record?.date, 0)}`}
               </button>
             )}
           </div>

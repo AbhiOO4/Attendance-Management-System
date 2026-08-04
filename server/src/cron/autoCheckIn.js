@@ -7,102 +7,129 @@ import {
   combineFromOffset,
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { getEmployeeIdsByCategory } from '../utils/collar.js';
 
 /**
- * Run the auto check-in process for night shifts.
- *
- * Finds active sites whose nightDefaultCheckIn matches the current local time,
- * then fills checkIn for empty night-shift sessions (isNightShift: true with no
- * checkIn/checkOut) for that site today, as long as the proposed time does not
- * overlap another session on the same record.
+ * Fill checkIn for a single category's empty night-shift sessions across a set of sites
+ * today. A night check-in default is an evening time, so it belongs to the record's own
+ * business day (offset 0). Scoped to one category's employee _id set so a category is
+ * only auto-checked-in from its own night default.
+ */
+async function processSites(sites, todayStr, checkInField, employeeIds) {
+  if (employeeIds.length === 0) return;
+
+  const todayDate = new Date(todayStr);
+  todayDate.setUTCHours(0, 0, 0, 0);
+
+  for (const site of sites) {
+    try {
+      const checkInTimeStr = site[checkInField];
+      if (!checkInTimeStr) continue;
+
+      // Today's records that have a session at this site, scoped to this category.
+      const records = await Attendance.find({
+        date: todayDate,
+        'sessions.siteId': site._id,
+        employee: { $in: employeeIds },
+      });
+
+      let updatedCount = 0;
+
+      for (const record of records) {
+        // Never auto check-in an employee marked as sick leave.
+        if (record.isSickLeave) continue;
+
+        let recordModified = false;
+
+        for (const session of record.sessions) {
+          // Only empty night-shift sessions for this site
+          if (
+            session.siteId.toString() === site._id.toString() &&
+            session.isNightShift === true &&
+            !session.checkIn &&
+            !session.checkOut
+          ) {
+            const checkInDate = combineFromOffset(todayStr, checkInTimeStr, false);
+
+            // In-memory dry-run overlap check against the record's other sessions
+            const candidate = record.sessions.map((s) =>
+              s._id.toString() === session._id.toString()
+                ? { checkIn: checkInDate, checkOut: null }
+                : { checkIn: s.checkIn, checkOut: s.checkOut }
+            );
+
+            if (hasSessionOverlap(candidate)) {
+              console.warn(
+                `[AutoCheckIn] Skipped overlapping night check-in for record ${record._id} at site "${site.siteName}"`
+              );
+              continue;
+            }
+
+            session.checkIn = checkInDate;
+            recordModified = true;
+          }
+        }
+
+        if (recordModified) {
+          await record.save();
+          updatedCount++;
+        }
+      }
+
+      if (updatedCount > 0) {
+        console.log(
+          `[AutoCheckIn] Site "${site.siteName}" (${checkInField}): auto-filled night check-in (${checkInTimeStr}) for ${updatedCount} record(s)`
+        );
+      }
+    } catch (siteError) {
+      console.error(
+        `[AutoCheckIn] Error processing site "${site.siteName}":`,
+        siteError
+      );
+    }
+  }
+}
+
+// Per-category night check-in modes. Foreign Skilled on a 24h site prefill their check-in
+// on the roster (supervisor submits), so their night auto check-in excludes 24h sites.
+const CHECKIN_MODES = [
+  { field: 'nightDefaultCheckIn',           cat: 'foreignSkilled', exclude24: true  },
+  { field: 'staffNightDefaultCheckIn',      cat: 'foreignStaff',   exclude24: false },
+  { field: 'omaniNightDefaultCheckIn',      cat: 'omaniSkilled',   exclude24: false },
+  { field: 'omaniStaffNightDefaultCheckIn', cat: 'omaniStaff',     exclude24: false },
+];
+
+/**
+ * Run the auto check-in process for night shifts. For each category's night check-in
+ * default that matches the current local minute, fill that category's empty night sessions
+ * (isNightShift: true, no checkIn/checkOut) today, avoiding overlaps.
  */
 async function runAutoCheckIn() {
   try {
     const currentTime = getCurrentLocalTime();
     const todayStr = getTodayLocal();
 
-    // Find all active sites whose nightDefaultCheckIn matches current time
-    const matchingSites = await Site.find({
-      isActive: true,
-      isDeleted: { $ne: true },
-      nightDefaultCheckIn: currentTime,
-    });
+    const active = { isActive: true, isDeleted: { $ne: true } };
 
-    if (matchingSites.length === 0) return;
+    const modeSites = await Promise.all(
+      CHECKIN_MODES.map((m) =>
+        Site.find({
+          ...active,
+          ...(m.exclude24 ? { is24HourShift: { $ne: true } } : {}),
+          [m.field]: currentTime,
+        })
+      )
+    );
 
-    const todayDate = new Date(todayStr);
-    todayDate.setUTCHours(0, 0, 0, 0);
+    if (modeSites.every((s) => s.length === 0)) return;
 
-    for (const site of matchingSites) {
-      try {
-        if (!site.nightDefaultCheckIn) continue;
+    const cats = await getEmployeeIdsByCategory();
 
-        // Today's records that have a session at this site
-        const records = await Attendance.find({
-          date: todayDate,
-          'sessions.siteId': site._id,
-        });
-
-        let updatedCount = 0;
-
-        for (const record of records) {
-          // Never auto check-in an employee marked as sick leave.
-          if (record.isSickLeave) continue;
-
-          let recordModified = false;
-
-          for (const session of record.sessions) {
-            // Only empty night-shift sessions for this site
-            if (
-              session.siteId.toString() === site._id.toString() &&
-              session.isNightShift === true &&
-              !session.checkIn &&
-              !session.checkOut
-            ) {
-              // Cutoff-free: a night check-in default is an evening time, so it belongs
-              // to the record's own business day (offset 0).
-              const checkInDate = combineFromOffset(
-                todayStr,
-                site.nightDefaultCheckIn,
-                false
-              );
-
-              // In-memory dry-run overlap check against the record's other sessions
-              const candidate = record.sessions.map((s) =>
-                s._id.toString() === session._id.toString()
-                  ? { checkIn: checkInDate, checkOut: null }
-                  : { checkIn: s.checkIn, checkOut: s.checkOut }
-              );
-
-              if (hasSessionOverlap(candidate)) {
-                console.warn(
-                  `[AutoCheckIn] Skipped overlapping night check-in for record ${record._id} at site "${site.siteName}"`
-                );
-                continue;
-              }
-
-              session.checkIn = checkInDate;
-              recordModified = true;
-            }
-          }
-
-          if (recordModified) {
-            await record.save();
-            updatedCount++;
-          }
-        }
-
-        if (updatedCount > 0) {
-          console.log(
-            `[AutoCheckIn] Site "${site.siteName}": auto-filled night check-in (${site.nightDefaultCheckIn}) for ${updatedCount} record(s)`
-          );
-        }
-      } catch (siteError) {
-        console.error(
-          `[AutoCheckIn] Error processing site "${site.siteName}":`,
-          siteError
-        );
-      }
+    for (let i = 0; i < CHECKIN_MODES.length; i++) {
+      const sites = modeSites[i];
+      if (sites.length === 0) continue;
+      const m = CHECKIN_MODES[i];
+      await processSites(sites, todayStr, m.field, cats[m.cat]);
     }
   } catch (error) {
     console.error('[AutoCheckIn] Cron job error:', error);
@@ -111,7 +138,7 @@ async function runAutoCheckIn() {
 
 /**
  * Start the auto check-in cron job.
- * Runs every minute to check if any site's nightDefaultCheckIn matches current local time.
+ * Runs every minute to check if any category's night check-in matches current local time.
  */
 export function startAutoCheckInCron() {
   cron.schedule('* * * * *', runAutoCheckIn);

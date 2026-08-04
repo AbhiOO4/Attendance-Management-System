@@ -10,7 +10,7 @@ export const generateTokenAndSetCookie = (res, user) => {
     res.cookie('token', token, {
         httpOnly: true, //cant be accesed with js avoid xss attacks
         secure: isProduction,
-        sameSite: isProduction ? "none" : "strict", //csrf
+        sameSite: isProduction ? "none" : "strict", //csrf //if the frontend and backend share same domain make the sameSite option lax
         maxAge: 30*24*60*60*1000
     });
 

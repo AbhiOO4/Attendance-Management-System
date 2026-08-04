@@ -31,6 +31,12 @@ const employeeSchema = Joi.object({
 
   employmentType: Joi.string().valid('permanent', 'temporary').default('permanent'),
 
+  // Orthogonal to collarType (which the controller derives from the job title).
+  // Together they form the four roster categories. Unknown keys are rejected by
+  // Joi's default, and `req.body = value` strips anything not listed here — so this
+  // must be declared for the nationality to survive to the controller.
+  nationality: Joi.string().valid('foreign', 'omani').default('foreign'),
+
 });
 
 

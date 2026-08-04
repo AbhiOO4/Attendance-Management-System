@@ -23,9 +23,10 @@ type NewEmployee = {
   name: string
   employeeId: string
   jobTitle: string
-  currentSite: string 
+  currentSite: string
   currentJob: string | null
   employmentType: 'permanent' | 'temporary'
+  nationality: 'foreign' | 'omani'
 }
 
 type JobTitle = {
@@ -52,6 +53,7 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
     name: "",
     employeeId: "",
     jobTitle: "",
+    nationality: "foreign",
   })
 
   const fetchTitles = async () => {
@@ -104,6 +106,7 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
       name: "",
       employeeId: "",
       jobTitle: "",
+      nationality: "foreign",
     })
     setSelectedJob("")
     setOpen(false)
@@ -180,6 +183,24 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
                   {job.name}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={formData.nationality}
+            onValueChange={(value) =>
+              setFormData({
+                ...formData,
+                nationality: value as "foreign" | "omani",
+              })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Nationality" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="foreign">Foreign</SelectItem>
+              <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
 

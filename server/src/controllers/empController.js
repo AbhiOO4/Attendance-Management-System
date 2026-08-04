@@ -65,7 +65,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
@@ -112,6 +112,8 @@ export const addEmployee = async (req, res) => {
   try {
     // Derive collar type from the chosen job title (client never sets it directly).
     req.body.collarType = await resolveCollarType(req.body.jobTitle);
+    // Nationality is set on the employee (not derived). Normalize to the allowed pair.
+    req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
 
     const newEmployee = new empModel(req.body);
     const savedEmp = await newEmployee.save({ session });
@@ -264,6 +266,11 @@ export const editEmployee = async (req, res) => {
     // Keep the denormalized collar type in sync when the job title changes.
     if (req.body.jobTitle && req.body.jobTitle !== existingEmployee.jobTitle) {
       req.body.collarType = await resolveCollarType(req.body.jobTitle);
+    }
+    // Normalize nationality only when the edit actually includes it (findByIdAndUpdate
+    // skips validators, so guard against a stray value slipping through).
+    if (req.body.nationality !== undefined) {
+      req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
     }
 
     const prevSite = existingEmployee.currentSite?.toString() || null;

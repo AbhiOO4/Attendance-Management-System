@@ -1807,6 +1807,16 @@ export const updateSite = async (req, res) => {
       staffDefaultCheckOut,
       staffNightDefaultCheckIn,
       staffNightDefaultCheckOut,
+      omaniDefaultCheckIn,
+      omaniDefaultCheckOut,
+      omaniNightDefaultCheckIn,
+      omaniNightDefaultCheckOut,
+      omaniStaffDefaultCheckIn,
+      omaniStaffDefaultCheckOut,
+      omaniStaffNightDefaultCheckIn,
+      omaniStaffNightDefaultCheckOut,
+      is24HourShift,
+      shift24StartTime,
       updateTodayRecords,
     } = req.body;
 
@@ -1836,19 +1846,24 @@ export const updateSite = async (req, res) => {
     // Absolute constraints only: a night DEFAULT check-in must be in the PM half and a
     // night DEFAULT check-out in the AM half. These bound the site's default times; actual
     // sessions are free-form and validated by ordering + duration (utils/timeLocal.js).
+    const eff = (incoming, stored) => (incoming !== undefined ? incoming : stored);
     const effectiveTimes = {
-      defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn,
-      staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : site.staffDefaultCheckIn,
-      nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : site.nightDefaultCheckIn,
-      nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : site.nightDefaultCheckOut,
-      staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : site.staffNightDefaultCheckIn,
-      staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : site.staffNightDefaultCheckOut,
+      nightDefaultCheckIn: eff(nightDefaultCheckIn, site.nightDefaultCheckIn),
+      nightDefaultCheckOut: eff(nightDefaultCheckOut, site.nightDefaultCheckOut),
+      staffNightDefaultCheckIn: eff(staffNightDefaultCheckIn, site.staffNightDefaultCheckIn),
+      staffNightDefaultCheckOut: eff(staffNightDefaultCheckOut, site.staffNightDefaultCheckOut),
+      omaniNightDefaultCheckIn: eff(omaniNightDefaultCheckIn, site.omaniNightDefaultCheckIn),
+      omaniNightDefaultCheckOut: eff(omaniNightDefaultCheckOut, site.omaniNightDefaultCheckOut),
+      omaniStaffNightDefaultCheckIn: eff(omaniStaffNightDefaultCheckIn, site.omaniStaffNightDefaultCheckIn),
+      omaniStaffNightDefaultCheckOut: eff(omaniStaffNightDefaultCheckOut, site.omaniStaffNightDefaultCheckOut),
     };
 
     const NOON = 12 * 60;
     for (const [field, label] of [
       ["nightDefaultCheckIn", "Night shift check-in"],
       ["staffNightDefaultCheckIn", "Staff night check-in"],
+      ["omaniNightDefaultCheckIn", "Omani night check-in"],
+      ["omaniStaffNightDefaultCheckIn", "Omani staff night check-in"],
     ]) {
       const min = toMinutes(effectiveTimes[field]);
       if (effectiveTimes[field] && min === null) {
@@ -1861,6 +1876,8 @@ export const updateSite = async (req, res) => {
     for (const [field, label] of [
       ["nightDefaultCheckOut", "Night shift check-out"],
       ["staffNightDefaultCheckOut", "Staff night check-out"],
+      ["omaniNightDefaultCheckOut", "Omani night check-out"],
+      ["omaniStaffNightDefaultCheckOut", "Omani staff night check-out"],
     ]) {
       const min = toMinutes(effectiveTimes[field]);
       if (effectiveTimes[field] && min === null) {
@@ -1876,39 +1893,38 @@ export const updateSite = async (req, res) => {
     // cross-midnight is recorded per session as an explicit day offset rather than inferred
     // from a global hour. Only the absolute per-shift sanity rules below still apply.
 
-    // --- DAY SHIFT VALIDATION ---
-    // Resolve the effective day times (incoming value overrides stored value)
-    const dayIn = defaultCheckIn !== undefined ? defaultCheckIn : site.defaultCheckIn;
-    const dayOut = defaultCheckOut !== undefined ? defaultCheckOut : site.defaultCheckOut;
-
-    if (dayIn && dayOut) {
-      const inMin = toMinutes(dayIn);
-      const outMin = toMinutes(dayOut);
-      if (inMin === null || outMin === null) {
-        return res.status(400).json({ message: "Invalid day shift times" });
-      }
-      // defaultCheckIn < defaultCheckOut and checkout stays before midnight (same calendar day)
-      if (outMin <= inMin) {
-        return res.status(400).json({
-          message: "Day shift check-out must be after check-in (before midnight)",
-        });
+    // --- DAY SHIFT VALIDATION (all four categories) ---
+    // Day shifts are same-day: check-out after check-in, before midnight.
+    for (const [inField, outField, label] of [
+      ["defaultCheckIn", "defaultCheckOut", "Day shift"],
+      ["staffDefaultCheckIn", "staffDefaultCheckOut", "Staff"],
+      ["omaniDefaultCheckIn", "omaniDefaultCheckOut", "Omani day shift"],
+      ["omaniStaffDefaultCheckIn", "omaniStaffDefaultCheckOut", "Omani staff"],
+    ]) {
+      const inVal = eff(req.body[inField], site[inField]);
+      const outVal = eff(req.body[outField], site[outField]);
+      if (inVal && outVal) {
+        const inMin = toMinutes(inVal);
+        const outMin = toMinutes(outVal);
+        if (inMin === null || outMin === null) {
+          return res.status(400).json({ message: `Invalid ${label.toLowerCase()} times` });
+        }
+        if (outMin <= inMin) {
+          return res.status(400).json({
+            message: `${label} check-out must be after check-in (before midnight)`,
+          });
+        }
       }
     }
 
-    // --- STAFF SHIFT VALIDATION ---
-    // Staff work fixed office hours: same-day, check-out after check-in.
-    const staffIn = staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : site.staffDefaultCheckIn;
-    const staffOut = staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : site.staffDefaultCheckOut;
-
-    if (staffIn && staffOut) {
-      const inMin = toMinutes(staffIn);
-      const outMin = toMinutes(staffOut);
-      if (inMin === null || outMin === null) {
-        return res.status(400).json({ message: "Invalid staff shift times" });
-      }
-      if (outMin <= inMin) {
+    // --- 24-HOUR SHIFT VALIDATION ---
+    // A 24h site needs exactly one valid start time; the shift is start → start (+1 day).
+    const effective24On = is24HourShift !== undefined ? !!is24HourShift : site.is24HourShift;
+    const effective24Start = shift24StartTime !== undefined ? shift24StartTime : site.shift24StartTime;
+    if (effective24On) {
+      if (!effective24Start || toMinutes(effective24Start) === null) {
         return res.status(400).json({
-          message: "Staff check-out must be after check-in (before midnight)",
+          message: "A 24-hour shift needs a valid start time (HH:mm)",
         });
       }
     }
@@ -1935,6 +1951,18 @@ export const updateSite = async (req, res) => {
     if (staffDefaultCheckOut !== undefined) site.staffDefaultCheckOut = staffDefaultCheckOut;
     if (staffNightDefaultCheckIn !== undefined) site.staffNightDefaultCheckIn = staffNightDefaultCheckIn;
     if (staffNightDefaultCheckOut !== undefined) site.staffNightDefaultCheckOut = staffNightDefaultCheckOut;
+    if (omaniDefaultCheckIn !== undefined) site.omaniDefaultCheckIn = omaniDefaultCheckIn;
+    if (omaniDefaultCheckOut !== undefined) site.omaniDefaultCheckOut = omaniDefaultCheckOut;
+    if (omaniNightDefaultCheckIn !== undefined) site.omaniNightDefaultCheckIn = omaniNightDefaultCheckIn;
+    if (omaniNightDefaultCheckOut !== undefined) site.omaniNightDefaultCheckOut = omaniNightDefaultCheckOut;
+    if (omaniStaffDefaultCheckIn !== undefined) site.omaniStaffDefaultCheckIn = omaniStaffDefaultCheckIn;
+    if (omaniStaffDefaultCheckOut !== undefined) site.omaniStaffDefaultCheckOut = omaniStaffDefaultCheckOut;
+    if (omaniStaffNightDefaultCheckIn !== undefined) site.omaniStaffNightDefaultCheckIn = omaniStaffNightDefaultCheckIn;
+    if (omaniStaffNightDefaultCheckOut !== undefined) site.omaniStaffNightDefaultCheckOut = omaniStaffNightDefaultCheckOut;
+    if (is24HourShift !== undefined) site.is24HourShift = !!is24HourShift;
+    if (shift24StartTime !== undefined) site.shift24StartTime = shift24StartTime;
+    // Turning the 24h shift off clears its start time so a stale value can't linger.
+    if (is24HourShift === false) site.shift24StartTime = "";
 
     await site.save();
 

@@ -30,9 +30,30 @@ export async function resolveCollarType(jobTitle) {
 }
 
 /**
- * Return the _id list of all employees classified as staff (white-collar).
- * Used to exclude them from man-hours / man-days stats.
+ * Return the _id list of all employees classified as staff (white-collar) — both
+ * foreign and Omani staff, since collarType is nationality-independent. Used to
+ * exclude staff from man-hours / man-days stats.
  */
 export async function getStaffEmployeeIds() {
   return empModel.find({ collarType: 'staff' }).distinct('_id');
+}
+
+/**
+ * Bucket every employee _id into one of the four roster categories,
+ * (skilled|staff) × (foreign|omani). The crons scope each auto check-in/out mode to
+ * exactly one category's ids so a category is only touched by its own default times.
+ * Returns `{ foreignSkilled, foreignStaff, omaniSkilled, omaniStaff }` (arrays of _id).
+ */
+export async function getEmployeeIdsByCategory() {
+  const emps = await empModel.find({}, '_id collarType nationality').lean();
+  const cats = { foreignSkilled: [], foreignStaff: [], omaniSkilled: [], omaniStaff: [] };
+  for (const e of emps) {
+    const isStaff = e.collarType === 'staff';
+    const isOmani = e.nationality === 'omani';
+    const key = isOmani
+      ? (isStaff ? 'omaniStaff' : 'omaniSkilled')
+      : (isStaff ? 'foreignStaff' : 'foreignSkilled');
+    cats[key].push(e._id);
+  }
+  return cats;
 }

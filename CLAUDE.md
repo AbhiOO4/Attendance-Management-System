@@ -46,11 +46,18 @@ and never sees the token. Key pieces:
 
 ### Data model (`server/src/models/`)
 - **Employee** — `employeeId` (unique), `jobTitle`, `currentSite`, `currentJob`,
-  `employmentType` (permanent|temporary), plus `pendingTransfer*` fields used by the
-  cross-site transfer flow.
+  `employmentType` (permanent|temporary), `collarType` (skilled|staff, derived from the
+  job title), `nationality` (foreign|omani, set on the employee), plus `pendingTransfer*`
+  fields used by the cross-site transfer flow. `collarType × nationality` gives the FOUR
+  roster categories: Foreign Skilled Labours, Foreign Staffs, Omani Labours, Omani Staffs.
 - **Site** — has `jobs[]`, day/night default check-in/out time strings, and flags
   (`isPermanent`, `isActive`, `isDeleted`, `isCompleted`). A permanent site
-  ("Workshop Phase 7") is auto-created on server boot.
+  ("Workshop Phase 7") is auto-created on server boot. There are FOUR sets of day/night
+  defaults, one per category: `defaultCheck*`/`nightDefaultCheck*` (foreign skilled),
+  `staff*` (foreign staff), `omani*` (Omani labours), `omaniStaff*` (Omani staffs). A
+  24-hour shift (`is24HourShift` + single `shift24StartTime`) is scoped to FOREIGN SKILLED
+  LABOURS only: it prefills their check-in at that time and the cron auto-closes it 24h
+  later (see below); the site's other three categories keep their normal day/night defaults.
 - **Job** — belongs to a Site, holds `employees[]`.
 - **User** — supervisor/admin/superadmin; supervisors have `assignedSite` and an
   `employeeId`. Password is bcrypt-hashed in a pre-save hook and `select: false`.
@@ -160,7 +167,16 @@ auto-filled — an unclosed session stays incomplete by design.
 ### Cron jobs (`server/src/cron/`)
 Started on boot from `server.js`. `autoCheckOut.js` and `autoCheckIn.js` fill in
 missing check-out/check-in times from each site's day/night default times for
-sessions left open. They reuse the same `timeLocal.js` helpers.
+sessions left open. Both are config-driven and CATEGORY-SCOPED: they run one mode per
+roster category (foreign skilled / foreign staff / omani skilled / omani staff), using
+`getEmployeeIdsByCategory()` (`utils/collar.js`) to touch only that category's employees
+with its own default time. Day modes fill today's sessions; night modes fill yesterday's
+(a shift started last evening checks out this morning). They reuse the `timeLocal.js`
+helpers. `autoCheckOut.js` also has a `shift24` mode scoped to FOREIGN SKILLED LABOURS:
+for a `is24HourShift` site it closes yesterday's open sessions at `shift24StartTime` with
+a FORCED next-day flag (the wall clock can't infer it — out reads equal to in), yielding
+exactly 24h. Only the foreign-skilled day/night queries exclude 24h sites (their skilled
+are closed by the 24h pass); the other three categories still run normally on a 24h site.
 
 ### Frontend
 React 19 + React Router 7 + Vite 8, Tailwind v4, shadcn/ui components (Radix) under

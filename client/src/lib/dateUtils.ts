@@ -120,6 +120,29 @@ export function formatLogicalDateLabel(dateStr: string): string {
 }
 
 /**
+ * Compact "day month" label (e.g. "4 Aug") for the business day that sits
+ * `offsetDays` after a record's `date` (offset 0 = the record's own day,
+ * offset 1 = the following day). Used on the same-day / next-day session
+ * toggles so the concrete calendar date each offset lands on is visible and
+ * the user never has to guess it. Built off normalizeBusinessDate (UTC
+ * midnight) and formatted in UTC so it can't drift a day.
+ */
+export function formatOffsetDayLabel(
+  recordDate: string | Date | null | undefined,
+  offsetDays: number
+): string {
+  const base = normalizeBusinessDate(recordDate);
+  if (!base) return "";
+  const dt = new Date(base.getTime());
+  dt.setUTCDate(dt.getUTCDate() + offsetDays);
+  return dt.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+}
+
+/**
  * Local calendar date ("YYYY-MM-DD") of an absolute instant, in the app's timezone.
  * Mirrors server/src/utils/timeLocal.js toLocalDateString.
  */

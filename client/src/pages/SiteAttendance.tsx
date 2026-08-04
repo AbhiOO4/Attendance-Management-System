@@ -32,6 +32,8 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
+import { Switch } from "@/components/ui/switch"
+
 import {
   Dialog,
   DialogContent,
@@ -57,6 +59,7 @@ import {
   MoreVertical,
   Check,
   ArrowLeftRight,
+  ChevronDown,
 } from "lucide-react"
 
 import {
@@ -69,8 +72,37 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 import { cn } from "@/lib/utils"
+import { Plane } from "lucide-react"
 
 type CollarType = 'skilled' | 'staff'
+type Nationality = 'foreign' | 'omani'
+
+// The four roster categories = collarType × nationality. Foreign categories are shown
+// with a ✈️ plane marker; Omani ones are labelled "Omani …". Only foreignSkilled can
+// run a 24-hour shift. collarType/nationality default to skilled/foreign for older data.
+type RosterCategory = 'foreignSkilled' | 'foreignStaff' | 'omaniSkilled' | 'omaniStaff'
+
+const categoryOf = (collarType?: CollarType | null, nationality?: Nationality | string | null): RosterCategory => {
+  const staff = collarType === 'staff'
+  const omani = nationality === 'omani'
+  return omani
+    ? (staff ? 'omaniStaff' : 'omaniSkilled')
+    : (staff ? 'foreignStaff' : 'foreignSkilled')
+}
+
+const CATEGORY_LABELS: Record<RosterCategory, string> = {
+  foreignSkilled: 'Skilled Labour',
+  foreignStaff: 'Staff',
+  omaniSkilled: 'Omani Labour',
+  omaniStaff: 'Omani Staff',
+}
+
+const CATEGORY_IS_FOREIGN: Record<RosterCategory, boolean> = {
+  foreignSkilled: true,
+  foreignStaff: true,
+  omaniSkilled: false,
+  omaniStaff: false,
+}
 
 interface Employee {
   _id: string
@@ -83,6 +115,7 @@ interface Employee {
   user: string | null
   employmentType?: 'permanent' | 'temporary'
   collarType?: CollarType
+  nationality?: Nationality
   pendingTransferCheckIn?: string | null
   pendingTransferSiteId?: string | null
   pendingTransferDate?: string | null
@@ -116,6 +149,16 @@ interface Site {
   staffDefaultCheckOut?: string
   staffNightDefaultCheckIn?: string
   staffNightDefaultCheckOut?: string
+  omaniDefaultCheckIn?: string
+  omaniDefaultCheckOut?: string
+  omaniNightDefaultCheckIn?: string
+  omaniNightDefaultCheckOut?: string
+  omaniStaffDefaultCheckIn?: string
+  omaniStaffDefaultCheckOut?: string
+  omaniStaffNightDefaultCheckIn?: string
+  omaniStaffNightDefaultCheckOut?: string
+  is24HourShift?: boolean
+  shift24StartTime?: string
 }
 
 export interface AttendanceSession {
@@ -163,6 +206,8 @@ export interface AttendanceRecord {
 
   collarType?: CollarType
 
+  nationality?: Nationality
+
   breaksTaken?: number | null
 
   totalRawHours?: number
@@ -203,6 +248,7 @@ interface DraftAttendanceRecord {
   employeeId: string,
   jobTitle: string,
   collarType?: CollarType,
+  nationality?: Nationality,
   jobId: string | null,
   sessions: DraftSession[]
   breaksTaken?: number | null
@@ -229,7 +275,7 @@ interface DraftAttendancePayload {
 
 // Search query filter type is a single string
 
-type CategoryFilter = 'temporary' | 'omani' | null
+type CategoryFilter = 'temporary' | null
 
 type OverlapError = {
   employeeId: string
@@ -569,7 +615,8 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
             </p>
             <Button
               size="sm"
-              className="w-full h-9 gap-1.5 bg-amber-600 hover:bg-amber-700 text-white"
+              variant="outline"
+              className="w-full h-9 gap-1.5 bg-background border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200"
               onClick={() => onOpenCarryover?.(record.employee._id)}
             >
               <Clock3 className="h-4 w-4" />
@@ -776,16 +823,6 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
               )
             }
           />
-          {hasCarryover && (
-            <Button
-              size="sm"
-              className="mt-1.5 h-8 w-full gap-1.5 whitespace-nowrap bg-amber-600 hover:bg-amber-700 text-white text-xs"
-              onClick={() => onOpenCarryover?.(record.employee._id)}
-            >
-              <Clock3 className="h-3.5 w-3.5" />
-              Check out yesterday
-            </Button>
-          )}
         </TableCell>
 
         <TableCell>
@@ -861,7 +898,21 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
 
         <TableCell className="text-right">
           <div className="flex justify-end items-center gap-2">
-            {showUndo ? (
+            {hasCarryover ? (
+              // Carryover row's primary action lives here (not under the check-in
+              // input) so it can't collide with the neighbouring time cells — the
+              // row is locked until yesterday's shift is closed anyway.
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 whitespace-nowrap border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200 px-3 h-8 text-xs font-medium"
+                title="Enter yesterday's check-out to unlock today"
+                onClick={() => onOpenCarryover?.(record.employee._id)}
+              >
+                <Clock3 className="h-3.5 w-3.5" />
+                Check out
+              </Button>
+            ) : showUndo ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -956,7 +1007,10 @@ function SiteAttendance() {
   // Yesterday's records with an OPEN (checked-in, not checked-out) session for this site.
   // Surfaced today so a supervisor can enter the real check-out; rolling one-day window.
   const [carryoverRecords, setCarryoverRecords] = useState<AttendanceRecord[]>([])
-  // The prominent pinned card only shows before noon; after that the per-row badge remains.
+  // The pinned panel only shows before noon; after that the per-row badge remains.
+  // It's collapsed by default — the header (with a count) is always visible, and the
+  // supervisor expands it to see and action the individual pending check-outs.
+  const [carryoverPanelOpen, setCarryoverPanelOpen] = useState(false)
   const beforeNoon = getCurrentTargetTime().getUTCHours() < 12
   const carryoverEmpIds = useMemo(
     () => new Set(carryoverRecords.map((r) => String(r.employee))),
@@ -1064,6 +1118,16 @@ function SiteAttendance() {
   const [editStaffDefaultCheckOut, setEditStaffDefaultCheckOut] = useState("")
   const [editStaffNightDefaultCheckIn, setEditStaffNightDefaultCheckIn] = useState("")
   const [editStaffNightDefaultCheckOut, setEditStaffNightDefaultCheckOut] = useState("")
+  const [editOmaniDefaultCheckIn, setEditOmaniDefaultCheckIn] = useState("")
+  const [editOmaniDefaultCheckOut, setEditOmaniDefaultCheckOut] = useState("")
+  const [editOmaniNightDefaultCheckIn, setEditOmaniNightDefaultCheckIn] = useState("")
+  const [editOmaniNightDefaultCheckOut, setEditOmaniNightDefaultCheckOut] = useState("")
+  const [editOmaniStaffDefaultCheckIn, setEditOmaniStaffDefaultCheckIn] = useState("")
+  const [editOmaniStaffDefaultCheckOut, setEditOmaniStaffDefaultCheckOut] = useState("")
+  const [editOmaniStaffNightDefaultCheckIn, setEditOmaniStaffNightDefaultCheckIn] = useState("")
+  const [editOmaniStaffNightDefaultCheckOut, setEditOmaniStaffNightDefaultCheckOut] = useState("")
+  const [edit24HourShift, setEdit24HourShift] = useState(false)
+  const [editShift24StartTime, setEditShift24StartTime] = useState("")
   const [savingDefaults, setSavingDefaults] = useState(false)
 
   // Update defaults dialog state
@@ -1100,6 +1164,16 @@ function SiteAttendance() {
       setEditStaffDefaultCheckOut(site.staffDefaultCheckOut || "")
       setEditStaffNightDefaultCheckIn(site.staffNightDefaultCheckIn || "")
       setEditStaffNightDefaultCheckOut(site.staffNightDefaultCheckOut || "")
+      setEditOmaniDefaultCheckIn(site.omaniDefaultCheckIn || "")
+      setEditOmaniDefaultCheckOut(site.omaniDefaultCheckOut || "")
+      setEditOmaniNightDefaultCheckIn(site.omaniNightDefaultCheckIn || "")
+      setEditOmaniNightDefaultCheckOut(site.omaniNightDefaultCheckOut || "")
+      setEditOmaniStaffDefaultCheckIn(site.omaniStaffDefaultCheckIn || "")
+      setEditOmaniStaffDefaultCheckOut(site.omaniStaffDefaultCheckOut || "")
+      setEditOmaniStaffNightDefaultCheckIn(site.omaniStaffNightDefaultCheckIn || "")
+      setEditOmaniStaffNightDefaultCheckOut(site.omaniStaffNightDefaultCheckOut || "")
+      setEdit24HourShift(!!site.is24HourShift)
+      setEditShift24StartTime(site.shift24StartTime || "")
     }
   }, [site])
 
@@ -1139,6 +1213,7 @@ function SiteAttendance() {
               employeeId: updatedRecord.employeeId ?? record.employeeId,
               jobTitle: updatedRecord.jobTitle ?? record.jobTitle,
               collarType: updatedRecord.collarType ?? record.collarType,
+              nationality: updatedRecord.nationality ?? record.nationality,
               employmentType: updatedRecord.employmentType ?? record.employmentType,
               user: updatedRecord.user ?? record.user,
             }
@@ -1267,9 +1342,9 @@ function SiteAttendance() {
     // Stay in the expanded focus mode — see handleCategoryFilterChange.
   }
 
-  // Skilled Labour (blue-collar) vs Staff (white-collar) tab. Records without an
-  // explicit collarType are treated as skilled.
-  const [collarTab, setCollarTab] = useState<CollarType>("skilled")
+  // Active roster category tab (one of the four collar × nationality groups). Records
+  // without explicit collarType/nationality resolve to foreignSkilled (older data).
+  const [collarTab, setCollarTab] = useState<RosterCategory>("foreignSkilled")
 
   const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
     try {
@@ -1300,13 +1375,25 @@ function SiteAttendance() {
             !!emp.pendingTransferDate &&
             String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
 
-          // Staff (white-collar) prefill from the site's staff default check-in;
-          // field workers use the day default. Never fall back across collars —
-          // if the applicable default is empty, the check-in is left empty.
-          const isStaff = emp.collarType === "staff"
-          const roleDefaultIn = isStaff
-            ? (siteData.staffDefaultCheckIn || "")
-            : (siteData.defaultCheckIn || "")
+          // Each of the four categories prefills from its OWN day default check-in;
+          // never fall back across categories — if the applicable default is empty, the
+          // check-in is left empty. The 24-hour shift overrides ONLY Foreign Skilled
+          // Labours (its scope): their check-in becomes the single 24h start time and the
+          // auto check-out cron closes it 24h later; the other categories are unaffected.
+          const category = categoryOf(emp.collarType, emp.nationality)
+          const dayDefaultByCategory: Record<RosterCategory, string> = {
+            foreignSkilled: siteData.defaultCheckIn || "",
+            foreignStaff: siteData.staffDefaultCheckIn || "",
+            omaniSkilled: siteData.omaniDefaultCheckIn || "",
+            omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
+          }
+          const is24ForeignSkilled =
+            category === "foreignSkilled" &&
+            !!siteData.is24HourShift &&
+            !!siteData.shift24StartTime
+          const roleDefaultIn = is24ForeignSkilled
+            ? (siteData.shift24StartTime || "")
+            : dayDefaultByCategory[category]
           // Carryover employees default to ABSENT (empty) — they're still finishing
           // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
           const isCarryover = carryoverIds.has(emp._id)
@@ -1331,6 +1418,8 @@ function SiteAttendance() {
             jobTitle: emp.jobTitle,
 
             collarType: emp.collarType,
+
+            nationality: emp.nationality,
 
             jobId:
               emp.currentJob?._id || null,
@@ -2096,6 +2185,16 @@ function SiteAttendance() {
         staffDefaultCheckOut: editStaffDefaultCheckOut,
         staffNightDefaultCheckIn: editStaffNightDefaultCheckIn,
         staffNightDefaultCheckOut: editStaffNightDefaultCheckOut,
+        omaniDefaultCheckIn: editOmaniDefaultCheckIn,
+        omaniDefaultCheckOut: editOmaniDefaultCheckOut,
+        omaniNightDefaultCheckIn: editOmaniNightDefaultCheckIn,
+        omaniNightDefaultCheckOut: editOmaniNightDefaultCheckOut,
+        omaniStaffDefaultCheckIn: editOmaniStaffDefaultCheckIn,
+        omaniStaffDefaultCheckOut: editOmaniStaffDefaultCheckOut,
+        omaniStaffNightDefaultCheckIn: editOmaniStaffNightDefaultCheckIn,
+        omaniStaffNightDefaultCheckOut: editOmaniStaffNightDefaultCheckOut,
+        is24HourShift: edit24HourShift,
+        shift24StartTime: edit24HourShift ? editShift24StartTime : "",
         updateTodayRecords,
       })
 
@@ -2154,21 +2253,11 @@ function SiteAttendance() {
           oldV === newV ? "none" : oldV && newV ? "update" : oldV ? "clear" : "fill"
 
         type Candidate = { old: string; next: string; night: boolean }
-        const defaultsByCollar: Record<
-          CollarType,
+        const defaultsByCategory: Record<
+          RosterCategory,
           { checkIn: Candidate[]; checkOut: Candidate[] }
         > = {
-          staff: {
-            checkIn: [
-              { old: site.staffDefaultCheckIn || "", next: editStaffDefaultCheckIn, night: false },
-              { old: site.staffNightDefaultCheckIn || "", next: editStaffNightDefaultCheckIn, night: true },
-            ],
-            checkOut: [
-              { old: site.staffDefaultCheckOut || "", next: editStaffDefaultCheckOut, night: false },
-              { old: site.staffNightDefaultCheckOut || "", next: editStaffNightDefaultCheckOut, night: true },
-            ],
-          },
-          skilled: {
+          foreignSkilled: {
             checkIn: [
               { old: site.defaultCheckIn || "", next: editDefaultCheckIn, night: false },
               { old: site.nightDefaultCheckIn || "", next: editNightDefaultCheckIn, night: true },
@@ -2178,12 +2267,41 @@ function SiteAttendance() {
               { old: site.nightDefaultCheckOut || "", next: editNightDefaultCheckOut, night: true },
             ],
           },
+          foreignStaff: {
+            checkIn: [
+              { old: site.staffDefaultCheckIn || "", next: editStaffDefaultCheckIn, night: false },
+              { old: site.staffNightDefaultCheckIn || "", next: editStaffNightDefaultCheckIn, night: true },
+            ],
+            checkOut: [
+              { old: site.staffDefaultCheckOut || "", next: editStaffDefaultCheckOut, night: false },
+              { old: site.staffNightDefaultCheckOut || "", next: editStaffNightDefaultCheckOut, night: true },
+            ],
+          },
+          omaniSkilled: {
+            checkIn: [
+              { old: site.omaniDefaultCheckIn || "", next: editOmaniDefaultCheckIn, night: false },
+              { old: site.omaniNightDefaultCheckIn || "", next: editOmaniNightDefaultCheckIn, night: true },
+            ],
+            checkOut: [
+              { old: site.omaniDefaultCheckOut || "", next: editOmaniDefaultCheckOut, night: false },
+              { old: site.omaniNightDefaultCheckOut || "", next: editOmaniNightDefaultCheckOut, night: true },
+            ],
+          },
+          omaniStaff: {
+            checkIn: [
+              { old: site.omaniStaffDefaultCheckIn || "", next: editOmaniStaffDefaultCheckIn, night: false },
+              { old: site.omaniStaffNightDefaultCheckIn || "", next: editOmaniStaffNightDefaultCheckIn, night: true },
+            ],
+            checkOut: [
+              { old: site.omaniStaffDefaultCheckOut || "", next: editOmaniStaffDefaultCheckOut, night: false },
+              { old: site.omaniStaffNightDefaultCheckOut || "", next: editOmaniStaffNightDefaultCheckOut, night: true },
+            ],
+          },
         }
 
         setDraftAttendance(prev =>
           prev.map(record => {
-            const collar: CollarType = record.collarType === "staff" ? "staff" : "skilled"
-            const { checkIn: inCands, checkOut: outCands } = defaultsByCollar[collar]
+            const { checkIn: inCands, checkOut: outCands } = defaultsByCategory[categoryOf(record.collarType, record.nationality)]
             return {
               ...record,
               sessions: record.sessions.map(session => {
@@ -2268,40 +2386,51 @@ function SiteAttendance() {
     // Mirror of the server's rules in siteController.updateSite: in < out ordering, plus
     // absolute night-shift bounds. Day and night windows may overlap freely.
 
-    // --- DAY SHIFT VALIDATION ---
-    if (editDefaultCheckIn && editDefaultCheckOut) {
-      if (toMinutes(editDefaultCheckOut) <= toMinutes(editDefaultCheckIn)) {
-        toast.error("Day shift check-out must be after check-in (before midnight)")
-        return
-      }
-    }
-
-    // --- NIGHT SHIFT VALIDATION (cutoff-independent bounds) ---
     const NOON = 12 * 60
-    if (editNightDefaultCheckIn && toMinutes(editNightDefaultCheckIn) < NOON) {
-      toast.error("Night shift check-in must be 12:00 (noon) or later")
-      return
-    }
-    if (editNightDefaultCheckOut && toMinutes(editNightDefaultCheckOut) > NOON) {
-      toast.error("Night shift check-out must be at or before 12:00 (noon)")
-      return
-    }
 
-    // --- STAFF DAY SHIFT VALIDATION ---
-    if (editStaffDefaultCheckIn && editStaffDefaultCheckOut) {
-      if (toMinutes(editStaffDefaultCheckOut) <= toMinutes(editStaffDefaultCheckIn)) {
-        toast.error("Staff day check-out must be after check-in (before midnight)")
+    // --- DAY SHIFT VALIDATION (all four categories): check-out after check-in ---
+    const dayPairs: Array<[string, string, string]> = [
+      [editDefaultCheckIn, editDefaultCheckOut, "Skilled day"],
+      [editStaffDefaultCheckIn, editStaffDefaultCheckOut, "Staff day"],
+      [editOmaniDefaultCheckIn, editOmaniDefaultCheckOut, "Omani day"],
+      [editOmaniStaffDefaultCheckIn, editOmaniStaffDefaultCheckOut, "Omani staff day"],
+    ]
+    for (const [inV, outV, label] of dayPairs) {
+      if (inV && outV && toMinutes(outV) <= toMinutes(inV)) {
+        toast.error(`${label} check-out must be after check-in (before midnight)`)
         return
       }
     }
 
-    // --- STAFF NIGHT SHIFT VALIDATION (same bounds as field night shift) ---
-    if (editStaffNightDefaultCheckIn && toMinutes(editStaffNightDefaultCheckIn) < NOON) {
-      toast.error("Staff night check-in must be 12:00 (noon) or later")
-      return
+    // --- NIGHT SHIFT VALIDATION (all four categories): check-in in PM, check-out in AM ---
+    const nightIns: Array<[string, string]> = [
+      [editNightDefaultCheckIn, "Night"],
+      [editStaffNightDefaultCheckIn, "Staff night"],
+      [editOmaniNightDefaultCheckIn, "Omani night"],
+      [editOmaniStaffNightDefaultCheckIn, "Omani staff night"],
+    ]
+    for (const [v, label] of nightIns) {
+      if (v && toMinutes(v) < NOON) {
+        toast.error(`${label} check-in must be 12:00 (noon) or later`)
+        return
+      }
     }
-    if (editStaffNightDefaultCheckOut && toMinutes(editStaffNightDefaultCheckOut) > NOON) {
-      toast.error("Staff night check-out must be at or before 12:00 (noon)")
+    const nightOuts: Array<[string, string]> = [
+      [editNightDefaultCheckOut, "Night"],
+      [editStaffNightDefaultCheckOut, "Staff night"],
+      [editOmaniNightDefaultCheckOut, "Omani night"],
+      [editOmaniStaffNightDefaultCheckOut, "Omani staff night"],
+    ]
+    for (const [v, label] of nightOuts) {
+      if (v && toMinutes(v) > NOON) {
+        toast.error(`${label} check-out must be at or before 12:00 (noon)`)
+        return
+      }
+    }
+
+    // --- 24-HOUR SHIFT VALIDATION ---
+    if (edit24HourShift && !editShift24StartTime) {
+      toast.error("Enter a start time for the 24-hour shift")
       return
     }
 
@@ -2331,6 +2460,16 @@ function SiteAttendance() {
     setEditStaffDefaultCheckOut(site?.staffDefaultCheckOut || "")
     setEditStaffNightDefaultCheckIn(site?.staffNightDefaultCheckIn || "")
     setEditStaffNightDefaultCheckOut(site?.staffNightDefaultCheckOut || "")
+    setEditOmaniDefaultCheckIn(site?.omaniDefaultCheckIn || "")
+    setEditOmaniDefaultCheckOut(site?.omaniDefaultCheckOut || "")
+    setEditOmaniNightDefaultCheckIn(site?.omaniNightDefaultCheckIn || "")
+    setEditOmaniNightDefaultCheckOut(site?.omaniNightDefaultCheckOut || "")
+    setEditOmaniStaffDefaultCheckIn(site?.omaniStaffDefaultCheckIn || "")
+    setEditOmaniStaffDefaultCheckOut(site?.omaniStaffDefaultCheckOut || "")
+    setEditOmaniStaffNightDefaultCheckIn(site?.omaniStaffNightDefaultCheckIn || "")
+    setEditOmaniStaffNightDefaultCheckOut(site?.omaniStaffNightDefaultCheckOut || "")
+    setEdit24HourShift(!!site?.is24HourShift)
+    setEditShift24StartTime(site?.shift24StartTime || "")
   }
 
   // Open the modal with a fresh copy of the saved values.
@@ -2358,15 +2497,14 @@ function SiteAttendance() {
     return draftAttendance.filter((record) => {
       const categoryMatch =
         !categoryFilter ||
-        (categoryFilter === 'temporary' && record.employee.employmentType === 'temporary') ||
-        (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
+        (categoryFilter === 'temporary' && record.employee.employmentType === 'temporary')
       const matchesQuery =
         !query ||
         record.employee.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        (record.collarType ?? "skilled") === collarTab &&
+        categoryOf(record.collarType, record.nationality) === collarTab &&
         categoryMatch &&
         matchesQuery
       )
@@ -2380,15 +2518,14 @@ function SiteAttendance() {
     return attendance.filter((record) => {
       const categoryMatch =
         !categoryFilter ||
-        (categoryFilter === 'temporary' && record.employmentType === 'temporary') ||
-        (categoryFilter === 'omani' && record.jobTitle.toLowerCase().includes('omani'))
+        (categoryFilter === 'temporary' && record.employmentType === 'temporary')
       const matchesQuery =
         !query ||
         record.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        (record.collarType ?? "skilled") === collarTab &&
+        categoryOf(record.collarType, record.nationality) === collarTab &&
         categoryMatch &&
         matchesQuery
       )
@@ -2397,61 +2534,48 @@ function SiteAttendance() {
     .sort((a, b) => Number(!!b.transferredFrom) - Number(!!a.transferredFrom))
   }, [attendance, categoryFilter, deferredSearchQuery, collarTab])
 
-  // Counts per collar group (unaffected by name/id/title filters) for the tabs.
+  // Counts per category (unaffected by name/id/title filters) for the tabs.
   const collarCounts = useMemo(() => {
     const source = attendanceExists ? attendance : draftAttendance
-    let skilled = 0
-    let staff = 0
-    for (const r of source) {
-      if ((r.collarType ?? "skilled") === "staff") staff++
-      else skilled++
+    const counts: Record<RosterCategory, number> = {
+      foreignSkilled: 0, foreignStaff: 0, omaniSkilled: 0, omaniStaff: 0,
     }
-    return { skilled, staff }
+    for (const r of source) {
+      counts[categoryOf(r.collarType, r.nationality)]++
+    }
+    return counts
   }, [attendanceExists, attendance, draftAttendance])
 
-  // Calculate attendance statistics for the ACTIVE collar tab.
-  const stats = useMemo(() => {
-    const source: Array<{ collarType?: CollarType; sessions: Array<{ siteId: string; checkIn?: string | null; isNightShift?: boolean }> }> =
-      attendanceExists ? attendance : draftAttendance
-    const records = source.filter((rec) => (rec.collarType ?? "skilled") === collarTab)
-    const totalAssigned = records.length
+  // Stats source is nationality/collar-agnostic; both the per-tab and global tallies
+  // reuse this shape (an employee can be assigned to both day AND night on the same day,
+  // so those buckets can overlap; "present" = at least one check-in on this site).
+  type StatsRecord = { collarType?: CollarType; nationality?: Nationality; sessions: Array<{ siteId: string; checkIn?: string | null; isNightShift?: boolean }> }
 
-    // Filter to sessions belonging to this site
-    // An employee is "present" if they have at least one session on this site with a check-in filled.
-    const presentRecords = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.checkIn)
-    )
-    const totalPresent = presentRecords.length
-
-    // Classify each assigned employee as Day Shift and/or Night Shift.
-    // An employee can be assigned to both shifts on the same day.
-    const dayShiftAssigned = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift)
-    )
-    const nightShiftAssigned = records.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift)
-    )
-
-    const totalDayShift = dayShiftAssigned.length
-    const totalNightShift = nightShiftAssigned.length
-
-    const dayShiftPresent = dayShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && !s.isNightShift && s.checkIn)
-    ).length
-
-    const nightShiftPresent = nightShiftAssigned.filter(rec =>
-      rec.sessions.some(s => String(s.siteId) === String(id) && s.isNightShift && s.checkIn)
-    ).length
-
+  const computeSiteStats = useCallback((records: StatsRecord[]) => {
+    const onSite = (s: { siteId: string }) => String(s.siteId) === String(id)
+    const dayShiftAssigned = records.filter(rec => rec.sessions.some(s => onSite(s) && !s.isNightShift))
+    const nightShiftAssigned = records.filter(rec => rec.sessions.some(s => onSite(s) && s.isNightShift))
     return {
-      totalAssigned,
-      totalPresent,
-      totalDayShift,
-      totalNightShift,
-      dayShiftPresent,
-      nightShiftPresent,
+      totalAssigned: records.length,
+      totalPresent: records.filter(rec => rec.sessions.some(s => onSite(s) && s.checkIn)).length,
+      totalDayShift: dayShiftAssigned.length,
+      totalNightShift: nightShiftAssigned.length,
+      dayShiftPresent: dayShiftAssigned.filter(rec => rec.sessions.some(s => onSite(s) && !s.isNightShift && s.checkIn)).length,
+      nightShiftPresent: nightShiftAssigned.filter(rec => rec.sessions.some(s => onSite(s) && s.isNightShift && s.checkIn)).length,
     }
-  }, [attendanceExists, attendance, draftAttendance, collarTab, id])
+  }, [id])
+
+  // Attendance statistics for the ACTIVE category tab.
+  const stats = useMemo(() => {
+    const source: StatsRecord[] = attendanceExists ? attendance : draftAttendance
+    return computeSiteStats(source.filter((rec) => categoryOf(rec.collarType, rec.nationality) === collarTab))
+  }, [attendanceExists, attendance, draftAttendance, collarTab, computeSiteStats])
+
+  // Site-wide attendance statistics across ALL four categories (the top-of-page summary).
+  const globalStats = useMemo(() => {
+    const source: StatsRecord[] = attendanceExists ? attendance : draftAttendance
+    return computeSiteStats(source)
+  }, [attendanceExists, attendance, draftAttendance, computeSiteStats])
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -2733,13 +2857,15 @@ function SiteAttendance() {
                   </span>
                   <Badge
                     variant="secondary"
-                    className={
-                      collarTab === "staff"
+                    className={cn(
+                      "gap-1",
+                      (collarTab === "foreignStaff" || collarTab === "omaniStaff")
                         ? "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30"
                         : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/30"
-                    }
+                    )}
                   >
-                    {collarTab === "staff" ? "Staff" : "Skilled Labour"}
+                    {CATEGORY_IS_FOREIGN[collarTab] && <Plane className="h-3 w-3" />}
+                    {CATEGORY_LABELS[collarTab]}
                   </Badge>
                 </CardTitle>
 
@@ -2754,28 +2880,24 @@ function SiteAttendance() {
                   </p>
                 )}
 
-                {/* Day / Night Shift Stats: Slim, mobile-responsive vertical layout */}
-                <div className="mt-2.5 space-y-1 text-xs">
-                  <div className="flex items-center gap-1.5 text-muted-foreground">
-                    <Sun className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                    <span>
-                      Day Shift:{" "}
-                      <strong className="text-foreground font-semibold">
-                        {stats.dayShiftPresent} / {stats.totalDayShift}
-                      </strong>{" "}
-                      present
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground">
-                    <Moon className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
-                    <span>
-                      Night Shift:{" "}
-                      <strong className="text-foreground font-semibold">
-                        {stats.nightShiftPresent} / {stats.totalNightShift}
-                      </strong>{" "}
-                      present
-                    </span>
-                  </div>
+                {/* Site-wide attendance across ALL categories — deliberately subtle and
+                    compact (one wrapping row). Per-category figures live in the tabs: the
+                    "Present" badge in the title above reflects the ACTIVE category tab. */}
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                  <span className="font-medium text-muted-foreground/80">All:</span>
+                  <span className="inline-flex items-center gap-1">
+                    <Users className="h-3 w-3 shrink-0" />
+                    <strong className="text-foreground font-semibold">{globalStats.totalPresent}/{globalStats.totalAssigned}</strong>
+                    present
+                  </span>
+                  <span className="inline-flex items-center gap-1" title="Day shift present">
+                    <Sun className="h-3 w-3 text-amber-500 shrink-0" />
+                    <strong className="text-foreground font-semibold">{globalStats.dayShiftPresent}/{globalStats.totalDayShift}</strong>
+                  </span>
+                  <span className="inline-flex items-center gap-1" title="Night shift present">
+                    <Moon className="h-3 w-3 text-indigo-400 shrink-0" />
+                    <strong className="text-foreground font-semibold">{globalStats.nightShiftPresent}/{globalStats.totalNightShift}</strong>
+                  </span>
                 </div>
               </div>
 
@@ -2909,87 +3031,133 @@ function SiteAttendance() {
           if (!o && !savingDefaults) setIsEditingDefaults(false)
         }}
       >
-        <DialogContent className="!max-w-[560px]">
-          <DialogHeader>
+        <DialogContent className="!max-w-[640px] flex flex-col max-h-[90dvh]">
+          <DialogHeader className="shrink-0">
             <DialogTitle className="flex items-center gap-2">
               <Clock3 className="h-5 w-5" />
               Default Shift Times
             </DialogTitle>
             <DialogDescription>
-              Used to pre-fill check-in and auto-fill check-out. Staff use their own
-              day &amp; night times.
+              Used to pre-fill check-in and auto-fill check-out. Each category
+              (✈️ foreign / Omani, skilled / staff) has its own day &amp; night times.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex flex-col gap-4 py-2">
+          <div className="flex flex-col gap-4 py-1 overflow-y-auto flex-1 min-h-0 pr-1">
 
-            {/* Skilled section */}
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5 px-0.5">Skilled</p>
-              <div className="space-y-2">
-                {[
-                  { label: "Day", inVal: editDefaultCheckIn, setIn: setEditDefaultCheckIn, outVal: editDefaultCheckOut, setOut: setEditDefaultCheckOut },
-                  { label: "Night", inVal: editNightDefaultCheckIn, setIn: setEditNightDefaultCheckIn, outVal: editNightDefaultCheckOut, setOut: setEditNightDefaultCheckOut },
-                ].map((s) => (
-                  <div key={s.label} className="flex items-center gap-3 rounded-lg border border-border bg-muted/10 p-2.5">
-                    <span className="text-xs font-semibold text-foreground w-10 shrink-0">{s.label}</span>
-                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <span className="text-[10px] text-muted-foreground uppercase font-medium">In</span>
-                      <Input
-                        type="time"
-                        value={s.inVal}
-                        onChange={(e) => s.setIn(e.target.value)}
-                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <span className="text-[10px] text-muted-foreground uppercase font-medium">Out</span>
-                      <Input
-                        type="time"
-                        value={s.outVal}
-                        onChange={(e) => s.setOut(e.target.value)}
-                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
-                      />
-                    </div>
-                  </div>
-                ))}
+            {/* 24-hour shift section */}
+            <div className="rounded-lg border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/40 dark:bg-indigo-950/20 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground flex items-center gap-1">
+                    24-hour shift
+                    <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-muted-foreground">
+                      <Plane className="h-2.5 w-2.5" /> Skilled Labour only
+                    </span>
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    One continuous shift from a single time to the same time the next day.
+                    Prefills Foreign Skilled Labours' check-in and auto-checks-out 24h later.
+                    Overrides only their day/night times below; other categories are unaffected.
+                  </p>
+                </div>
+                <Switch
+                  checked={edit24HourShift}
+                  onCheckedChange={setEdit24HourShift}
+                  className="mt-0.5"
+                />
               </div>
+              {edit24HourShift && (
+                <div className="mt-3 flex items-center gap-2.5 rounded-lg border border-border bg-background p-2.5">
+                  <span className="text-xs font-semibold text-foreground shrink-0">Start</span>
+                  <Input
+                    type="time"
+                    value={editShift24StartTime}
+                    onChange={(e) => setEditShift24StartTime(e.target.value)}
+                    className="h-8 text-xs px-2 w-32 min-w-0 bg-background"
+                  />
+                  <span className="text-[11px] text-muted-foreground truncate">
+                    → {editShift24StartTime || "--:--"} next day&nbsp;·&nbsp;24h
+                  </span>
+                </div>
+              )}
             </div>
 
-            {/* Divider */}
-            <div className="h-px bg-border" />
-
-            {/* Staff section */}
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5 px-0.5">Staff</p>
-              <div className="space-y-2">
-                {[
-                  { label: "Day", inVal: editStaffDefaultCheckIn, setIn: setEditStaffDefaultCheckIn, outVal: editStaffDefaultCheckOut, setOut: setEditStaffDefaultCheckOut },
-                  { label: "Night", inVal: editStaffNightDefaultCheckIn, setIn: setEditStaffNightDefaultCheckIn, outVal: editStaffNightDefaultCheckOut, setOut: setEditStaffNightDefaultCheckOut },
-                ].map((s) => (
-                  <div key={s.label} className="flex items-center gap-3 rounded-lg border border-border bg-muted/10 p-2.5">
-                    <span className="text-xs font-semibold text-foreground w-10 shrink-0">{s.label}</span>
-                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <span className="text-[10px] text-muted-foreground uppercase font-medium">In</span>
-                      <Input
-                        type="time"
-                        value={s.inVal}
-                        onChange={(e) => s.setIn(e.target.value)}
-                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
-                      />
+            {/* Per-category day/night defaults, laid out as a 2×2 grid of tiles. Each
+                category prefills from its own times; the 24-hour shift overrides ONLY
+                Foreign Skilled Labours, so only that tile dims while the toggle is on. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {(([
+                {
+                  key: "foreignSkilled", label: "Skilled Labour", foreign: true, staff: false,
+                  rows: [
+                    { label: "Day", inVal: editDefaultCheckIn, setIn: setEditDefaultCheckIn, outVal: editDefaultCheckOut, setOut: setEditDefaultCheckOut },
+                    { label: "Night", inVal: editNightDefaultCheckIn, setIn: setEditNightDefaultCheckIn, outVal: editNightDefaultCheckOut, setOut: setEditNightDefaultCheckOut },
+                  ],
+                },
+                {
+                  key: "foreignStaff", label: "Staff", foreign: true, staff: true,
+                  rows: [
+                    { label: "Day", inVal: editStaffDefaultCheckIn, setIn: setEditStaffDefaultCheckIn, outVal: editStaffDefaultCheckOut, setOut: setEditStaffDefaultCheckOut },
+                    { label: "Night", inVal: editStaffNightDefaultCheckIn, setIn: setEditStaffNightDefaultCheckIn, outVal: editStaffNightDefaultCheckOut, setOut: setEditStaffNightDefaultCheckOut },
+                  ],
+                },
+                {
+                  key: "omaniSkilled", label: "Omani Labour", foreign: false, staff: false,
+                  rows: [
+                    { label: "Day", inVal: editOmaniDefaultCheckIn, setIn: setEditOmaniDefaultCheckIn, outVal: editOmaniDefaultCheckOut, setOut: setEditOmaniDefaultCheckOut },
+                    { label: "Night", inVal: editOmaniNightDefaultCheckIn, setIn: setEditOmaniNightDefaultCheckIn, outVal: editOmaniNightDefaultCheckOut, setOut: setEditOmaniNightDefaultCheckOut },
+                  ],
+                },
+                {
+                  key: "omaniStaff", label: "Omani Staff", foreign: false, staff: true,
+                  rows: [
+                    { label: "Day", inVal: editOmaniStaffDefaultCheckIn, setIn: setEditOmaniStaffDefaultCheckIn, outVal: editOmaniStaffDefaultCheckOut, setOut: setEditOmaniStaffDefaultCheckOut },
+                    { label: "Night", inVal: editOmaniStaffNightDefaultCheckIn, setIn: setEditOmaniStaffNightDefaultCheckIn, outVal: editOmaniStaffNightDefaultCheckOut, setOut: setEditOmaniStaffNightDefaultCheckOut },
+                  ],
+                },
+              ]) as { key: RosterCategory; label: string; foreign: boolean; staff: boolean; rows: { label: string; inVal: string; setIn: (v: string) => void; outVal: string; setOut: (v: string) => void }[] }[]).map((sec) => {
+                const dimmed = sec.key === "foreignSkilled" && edit24HourShift
+                return (
+                  <div key={sec.key} className="rounded-xl border border-border bg-muted/[0.04] p-3">
+                    <div className="flex items-center gap-1.5 mb-2.5">
+                      <span className={cn("h-2 w-2 rounded-full shrink-0", sec.staff ? "bg-violet-500" : "bg-emerald-500")} />
+                      {sec.foreign && <Plane className="h-3 w-3 text-muted-foreground shrink-0" />}
+                      <span className="text-xs font-semibold text-foreground truncate">{sec.label}</span>
+                      {dimmed && (
+                        <span className="ml-auto shrink-0 rounded bg-indigo-50 dark:bg-indigo-950/40 px-1.5 text-[9px] font-medium text-indigo-600 dark:text-indigo-300">24h</span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <span className="text-[10px] text-muted-foreground uppercase font-medium">Out</span>
-                      <Input
-                        type="time"
-                        value={s.outVal}
-                        onChange={(e) => s.setOut(e.target.value)}
-                        className="h-8 text-xs px-2 flex-1 min-w-0 bg-background"
-                      />
+                    <div className={cn("space-y-1.5", dimmed && "opacity-40 pointer-events-none")}>
+                      {sec.rows.map((s) => {
+                        const isDay = s.label === "Day"
+                        return (
+                          <div key={s.label} className="flex items-center gap-1.5">
+                            {isDay
+                              ? <Sun className="h-3.5 w-3.5 text-amber-500 shrink-0" aria-label="Day" />
+                              : <Moon className="h-3.5 w-3.5 text-indigo-400 shrink-0" aria-label="Night" />}
+                            <Input
+                              type="time"
+                              value={s.inVal}
+                              onChange={(e) => s.setIn(e.target.value)}
+                              title={`${sec.label} ${s.label.toLowerCase()} check-in`}
+                              className="h-8 text-xs px-1.5 flex-1 min-w-0 bg-background"
+                            />
+                            <span className="text-muted-foreground text-xs shrink-0">→</span>
+                            <Input
+                              type="time"
+                              value={s.outVal}
+                              onChange={(e) => s.setOut(e.target.value)}
+                              title={`${sec.label} ${s.label.toLowerCase()} check-out`}
+                              className="h-8 text-xs px-1.5 flex-1 min-w-0 bg-background"
+                            />
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
-                ))}
-              </div>
+                )
+              })}
             </div>
 
             {/* Night shifts are recorded on the day they START; their check-out is entered
@@ -3004,7 +3172,7 @@ function SiteAttendance() {
 
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button
               variant="outline"
               onClick={cancelEditDefaults}
@@ -3095,7 +3263,6 @@ function SiteAttendance() {
           <span className="hidden sm:inline text-[11px] text-muted-foreground font-medium shrink-0">Category:</span>
           {([
             { key: 'temporary' as const, label: 'Temporary Workers' },
-            { key: 'omani'     as const, label: 'Omani Staff' },
           ] as { key: CategoryFilter & string; label: string }[]).map(({ key, label }) => {
             const active = categoryFilter === key
             return (
@@ -3125,23 +3292,26 @@ function SiteAttendance() {
           )}
         </div>
 
-        {/* COLLAR TABS: Skilled Labour (blue-collar) vs Staff (white-collar) */}
-        <div className="flex items-center gap-0 border-t border-muted/20 pt-1 -mx-6 px-6">
-          {([
-            { key: "skilled" as CollarType, label: "Skilled Labour", count: collarCounts.skilled },
-            { key: "staff" as CollarType, label: "Staff", count: collarCounts.staff },
-          ]).map((tab) => {
+        {/* CATEGORY TABS: (Foreign) Skilled Labour / Staff — marked ✈️ — and Omani Labour / Omani Staff */}
+        <div className="flex items-center gap-0 border-t border-muted/20 pt-1 -mx-6 px-6 overflow-x-auto">
+          {(([
+            { key: "foreignSkilled", label: "Skilled Labour", count: collarCounts.foreignSkilled, foreign: true },
+            { key: "foreignStaff", label: "Staff", count: collarCounts.foreignStaff, foreign: true },
+            { key: "omaniSkilled", label: "Omani Labour", count: collarCounts.omaniSkilled, foreign: false },
+            { key: "omaniStaff", label: "Omani Staff", count: collarCounts.omaniStaff, foreign: false },
+          ]) as { key: RosterCategory; label: string; count: number; foreign: boolean }[]).map((tab) => {
             const isActive = collarTab === tab.key
             return (
               <button
                 key={tab.key}
                 onClick={() => setCollarTab(tab.key)}
-                className={`relative inline-flex items-center gap-2 px-5 pb-2.5 pt-1.5 text-sm font-semibold transition-colors duration-200 ${
+                className={`relative shrink-0 whitespace-nowrap inline-flex items-center gap-1.5 px-4 pb-2.5 pt-1.5 text-sm font-semibold transition-colors duration-200 ${
                   isActive
                     ? "text-primary"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
+                {tab.foreign && <Plane className="h-3.5 w-3.5 shrink-0" aria-label="Foreign" />}
                 {tab.label}
                 <span
                   className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
@@ -3162,45 +3332,66 @@ function SiteAttendance() {
       </div>
 
       {beforeNoon && carryoverRecords.length > 0 && (
-        <Card className="mb-4 border-amber-300 dark:border-amber-800/50 bg-amber-50/40 dark:bg-amber-950/10">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2 text-amber-800 dark:text-amber-300">
-              <Clock3 className="h-4 w-4" />
-              Pending check-out · {formatLogicalDateLabel(yesterdayOf(today))}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 space-y-2">
-            <p className="text-xs text-muted-foreground">
-              These employees have an open shift from yesterday. Enter their real check-out time before it's forgotten.
-            </p>
-            {carryoverRecords.map((rec) => {
-              const openSession = rec.sessions.find(
-                (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
-              )
-              return (
-                <div
-                  key={rec.attendanceId}
-                  className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{rec.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {rec.employeeId} • in {openSession?.checkIn ? formatLocalTime12h(openSession.checkIn) : "—"}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 shrink-0 gap-1.5"
-                    onClick={() => openEditRecord(rec)}
+        <Card className="mb-4 gap-0 py-0 border-amber-300 dark:border-amber-800/50 bg-amber-50/40 dark:bg-amber-950/10">
+          <button
+            type="button"
+            onClick={() => setCarryoverPanelOpen((o) => !o)}
+            aria-expanded={carryoverPanelOpen}
+            className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left transition-colors hover:bg-amber-100/40 dark:hover:bg-amber-900/20 rounded-xl"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-300 min-w-0">
+              <Clock3 className="h-4 w-4 shrink-0" />
+              <span className="truncate">
+                Pending check-out · {formatLogicalDateLabel(yesterdayOf(today))}
+              </span>
+              <Badge
+                variant="secondary"
+                className="shrink-0 bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200 border border-amber-300/60 dark:border-amber-700/40 text-[10px] px-1.5 py-0 h-4"
+              >
+                {carryoverRecords.length}
+              </Badge>
+            </span>
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400 transition-transform duration-200",
+                carryoverPanelOpen && "rotate-180"
+              )}
+            />
+          </button>
+          {carryoverPanelOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              <p className="text-xs text-muted-foreground">
+                These employees have an open shift from yesterday. Enter their real check-out time before it's forgotten.
+              </p>
+              {carryoverRecords.map((rec) => {
+                const openSession = rec.sessions.find(
+                  (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
+                )
+                return (
+                  <div
+                    key={rec.attendanceId}
+                    className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
                   >
-                    <Clock3 className="h-4 w-4" />
-                    Check out
-                  </Button>
-                </div>
-              )
-            })}
-          </CardContent>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{rec.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {rec.employeeId} • in {openSession?.checkIn ? formatLocalTime12h(openSession.checkIn) : "—"}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 shrink-0 gap-1.5"
+                      onClick={() => openEditRecord(rec)}
+                    >
+                      <Clock3 className="h-4 w-4" />
+                      Check out
+                    </Button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </Card>
       )}
 
@@ -3515,7 +3706,8 @@ function SiteAttendance() {
                               // Carryover takes over the row's primary action: closing
                               // yesterday's shift is the only thing to do here until done.
                               <Button
-                                className="bg-amber-600 hover:bg-amber-700 text-white"
+                                variant="outline"
+                                className="border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200"
                                 onClick={() => handleOpenCarryover(record.employee)}
                               >
                                 <Clock3 className="h-4 w-4 mr-2" />
@@ -3852,15 +4044,19 @@ function SiteAttendance() {
                                   ) : (
                                     <div className="flex justify-end items-center gap-2">
                                       {carryoverEmpIds.has(record.employee) ? (
-                                        // Carryover takes over the row's primary action.
+                                        // Carryover takes over the row's primary action. Kept
+                                        // subtle (outline, not a solid fill) so it doesn't crowd
+                                        // the kebab beside it on md-width laptops — the amber
+                                        // ⏳ badge in the employee cell already flags the state.
                                         <Button
                                           size="sm"
-                                          className="gap-1.5 whitespace-nowrap bg-amber-600 hover:bg-amber-700 text-white"
+                                          variant="outline"
+                                          className="gap-1.5 border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200"
                                           title="Enter yesterday's check-out to unlock today"
                                           onClick={() => handleOpenCarryover(record.employee)}
                                         >
                                           <Clock3 className="h-4 w-4" />
-                                          Check out yesterday
+                                          Check out
                                         </Button>
                                       ) : complete ? (
                                         <Button

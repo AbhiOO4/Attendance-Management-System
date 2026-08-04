@@ -35,6 +35,7 @@ interface Employee {
   currentSite: string | null
   currentJob: string | null
   employmentType: 'permanent' | 'temporary'
+  nationality?: 'foreign' | 'omani'
 }
 
 type UpdateInfo = {
@@ -45,6 +46,7 @@ type UpdateInfo = {
   currentJob: string | null
   monthlySalary: number
   employmentType: 'permanent' | 'temporary'
+  nationality: 'foreign' | 'omani'
 }
 
 interface Site {
@@ -86,6 +88,7 @@ function EditEmployee({employee, onSave, sites }: Props) {
       currentJob: employee.currentJob,
       monthlySalary: employee.monthlySalary,
       employmentType: employee.employmentType || "permanent",
+      nationality: employee.nationality || "foreign",
     })
   const [salaryInput, setSalaryInput] = useState(String(employee.monthlySalary))
 
@@ -161,6 +164,7 @@ function EditEmployee({employee, onSave, sites }: Props) {
         currentJob: employee.currentJob,
         monthlySalary: employee.monthlySalary,
         employmentType: employee.employmentType || "permanent",
+        nationality: employee.nationality || "foreign",
       })
       setSalaryInput(String(employee.monthlySalary))
     }
@@ -290,6 +294,22 @@ function EditEmployee({employee, onSave, sites }: Props) {
             <SelectContent>
               <SelectItem value="permanent">Permanent</SelectItem>
               <SelectItem value="temporary">Temporary</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={formData.nationality}
+            onValueChange={(value) => setFormData({
+              ...formData,
+              nationality: value as "foreign" | "omani"
+            })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Nationality" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="foreign">Foreign</SelectItem>
+              <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
 
