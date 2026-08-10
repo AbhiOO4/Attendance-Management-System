@@ -24,6 +24,7 @@ export const getAllEmployees = async (req, res) => {
       limit,
       notSupervisor = "false",
       employmentType,
+      rosterForSite,
     } = req.query;
 
     let filter = {};
@@ -41,7 +42,20 @@ export const getAllEmployees = async (req, res) => {
 
     filter.isActive = true;
 
-    if (site) {
+    if (rosterForSite) {
+      // Manage-Employees-from-SiteDetail roster: on-site employees (incl. those
+      // with a pending job change) AND incoming scheduled-adds targeting this site.
+      // Wrapped in $and so it never clashes with the notSupervisor $or above.
+      filter.$and = [
+        ...(filter.$and || []),
+        {
+          $or: [
+            { currentSite: rosterForSite },
+            { scheduledSiteId: rosterForSite },
+          ],
+        },
+      ];
+    } else if (site) {
       if (site === "null") {
         filter.currentSite = null;
       } else {
@@ -65,11 +79,18 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId"
+        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
       .sort({ name: 1 });
+
+    // Only the manage-from-SiteDetail roster needs the pending target names resolved.
+    if (rosterForSite) {
+      query = query
+        .populate("scheduledSiteId", "siteName")
+        .populate("scheduledJobId", "name");
+    }
 
     // apply pagination only if both page and limit are provided
     if (page && limit) {

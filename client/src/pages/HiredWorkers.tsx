@@ -1,7 +1,7 @@
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { useEffect, useState } from "react"
-import { useParams, useNavigate } from "react-router-dom"
+import { useParams, useNavigate, useLocation } from "react-router-dom"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -50,6 +50,10 @@ interface Employee {
   currentJob: { _id: string; name: string } | null
   user?: string | null
   employmentType: 'permanent' | 'temporary'
+  // Deferred ("from tomorrow") assignment, only surfaced in the SiteDetail context.
+  scheduledSiteId?: { _id: string; siteName: string } | string | null
+  scheduledJobId?: { _id: string; name: string } | string | null
+  scheduledEffectiveDate?: string | null
 }
 
 interface Filters {
@@ -76,7 +80,24 @@ function HiredWorkers() {
   const { user } = useAuth()
   const { siteId } = useParams<{ siteId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const assignedSite = siteId || user?.assignedSite
+
+  // Opened from SiteDetail (admin) → assignment actions are deferred to tomorrow and
+  // pending changes are shown with a cancel option. From SiteAttendance → instant.
+  const from = location.state?.from as string | undefined
+  const deferred = from === "site-detail"
+
+  // Return to whichever page opened this one. SiteDetail passes
+  // state={{ from: "site-detail" }}; every other entry point (Site Attendance,
+  // Add Employees) passes no state and keeps landing on Site Attendance.
+  function handleBack() {
+    if (location.state?.from === "site-detail" && siteId) {
+      navigate(`/site/${siteId}`)
+    } else {
+      navigate(`/attendance/${assignedSite}`)
+    }
+  }
 
   const [filters, setFilters] = useState<Filters>({
     name: "",
@@ -106,6 +127,40 @@ function HiredWorkers() {
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [deleteAttendance, setDeleteAttendance] = useState(false)
 
+  // Cancel-pending-schedule state (deferred mode only)
+  const [cancelingId, setCancelingId] = useState<string | null>(null)
+
+  // Classify a row's pending (from-tomorrow) state. Incoming = scheduled to arrive
+  // tomorrow but not on the site yet; jobChange = already on the site with a pending
+  // job change. Only meaningful in deferred (SiteDetail) mode.
+  function pendingInfo(employee: Employee) {
+    const isOnSite = employee.currentSite === assignedSite
+    const hasSchedule = !!employee.scheduledEffectiveDate
+    const scheduledJobName =
+      employee.scheduledJobId && typeof employee.scheduledJobId === "object"
+        ? employee.scheduledJobId.name
+        : null
+    return {
+      isIncoming: deferred && hasSchedule && !isOnSite,
+      hasJobChange: deferred && hasSchedule && isOnSite,
+      scheduledJobName,
+    }
+  }
+
+  async function cancelSchedule(employeeId: string) {
+    setCancelingId(employeeId)
+    try {
+      await api.delete(`/api/site/${assignedSite}/employee/${employeeId}/scheduled`)
+      toast.success("Scheduled change cancelled")
+      fetchHiredWorkers()
+    } catch (error: any) {
+      console.log(error)
+      toast.error(error.response?.data?.message || "Failed to cancel scheduled change")
+    } finally {
+      setCancelingId(null)
+    }
+  }
+
   // Roster fetching
   async function fetchHiredWorkers() {
     if (!assignedSite) return
@@ -116,7 +171,10 @@ function HiredWorkers() {
         {
           params: {
             ...filters,
-            site: assignedSite,
+            // Deferred mode also surfaces incoming scheduled-adds for this site.
+            ...(deferred
+              ? { rosterForSite: assignedSite }
+              : { site: assignedSite }),
             employmentType: showTempOnly ? "temporary" : undefined,
           },
         }
@@ -175,14 +233,16 @@ function HiredWorkers() {
     try {
       const targetJobId = jobId === "unassigned" ? null : jobId
       const res = await api.patch<Employee>(`/api/site/${assignedSite}/employee/${employeeId}/job`, {
-        jobId: targetJobId
+        jobId: targetJobId,
+        ...(deferred ? { deferred: true } : {}),
       })
-      toast.success("Employee job updated successfully")
+      toast.success(deferred ? "Job change scheduled — starts tomorrow" : "Employee job updated successfully")
       setEmployees(prev => prev.map(emp => emp._id === employeeId ? res.data : emp))
       setEditingJobEmployeeId(null)
-      
-      // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
-      if (assignedSite) {
+
+      // Instant job changes affect today's draft; deferred ones don't touch today.
+      if (!deferred && assignedSite) {
+        // Clear draft cache for this site so SiteAttendance page fetches fresh employees list
         Object.keys(localStorage).forEach((key) => {
           if (key.startsWith(`attendance_draft_${assignedSite}_`)) {
             localStorage.removeItem(key)
@@ -246,26 +306,36 @@ function HiredWorkers() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => navigate(`/attendance/${assignedSite}`)}
+            onClick={handleBack}
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-2xl sm:text-4xl font-bold tracking-tight">
               Manage Employees
             </h1>
             <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20 text-sm font-semibold px-3 py-1 mt-1">
               Total: {totalEmployees}
             </Badge>
+            {deferred && (
+              <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-xs font-medium px-2.5 py-1 mt-1">
+                Changes take effect tomorrow
+              </Badge>
+            )}
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <Button variant="outline" onClick={() => navigate(`/attendance/${assignedSite}/insta-add`)}>
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/attendance/${assignedSite}/insta-add`, { state: { from } })}
+          >
             <UserPlus className="h-4 w-4 mr-2" />
             Add Employees
           </Button>
-          <AddTemporaryWorker onAdd={addHiredWorker} assignedSiteId={assignedSite} />
+          {!deferred && (
+            <AddTemporaryWorker onAdd={addHiredWorker} assignedSiteId={assignedSite} />
+          )}
         </div>
       </div>
 
@@ -346,8 +416,10 @@ function HiredWorkers() {
                 </TableCell>
               </TableRow>
             ) : employees.length > 0 ? (
-              employees.map((employee, index) => (
-                <TableRow 
+              employees.map((employee, index) => {
+                const { isIncoming, hasJobChange, scheduledJobName } = pendingInfo(employee)
+                return (
+                <TableRow
                   key={employee._id}
                   className="hover:bg-muted/50 transition-colors"
                 >
@@ -368,6 +440,16 @@ function HiredWorkers() {
                           Temporary
                         </Badge>
                       )}
+                      {isIncoming && (
+                        <Badge variant="secondary" className="bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/50 dark:border-sky-800/30 text-[10px] px-1.5 py-0 h-4">
+                          Starting tomorrow
+                        </Badge>
+                      )}
+                      {hasJobChange && (
+                        <Badge variant="secondary" className="bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30 text-[10px] px-1.5 py-0 h-4">
+                          Job change tomorrow
+                        </Badge>
+                      )}
                     </div>
                   </TableCell>
 
@@ -380,7 +462,14 @@ function HiredWorkers() {
                   </TableCell>
 
                   <TableCell className="w-[240px]">
-                    {editingJobEmployeeId === employee._id ? (
+                    {isIncoming ? (
+                      <div className="text-sm">
+                        <span className="font-medium">
+                          {scheduledJobName || <span className="text-muted-foreground text-xs font-normal">Unassigned</span>}
+                        </span>
+                        <span className="block text-[11px] text-muted-foreground">from tomorrow</span>
+                      </div>
+                    ) : editingJobEmployeeId === employee._id ? (
                       <div className="flex items-center gap-1.5">
                         <Select
                           value={employee.currentJob?._id || "unassigned"}
@@ -420,6 +509,11 @@ function HiredWorkers() {
                       <div className="flex items-center gap-2 group/job">
                         <span className="font-medium text-sm">
                           {employee.currentJob?.name || <span className="text-muted-foreground text-xs font-normal">Unassigned</span>}
+                          {hasJobChange && (
+                            <span className="block text-[11px] font-normal text-violet-600 dark:text-violet-400">
+                              → {scheduledJobName || "Unassigned"} tomorrow
+                            </span>
+                          )}
                         </span>
                         <Button
                           variant="ghost"
@@ -434,21 +528,57 @@ function HiredWorkers() {
                   </TableCell>
 
                   <TableCell className="text-right">
-                    <Button 
-                      variant="ghost" 
-                      size="sm"
-                      className="text-destructive hover:bg-destructive/10"
-                      onClick={() => {
-                        setWorkerToRemove(employee)
-                        setIsRemoveConfirmOpen(true)
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 mr-1" />
-                      Remove
-                    </Button>
+                    {isIncoming ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                        disabled={cancelingId === employee._id}
+                        onClick={() => cancelSchedule(employee._id)}
+                      >
+                        {cancelingId === employee._id ? (
+                          <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                        ) : (
+                          <X className="h-4 w-4 mr-1" />
+                        )}
+                        Cancel
+                      </Button>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1">
+                        {hasJobChange && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                            disabled={cancelingId === employee._id}
+                            onClick={() => cancelSchedule(employee._id)}
+                          >
+                            {cancelingId === employee._id ? (
+                              <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                            ) : (
+                              <X className="h-4 w-4 mr-1" />
+                            )}
+                            Cancel change
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:bg-destructive/10"
+                          onClick={() => {
+                            setWorkerToRemove(employee)
+                            setIsRemoveConfirmOpen(true)
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" />
+                          Remove
+                        </Button>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
-              ))
+                )
+              })
             ) : (
               <TableRow>
                 <TableCell
@@ -470,7 +600,9 @@ function HiredWorkers() {
             <Loader2 className="h-6 w-6 animate-spin mx-auto text-primary" />
           </div>
         ) : employees.length > 0 ? (
-          employees.map((employee, index) => (
+          employees.map((employee, index) => {
+            const { isIncoming, hasJobChange, scheduledJobName } = pendingInfo(employee)
+            return (
             <div
               key={employee._id}
               className="bg-card border rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden"
@@ -491,6 +623,16 @@ function HiredWorkers() {
                         Temporary
                       </Badge>
                     )}
+                    {isIncoming && (
+                      <Badge variant="secondary" className="bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/50 dark:border-sky-800/30 text-[10px] px-1.5 py-0">
+                        Starting tomorrow
+                      </Badge>
+                    )}
+                    {hasJobChange && (
+                      <Badge variant="secondary" className="bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30 text-[10px] px-1.5 py-0">
+                        Job change tomorrow
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground font-mono">
                     ID: {employee.employeeId}
@@ -507,8 +649,16 @@ function HiredWorkers() {
                   <span className="font-medium text-foreground capitalize">{employee.jobTitle}</span>
                 </div>
                 <div className="col-span-2 mt-2">
-                  <span className="text-xs text-muted-foreground block mb-1">Current Job</span>
-                  {editingJobEmployeeId === employee._id ? (
+                  <span className="text-xs text-muted-foreground block mb-1">
+                    {isIncoming ? "Job from tomorrow" : "Current Job"}
+                  </span>
+                  {isIncoming ? (
+                    <div className="border rounded-lg px-3 py-2 bg-card/50">
+                      <span className="font-medium text-sm">
+                        {scheduledJobName || <span className="text-muted-foreground text-xs font-normal">Unassigned</span>}
+                      </span>
+                    </div>
+                  ) : editingJobEmployeeId === employee._id ? (
                     <div className="flex items-center gap-1.5">
                       <Select
                         value={employee.currentJob?._id || "unassigned"}
@@ -548,6 +698,11 @@ function HiredWorkers() {
                     <div className="flex items-center justify-between border rounded-lg px-3 py-2 bg-card/50">
                       <span className="font-medium text-sm">
                         {employee.currentJob?.name || <span className="text-muted-foreground text-xs font-normal">Unassigned</span>}
+                        {hasJobChange && (
+                          <span className="block text-[11px] font-normal text-violet-600 dark:text-violet-400">
+                            → {scheduledJobName || "Unassigned"} tomorrow
+                          </span>
+                        )}
                       </span>
                       <Button
                         variant="ghost"
@@ -562,22 +717,58 @@ function HiredWorkers() {
                 </div>
               </div>
 
-              <div className="mt-4 pt-3 border-t flex justify-end">
-                <Button 
-                  variant="ghost" 
-                  size="sm"
-                  className="text-destructive hover:bg-destructive/10"
-                  onClick={() => {
-                    setWorkerToRemove(employee)
-                    setIsRemoveConfirmOpen(true)
-                  }}
-                >
-                  <Trash2 className="h-4 w-4 mr-1" />
-                  Remove
-                </Button>
+              <div className="mt-4 pt-3 border-t flex justify-end gap-2">
+                {isIncoming ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                    disabled={cancelingId === employee._id}
+                    onClick={() => cancelSchedule(employee._id)}
+                  >
+                    {cancelingId === employee._id ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                    ) : (
+                      <X className="h-4 w-4 mr-1" />
+                    )}
+                    Cancel
+                  </Button>
+                ) : (
+                  <>
+                    {hasJobChange && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                        disabled={cancelingId === employee._id}
+                        onClick={() => cancelSchedule(employee._id)}
+                      >
+                        {cancelingId === employee._id ? (
+                          <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                        ) : (
+                          <X className="h-4 w-4 mr-1" />
+                        )}
+                        Cancel change
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        setWorkerToRemove(employee)
+                        setIsRemoveConfirmOpen(true)
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      Remove
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
-          ))
+            )
+          })
         ) : (
           <div className="text-center py-8 text-muted-foreground border rounded-xl bg-card/50">
             No employees found on this site

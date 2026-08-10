@@ -10,7 +10,7 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
-import { combineFromOffset } from '../utils/timeLocal.js'
+import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 
 
@@ -1215,7 +1215,7 @@ export const instaAddEmployee = async (req, res) => {
   session.startTransaction();
   try {
     const { siteId } = req.params
-    const { empId, currentJob, checkInTime } = req.body
+    const { empId, currentJob, checkInTime, deferred = false } = req.body
 
     const markedBy = req.user?.id
 
@@ -1260,6 +1260,37 @@ export const instaAddEmployee = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Employee is already assigned to this site",
+      })
+    }
+
+    // ----------------------------------
+    // DEFERRED (from-tomorrow) ADD via SiteDetail
+    // ----------------------------------
+    // Admin-context add: don't touch currentSite/currentJob or today's attendance
+    // (no check-in needed). Stash the target site/job with tomorrow's local
+    // midnight; the applyScheduledAssignments cron promotes it at day rollover.
+    if (deferred) {
+      if (site.isDeleted || !site.isActive || site.isCompleted) {
+        await session.abortTransaction()
+        session.endSession()
+        return res.status(400).json({
+          success: false,
+          message: "Site is not a valid destination for a scheduled add",
+        })
+      }
+
+      employee.scheduledSiteId = siteId
+      employee.scheduledJobId = currentJob || null
+      employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
+
+      await employee.save({ session })
+
+      await session.commitTransaction()
+      session.endSession()
+
+      return res.status(200).json({
+        success: true,
+        message: "Employee scheduled — starts tomorrow",
       })
     }
 
@@ -2041,7 +2072,7 @@ export const updateEmployeeJob = async (req, res) => {
   session.startTransaction();
   try {
     const { siteId, employeeId } = req.params;
-    const { jobId } = req.body;
+    const { jobId, deferred = false } = req.body;
 
     const employee = await empModel.findById(employeeId).session(session);
 
@@ -2080,6 +2111,21 @@ export const updateEmployeeJob = async (req, res) => {
           message: "Job does not belong to this site",
         });
       }
+    }
+
+    // Deferred (from-tomorrow) job change via SiteDetail: stash the target job with
+    // tomorrow's local midnight and leave currentJob/job arrays untouched today. A
+    // null scheduledSiteId marks this as a job-only change for the cron to apply.
+    if (deferred) {
+      employee.scheduledSiteId = null;
+      employee.scheduledJobId = jobId || null;
+      employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+      await employee.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+      await employee.populate("currentJob", "name");
+      await employee.populate("scheduledJobId", "name");
+      return res.status(200).json(employee);
     }
 
     // If job hasn't changed, just return
@@ -2126,6 +2172,55 @@ export const updateEmployeeJob = async (req, res) => {
   }
 };
 
+// Clear a deferred (from-tomorrow) assignment before the cron applies it. Used by
+// the SiteDetail Manage Employees "Cancel" action on a pending row.
+export const cancelScheduledAssignment = async (req, res) => {
+  try {
+    const { siteId, employeeId } = req.params;
+
+    const employee = await empModel.findById(employeeId);
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      });
+    }
+
+    // The pending change must belong to THIS site: either a scheduled add/move
+    // targeting it (scheduledSiteId), or a job-only change for an employee
+    // currently on it (scheduledSiteId null, currentSite === siteId).
+    const belongsToSite =
+      (employee.scheduledSiteId && employee.scheduledSiteId.toString() === siteId) ||
+      (!employee.scheduledSiteId &&
+        employee.currentSite &&
+        employee.currentSite.toString() === siteId);
+
+    if (!employee.scheduledEffectiveDate || !belongsToSite) {
+      return res.status(400).json({
+        success: false,
+        message: "No scheduled change for this site",
+      });
+    }
+
+    employee.scheduledSiteId = null;
+    employee.scheduledJobId = null;
+    employee.scheduledEffectiveDate = null;
+    await employee.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Scheduled change cancelled",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to cancel scheduled change",
+    });
+  }
+};
+
 const siteController = {
     getSites,
     getSite,
@@ -2153,7 +2248,8 @@ const siteController = {
     getAvailableEmployeesForSite,
     updateSite,
     toggleJobCompleted,
-    updateEmployeeJob
+    updateEmployeeJob,
+    cancelScheduledAssignment
 }
 
 export default siteController;

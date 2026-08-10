@@ -74,35 +74,16 @@ import {
 import { cn } from "@/lib/utils"
 import { Plane } from "lucide-react"
 
-type CollarType = 'skilled' | 'staff'
-type Nationality = 'foreign' | 'omani'
-
-// The four roster categories = collarType × nationality. Foreign categories are shown
-// with a ✈️ plane marker; Omani ones are labelled "Omani …". Only foreignSkilled can
-// run a 24-hour shift. collarType/nationality default to skilled/foreign for older data.
-type RosterCategory = 'foreignSkilled' | 'foreignStaff' | 'omaniSkilled' | 'omaniStaff'
-
-const categoryOf = (collarType?: CollarType | null, nationality?: Nationality | string | null): RosterCategory => {
-  const staff = collarType === 'staff'
-  const omani = nationality === 'omani'
-  return omani
-    ? (staff ? 'omaniStaff' : 'omaniSkilled')
-    : (staff ? 'foreignStaff' : 'foreignSkilled')
-}
-
-const CATEGORY_LABELS: Record<RosterCategory, string> = {
-  foreignSkilled: 'Skilled Labour',
-  foreignStaff: 'Staff',
-  omaniSkilled: 'Omani Labour',
-  omaniStaff: 'Omani Staff',
-}
-
-const CATEGORY_IS_FOREIGN: Record<RosterCategory, boolean> = {
-  foreignSkilled: true,
-  foreignStaff: true,
-  omaniSkilled: false,
-  omaniStaff: false,
-}
+// The four roster categories (collarType × nationality), their labels and the
+// ✈️ foreign marker live in a shared module so SiteDetail stays in sync.
+import {
+  categoryOf,
+  CATEGORY_LABELS,
+  CATEGORY_IS_FOREIGN,
+  type CollarType,
+  type Nationality,
+  type RosterCategory,
+} from "@/lib/rosterUtils"
 
 interface Employee {
   _id: string

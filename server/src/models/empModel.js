@@ -75,6 +75,29 @@ const employeeSchema = new mongoose.Schema({
     default: null
   },
 
+  // Deferred ("from tomorrow") assignment, written by SiteDetail-context actions
+  // (admin) instead of mutating currentSite/currentJob now, and applied by the
+  // applyScheduledAssignments cron at the local day rollover. Presence is keyed on
+  // scheduledEffectiveDate != null. If scheduledSiteId is set it's a scheduled
+  // add/move (apply site + job); if null it's a scheduled job-only change (apply
+  // job, leave the current site). See cron/applyScheduledAssignments.js.
+  scheduledSiteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site',
+    default: null
+  },
+
+  scheduledJobId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Job',
+    default: null
+  },
+
+  scheduledEffectiveDate: {
+    type: Date,
+    default: null
+  },
+
   isActive: {
     type: Boolean,
     default: true

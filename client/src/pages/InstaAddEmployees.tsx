@@ -14,7 +14,7 @@ import toast from "react-hot-toast"
 
 import axios from "axios"
 
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useLocation } from "react-router-dom"
 
 import {
     Card,
@@ -127,6 +127,13 @@ function InstaAddEmployees() {
     const { siteId } = useParams()
 
     const navigate = useNavigate()
+
+    const location = useLocation()
+
+    // Opened from SiteDetail (admin) → schedule the add for tomorrow: no check-in,
+    // no today session. Opened from SiteAttendance → instant add (unchanged).
+    const from = location.state?.from as string | undefined
+    const deferred = from === "site-detail"
 
     const [loading, setLoading] =
         useState(true)
@@ -281,9 +288,10 @@ function InstaAddEmployees() {
             await api.post(`/api/site/${siteId}/insta-add-employee`, {
                 empId: employeeId,
                 currentJob: jobId,
-                checkInTime: checkIn,
+                // Deferred adds carry no check-in — they only take effect tomorrow.
+                ...(deferred ? { deferred: true } : { checkInTime: checkIn }),
             })
-            toast.success("Employee added successfully")
+            toast.success(deferred ? "Employee scheduled — starts tomorrow" : "Employee added successfully")
 
             if (siteId) {
                 Object.keys(localStorage).forEach((key) => {
@@ -314,7 +322,7 @@ function InstaAddEmployees() {
     const confirmAdd = async () => {
         if (!selectedEmployee) return
 
-        if (!checkInTime) {
+        if (!deferred && !checkInTime) {
             toast.error("Check-in time is required")
             return
         }
@@ -352,7 +360,7 @@ function InstaAddEmployees() {
                             variant="outline"
                             size="icon"
                             onClick={() =>
-                                navigate(`/attendance/${siteId}/hired-workers`)
+                                navigate(`/attendance/${siteId}/hired-workers`, { state: { from } })
                             }
                         >
                             <ArrowLeft className="h-4 w-4" />
@@ -368,7 +376,9 @@ function InstaAddEmployees() {
                             </h1>
 
                             <p className="text-sm text-muted-foreground mt-1">
-                                Quickly assign employees to this site and today's attendance.
+                                {deferred
+                                    ? "Assign employees to this site — the change takes effect tomorrow."
+                                    : "Quickly assign employees to this site and today's attendance."}
                             </p>
 
                         </div>
@@ -752,46 +762,57 @@ function InstaAddEmployees() {
                             </Select>
                         </div>
 
-                        <div className="space-y-2.5">
-                            <div className="flex items-center gap-1.5">
-                                <Clock3 className="h-4 w-4 text-muted-foreground" />
-                                <Label className="text-sm font-semibold text-foreground">Check-in Time</Label>
-                                <Badge variant="secondary" className="text-[10px] font-medium py-0 px-1.5 h-4 bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300 border border-red-200/50 dark:border-red-800/30">
-                                    Required
-                                </Badge>
+                        {deferred ? (
+                            <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                                <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5" />
+                                <span>
+                                    This assignment takes effect <strong className="text-foreground">tomorrow</strong> —
+                                    no check-in time is needed. The employee will appear on{" "}
+                                    <strong className="text-foreground">{site?.siteName}</strong>'s roster from then.
+                                </span>
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                                Enter the check-in time for this employee at <strong>{site?.siteName}</strong>.
-                            </p>
-
-                            <Input
-                                type="time"
-                                value={checkInTime}
-                                onChange={(e) => {
-                                    setCheckInTime(e.target.value)
-                                    setOverlapError(null)
-                                }}
-                                className="w-full bg-background border-input shadow-sm hover:border-accent mt-1"
-                            />
-
-                            {overlapError && (
-                                <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
-                                    <div className="font-medium flex items-center gap-1.5">
-                                        <AlertCircle className="h-4 w-4 shrink-0" />
-                                        Conflicts with existing session
-                                    </div>
-                                    <div>
-                                        Site: {overlapError.conflictingSession.siteName}
-                                    </div>
-                                    <div>
-                                        Time: {formatLocalTime12h(overlapError.conflictingSession.checkIn)}
-                                        {overlapError.conflictingSession.checkOut
-                                            ? ` - ${formatLocalTime12h(overlapError.conflictingSession.checkOut)}`
-                                            : " (no check-out)"}
-                                    </div>
+                        ) : (
+                            <div className="space-y-2.5">
+                                <div className="flex items-center gap-1.5">
+                                    <Clock3 className="h-4 w-4 text-muted-foreground" />
+                                    <Label className="text-sm font-semibold text-foreground">Check-in Time</Label>
+                                    <Badge variant="secondary" className="text-[10px] font-medium py-0 px-1.5 h-4 bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300 border border-red-200/50 dark:border-red-800/30">
+                                        Required
+                                    </Badge>
                                 </div>
-                            )}
-                        </div>
+                                <p className="text-xs text-muted-foreground">
+                                    Enter the check-in time for this employee at <strong>{site?.siteName}</strong>.
+                                </p>
+
+                                <Input
+                                    type="time"
+                                    value={checkInTime}
+                                    onChange={(e) => {
+                                        setCheckInTime(e.target.value)
+                                        setOverlapError(null)
+                                    }}
+                                    className="w-full bg-background border-input shadow-sm hover:border-accent mt-1"
+                                />
+
+                                {overlapError && (
+                                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
+                                        <div className="font-medium flex items-center gap-1.5">
+                                            <AlertCircle className="h-4 w-4 shrink-0" />
+                                            Conflicts with existing session
+                                        </div>
+                                        <div>
+                                            Site: {overlapError.conflictingSession.siteName}
+                                        </div>
+                                        <div>
+                                            Time: {formatLocalTime12h(overlapError.conflictingSession.checkIn)}
+                                            {overlapError.conflictingSession.checkOut
+                                                ? ` - ${formatLocalTime12h(overlapError.conflictingSession.checkOut)}`
+                                                : " (no check-out)"}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     <DialogFooter className="px-6 py-4 bg-muted/30 border-t border-border/40 flex sm:justify-end gap-2">
@@ -806,18 +827,18 @@ function InstaAddEmployees() {
 
                         <Button
                             onClick={confirmAdd}
-                            disabled={submitting || !checkInTime}
+                            disabled={submitting || (!deferred && !checkInTime)}
                             className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
                         >
                             {submitting ? (
                                 <>
                                     <Loader2 className="h-4 w-4 animate-spin" />
-                                    Adding...
+                                    {deferred ? "Scheduling..." : "Adding..."}
                                 </>
                             ) : (
                                 <>
                                     <UserPlus className="h-4 w-4" />
-                                    Confirm Add
+                                    {deferred ? "Schedule for Tomorrow" : "Confirm Add"}
                                 </>
                             )}
                         </Button>
