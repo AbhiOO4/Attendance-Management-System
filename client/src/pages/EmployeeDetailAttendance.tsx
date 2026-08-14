@@ -178,6 +178,13 @@ function EmployeeAttendanceDetail() {
 
   const exportSpreadsheet = async () => {
     try {
+      // Grey palette (print-friendly). Fridays get a darker shade to mark the
+      // weekend; alternating rows keep the two-tone look, just in grey.
+      const HEADER_GREY = "D9D9D9"
+      const ROW_GREY = "EFEFEF"
+      const FRIDAY_GREY = "C0C0C0"
+      const TOTALS_GREY = "BFBFBF"
+
       const workbook = new ExcelJS.Workbook()
 
       const worksheet =
@@ -361,7 +368,7 @@ function EmployeeAttendanceDetail() {
           type: "pattern",
           pattern: "solid",
           fgColor: {
-            argb: "81C784",
+            argb: HEADER_GREY,
           },
         }
 
@@ -434,13 +441,13 @@ function EmployeeAttendanceDetail() {
                 cell.fill = {
                   type: "pattern",
                   pattern: "solid",
-                  fgColor: { argb: "4CAF50" },
+                  fgColor: { argb: FRIDAY_GREY },
                 }
               } else if (index % 2 !== 0) {
                 cell.fill = {
                   type: "pattern",
                   pattern: "solid",
-                  fgColor: { argb: "D6F7DC" },
+                  fgColor: { argb: ROW_GREY },
                 }
               }
             }
@@ -552,7 +559,7 @@ function EmployeeAttendanceDetail() {
                     type: "pattern",
                     pattern: "solid",
                     fgColor: {
-                      argb: "4CAF50",
+                      argb: FRIDAY_GREY,
                     },
                   }
                 } else if (index % 2 !== 0) {
@@ -560,7 +567,7 @@ function EmployeeAttendanceDetail() {
                     type: "pattern",
                     pattern: "solid",
                     fgColor: {
-                      argb: "D6F7DC",
+                      argb: ROW_GREY,
                     },
                   }
                 }
@@ -641,7 +648,7 @@ function EmployeeAttendanceDetail() {
           type: "pattern",
           pattern: "solid",
           fgColor: {
-            argb: "66BB6A",
+            argb: TOTALS_GREY,
           },
         }
 
@@ -659,6 +666,68 @@ function EmployeeAttendanceDetail() {
             style: "thin",
           },
         }
+      })
+
+      // --------------------------
+      // HOURS SUMMARY
+      // --------------------------
+
+      worksheet.addRow([])
+
+      const summaryRows: [string, number][] = [
+        ["Total Normal Hours", round2(totals.totalHours - totals.otHours)],
+        [
+          "Total OT Hours (OT + Holiday)",
+          round2(totals.otHours + totals.holidayHours),
+        ],
+        ["Grand Total", round2(totals.totalHours + totals.holidayHours)],
+      ]
+
+      summaryRows.forEach(([label, value]) => {
+        const row = worksheet.addRow([
+          label,
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          `${value} hrs`,
+          "",
+          "",
+        ])
+
+        row.height = 18
+
+        worksheet.mergeCells(row.number, 1, row.number, 9) // label
+        worksheet.mergeCells(row.number, 10, row.number, 12) // value
+
+        const labelCell = row.getCell(1)
+        labelCell.font = { bold: true, size: 9 }
+        labelCell.alignment = { horizontal: "right", vertical: "middle" }
+
+        const valueCell = row.getCell(10)
+        valueCell.font = { bold: true, size: 9 }
+        valueCell.alignment = { horizontal: "center", vertical: "middle" }
+
+        ;[1, 10].forEach((col) => {
+          const cell = row.getCell(col)
+
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: ROW_GREY },
+          }
+
+          cell.border = {
+            top: { style: "thin" },
+            left: { style: "thin" },
+            bottom: { style: "thin" },
+            right: { style: "thin" },
+          }
+        })
       })
 
       // --------------------------
@@ -827,12 +896,22 @@ function EmployeeAttendanceDetail() {
           acc.holidayHours += record.holidayHours || 0
         }
 
+        // Half-days count as present; sick-leave days carry status "absent",
+        // so they fall into the absent bucket alongside plain absences.
+        if (record.status === "fullday" || record.status === "halfday") {
+          acc.daysPresent += 1
+        } else {
+          acc.daysAbsent += 1
+        }
+
         return acc
       },
       {
         totalHours: 0,
         otHours: 0,
         holidayHours: 0,
+        daysPresent: 0,
+        daysAbsent: 0,
       }
     )
   }, [attendance])
@@ -849,8 +928,8 @@ function EmployeeAttendanceDetail() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/30 p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <div className="min-h-screen bg-muted/30 px-3 py-6 sm:px-4">
+      <div className="mx-auto max-w-none space-y-6">
 
         {/* BACK BUTTON */}
         <Button
@@ -987,6 +1066,51 @@ function EmployeeAttendanceDetail() {
             </div>
           </CardContent>
         </Card>
+
+        {/* SUMMARY */}
+        {employee && (
+          <Card>
+            <CardContent className="p-6">
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-muted-foreground">
+                    Normal Hours
+                  </p>
+                  <p className="mt-1 text-2xl font-bold">
+                    {round2(totals.totalHours - totals.otHours)} hrs
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-muted-foreground">
+                    Total OT Hours
+                  </p>
+                  <p className="mt-1 text-2xl font-bold">
+                    {round2(totals.otHours + totals.holidayHours)} hrs
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-muted-foreground">
+                    Days Present
+                  </p>
+                  <p className="mt-1 text-2xl font-bold">
+                    {totals.daysPresent}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-muted-foreground">
+                    Days Absent
+                  </p>
+                  <p className="mt-1 text-2xl font-bold">
+                    {totals.daysAbsent}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ATTENDANCE TABLE */}
         <Card>

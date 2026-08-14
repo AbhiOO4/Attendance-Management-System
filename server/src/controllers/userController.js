@@ -4,6 +4,7 @@ import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js
 import empModel from "../models/empModel.js";
 import siteModel from "../models/siteModel.js";
 import mongoose from "mongoose";
+import { applySupervisorSiteChange } from "../services/supervisorReassignment.js";
 
 export const login = async (req, res) => {
     try{
@@ -76,9 +77,26 @@ export async function updateUser(req, res) {
       updateData.password = hashedPassword;
     }
 
-    if (assignedSite && employee){
-      updateData.assignedSite = assignedSite;
-      employee.currentSite = assignedSite;
+    // Site change is conditional on attendance state — only act when it actually
+    // changed (the modal resends assignedSite on every save, so an email/password
+    // edit must not trigger a reassignment). Supervisors only (they have an employee).
+    let deferredSiteChange = false;
+
+    if (
+      assignedSite &&
+      employee &&
+      String(assignedSite) !== String(employee.currentSite || "")
+    ) {
+      const result = await applySupervisorSiteChange({
+        employee,
+        newSiteId: assignedSite,
+        actorId: req.user.id,
+        dbSession: session,
+      });
+      if (result.assignedSite) {
+        updateData.assignedSite = result.assignedSite;
+      }
+      deferredSiteChange = result.deferred;
     }
 
     const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true, session});
@@ -92,7 +110,10 @@ export async function updateUser(req, res) {
 
     res.status(200).json({
       success: true,
-      message: "The user has been updated",
+      message: deferredSiteChange
+        ? "User updated — site change scheduled to take effect tomorrow"
+        : "The user has been updated",
+      deferred: deferredSiteChange,
       updatedUser
     });
 

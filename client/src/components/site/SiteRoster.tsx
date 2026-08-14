@@ -29,6 +29,14 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Loader2,
   UserPlus,
   Trash2,
@@ -122,6 +130,9 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
 
   const [workerToRemove, setWorkerToRemove] = useState<Employee | null>(null)
   const [removeOpen, setRemoveOpen] = useState(false)
+
+  const [scheduleToCancel, setScheduleToCancel] = useState<Employee | null>(null)
+  const [cancelScheduleOpen, setCancelScheduleOpen] = useState(false)
 
   const canEdit = isSiteActive
 
@@ -347,9 +358,9 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
           : curJobName
         : curJobName
 
-    // Editable everywhere on Today; on Tomorrow everywhere except incoming rows
-    // (their job is the scheduled add's job — change it by cancel + re-add).
-    const editable = mode === "today" ? true : !incoming
+    // Job cell is editable in both tabs. On Tomorrow this includes incoming
+    // scheduled-adds — editing their job updates scheduledJobId in place.
+    const editable = true
 
     const selectValue =
       mode === "tomorrow" && hasSchedule
@@ -374,24 +385,6 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
     const info = rowInfo(e, mode)
     const isEditing = editingJobEmployeeId === e._id
     const updating = updatingJobMap[e._id]
-
-    if (info.incoming) {
-      // Read-only scheduled job for an arriving employee.
-      return (
-        <div className="text-sm">
-          <span className="font-medium">
-            {info.displayJobName || (
-              <span className="text-xs font-normal text-muted-foreground">
-                Unassigned
-              </span>
-            )}
-          </span>
-          <span className="block text-[11px] text-muted-foreground">
-            from tomorrow
-          </span>
-        </div>
-      )
-    }
 
     if (canEdit && info.editable && isEditing) {
       return (
@@ -473,7 +466,10 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
           size="sm"
           className="text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
           disabled={cancelingId === e._id}
-          onClick={() => cancelSchedule(e._id)}
+          onClick={() => {
+            setScheduleToCancel(e)
+            setCancelScheduleOpen(true)
+          }}
         >
           {cancelingId === e._id ? (
             <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -493,7 +489,10 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             size="sm"
             className="text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
             disabled={cancelingId === e._id}
-            onClick={() => cancelSchedule(e._id)}
+            onClick={() => {
+              setScheduleToCancel(e)
+              setCancelScheduleOpen(true)
+            }}
           >
             {cancelingId === e._id ? (
               <Loader2 className="mr-1 h-4 w-4 animate-spin" />
@@ -796,6 +795,66 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
         employee={workerToRemove}
         onRemoved={fetchRoster}
       />
+
+      <Dialog open={cancelScheduleOpen} onOpenChange={setCancelScheduleOpen}>
+        <DialogContent className="sm:max-w-md">
+          {(() => {
+            // Tailor the copy to the pending change being cancelled: an incoming
+            // scheduled-add (arriving here tomorrow) vs a from-tomorrow job change.
+            const incoming =
+              !!scheduleToCancel &&
+              refId(scheduleToCancel.scheduledSiteId) === siteId &&
+              scheduleToCancel.currentSite !== siteId
+            return (
+              <DialogHeader>
+                <DialogTitle className="text-xl font-bold">
+                  {incoming
+                    ? "Cancel scheduled arrival?"
+                    : "Cancel scheduled job change?"}
+                </DialogTitle>
+                <DialogDescription className="pt-2 text-base">
+                  {incoming ? (
+                    <>
+                      <strong>{scheduleToCancel?.name}</strong> will no longer be
+                      added to this site tomorrow. You can schedule them again
+                      later.
+                    </>
+                  ) : (
+                    <>
+                      The job change scheduled for{" "}
+                      <strong>{scheduleToCancel?.name}</strong> tomorrow will be
+                      discarded. Their current job stays unchanged.
+                    </>
+                  )}
+                </DialogDescription>
+              </DialogHeader>
+            )
+          })()}
+
+          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              disabled={!!scheduleToCancel && cancelingId === scheduleToCancel._id}
+              onClick={() => setCancelScheduleOpen(false)}
+            >
+              Keep it
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!!scheduleToCancel && cancelingId === scheduleToCancel._id}
+              onClick={async () => {
+                if (!scheduleToCancel) return
+                await cancelSchedule(scheduleToCancel._id)
+                setCancelScheduleOpen(false)
+              }}
+            >
+              {!!scheduleToCancel && cancelingId === scheduleToCancel._id
+                ? "Cancelling..."
+                : "Cancel change"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

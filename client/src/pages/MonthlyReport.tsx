@@ -1,6 +1,12 @@
 
 import { useEffect, useMemo, useState } from "react"
-import { Search, Download, RotateCcw, ChevronRight } from "lucide-react"
+import {
+  Search,
+  Download,
+  RotateCcw,
+  ChevronRight,
+  ChevronLeft,
+} from "lucide-react"
 import { api } from "@/lib/api"
 import * as XLSX from "xlsx"
 import { saveAs } from "file-saver"
@@ -93,6 +99,12 @@ function MonthlyAttendanceTab() {
   const [employeeId, setEmployeeId] = useState("")
   const [jobTitle, setJobTitle] = useState("")
 
+  // Client-side pagination for the display only. The full month stays in `reports`
+  // so search spans everyone and Export always covers the whole roster.
+  const PAGE_SIZE_OPTIONS = ["25", "50", "100", "all"] as const
+  const [pageSize, setPageSize] = useState<string>("50")
+  const [currentPage, setCurrentPage] = useState(1)
+
   async function fetchReports() {
     try {
       setLoading(true)
@@ -112,8 +124,22 @@ function MonthlyAttendanceTab() {
     fetchReports()
   }, [month, year])
 
+  // All employees, sorted (active first, then by name). This is the export set —
+  // Export always covers everyone, independent of the on-screen search.
+  const sortedAll = useMemo(() => {
+    return [...reports].sort((a, b) => {
+      const aActive = a.isActive !== false
+      const bActive = b.isActive !== false
+      if (aActive && !bActive) return -1
+      if (!aActive && bActive) return 1
+      return a.employeeName.localeCompare(b.employeeName)
+    })
+  }, [reports])
+
+  // Search-filtered view (drives the table + summary). Filtering a sorted list
+  // preserves order.
   const filteredReports = useMemo(() => {
-    const filtered = reports.filter((employee) => {
+    return sortedAll.filter((employee) => {
       const matchesName = employee.employeeName
         .toLowerCase()
         .includes(name.toLowerCase())
@@ -125,14 +151,28 @@ function MonthlyAttendanceTab() {
         .includes(jobTitle.toLowerCase())
       return matchesName && matchesEmployeeId && matchesJobTitle
     })
-    return [...filtered].sort((a, b) => {
-      const aActive = a.isActive !== false
-      const bActive = b.isActive !== false
-      if (aActive && !bActive) return -1
-      if (!aActive && bActive) return 1
-      return a.employeeName.localeCompare(b.employeeName)
-    })
-  }, [reports, name, employeeId, jobTitle])
+  }, [sortedAll, name, employeeId, jobTitle])
+
+  // Pagination math. "all" collapses to a single page of the full filtered list.
+  const showAll = pageSize === "all"
+  const perPage = showAll ? filteredReports.length || 1 : Number(pageSize)
+  const totalPages = showAll
+    ? 1
+    : Math.max(1, Math.ceil(filteredReports.length / perPage))
+  const startIndex = showAll ? 0 : (currentPage - 1) * perPage
+  const pagedReports = showAll
+    ? filteredReports
+    : filteredReports.slice(startIndex, startIndex + perPage)
+
+  // Reset to page 1 whenever the filtered set or page size changes.
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [name, employeeId, jobTitle, pageSize, month, year])
+
+  // Guard against landing past the last page if the data shrinks.
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages)
+  }, [currentPage, totalPages])
 
   const totals = useMemo(() => {
     return filteredReports.reduce(
@@ -157,8 +197,9 @@ function MonthlyAttendanceTab() {
   }, [filteredReports])
 
   function exportToExcel() {
-    if (filteredReports.length === 0) return
-    const formattedData = filteredReports.map((employee, index) => ({
+    // Always export every employee for the month, regardless of the active search.
+    if (sortedAll.length === 0) return
+    const formattedData = sortedAll.map((employee, index) => ({
       "Sl No": index + 1,
       "Employee Name":
         employee.employeeName +
@@ -259,10 +300,10 @@ function MonthlyAttendanceTab() {
             variant="outline"
             size="sm"
             onClick={exportToExcel}
-            disabled={filteredReports.length === 0}
+            disabled={sortedAll.length === 0}
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export
+            Export all
           </Button>
         </div>
       </div>
@@ -270,7 +311,16 @@ function MonthlyAttendanceTab() {
       {/* Summary row */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground border-b pb-3">
         <span>
-          <span className="font-medium text-foreground">{filteredReports.length}</span> employees
+          {filteredReports.length === sortedAll.length ? (
+            <>
+              <span className="font-medium text-foreground">{sortedAll.length}</span> employees
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">{filteredReports.length}</span> of{" "}
+              {sortedAll.length} employees
+            </>
+          )}
         </span>
         <span>
           OT <span className="font-medium text-foreground">{totals.overtimeHours.toFixed(2)}</span>h
@@ -283,10 +333,11 @@ function MonthlyAttendanceTab() {
         </span>
       </div>
 
-      {/* Table */}
-      <div className="rounded-lg border overflow-auto max-h-[calc(100vh-280px)]">
+      {/* Table — grows with the page's rows; pagination bounds the count, so no
+          inner scroll cage. Horizontal scroll is handled by the Table wrapper. */}
+      <div className="rounded-lg border">
         <Table>
-          <TableHeader className="sticky top-0 bg-background z-10">
+          <TableHeader className="bg-background">
             <TableRow>
               <TableHead className="w-10">#</TableHead>
               <TableHead>Employee</TableHead>
@@ -315,7 +366,7 @@ function MonthlyAttendanceTab() {
                 </TableCell>
               </TableRow>
             ) : (
-              filteredReports.map((employee, index) => (
+              pagedReports.map((employee, index) => (
                 <TableRow
                   key={employee.employeeId}
                   className={
@@ -324,7 +375,9 @@ function MonthlyAttendanceTab() {
                       : ""
                   }
                 >
-                  <TableCell className="text-muted-foreground">{index + 1}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {startIndex + index + 1}
+                  </TableCell>
                   <TableCell>
                     <span className={employee.isActive === false ? "line-through decoration-1" : ""}>
                       {employee.employeeName}
@@ -349,6 +402,62 @@ function MonthlyAttendanceTab() {
             )}
           </TableBody>
         </Table>
+      </div>
+
+      {/* Pagination — display only; search and Export always span the full month */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>Rows per page</span>
+          <Select value={pageSize} onValueChange={setPageSize}>
+            <SelectTrigger className="h-8 w-[90px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZE_OPTIONS.map((opt) => (
+                <SelectItem key={opt} value={opt}>
+                  {opt === "all" ? "All" : opt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <span className="tabular-nums">
+            {filteredReports.length === 0
+              ? "0"
+              : `${startIndex + 1}–${Math.min(
+                  startIndex + perPage,
+                  filteredReports.length
+                )}`}{" "}
+            of {filteredReports.length}
+          </span>
+          {!showAll && (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage <= 1}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="px-1 tabular-nums">
+                {currentPage} / {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -613,8 +722,8 @@ function SiteGroup({ children }: { children: React.ReactNode }) {
 
 function MonthlyReport() {
   return (
-    <div className="min-h-screen bg-muted/30 p-4 sm:p-6">
-      <div className="mx-auto max-w-7xl space-y-4">
+    <div className="min-h-screen bg-muted/30 px-3 py-6 sm:px-4">
+      <div className="mx-auto max-w-none space-y-4">
         <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
 
         <Tabs defaultValue="monthly">

@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import empModel from '../models/empModel.js';
 import jobModel from '../models/jobModel.js';
 import siteModel from '../models/siteModel.js';
+import userModel from '../models/userModel.js';
+import { isAssignableSite } from '../utils/siteAssignable.js';
 
 /**
  * Promote deferred ("from tomorrow") assignments once their effective date arrives.
@@ -49,7 +51,7 @@ async function runApplyScheduledAssignments() {
         // Guard: a scheduled add/move whose target site is gone is dropped, not applied.
         if (isMove) {
           const site = await siteModel.findById(employee.scheduledSiteId).session(session);
-          if (!site || site.isDeleted || !site.isActive || site.isCompleted) {
+          if (!isAssignableSite(site)) {
             employee.scheduledSiteId = null;
             employee.scheduledJobId = null;
             employee.scheduledEffectiveDate = null;
@@ -84,6 +86,18 @@ async function runApplyScheduledAssignments() {
           await jobModel.findByIdAndUpdate(
             newJobId,
             { $addToSet: { employees: employee._id } },
+            { session }
+          );
+        }
+
+        // If this employee is a supervisor, keep their User.assignedSite (auth
+        // scope) in step with the worker-site move. The scheduled mechanism was
+        // built for plain employees and did not sync the linked user; a deferred
+        // supervisor reassignment relies on this.
+        if (isMove && employee.user) {
+          await userModel.findByIdAndUpdate(
+            employee.user,
+            { assignedSite: employee.currentSite },
             { session }
           );
         }

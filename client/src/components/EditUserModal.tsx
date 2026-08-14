@@ -34,6 +34,9 @@ interface UserType {
 interface Site {
   _id: string
   siteName: string
+  isActive?: boolean
+  isCompleted?: boolean
+  isDeleted?: boolean
 }
 
 interface Props {
@@ -103,9 +106,22 @@ function EditUserModal({
   const hasTypedPassword = password.length > 0
   const isPasswordMatch = password === confirmPassword
   
-  const canUpdate = 
-    email.trim() !== "" && 
+  const canUpdate =
+    email.trim() !== "" &&
     (!hasTypedPassword || (password.length >= 6 && isPasswordMatch))
+
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
+
+  // Only offer live sites (plus the currently-assigned one, so its value still
+  // renders even if it was since deactivated/completed).
+  const assignableSites = sites.filter(
+    (s) =>
+      (s.isActive !== false && !s.isCompleted && !s.isDeleted) ||
+      s._id === user?.assignedSite
+  )
+
+  const siteChanged =
+    !isAdmin && !!user && assignedSite !== (user.assignedSite || "")
 
   const handleUpdate = async () => {
     if (!user || !canUpdate) return
@@ -121,7 +137,9 @@ function EditUserModal({
         email,
       }
 
-      if (user.role !== 'admin' && user.role !== 'superadmin') {
+      // Only send the site when it actually changed — the server treats a resent
+      // unchanged value as a no-op, but this keeps the intent (and its side effects) explicit.
+      if (siteChanged) {
         payload.assignedSite = assignedSite
       }
 
@@ -129,22 +147,24 @@ function EditUserModal({
         payload.password = password
       }
 
-      await api.patch(`/api/user/update/${user._id}`, payload)
+      const res = await api.patch(`/api/user/update/${user._id}`, payload)
 
-      toast.success("User updated successfully")
+      toast.success(
+        res.data?.deferred
+          ? "Saved — the site change takes effect tomorrow"
+          : "User updated successfully"
+      )
 
       onSuccess()
       onClose()
 
-    } catch (error) {
+    } catch (error: any) {
       console.log(error)
-      toast.error("Failed to update user")
+      toast.error(error?.response?.data?.message || "Failed to update user")
     } finally {
       setLoading(false)
     }
   }
-
-  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -218,7 +238,7 @@ function EditUserModal({
                 </SelectTrigger>
 
                 <SelectContent>
-                  {sites.map((site) => (
+                  {assignableSites.map((site) => (
                     <SelectItem
                       key={site._id}
                       value={site._id}
@@ -228,6 +248,14 @@ function EditUserModal({
                   ))}
                 </SelectContent>
               </Select>
+
+              {siteChanged && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                  This moves the supervisor — and their own worker record — to the
+                  new site. If today's attendance at their current site is already
+                  saved, the change applies from tomorrow.
+                </div>
+              )}
             </div>
           )}
 

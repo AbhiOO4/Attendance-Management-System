@@ -14,6 +14,7 @@ import { getStaffEmployeeIds } from '../utils/collar.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { isAssignableSite } from '../utils/siteAssignable.js';
 
 
 // --- CURRENT-JOB SYNC ---
@@ -562,7 +563,24 @@ export const jobReport = async (req, res) => {
         {
           $group: {
             _id: "$sessions.jobId",
-            normalHours: { $sum: { $ifNull: ["$sessions.workedHours", 0] } },
+            // Normal (regular) hours = net worked minus overtime, i.e. the
+            // base-rate portion — breaks and the OT hours excluded. Apportioned
+            // to each job by its session's share of the day's raw worked hours,
+            // matching how OT/holiday are split below. (_rawTotal > 0 is
+            // guaranteed by the $match above, so the divide is safe.)
+            normalHours: {
+              $sum: {
+                $multiply: [
+                  {
+                    $subtract: [
+                      { $ifNull: ["$totalWorkHours", 0] },
+                      { $ifNull: ["$overtimeHours", 0] },
+                    ],
+                  },
+                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
+                ],
+              },
+            },
             overtimeHours: {
               $sum: {
                 $multiply: [
@@ -3373,7 +3391,7 @@ export const transferEmployee = async (req, res) => {
     }
 
     const toSite = await Site.findById(toSiteId).session(dbSession)
-    if (!toSite || toSite.isDeleted || !toSite.isActive || toSite.isCompleted) {
+    if (!isAssignableSite(toSite)) {
       throwValidationError(400, "Target site is not a valid transfer destination")
     }
 

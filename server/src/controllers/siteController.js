@@ -12,6 +12,7 @@ import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
 import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
+import { isAssignableSite } from '../utils/siteAssignable.js'
 
 
 //Admin
@@ -1270,7 +1271,7 @@ export const instaAddEmployee = async (req, res) => {
     // (no check-in needed). Stash the target site/job with tomorrow's local
     // midnight; the applyScheduledAssignments cron promotes it at day rollover.
     if (deferred) {
-      if (site.isDeleted || !site.isActive || site.isCompleted) {
+      if (!isAssignableSite(site)) {
         await session.abortTransaction()
         session.endSession()
         return res.status(400).json({
@@ -2066,7 +2067,16 @@ export const updateEmployeeJob = async (req, res) => {
       });
     }
 
-    if (!employee.currentSite || employee.currentSite.toString() !== siteId) {
+    const onSiteHere =
+      employee.currentSite && employee.currentSite.toString() === siteId;
+    const isIncomingHere =
+      !!employee.scheduledEffectiveDate &&
+      employee.scheduledSiteId &&
+      employee.scheduledSiteId.toString() === siteId;
+
+    // On-site employees can be edited directly; an incoming scheduled-add can only
+    // have its (inherently deferred) scheduled job changed.
+    if (!onSiteHere && !(isIncomingHere && deferred)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
@@ -2096,10 +2106,11 @@ export const updateEmployeeJob = async (req, res) => {
     }
 
     // Deferred (from-tomorrow) job change via SiteDetail: stash the target job with
-    // tomorrow's local midnight and leave currentJob/job arrays untouched today. A
-    // null scheduledSiteId marks this as a job-only change for the cron to apply.
+    // tomorrow's local midnight and leave currentJob/job arrays untouched today.
+    // On-site employee → job-only change (scheduledSiteId stays null). Incoming
+    // scheduled-add → keep the pending arrival, just swap the scheduled job.
     if (deferred) {
-      employee.scheduledSiteId = null;
+      employee.scheduledSiteId = onSiteHere ? null : employee.scheduledSiteId;
       employee.scheduledJobId = jobId || null;
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
       await employee.save({ session });
