@@ -23,12 +23,6 @@ const employeeSchema = Joi.object({
 
   isActive: Joi.boolean().default(true),
 
-  monthlySalary: Joi.number()
-    .min(0)
-    .messages({
-      'any.required': 'Monthly salary is required for salaried employees',
-    }),
-
   employmentType: Joi.string().valid('permanent', 'temporary').default('permanent'),
 
   // Orthogonal to collarType (which the controller derives from the job title).

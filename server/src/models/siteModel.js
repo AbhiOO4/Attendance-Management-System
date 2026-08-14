@@ -119,22 +119,6 @@ const siteSchema = new mongoose.Schema({
     trim: true,
     default: ""
   },
-  // 24-hour shift: a continuous shift (e.g. security/watchmen) that runs from a single
-  // start time to the SAME time the next day (07:00 → 07:00 +1 = 24h). Scoped to the
-  // FOREIGN SKILLED LABOURS category only — when on, their check-in is prefilled at
-  // `shift24StartTime` and the auto check-out cron closes the open session at that time
-  // the next day with an EXPLICIT next-day flag (the one case the wall clock can't infer,
-  // since check-out reads equal to check-in). The site's other three categories keep
-  // their normal day/night defaults.
-  is24HourShift: {
-    type: Boolean,
-    default: false
-  },
-  shift24StartTime: {
-    type: String,
-    trim: true,
-    default: ""
-  },
   // NOTE: nightShiftCutoffHour / cutoffHistory were removed with the cutoff redesign.
   // A site's day and night default windows may now overlap freely; cross-midnight is an
   // explicit per-session day offset on the attendance record, not a derived boundary hour.

@@ -47,11 +47,11 @@ interface Employee {
   name: string
   employeeId: string
   jobTitle: string
-  monthlySalary: number
   currentSite: string | null
   currentJob: { _id: string; name: string } | null
   user?: string | null
   employmentType: 'permanent' | 'temporary'
+  nationality?: 'foreign' | 'omani'
 }
 
 
@@ -76,13 +76,20 @@ interface EmployeesResponse {
   totalEmployees: number
 }
 
+type NewEmployee = {
+  name: string
+  employeeId: string
+  jobTitle: string
+  employmentType: 'permanent' | 'temporary'
+  nationality: 'foreign' | 'omani'
+}
+
 type UpdateInfo = {
   name: string
   employeeId: string
   jobTitle: string
-  currentSite: string | null
-  monthlySalary: number
   employmentType: 'permanent' | 'temporary'
+  nationality: 'foreign' | 'omani'
 }
 
 
@@ -158,12 +165,8 @@ function Employees() {
     fetchEmployees()
   }, [filters])
 
-  const addEmployee = async ( newEmployee: Omit<Employee, "_id" | "currentJob"> ) => {
+  const addEmployee = async ( newEmployee: NewEmployee ) => {
     try{
-
-      if (newEmployee.currentSite === " "){
-        newEmployee.currentSite = null
-      } 
       await api.post('/api/employees', newEmployee)
       toast.success("Employee added successfully")
       fetchEmployees()
@@ -194,9 +197,6 @@ function Employees() {
 
   const editEmployee = async (id: string, updateInfo: UpdateInfo ) => {
     try {
-      if (updateInfo.currentSite === " "){
-        updateInfo.currentSite = null
-      }
       await api.put(`/api/employees/${id}`, updateInfo)
 
       toast.success("Employee updated successfully")
@@ -220,7 +220,7 @@ function Employees() {
           </Badge>
         </div>
 
-        <AddEmployee onAdd={addEmployee} sites={sites} />
+        <AddEmployee onAdd={addEmployee} />
       </div>
 
       {/* FILTER SECTION */}
@@ -315,10 +315,6 @@ function Employees() {
                 Job Title
               </TableHead>
 
-              <TableHead>
-                Monthly Salary
-              </TableHead>
-
               <TableHead>Current Site</TableHead>
 
               <TableHead className="text-right">
@@ -364,10 +360,6 @@ function Employees() {
                   </TableCell>
 
                   <TableCell>
-                     {employee.monthlySalary}
-                  </TableCell>
-
-                  <TableCell>
                     <div className="flex flex-col gap-0.5">
                       <span>{employee.currentSite ? siteMap[employee.currentSite] : "Not Assigned"}</span>
                       {employee.currentJob && (
@@ -380,12 +372,8 @@ function Employees() {
                     {/* EDIT */}
 
                     <EditEmployee
-                      employee={{
-                        ...employee,
-                        currentJob: employee.currentJob?._id ?? null,
-                      }}
+                      employee={employee}
                       onSave={editEmployee}
-                      sites={sites}
                     />
 
                     {/* DELETE */}
@@ -432,7 +420,7 @@ function Employees() {
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={7}
+                  colSpan={6}
                   className="text-center py-6"
                 >
                   No employees found

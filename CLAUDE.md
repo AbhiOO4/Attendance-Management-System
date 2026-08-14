@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Attendance & payroll automation system ("NGDP AMS") for a construction/workshop
+Attendance tracking system ("NGDP AMS") for a construction/workshop
 company. Supervisors mark daily attendance per site; admins manage sites,
 employees and users; superadmins configure the work schedule and pull monthly
-payroll reports. Monorepo with two independent packages: `server/` (Express +
-MongoDB API) and `client/` (React + Vite PWA). There is no root package.json —
-each is installed and run separately.
+attendance reports. There is NO payroll/pay-rate logic — the app tracks hours
+(worked, overtime, holiday) only, not money. Monorepo with two independent
+packages: `server/` (Express + MongoDB API) and `client/` (React + Vite PWA).
+There is no root package.json — each is installed and run separately.
 
 ## Commands
 
@@ -54,10 +55,7 @@ and never sees the token. Key pieces:
   (`isPermanent`, `isActive`, `isDeleted`, `isCompleted`). A permanent site
   ("Workshop Phase 7") is auto-created on server boot. There are FOUR sets of day/night
   defaults, one per category: `defaultCheck*`/`nightDefaultCheck*` (foreign skilled),
-  `staff*` (foreign staff), `omani*` (Omani labours), `omaniStaff*` (Omani staffs). A
-  24-hour shift (`is24HourShift` + single `shift24StartTime`) is scoped to FOREIGN SKILLED
-  LABOURS only: it prefills their check-in at that time and the cron auto-closes it 24h
-  later (see below); the site's other three categories keep their normal day/night defaults.
+  `staff*` (foreign staff), `omani*` (Omani labours), `omaniStaff*` (Omani staffs).
 - **Job** — belongs to a Site, holds `employees[]`.
 - **User** — supervisor/admin/superadmin; supervisors have `assignedSite` and an
   `employeeId`. Password is bcrypt-hashed in a pre-save hook and `select: false`.
@@ -68,8 +66,9 @@ and never sees the token. Key pieces:
   `isHoliday`, `isSickLeave`, and night-shift fields. A pre-save hook enforces the
   invariant that `isSickLeave` is only valid when no session has any check-in/out.
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
-  `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `overtimeMultiplier`,
-  `monthlyHoursDivisor`, `weeklyHolidays`, `breakDurationMinutes`.
+  `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `weeklyHolidays`,
+  `breakDurationMinutes`. (The pay knobs `overtimeMultiplier` /
+  `monthlyHoursDivisor` were removed with the payroll teardown.)
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
   attendance locks that site/day; only an admin can unlock it for editing.
 - **Holiday** (`holidayModel.js`), **JobTitle** (`jobTitleModel.js`).
@@ -77,12 +76,12 @@ and never sees the token. Key pieces:
 ### API surface
 Routes are mounted in `server/src/server.js` under `/api/{employees,user,attendance,site,config}`
 → `routes/*Routes.js` → `controllers/*Controller.js`. Controllers are the bulk of the
-logic; `attendanceController.js` is by far the largest and holds the core payroll math.
+logic; `attendanceController.js` is by far the largest and holds the core hours math.
 Route ordering matters: specific paths are declared before `/:id`-style wildcards.
 
-### Payroll / hours calculation (the domain core)
+### Hours calculation (the domain core)
 `computeAttendanceTotals(rawHours, workConfig, breaksTaken, holidayInfo)` in
-`server/src/utils/attendanceMath.js` is the single source of truth for pay math
+`server/src/utils/attendanceMath.js` is the single source of truth for the hours math
 (used by the controller, crons, default propagation, and the seed recalc script):
 1. **Status** is derived from RAW session hours (break-agnostic) to avoid demotions.
 2. **Breaks** are proportional — `floor(rawHours / fullDayHours)` breaks by default,
@@ -91,20 +90,19 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
 5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): public
    holiday → net hours; weekly holiday → flat `WEEKLY_HOLIDAY_HOURS` credit
-   (15 fullday / 10 halfday). The monthly report pays `holidayHours` at the OT
-   rate with no payable day. The client mirrors this in
+   (15 fullday / 10 halfday), with no payable day. The client mirrors this in
    `client/src/lib/attendanceUtils.ts` — keep the constants in sync.
 Any change to this formula requires re-running the recalculation script in
 `seed/seed.js` against existing records.
 
-**Pay rates** (`server/src/utils/payMath.js`) are RELATIVE to each employee — there
-is no flat company-wide OT rate. `computeOvertimeRate` derives it per employee:
-`(monthlySalary / monthlyHoursDivisor) × overtimeMultiplier` (defaults 240 / 1.25,
-both configurable). The monthly report is the only consumer; it prices both
-`overtimeHours` and `holidayHours` at this rate. An employee with no `monthlySalary`
-earns no OT pay. Pay is computed on READ, so a rate change re-prices past months —
-no recalculation script needed, unlike the hours math above. Note `SALARY_DIVISOR = 26`
-in the report is a separate thing: payable DAYS → daily salary.
+**No pay/money logic.** There is no per-employee salary, no OT rate and no pay
+pricing (the old `server/src/utils/payMath.js`, `monthlySalary`, `overtimeMultiplier`
+and `monthlyHoursDivisor` were all removed). The monthly report (`monthlyReport` in
+`attendanceController.js`) is an HOURS report: per employee it returns `fullDays`,
+`halfDays`, `absentDays`, `attendancePercentage`, `overtimeHours`, `holidayHours`,
+and `totalOvertimeHours` (= `overtimeHours` + `holidayHours`, since OT and holiday
+hours were paid at the same rate). `payableDays` is still computed internally to
+derive `attendancePercentage` but is not returned.
 
 ### Time zones & night shifts (subtle — read carefully)
 All timestamps are stored in UTC but the app operates in a single configured
@@ -172,11 +170,7 @@ roster category (foreign skilled / foreign staff / omani skilled / omani staff),
 `getEmployeeIdsByCategory()` (`utils/collar.js`) to touch only that category's employees
 with its own default time. Day modes fill today's sessions; night modes fill yesterday's
 (a shift started last evening checks out this morning). They reuse the `timeLocal.js`
-helpers. `autoCheckOut.js` also has a `shift24` mode scoped to FOREIGN SKILLED LABOURS:
-for a `is24HourShift` site it closes yesterday's open sessions at `shift24StartTime` with
-a FORCED next-day flag (the wall clock can't infer it — out reads equal to in), yielding
-exactly 24h. Only the foreign-skilled day/night queries exclude 24h sites (their skilled
-are closed by the 24h pass); the other three categories still run normally on a 24h site.
+helpers.
 
 ### Frontend
 React 19 + React Router 7 + Vite 8, Tailwind v4, shadcn/ui components (Radix) under

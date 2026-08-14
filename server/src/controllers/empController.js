@@ -20,6 +20,7 @@ export const getAllEmployees = async (req, res) => {
       employeeId,
       site,
       jobTitle,
+      job,
       page,
       limit,
       notSupervisor = "false",
@@ -63,6 +64,11 @@ export const getAllEmployees = async (req, res) => {
       }
     }
 
+    if (job) {
+      // Narrow to a specific site Job (currentJob reference). "unassigned" → no job.
+      filter.currentJob = job === "unassigned" ? null : job;
+    }
+
     if (jobTitle) {
       filter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: "i" };
     }
@@ -79,7 +85,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
@@ -294,48 +300,54 @@ export const editEmployee = async (req, res) => {
       req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
     }
 
-    const prevSite = existingEmployee.currentSite?.toString() || null;
-    const newSite = currentSite || null;
+    // Site/job assignment is managed through the site-detail / hired-workers flows,
+    // not this edit form. Only reconcile currentSite/currentJob when the request
+    // explicitly includes currentSite — otherwise leave them untouched (an absent
+    // field must never be read as "clear the assignment").
+    if (currentSite !== undefined) {
+      const prevSite = existingEmployee.currentSite?.toString() || null;
+      const newSite = currentSite || null;
 
-    const prevJob = existingEmployee.currentJob?.toString() || null;
-    // If site cleared, job must also be null; otherwise use what was sent
-    const newJob = !newSite ? null : (currentJob || null);
+      const prevJob = existingEmployee.currentJob?.toString() || null;
+      // If site cleared, job must also be null; otherwise use what was sent
+      const newJob = !newSite ? null : (currentJob || null);
 
-    // ----------------------------------------
-    // SITE CHANGED → pull from old job, apply new job if provided
-    // ----------------------------------------
-    if (prevSite !== newSite) {
-      // Remove from old job
-      if (prevJob) {
-        await jobModel.findByIdAndUpdate(prevJob, {
-          $pull: { employees: existingEmployee._id },
-        }, { session });
+      // ----------------------------------------
+      // SITE CHANGED → pull from old job, apply new job if provided
+      // ----------------------------------------
+      if (prevSite !== newSite) {
+        // Remove from old job
+        if (prevJob) {
+          await jobModel.findByIdAndUpdate(prevJob, {
+            $pull: { employees: existingEmployee._id },
+          }, { session });
+        }
+        // Add to new job if one was sent alongside the new site
+        if (newJob) {
+          await jobModel.findByIdAndUpdate(newJob, {
+            $addToSet: { employees: existingEmployee._id },
+          }, { session });
+        }
+        req.body.currentJob = newJob; // null if no job sent, or the new job id
       }
-      // Add to new job if one was sent alongside the new site
-      if (newJob) {
-        await jobModel.findByIdAndUpdate(newJob, {
-          $addToSet: { employees: existingEmployee._id },
-        }, { session });
+      // ----------------------------------------
+      // SITE SAME, JOB CHANGED
+      // ----------------------------------------
+      else if (prevJob !== newJob) {
+        // Remove from old job
+        if (prevJob) {
+          await jobModel.findByIdAndUpdate(prevJob, {
+            $pull: { employees: existingEmployee._id },
+          }, { session });
+        }
+        // Add to new job
+        if (newJob) {
+          await jobModel.findByIdAndUpdate(newJob, {
+            $addToSet: { employees: existingEmployee._id },
+          }, { session });
+        }
+        req.body.currentJob = newJob;
       }
-      req.body.currentJob = newJob; // null if no job sent, or the new job id
-    }
-    // ----------------------------------------
-    // SITE SAME, JOB CHANGED
-    // ----------------------------------------
-    else if (prevJob !== newJob) {
-      // Remove from old job
-      if (prevJob) {
-        await jobModel.findByIdAndUpdate(prevJob, {
-          $pull: { employees: existingEmployee._id },
-        }, { session });
-      }
-      // Add to new job
-      if (newJob) {
-        await jobModel.findByIdAndUpdate(newJob, {
-          $addToSet: { employees: existingEmployee._id },
-        }, { session });
-      }
-      req.body.currentJob = newJob;
     }
 
     const employee = await empModel.findByIdAndUpdate(
@@ -348,7 +360,9 @@ export const editEmployee = async (req, res) => {
       await userModel.findByIdAndUpdate(employee.user, {
         name,
         employeeId,
-        assignedSite: currentSite,
+        // Keep the supervisor's assignedSite in sync only when the edit actually
+        // carried a site change.
+        ...(currentSite !== undefined ? { assignedSite: currentSite } : {}),
       }, { session });
     }
 
@@ -506,7 +520,7 @@ export const getSupervisors = async (req, res) => {
     const employees = await empModel
       .find(
         filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob"
+        "_id name employeeId jobTitle currentSite currentJob"
       )
       .skip(skip)
       .limit(Number(limit));
@@ -725,7 +739,7 @@ export const getTempPool = async (req, res) => {
     const skip = (Number(page) - 1) * Number(limit);
 
     const employees = await empModel.find(filter,
-        "_id name employeeId jobTitle monthlySalary currentSite currentJob user employmentType"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType"
       )
       .populate("currentJob", "name")
       .sort({ name: 1 })

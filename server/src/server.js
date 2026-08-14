@@ -18,7 +18,6 @@ import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
 import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
 import { startApplyScheduledAssignmentsCron } from './cron/applyScheduledAssignments.js'
-import { ensureOvertimePayFields } from './controllers/configController.js'
 // Night check-in is now pre-filled when a night shift is assigned (see
 // assignNightShift), so the auto check-in cron is no longer scheduled.
 
@@ -68,7 +67,6 @@ const initializePermanentSite = async () => {
 
 connectDB().then(async () => {
     await initializePermanentSite();
-    await ensureOvertimePayFields();
     startAutoCheckOutCron();
     startApplyScheduledAssignmentsCron();
     app.listen(process.env.PORT || 3000, () => {

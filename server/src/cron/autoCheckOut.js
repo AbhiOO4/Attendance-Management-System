@@ -24,12 +24,10 @@ import { computeAttendanceTotals } from '../utils/attendanceMath.js';
  * opts:
  *  - checkOutField : Site field holding this category's default check-out ("HH:mm").
  *  - isNight       : night-type mode — check-out is the next morning (run vs yesterday).
- *  - is24          : 24-hour shift (Foreign Skilled only) — closes ANY open session at the
- *                    site at the SAME time the next day (forced +1 day = 24h).
  *  - employeeIds   : this category's employee _id set.
  */
 async function processSites(sites, dateStr, opts, workConfig) {
-  const { checkOutField, isNight = false, is24 = false, employeeIds = [] } = opts;
+  const { checkOutField, isNight = false, employeeIds = [] } = opts;
   if (employeeIds.length === 0) return;
 
   const recordDate = new Date(dateStr);
@@ -37,7 +35,7 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
   for (const site of sites) {
     try {
-      const checkOutTimeStr = is24 ? site.shift24StartTime : site[checkOutField];
+      const checkOutTimeStr = site[checkOutField];
       if (!checkOutTimeStr) continue;
 
       // Records for this date with a session at this site, scoped to this category.
@@ -59,18 +57,15 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
           const sessionIsNight = session.isNightShift === true;
 
-          // Each mode only fills its own shift type. The 24h mode closes ANY open
-          // session for its category, so it skips the day/night gating.
-          if (!is24) {
-            if (isNight && !sessionIsNight) continue;
-            if (!isNight && sessionIsNight) continue;
-          }
+          // Each mode only fills its own shift type.
+          if (isNight && !sessionIsNight) continue;
+          if (!isNight && sessionIsNight) continue;
 
           const checkInTimeStr = toLocalTimeString(session.checkIn);
 
           // Day-type shifts: skip if check-in is later than the default check-out time.
-          // (Night and 24h shifts check out the next day, so this doesn't apply.)
-          if (!isNight && !is24) {
+          // (Night shifts check out the next day, so this doesn't apply.)
+          if (!isNight) {
             const [inH, inM] = checkInTimeStr.split(':').map(Number);
             const [outH, outM] = checkOutTimeStr.split(':').map(Number);
             if (inH * 60 + inM > outH * 60 + outM) {
@@ -78,14 +73,10 @@ async function processSites(sites, dateStr, opts, workConfig) {
             }
           }
 
-          // 24h shift: the check-out is the SAME time the next day, so out reads equal to
-          // in — the wall clock can't infer the day-cross. Force the next-day flag (the one
-          // case nothing can derive). Otherwise: cutoff-free — the check-out rolls to the
-          // next day exactly when it reads earlier than the check-in, and the stored
-          // check-in's own offset carries through unchanged.
-          const checkOutNextDay = is24
-            ? true
-            : deriveOffsets(checkInTimeStr, checkOutTimeStr, !!session.checkInNextDay).checkOutNextDay;
+          // Cutoff-free — the check-out rolls to the next day exactly when it reads earlier
+          // than the check-in, and the stored check-in's own offset carries through unchanged.
+          const checkOutNextDay =
+            deriveOffsets(checkInTimeStr, checkOutTimeStr, !!session.checkInNextDay).checkOutNextDay;
           const checkOutDate = combineFromOffset(dateStr, checkOutTimeStr, checkOutNextDay);
 
           // Worked hours must be valid (check-in chronologically before check-out)
@@ -111,10 +102,9 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
           session.checkOut = checkOutDate;
           session.workedHours = Number(workedHours.toFixed(2));
-          // A next-day check-out crosses midnight — keep the display flag in sync. Matters
-          // for the 24h shift, whose check-out equals the check-in so the clock alone reads
-          // it as a same-day (0h) shift. (The pre-save hook re-derives rawCheckOut/offsets
-          // from the absolute checkOut Date, so those stay consistent either way.)
+          // A next-day check-out crosses midnight — keep the display flag in sync. (The
+          // pre-save hook re-derives rawCheckOut/offsets from the absolute checkOut Date,
+          // so those stay consistent either way.)
           if (checkOutNextDay) session.isNightShift = true;
           recordModified = true;
         }
@@ -147,7 +137,7 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
       if (updatedCount > 0) {
         console.log(
-          `[AutoCheckOut] Site "${site.siteName}" (${is24 ? '24h' : checkOutField}): auto-filled checkOut (${checkOutTimeStr}) for ${updatedCount} record(s)`
+          `[AutoCheckOut] Site "${site.siteName}" (${checkOutField}): auto-filled checkOut (${checkOutTimeStr}) for ${updatedCount} record(s)`
         );
       }
     } catch (siteError) {
@@ -161,24 +151,20 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
 // The eight per-category day/night check-out modes. Day modes fill TODAY's open sessions;
 // night modes fill YESTERDAY's (a shift that started last evening checks out this morning).
-// Foreign Skilled on a 24h site are closed by the 24h mode instead, so their day/night
-// queries exclude 24h sites; the other three categories run normally on any site.
 const CHECKOUT_MODES = [
-  { field: 'defaultCheckOut',                isNight: false, when: 'today',     cat: 'foreignSkilled', exclude24: true  },
-  { field: 'nightDefaultCheckOut',           isNight: true,  when: 'yesterday', cat: 'foreignSkilled', exclude24: true  },
-  { field: 'staffDefaultCheckOut',           isNight: false, when: 'today',     cat: 'foreignStaff',   exclude24: false },
-  { field: 'staffNightDefaultCheckOut',      isNight: true,  when: 'yesterday', cat: 'foreignStaff',   exclude24: false },
-  { field: 'omaniDefaultCheckOut',           isNight: false, when: 'today',     cat: 'omaniSkilled',   exclude24: false },
-  { field: 'omaniNightDefaultCheckOut',      isNight: true,  when: 'yesterday', cat: 'omaniSkilled',   exclude24: false },
-  { field: 'omaniStaffDefaultCheckOut',      isNight: false, when: 'today',     cat: 'omaniStaff',     exclude24: false },
-  { field: 'omaniStaffNightDefaultCheckOut', isNight: true,  when: 'yesterday', cat: 'omaniStaff',     exclude24: false },
+  { field: 'defaultCheckOut',                isNight: false, when: 'today',     cat: 'foreignSkilled' },
+  { field: 'nightDefaultCheckOut',           isNight: true,  when: 'yesterday', cat: 'foreignSkilled' },
+  { field: 'staffDefaultCheckOut',           isNight: false, when: 'today',     cat: 'foreignStaff'   },
+  { field: 'staffNightDefaultCheckOut',      isNight: true,  when: 'yesterday', cat: 'foreignStaff'   },
+  { field: 'omaniDefaultCheckOut',           isNight: false, when: 'today',     cat: 'omaniSkilled'   },
+  { field: 'omaniNightDefaultCheckOut',      isNight: true,  when: 'yesterday', cat: 'omaniSkilled'   },
+  { field: 'omaniStaffDefaultCheckOut',      isNight: false, when: 'today',     cat: 'omaniStaff'     },
+  { field: 'omaniStaffNightDefaultCheckOut', isNight: true,  when: 'yesterday', cat: 'omaniStaff'     },
 ];
 
 /**
  * Run the auto check-out process. For each of the four categories' day/night default
  * check-out times that matches the current local minute, fill the matching open sessions.
- * Foreign Skilled on 24h sites are closed by the dedicated 24h pass (yesterday → today,
- * forced next-day check-out = 24h).
  */
 async function runAutoCheckOut() {
   try {
@@ -194,21 +180,12 @@ async function runAutoCheckOut() {
       CHECKOUT_MODES.map((m) =>
         Site.find({
           ...active,
-          ...(m.exclude24 ? { is24HourShift: { $ne: true } } : {}),
           [m.field]: currentTime,
         })
       )
     );
 
-    // 24h sites whose start time matches now: their Foreign Skilled shift started yesterday
-    // and checks out at the SAME time today.
-    const shift24Sites = await Site.find({
-      ...active,
-      is24HourShift: true,
-      shift24StartTime: currentTime,
-    });
-
-    if (modeSites.every((s) => s.length === 0) && shift24Sites.length === 0) return;
+    if (modeSites.every((s) => s.length === 0)) return;
 
     const workConfig = await workModel.findOne();
     if (!workConfig) {
@@ -226,15 +203,6 @@ async function runAutoCheckOut() {
         sites,
         m.when === 'today' ? todayStr : yesterdayStr,
         { checkOutField: m.field, isNight: m.isNight, employeeIds: cats[m.cat] },
-        workConfig
-      );
-    }
-
-    if (shift24Sites.length > 0) {
-      await processSites(
-        shift24Sites,
-        yesterdayStr,
-        { checkOutField: 'shift24StartTime', is24: true, employeeIds: cats.foreignSkilled },
         workConfig
       );
     }

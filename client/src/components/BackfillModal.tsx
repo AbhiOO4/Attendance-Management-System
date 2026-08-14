@@ -81,6 +81,7 @@ export interface MissingEmployee {
   jobTitle: string
   currentSite?: { _id: string; siteName: string } | null
   currentJob?: { _id: string; name: string } | null
+  employmentType?: 'permanent' | 'temporary'
 }
 
 interface BackfillModalProps {
@@ -259,17 +260,22 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     return "absent"
   }, [rawHours, config.fullDayHours, config.halfDayHours])
 
+  // Temporary workers are exempt from holiday treatment — a holiday is a normal
+  // working day for them (normal hours + OT, no holiday-hours credit), mirroring
+  // the server. Only permanent workers get holiday handling.
+  const applyHoliday = holidayInfo.isHoliday && employee?.employmentType !== "temporary"
+
   const overtimeHours = useMemo(() => {
-    // No overtime on holidays — only holiday hours are credited.
-    if (holidayInfo.isHoliday) return 0
+    // No overtime on holidays — only holiday hours are credited (permanent only).
+    if (applyHoliday) return 0
     if (totalWorkHours <= config.overtimeThreshold) return 0
     return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [holidayInfo.isHoliday, totalWorkHours, config.overtimeThreshold])
+  }, [applyHoliday, totalWorkHours, config.overtimeThreshold])
 
   const holidayHours = useMemo(() => {
-    if (!holidayInfo.isHoliday) return 0
+    if (!applyHoliday) return 0
     return computeHolidayHours(totalWorkHours, status, holidayInfo.reason)
-  }, [holidayInfo, totalWorkHours, status])
+  }, [applyHoliday, totalWorkHours, status, holidayInfo.reason])
 
 
   // --------------------------------------------------

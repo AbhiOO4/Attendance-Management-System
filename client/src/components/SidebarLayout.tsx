@@ -6,7 +6,22 @@ import { api } from "@/lib/api"
 
 import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
-import { Moon, Sun } from "lucide-react"
+import {
+  Moon,
+  Sun,
+  PanelLeftClose,
+  PanelLeftOpen,
+  LogOut,
+  LayoutDashboard,
+  Users,
+  ClipboardCheck,
+  BarChart3,
+  UserPlus,
+  Building2,
+  Settings,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react"
 import { useTheme } from "next-themes"
 import logo from '../assets/ngdp logo.png'
 
@@ -25,39 +40,41 @@ import { useAuth } from "@/context/AuthContext"
 type NavItem = {
   name: string
   path: string
+  icon: LucideIcon
 }
 
 const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
-  { name: "Dashboard", path: "/dashboard" },
-  { name: "Employees", path: "/employees" },
-  { name: "Mark Attendance", path: "/attendance" },
-  { name: "Reports", path: "/reports" },
-  { name: "Add Supervisors", path: "/supervisor" },
-  { name: "Site", path: "/site" },
-  { name: "Configure", path: "/configure" },
-  { name: "Manage Users", path: "/manage-users" },
+  { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+  { name: "Employees", path: "/employees", icon: Users },
+  { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
+  { name: "Reports", path: "/reports", icon: BarChart3 },
+  { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
+  { name: "Site", path: "/site", icon: Building2 },
+  { name: "Configure", path: "/configure", icon: Settings },
+  { name: "Manage Users", path: "/manage-users", icon: ShieldCheck },
 ]
 
 const ADMIN_NAV_ITEMS: NavItem[] = [
-  { name: "Dashboard", path: "/dashboard" },
-  { name: "Employees", path: "/employees" },
-  { name: "Mark Attendance", path: "/attendance" },
-  { name: "Add Supervisors", path: "/supervisor" },
-  { name: "Site", path: "/site" },
-  { name: "Configure", path: "/configure" },
+  { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+  { name: "Employees", path: "/employees", icon: Users },
+  { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
+  { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
+  { name: "Site", path: "/site", icon: Building2 },
+  { name: "Configure", path: "/configure", icon: Settings },
 ]
 
 function getSupervisorNavItems(
   assignedSite: string | null
 ): NavItem[] {
   const items: NavItem[] = [
-    { name: "Dashboard", path: "/dashboard" },
+    { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   ]
 
   if (assignedSite) {
     items.push({
       name: "Mark Attendance",
       path: `/attendance/${assignedSite}`,
+      icon: ClipboardCheck,
     })
   }
 
@@ -71,6 +88,20 @@ export default function SidebarLayout() {
 
   const [open, setOpen] = useState(false)
   const [openModal, setOpenModal] = useState(false)
+
+  // Desktop-only: collapse the sidebar to a slim rail to reclaim space.
+  // Persisted so it survives navigation and reloads. Does not affect mobile.
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => localStorage.getItem("sidebarCollapsed") === "true"
+  )
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem("sidebarCollapsed", String(next))
+      return next
+    })
+  }
 
   const navigate = useNavigate()
 
@@ -125,80 +156,151 @@ export default function SidebarLayout() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed md:static top-0 left-0 h-full w-64 border-r bg-background transform transition-transform duration-300 z-50 flex flex-col",
-          open ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+          "fixed md:static top-0 left-0 h-full w-64 border-r bg-background transform transition-transform duration-300 z-50 flex flex-col overflow-hidden",
+          open ? "translate-x-0" : "-translate-x-full md:translate-x-0",
+          collapsed && "md:w-16"
         )}
       >
-        <div className="md:hidden flex justify-end p-4">
-          <button onClick={() => setOpen(false)}>✕</button>
-        </div>
+        {/* Collapsed rail — desktop only: brand + icon nav */}
+        <div className={cn("hidden flex-1 flex-col items-center gap-4 py-4", collapsed && "md:flex")}>
+          {/* Brand logo */}
+          <img
+            src={logo}
+            alt="NGDP Logo"
+            className="h-8 w-auto object-contain"
+          />
 
-        <div className="flex flex-col flex-1">
-          {/* Logo */}
-          <div className="flex justify-center py-6 px-4 md:py-8 border-b">
-            <img
-              src={logo}
-              alt="NGDP Logo"
-              className="w-auto object-contain h-24 md:h-32 lg:h-40 transition-all duration-300"
-            />
-          </div>
+          {/* Expand toggle */}
+          <button
+            onClick={toggleCollapsed}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <PanelLeftOpen className="h-5 w-5" />
+          </button>
 
-
-          <div className="flex-1 flex items-center justify-center">
-          <nav className="flex flex-col gap-3 w-full px-4">
+          {/* Icon-only nav */}
+          <nav className="mt-2 flex flex-col items-center gap-2">
             {navItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
                 end={item.path === "/"}
-                onClick={() => setOpen(false)}
+                title={item.name}
+                aria-label={item.name}
                 className={({ isActive }) =>
                   cn(
-                    "px-4 py-2 rounded-xl text-sm font-medium transition",
+                    "inline-flex h-10 w-10 items-center justify-center rounded-xl transition",
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-muted"
                   )
                 }
               >
-                {item.name}
+                <item.icon className="h-5 w-5" />
               </NavLink>
             ))}
           </nav>
-        </div>
+
+          {/* Bottom actions */}
+          <div className="mt-auto flex flex-col items-center gap-2">
+            <button
+              onClick={() =>
+                setTheme(theme === "dark" ? "light" : "dark")
+              }
+              title={theme === "dark" ? "Light Mode" : "Dark Mode"}
+              aria-label="Toggle theme"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted"
+            >
+              {theme === "dark" ? (
+                <Sun className="h-5 w-5" />
+              ) : (
+                <Moon className="h-5 w-5" />
+              )}
+            </button>
+            <button
+              onClick={() => setOpenModal(true)}
+              title="Logout"
+              aria-label="Logout"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-destructive hover:bg-destructive/10"
+            >
+              <LogOut className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
-        <div className="p-4 border-t space-y-3">
-          <Button
-            variant="outline"
-            className="w-full justify-start"
-            onClick={() =>
-              setTheme(
-                theme === "dark"
-                  ? "light"
-                  : "dark"
-              )
-            }
-          >
-            {theme === "dark" ? (
-              <>
-                <Sun className="mr-2 h-4 w-4" />
-                Light Mode
-              </>
-            ) : (
-              <>
-                <Moon className="mr-2 h-4 w-4" />
-                Dark Mode
-              </>
-            )}
-          </Button>
-          <Button
-            variant="destructive"
-            className="w-full"
-            onClick={() => setOpenModal(true)}
-          >
-            Logout
-          </Button>
+        {/* Full sidebar content — hidden on desktop when collapsed */}
+        <div className={cn("flex flex-1 flex-col min-h-0", collapsed && "md:hidden")}>
+          {/* Close (mobile) / Collapse (desktop) */}
+          <div className="flex justify-end p-4">
+            <button className="md:hidden" onClick={() => setOpen(false)}>✕</button>
+            <button
+              className="hidden md:inline-flex text-muted-foreground hover:text-foreground"
+              onClick={toggleCollapsed}
+              aria-label="Collapse sidebar"
+            >
+              <PanelLeftClose className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="flex flex-1 flex-col gap-1 px-3">
+            {/* Logo */}
+            <div className="flex justify-center py-6">
+              <img
+                src={logo}
+                alt="NGDP Logo"
+                className="w-auto object-contain h-16 md:h-20 transition-all duration-300"
+              />
+            </div>
+
+            {/* Nav */}
+            <nav className="flex flex-col gap-1">
+              {navItems.map((item) => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  end={item.path === "/"}
+                  onClick={() => setOpen(false)}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                      isActive
+                        ? "bg-muted font-medium text-foreground"
+                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                    )
+                  }
+                >
+                  <item.icon className="h-4 w-4 shrink-0" />
+                  {item.name}
+                </NavLink>
+              ))}
+            </nav>
+
+            {/* Actions — kept high, right below the nav */}
+            <div className="mt-4 flex flex-col gap-1 border-t pt-4">
+              <button
+                onClick={() =>
+                  setTheme(theme === "dark" ? "light" : "dark")
+                }
+                className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                {theme === "dark" ? (
+                  <Sun className="h-4 w-4 shrink-0" />
+                ) : (
+                  <Moon className="h-4 w-4 shrink-0" />
+                )}
+                {theme === "dark" ? "Light Mode" : "Dark Mode"}
+              </button>
+              <button
+                onClick={() => setOpenModal(true)}
+                className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              >
+                <LogOut className="h-4 w-4 shrink-0" />
+                Logout
+              </button>
+            </div>
+          </div>
         </div>
       </aside>
 

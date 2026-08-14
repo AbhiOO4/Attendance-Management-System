@@ -67,8 +67,6 @@ interface Employee {
 
   jobTitle: string
 
-  monthlySalary: number
-
   currentSite: string | null
 
   currentJob: string | null

@@ -24,7 +24,6 @@ type NewEmployee = {
   employeeId: string
   jobTitle: string
   currentSite: string
-  currentJob: string | null
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
 }
@@ -32,11 +31,6 @@ type NewEmployee = {
 type JobTitle = {
   _id: string
   title: string
-}
-
-type SiteJob = {
-  _id: string
-  name: string
 }
 
 interface Props {
@@ -47,9 +41,7 @@ interface Props {
 function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
   const [open, setOpen] = useState(false)
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
-  const [siteJobs, setSiteJobs] = useState<SiteJob[]>([])
-  const [selectedJob, setSelectedJob] = useState<string>("")
-  const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType" | "currentJob">>({
+  const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType">>({
     name: "",
     employeeId: "",
     jobTitle: "",
@@ -60,18 +52,6 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
     try {
       const res = await api.get<JobTitle[]>('/api/employees/jobTitles')
       setJobTitles(res.data)
-    } catch (error) {
-      console.log(error)
-    }
-  }
-
-  const fetchSiteJobs = async () => {
-    try {
-      const res = await api.get(`/api/site/${assignedSiteId}`)
-      if (res.data && res.data.jobs) {
-        const activeJobs = res.data.jobs.filter((j: any) => j.isActive && !j.isDeleted && !j.isCompleted)
-        setSiteJobs(activeJobs)
-      }
     } catch (error) {
       console.log(error)
     }
@@ -93,12 +73,9 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
       return
     }
 
-    const jobVal = selectedJob && selectedJob !== "none" ? selectedJob : null;
-
     await onAdd({
       ...formData,
       currentSite: assignedSiteId,
-      currentJob: jobVal,
       employmentType: "temporary",
     })
 
@@ -108,14 +85,12 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
       jobTitle: "",
       nationality: "foreign",
     })
-    setSelectedJob("")
     setOpen(false)
   }
 
   useEffect(() => {
     if (open) {
       fetchTitles()
-      fetchSiteJobs()
     }
   }, [open])
 
@@ -168,23 +143,6 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
             }
             placeholder="Select Job Title"
           />
-
-          <Select
-            value={selectedJob}
-            onValueChange={setSelectedJob}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select Active Job (Optional)" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No Job / Unassigned</SelectItem>
-              {siteJobs.map((job) => (
-                <SelectItem key={job._id} value={job._id}>
-                  {job.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
 
           <Select
             value={formData.nationality}

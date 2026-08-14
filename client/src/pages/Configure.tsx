@@ -39,8 +39,6 @@ type WorkSchedule = {
   fullDayHours: number;
   halfDayHours: number;
   overtimeThreshold: number;
-  overtimeMultiplier: number;
-  monthlyHoursDivisor: number;
   weeklyHolidays: string[];
   breakDurationMinutes: number;
 };
@@ -92,8 +90,6 @@ export default function Configure() {
     fullDayHours: 8,
     halfDayHours: 4,
     overtimeThreshold: 8,
-    overtimeMultiplier: 1.25,
-    monthlyHoursDivisor: 240,
     weeklyHolidays: [],
     breakDurationMinutes: 60,
   });
@@ -169,8 +165,6 @@ export default function Configure() {
         fullDayHours: schedule.fullDayHours,
         halfDayHours: schedule.halfDayHours,
         overtimeThreshold: schedule.overtimeThreshold,
-        overtimeMultiplier: schedule.overtimeMultiplier,
-        monthlyHoursDivisor: schedule.monthlyHoursDivisor,
         weeklyHolidays: schedule.weeklyHolidays,
         breakDurationMinutes: schedule.breakDurationMinutes,
       });
@@ -440,56 +434,6 @@ export default function Configure() {
                   </p>
                 </div>
 
-                {/* OT MULTIPLIER */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    OT Rate Multiplier
-                  </label>
-
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.05}
-                    value={schedule.overtimeMultiplier}
-                    onChange={(e) =>
-                      setSchedule({
-                        ...schedule,
-                        overtimeMultiplier: Number(e.target.value),
-                      })
-                    }
-                  />
-
-                  <p className="text-xs text-muted-foreground">
-                    Overtime is paid at this multiple of the employee's normal hourly rate.
-                    e.g. 1.25 = 125%.
-                  </p>
-                </div>
-
-                {/* MONTHLY HOURS */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">
-                    Monthly Hours
-                  </label>
-
-                  <Input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={schedule.monthlyHoursDivisor}
-                    onChange={(e) =>
-                      setSchedule({
-                        ...schedule,
-                        monthlyHoursDivisor: Number(e.target.value),
-                      })
-                    }
-                  />
-
-                  <p className="text-xs text-muted-foreground">
-                    Hours per month used to derive an employee's normal hourly rate from
-                    their monthly salary.
-                  </p>
-                </div>
-
                 {/* BREAK DURATION */}
                 <div className="space-y-2">
                   <label className="text-sm font-medium">
@@ -567,35 +511,6 @@ export default function Configure() {
                     </span>
                   </div>
                 ))}
-              </div>
-            </div>
-
-            {/* NIGHT SHIFT SETTINGS (informational) */}
-            <div className="space-y-4">
-              <div>
-                <h3 className="font-medium flex items-center gap-2">
-                  <span>🌙</span> Night Shift Settings
-                </h3>
-
-                <p className="text-sm text-muted-foreground">
-                  Night shifts need no global configuration.
-                </p>
-              </div>
-
-              <div className="rounded-md border bg-muted/20 p-4 space-y-2">
-                <p className="text-sm">
-                  A shift is recorded on the day it{" "}
-                  <span className="font-medium">starts</span>. When a shift runs past
-                  midnight, its check-out is simply marked as belonging to the next day —
-                  so a site's day and night shift times can overlap freely and shifts of
-                  any length are supported.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  A night shift left un-checked-out appears on the next day's roster for
-                  that site as a <span className="font-medium">carryover</span>, so the
-                  supervisor can enter the real check-out time before marking that
-                  employee for the new day.
-                </p>
               </div>
             </div>
 

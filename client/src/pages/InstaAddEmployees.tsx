@@ -123,6 +123,17 @@ type OverlapError = {
     }
 }
 
+// A session the employee already has at another site TODAY (read-only, informational).
+type DaySession = {
+    siteId: string
+    siteName: string
+    checkIn: string | null
+    checkOut: string | null
+    rawCheckIn: string | null
+    rawCheckOut: string | null
+    isOpen: boolean
+}
+
 function InstaAddEmployees() {
     const { siteId } = useParams()
 
@@ -134,6 +145,10 @@ function InstaAddEmployees() {
     // no today session. Opened from SiteAttendance → instant add (unchanged).
     const from = location.state?.from as string | undefined
     const deferred = from === "site-detail"
+
+    // Where the back button returns to. The embedded SiteDetail roster passes its
+    // own path so Add returns there; other entry points fall back to hired-workers.
+    const returnTo = location.state?.returnTo as string | undefined
 
     const [loading, setLoading] =
         useState(true)
@@ -173,6 +188,10 @@ function InstaAddEmployees() {
     const [checkInTime, setCheckInTime] = useState("")
     const [submitting, setSubmitting] = useState(false)
     const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
+
+    // Instant add only: the employee's existing sessions at OTHER sites today.
+    const [daySessions, setDaySessions] = useState<DaySession[]>([])
+    const [daySessionsLoading, setDaySessionsLoading] = useState(false)
 
     const [filters, setFilters] = useState({
         name: "",
@@ -275,11 +294,55 @@ function InstaAddEmployees() {
         fetchEmployees()
     }, [page, activeFilters])
 
+    // Instant add only: when the confirm modal opens for an employee, fetch any sessions
+    // they already have at OTHER sites today so the supervisor can spot a same-day
+    // conflict before entering a check-in. Deferred (tomorrow) adds create no session
+    // today, so this is skipped for them.
+    useEffect(() => {
+        if (deferred || !confirmOpen || !selectedEmployee) {
+            setDaySessions([])
+            return
+        }
+
+        let cancelled = false
+
+        const fetchDaySessions = async () => {
+            try {
+                setDaySessionsLoading(true)
+                const res = await api.get("/api/attendance/employee-day-sessions", {
+                    params: {
+                        employeeId: selectedEmployee._id,
+                        excludeSiteId: siteId,
+                    },
+                })
+                if (!cancelled) {
+                    setDaySessions(res.data?.data?.sessions ?? [])
+                }
+            } catch (error) {
+                console.log(error)
+                if (!cancelled) {
+                    setDaySessions([])
+                }
+            } finally {
+                if (!cancelled) {
+                    setDaySessionsLoading(false)
+                }
+            }
+        }
+
+        fetchDaySessions()
+
+        return () => {
+            cancelled = true
+        }
+    }, [confirmOpen, selectedEmployee, deferred, siteId])
+
     const openConfirmModal = (employee: Employee) => {
         setSelectedEmployee(employee)
         setSelectedJob(null)
         setCheckInTime("")
         setOverlapError(null)
+        setDaySessions([])
         setConfirmOpen(true)
     }
 
@@ -360,7 +423,10 @@ function InstaAddEmployees() {
                             variant="outline"
                             size="icon"
                             onClick={() =>
-                                navigate(`/attendance/${siteId}/hired-workers`, { state: { from } })
+                                navigate(
+                                    returnTo || `/attendance/${siteId}/hired-workers`,
+                                    { state: { from } }
+                                )
                             }
                         >
                             <ArrowLeft className="h-4 w-4" />
@@ -772,45 +838,82 @@ function InstaAddEmployees() {
                                 </span>
                             </div>
                         ) : (
-                            <div className="space-y-2.5">
-                                <div className="flex items-center gap-1.5">
-                                    <Clock3 className="h-4 w-4 text-muted-foreground" />
-                                    <Label className="text-sm font-semibold text-foreground">Check-in Time</Label>
-                                    <Badge variant="secondary" className="text-[10px] font-medium py-0 px-1.5 h-4 bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300 border border-red-200/50 dark:border-red-800/30">
-                                        Required
-                                    </Badge>
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Enter the check-in time for this employee at <strong>{site?.siteName}</strong>.
-                                </p>
-
-                                <Input
-                                    type="time"
-                                    value={checkInTime}
-                                    onChange={(e) => {
-                                        setCheckInTime(e.target.value)
-                                        setOverlapError(null)
-                                    }}
-                                    className="w-full bg-background border-input shadow-sm hover:border-accent mt-1"
-                                />
-
-                                {overlapError && (
-                                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
-                                        <div className="font-medium flex items-center gap-1.5">
-                                            <AlertCircle className="h-4 w-4 shrink-0" />
-                                            Conflicts with existing session
-                                        </div>
-                                        <div>
-                                            Site: {overlapError.conflictingSession.siteName}
-                                        </div>
-                                        <div>
-                                            Time: {formatLocalTime12h(overlapError.conflictingSession.checkIn)}
-                                            {overlapError.conflictingSession.checkOut
-                                                ? ` - ${formatLocalTime12h(overlapError.conflictingSession.checkOut)}`
-                                                : " (no check-out)"}
-                                        </div>
+                            <div className="space-y-4">
+                                {/* Cross-site visibility: any sessions this employee already
+                                    has at OTHER sites today. Neutral info — a multi-site day
+                                    is legitimate; only the supervisor knows if it's a mistake. */}
+                                {daySessionsLoading ? (
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        Checking other sites...
                                     </div>
-                                )}
+                                ) : daySessions.length > 0 ? (
+                                    <div className="rounded-xl border border-amber-200/70 bg-amber-50 p-3 space-y-1.5 text-amber-800 dark:bg-amber-950/20 dark:border-amber-800/30 dark:text-amber-200">
+                                        <div className="font-medium flex items-center gap-1.5 text-sm">
+                                            <AlertCircle className="h-4 w-4 shrink-0" />
+                                            Already recorded today at another site
+                                        </div>
+                                        <ul className="space-y-1 text-xs">
+                                            {daySessions.map((s, idx) => (
+                                                <li key={`${s.siteId}-${idx}`} className="flex items-center gap-1.5">
+                                                    <MapPin className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                                    <span className="font-medium">{s.siteName}</span>
+                                                    <span className="opacity-80">
+                                                        {formatLocalTime12h(s.checkIn)}
+                                                        {s.isOpen
+                                                            ? " (no check-out)"
+                                                            : ` - ${formatLocalTime12h(s.checkOut)}`}
+                                                    </span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                        <p className="text-[11px] opacity-80 leading-snug">
+                                            This may be an intentional multi-site day. If it's a mistake, ask that
+                                            site's supervisor or an admin to remove the session before adding here.
+                                        </p>
+                                    </div>
+                                ) : null}
+
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center gap-1.5">
+                                        <Clock3 className="h-4 w-4 text-muted-foreground" />
+                                        <Label className="text-sm font-semibold text-foreground">Check-in Time</Label>
+                                        <Badge variant="secondary" className="text-[10px] font-medium py-0 px-1.5 h-4 bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-300 border border-red-200/50 dark:border-red-800/30">
+                                            Required
+                                        </Badge>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        Enter the check-in time for this employee at <strong>{site?.siteName}</strong>.
+                                    </p>
+
+                                    <Input
+                                        type="time"
+                                        value={checkInTime}
+                                        onChange={(e) => {
+                                            setCheckInTime(e.target.value)
+                                            setOverlapError(null)
+                                        }}
+                                        className="w-full bg-background border-input shadow-sm hover:border-accent mt-1"
+                                    />
+
+                                    {overlapError && (
+                                        <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-1 text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
+                                            <div className="font-medium flex items-center gap-1.5">
+                                                <AlertCircle className="h-4 w-4 shrink-0" />
+                                                Conflicts with existing session
+                                            </div>
+                                            <div>
+                                                Site: {overlapError.conflictingSession.siteName}
+                                            </div>
+                                            <div>
+                                                Time: {formatLocalTime12h(overlapError.conflictingSession.checkIn)}
+                                                {overlapError.conflictingSession.checkOut
+                                                    ? ` - ${formatLocalTime12h(overlapError.conflictingSession.checkOut)}`
+                                                    : " (no check-out)"}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>

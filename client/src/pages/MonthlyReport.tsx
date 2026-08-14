@@ -1,27 +1,11 @@
 
-// pages/MonthlyReport.tsx
-
 import { useEffect, useMemo, useState } from "react"
-
-import {
-  CalendarDays,
-  Search,
-  Download,
-  RotateCcw,
-} from "lucide-react"
-
+import { Search, Download, RotateCcw, ChevronRight } from "lucide-react"
 import { api } from "@/lib/api"
-
 import * as XLSX from "xlsx"
-
 import { saveAs } from "file-saver"
-
-import { Card } from "@/components/ui/card"
-
 import { Input } from "@/components/ui/input"
-
 import { Button } from "@/components/ui/button"
-
 import {
   Select,
   SelectContent,
@@ -29,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-
 import {
   Table,
   TableBody,
@@ -38,27 +21,27 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
+
+// --- Monthly Attendance types ---
 
 interface ReportEmployee {
   employeeName: string
   employeeId: string
   jobTitle: string
   isActive?: boolean
-
   fullDays: number
   halfDays: number
   absentDays: number
-
   attendancePercentage: number
-
   overtimeHours: number
-
-  payableDays: number
-
-  normalPay: number
-  overtimePay: number
-
-  salary: number
+  holidayHours: number
+  totalOvertimeHours: number
 }
 
 interface MonthlyReportResponse {
@@ -68,45 +51,57 @@ interface MonthlyReportResponse {
   report: ReportEmployee[]
 }
 
-function MonthlyReport() {
+// --- Job Report types ---
+
+interface JobReportJob {
+  jobId: string
+  jobCode: string
+  jobName: string
+  isActive: boolean
+  isCompleted: boolean
+  normalHours: number
+  overtimeHours: number
+  holidayHours: number
+  totalOTHours: number
+}
+
+interface JobReportSite {
+  siteId: string
+  siteName: string
+  isActive: boolean
+  isPermanent: boolean
+  isCompleted: boolean
+  jobs: JobReportJob[]
+}
+
+interface JobReportResponse {
+  success: boolean
+  report: JobReportSite[]
+}
+
+// =============================================================================
+// Monthly Attendance Tab
+// =============================================================================
+
+function MonthlyAttendanceTab() {
   const today = new Date()
-
-  const [month, setMonth] = useState(
-    String(today.getMonth() + 1)
-  )
-
-  const [year, setYear] = useState(
-    String(today.getFullYear())
-  )
-
-  const [loading, setLoading] =
-    useState(false)
-
-  const [reports, setReports] = useState<
-    ReportEmployee[]
-  >([])
-
+  const [month, setMonth] = useState(String(today.getMonth() + 1))
+  const [year, setYear] = useState(String(today.getFullYear()))
+  const [loading, setLoading] = useState(false)
+  const [reports, setReports] = useState<ReportEmployee[]>([])
   const [name, setName] = useState("")
-
-  const [employeeId, setEmployeeId] =
-    useState("")
-
-  const [jobTitle, setJobTitle] =
-    useState("")
+  const [employeeId, setEmployeeId] = useState("")
+  const [jobTitle, setJobTitle] = useState("")
 
   async function fetchReports() {
     try {
       setLoading(true)
-
-      const res =
-        await api.get<MonthlyReportResponse>(
-          `/api/attendance/reports/monthly/${month}/${year}`
-        )
-
+      const res = await api.get<MonthlyReportResponse>(
+        `/api/attendance/reports/monthly/${month}/${year}`
+      )
       setReports(res.data.report || [])
     } catch (error) {
       console.log(error)
-
       setReports([])
     } finally {
       setLoading(false)
@@ -119,519 +114,526 @@ function MonthlyReport() {
 
   const filteredReports = useMemo(() => {
     const filtered = reports.filter((employee) => {
-      const matchesName =
-        employee.employeeName
-          .toLowerCase()
-          .includes(
-            name.toLowerCase()
-          )
-
-      const matchesEmployeeId =
-        employee.employeeId
-          .toLowerCase()
-          .includes(
-            employeeId.toLowerCase()
-          )
-
-      const matchesJobTitle =
-        employee.jobTitle
-          .toLowerCase()
-          .includes(
-            jobTitle.toLowerCase()
-          )
-
-      return (
-        matchesName &&
-        matchesEmployeeId &&
-        matchesJobTitle
-      )
+      const matchesName = employee.employeeName
+        .toLowerCase()
+        .includes(name.toLowerCase())
+      const matchesEmployeeId = employee.employeeId
+        .toLowerCase()
+        .includes(employeeId.toLowerCase())
+      const matchesJobTitle = employee.jobTitle
+        .toLowerCase()
+        .includes(jobTitle.toLowerCase())
+      return matchesName && matchesEmployeeId && matchesJobTitle
     })
-
     return [...filtered].sort((a, b) => {
-      const aActive = a.isActive !== false;
-      const bActive = b.isActive !== false;
-      if (aActive && !bActive) return -1;
-      if (!aActive && bActive) return 1;
-      return a.employeeName.localeCompare(b.employeeName);
-    });
-  }, [
-    reports,
-    name,
-    employeeId,
-    jobTitle,
-  ])
+      const aActive = a.isActive !== false
+      const bActive = b.isActive !== false
+      if (aActive && !bActive) return -1
+      if (!aActive && bActive) return 1
+      return a.employeeName.localeCompare(b.employeeName)
+    })
+  }, [reports, name, employeeId, jobTitle])
 
   const totals = useMemo(() => {
     return filteredReports.reduce(
-      (acc, employee) => {
-        acc.fullDays +=
-          employee.fullDays
-
-        acc.halfDays +=
-          employee.halfDays
-
-        acc.absentDays +=
-          employee.absentDays
-
-        acc.overtimeHours +=
-          employee.overtimeHours
-
-        acc.payableDays +=
-          employee.payableDays
-
-        acc.normalPay +=
-          employee.normalPay
-
-        acc.overtimePay +=
-          employee.overtimePay
-
-        acc.salary +=
-          employee.salary
-
+      (acc, e) => {
+        acc.fullDays += e.fullDays
+        acc.halfDays += e.halfDays
+        acc.absentDays += e.absentDays
+        acc.overtimeHours += e.overtimeHours
+        acc.holidayHours += e.holidayHours
+        acc.totalOvertimeHours += e.totalOvertimeHours
         return acc
       },
       {
         fullDays: 0,
         halfDays: 0,
         absentDays: 0,
-
         overtimeHours: 0,
-
-        payableDays: 0,
-
-        normalPay: 0,
-        overtimePay: 0,
-
-        salary: 0,
+        holidayHours: 0,
+        totalOvertimeHours: 0,
       }
     )
   }, [filteredReports])
 
-  function clearFilters() {
-    setName("")
-    setEmployeeId("")
-    setJobTitle("")
-  }
-
   function exportToExcel() {
-    if (filteredReports.length === 0)
-      return
-
-    const formattedData =
-      filteredReports.map(
-        (employee, index) => ({
-          "Sl No": index + 1,
-
-          "Employee Name":
-            employee.employeeName + (employee.isActive === false ? " (Inactive)" : ""),
-
-          "Employee ID":
-            employee.employeeId,
-
-          "Job Title":
-            employee.jobTitle,
-
-          "Full Days":
-            employee.fullDays,
-
-          "Half Days":
-            employee.halfDays,
-
-          "Absent Days":
-            employee.absentDays,
-
-          "Attendance %":
-            employee.attendancePercentage,
-
-          "OT Hours":
-            employee.overtimeHours,
-
-          "Payable Days":
-            employee.payableDays,
-
-          "Normal Pay":
-            employee.normalPay,
-
-          "OT Pay":
-            employee.overtimePay,
-
-          Salary:
-            employee.salary,
-        })
-      )
-
-    const worksheet =
-      XLSX.utils.json_to_sheet(
-        formattedData
-      )
-
-    const workbook =
-      XLSX.utils.book_new()
-
-    XLSX.utils.book_append_sheet(
-      workbook,
-      worksheet,
-      "Monthly Report"
-    )
-
-    const excelBuffer =
-      XLSX.write(workbook, {
-        bookType: "xlsx",
-        type: "array",
-      })
-
-    const fileData = new Blob(
-      [excelBuffer],
-      {
-        type:
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
-      }
-    )
-
-    saveAs(
-      fileData,
-      `monthly-report-${month}-${year}.xlsx`
-    )
+    if (filteredReports.length === 0) return
+    const formattedData = filteredReports.map((employee, index) => ({
+      "Sl No": index + 1,
+      "Employee Name":
+        employee.employeeName +
+        (employee.isActive === false ? " (Inactive)" : ""),
+      "Employee ID": employee.employeeId,
+      "Job Title": employee.jobTitle,
+      "Full Days": employee.fullDays,
+      "Half Days": employee.halfDays,
+      "Absent Days": employee.absentDays,
+      "Attendance %": employee.attendancePercentage,
+      "OT Hours": employee.overtimeHours,
+      "Holiday Hours": employee.holidayHours,
+      "Total OT Hours": employee.totalOvertimeHours,
+    }))
+    const worksheet = XLSX.utils.json_to_sheet(formattedData)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Monthly Report")
+    const excelBuffer = XLSX.write(workbook, {
+      bookType: "xlsx",
+      type: "array",
+    })
+    const fileData = new Blob([excelBuffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
+    })
+    saveAs(fileData, `monthly-report-${month}-${year}.xlsx`)
   }
 
   const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
   ]
 
   return (
-    <div className="min-h-screen bg-muted/30 p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={month} onValueChange={setMonth}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {months.map((monthName, index) => (
+              <SelectItem key={monthName} value={String(index + 1)}>
+                {monthName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <CalendarDays className="h-8 w-8" />
+        <Input
+          className="w-[80px]"
+          placeholder="Year"
+          value={year}
+          onChange={(e) => setYear(e.target.value)}
+        />
 
-            <div>
-              <h1 className="text-3xl font-bold">
-                Monthly Payroll Report
-              </h1>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="w-[160px] pl-8"
+            placeholder="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
 
-              <p className="text-muted-foreground">
-                Attendance, OT and salary summary
-              </p>
-            </div>
-          </div>
+        <Input
+          className="w-[120px]"
+          placeholder="ID"
+          value={employeeId}
+          onChange={(e) => setEmployeeId(e.target.value)}
+        />
 
+        <Input
+          className="w-[120px]"
+          placeholder="Job Title"
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+        />
+
+        {(name || employeeId || jobTitle) && (
           <Button
-            onClick={exportToExcel}
-            disabled={
-              filteredReports.length ===
-              0
-            }
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setName("")
+              setEmployeeId("")
+              setJobTitle("")
+            }}
           >
-            <Download className="mr-2 h-4 w-4" />
-            Export Spreadsheet
+            <RotateCcw className="mr-1 h-3 w-3" />
+            Clear
+          </Button>
+        )}
+
+        <div className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportToExcel}
+            disabled={filteredReports.length === 0}
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Export
           </Button>
         </div>
+      </div>
 
-        <Card className="p-6">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+      {/* Summary row */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground border-b pb-3">
+        <span>
+          <span className="font-medium text-foreground">{filteredReports.length}</span> employees
+        </span>
+        <span>
+          OT <span className="font-medium text-foreground">{totals.overtimeHours.toFixed(2)}</span>h
+        </span>
+        <span>
+          Holiday <span className="font-medium text-foreground">{totals.holidayHours.toFixed(2)}</span>h
+        </span>
+        <span>
+          Total OT <span className="font-medium text-foreground">{totals.totalOvertimeHours.toFixed(2)}</span>h
+        </span>
+      </div>
 
-            <Select
-              value={month}
-              onValueChange={
-                setMonth
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
+      {/* Table */}
+      <div className="rounded-lg border overflow-auto max-h-[calc(100vh-280px)]">
+        <Table>
+          <TableHeader className="sticky top-0 bg-background z-10">
+            <TableRow>
+              <TableHead className="w-10">#</TableHead>
+              <TableHead>Employee</TableHead>
+              <TableHead>ID</TableHead>
+              <TableHead>Job</TableHead>
+              <TableHead className="text-right">Full</TableHead>
+              <TableHead className="text-right">Half</TableHead>
+              <TableHead className="text-right">Absent</TableHead>
+              <TableHead className="text-right">%</TableHead>
+              <TableHead className="text-right">OT</TableHead>
+              <TableHead className="text-right">Holiday</TableHead>
+              <TableHead className="text-right">Total OT</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={11} className="text-center h-24 text-muted-foreground">
+                  Loading...
+                </TableCell>
+              </TableRow>
+            ) : filteredReports.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={11} className="text-center h-24 text-muted-foreground">
+                  No data found
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredReports.map((employee, index) => (
+                <TableRow
+                  key={employee.employeeId}
+                  className={
+                    employee.isActive === false
+                      ? "opacity-50"
+                      : ""
+                  }
+                >
+                  <TableCell className="text-muted-foreground">{index + 1}</TableCell>
+                  <TableCell>
+                    <span className={employee.isActive === false ? "line-through decoration-1" : ""}>
+                      {employee.employeeName}
+                    </span>
+                    {employee.isActive === false && (
+                      <span className="ml-1.5 text-[10px] text-destructive font-medium uppercase">
+                        Inactive
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{employee.employeeId}</TableCell>
+                  <TableCell className="capitalize">{employee.jobTitle}</TableCell>
+                  <TableCell className="text-right">{employee.fullDays}</TableCell>
+                  <TableCell className="text-right">{employee.halfDays}</TableCell>
+                  <TableCell className="text-right">{employee.absentDays}</TableCell>
+                  <TableCell className="text-right">{employee.attendancePercentage}%</TableCell>
+                  <TableCell className="text-right">{employee.overtimeHours}</TableCell>
+                  <TableCell className="text-right">{employee.holidayHours}</TableCell>
+                  <TableCell className="text-right font-medium">{employee.totalOvertimeHours}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
 
-              <SelectContent>
-                {months.map(
-                  (
-                    monthName,
-                    index
-                  ) => (
-                    <SelectItem
-                      key={
-                        monthName
-                      }
-                      value={String(
-                        index + 1
-                      )}
-                    >
-                      {monthName}
-                    </SelectItem>
-                  )
-                )}
-              </SelectContent>
-            </Select>
+// =============================================================================
+// Job Report Tab
+// =============================================================================
 
-            <Input
-              placeholder="Year"
-              value={year}
-              onChange={(e) =>
-                setYear(
-                  e.target.value
-                )
-              }
-            />
+function JobReportTab() {
+  const [loading, setLoading] = useState(false)
+  const [sites, setSites] = useState<JobReportSite[]>([])
+  const [search, setSearch] = useState("")
+  const [collapsedSites, setCollapsedSites] = useState<Set<string>>(new Set())
 
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+  async function fetchJobReport() {
+    try {
+      setLoading(true)
+      const res = await api.get<JobReportResponse>("/api/attendance/reports/job-report")
+      setSites(res.data.report || [])
+    } catch (error) {
+      console.log(error)
+      setSites([])
+    } finally {
+      setLoading(false)
+    }
+  }
 
-              <Input
-                className="pl-10"
-                placeholder="Employee Name"
-                value={name}
-                onChange={(e) =>
-                  setName(
-                    e.target.value
-                  )
-                }
-              />
-            </div>
+  useEffect(() => {
+    fetchJobReport()
+  }, [])
 
-            <Input
-              placeholder="Employee ID"
-              value={employeeId}
-              onChange={(e) =>
-                setEmployeeId(
-                  e.target.value
-                )
-              }
-            />
+  const filteredSites = useMemo(() => {
+    if (!search) return sites
+    const q = search.toLowerCase()
+    return sites
+      .map((site) => {
+        const matchesSite = site.siteName.toLowerCase().includes(q)
+        const matchingJobs = site.jobs.filter(
+          (j) =>
+            (j.jobCode && j.jobCode.toLowerCase().includes(q)) ||
+            (j.jobName && j.jobName.toLowerCase().includes(q))
+        )
+        if (matchesSite) return site
+        if (matchingJobs.length > 0) return { ...site, jobs: matchingJobs }
+        return null
+      })
+      .filter(Boolean) as JobReportSite[]
+  }, [sites, search])
 
-            <Input
-              placeholder="Job Title"
-              value={jobTitle}
-              onChange={(e) =>
-                setJobTitle(
-                  e.target.value
-                )
-              }
-            />
-          </div>
+  function toggleSite(siteId: string) {
+    setCollapsedSites((prev) => {
+      const next = new Set(prev)
+      if (next.has(siteId)) next.delete(siteId)
+      else next.add(siteId)
+      return next
+    })
+  }
 
-          <div className="mt-4">
-            <Button
-              variant="outline"
-              onClick={
-                clearFilters
-              }
-            >
-              <RotateCcw className="mr-2 h-4 w-4" />
-              Clear Filters
-            </Button>
-          </div>
-        </Card>
+  function exportToExcel() {
+    const rows: Record<string, string | number>[] = []
+    for (const site of filteredSites) {
+      for (const job of site.jobs) {
+        rows.push({
+          Site: site.siteName,
+          "Job Number": job.jobCode || "",
+          "Job Name": job.jobName || "",
+          Status: job.isCompleted ? "Completed" : job.isActive ? "Active" : "Inactive",
+          "Normal Hours": job.normalHours,
+          "OT Hours": job.overtimeHours,
+          "Holiday Hours": job.holidayHours,
+          "Total OT Hours": job.totalOTHours,
+        })
+      }
+    }
+    if (rows.length === 0) return
+    const worksheet = XLSX.utils.json_to_sheet(rows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Job Report")
+    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" })
+    const fileData = new Blob([excelBuffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
+    })
+    saveAs(fileData, `job-report.xlsx`)
+  }
 
-        <div className="grid gap-4 md:grid-cols-5">
-          <Card className="p-4">
-            <p className="text-sm text-muted-foreground">
-              Employees
-            </p>
+  const totalJobs = filteredSites.reduce((sum, s) => sum + s.jobs.length, 0)
 
-            <p className="text-2xl font-bold">
-              {
-                filteredReports.length
-              }
-            </p>
-          </Card>
-
-          <Card className="p-4">
-            <p className="text-sm text-muted-foreground">
-              OT Hours
-            </p>
-
-            <p className="text-2xl font-bold">
-              {totals.overtimeHours.toFixed(
-                2
-              )}
-            </p>
-          </Card>
-
-          <Card className="p-4">
-            <p className="text-sm text-muted-foreground">
-              Normal Pay
-            </p>
-
-            <p className="text-2xl font-bold">
-              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
-              {totals.normalPay.toLocaleString()}
-            </p>
-          </Card>
-
-          <Card className="p-4">
-            <p className="text-sm text-muted-foreground">
-              OT Pay
-            </p>
-
-            <p className="text-2xl font-bold">
-              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
-              {totals.overtimePay.toLocaleString()}
-            </p>
-          </Card>
-
-          <Card className="p-4">
-            <p className="text-sm text-muted-foreground">
-              Total Payroll
-            </p>
-
-            <p className="text-2xl font-bold">
-              <span className="text-sm font-normal text-muted-foreground mr-1.5">OMR</span>
-              {totals.salary.toLocaleString()}
-            </p>
-          </Card>
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="w-[220px] pl-8"
+            placeholder="Search site or job..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
 
-        <Card className="p-6">
-          <Table wrapperClassName="h-[650px] overflow-auto rounded-xl border">
-              <TableHeader className="sticky top-0 bg-background z-10">
-                <TableRow>
-                  <TableHead>Sl</TableHead>
-                  <TableHead>Employee</TableHead>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Job</TableHead>
-                  <TableHead>Full</TableHead>
-                  <TableHead>Half</TableHead>
-                  <TableHead>Absent</TableHead>
-                  <TableHead>%</TableHead>
-                  <TableHead>OT</TableHead>
-                  <TableHead>Payable</TableHead>
-                  <TableHead>Normal Pay</TableHead>
-                  <TableHead>OT Pay</TableHead>
-                  <TableHead>Salary</TableHead>
-                </TableRow>
-              </TableHeader>
+        {search && (
+          <Button variant="ghost" size="sm" onClick={() => setSearch("")}>
+            <RotateCcw className="mr-1 h-3 w-3" />
+            Clear
+          </Button>
+        )}
 
-              <TableBody>
-                {loading ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={13}
-                      className="text-center h-24"
-                    >
-                      Loading...
-                    </TableCell>
-                  </TableRow>
-                ) : filteredReports.length ===
-                  0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={13}
-                      className="text-center h-24"
-                    >
-                      No data found
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredReports.map(
-                    (
-                      employee,
-                      index
-                    ) => (
-                      <TableRow
-                        key={
-                          employee.employeeId
-                        }
-                        className={employee.isActive === false ? "opacity-60 bg-muted/20 hover:bg-muted/30" : ""}
-                      >
-                        <TableCell>
-                          {index + 1}
-                        </TableCell>
+        <div className="ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportToExcel}
+            disabled={totalJobs === 0}
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            Export
+          </Button>
+        </div>
+      </div>
 
-                        <TableCell>
-                          <div className="flex flex-col gap-0.5">
-                            <span className={employee.isActive === false ? "text-muted-foreground line-through decoration-1" : ""}>
-                              {employee.employeeName}
+      {/* Summary */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground border-b pb-3">
+        <span>
+          <span className="font-medium text-foreground">{filteredSites.length}</span> sites
+        </span>
+        <span>
+          <span className="font-medium text-foreground">{totalJobs}</span> jobs
+        </span>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-lg border overflow-auto max-h-[calc(100vh-280px)]">
+        <Table>
+          <TableHeader className="sticky top-0 bg-background z-10">
+            <TableRow>
+              <TableHead className="w-[240px]">Job Number</TableHead>
+              <TableHead>Job Name</TableHead>
+              <TableHead className="text-right">Normal Hours</TableHead>
+              <TableHead className="text-right">OT Hours</TableHead>
+              <TableHead className="text-right">Holiday Hours</TableHead>
+              <TableHead className="text-right">Total OT Hours</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center h-24 text-muted-foreground">
+                  Loading...
+                </TableCell>
+              </TableRow>
+            ) : filteredSites.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-center h-24 text-muted-foreground">
+                  No data found
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredSites.map((site) => {
+                const isCollapsed = collapsedSites.has(site.siteId)
+                const siteTotals = site.jobs.reduce(
+                  (acc, j) => {
+                    acc.normal += j.normalHours
+                    acc.ot += j.overtimeHours
+                    acc.holiday += j.holidayHours
+                    acc.totalOT += j.totalOTHours
+                    return acc
+                  },
+                  { normal: 0, ot: 0, holiday: 0, totalOT: 0 }
+                )
+
+                return (
+                  <SiteGroup key={site.siteId}>
+                    {/* Site header row */}
+                    <TableRow
+                      className="bg-muted/40 hover:bg-muted/60 cursor-pointer"
+                      onClick={() => toggleSite(site.siteId)}
+                    >
+                      <TableCell colSpan={2} className="font-medium">
+                        <div className="flex items-center gap-2">
+                          <ChevronRight
+                            className={`h-4 w-4 text-muted-foreground transition-transform ${
+                              !isCollapsed ? "rotate-90" : ""
+                            }`}
+                          />
+                          <span>{site.siteName}</span>
+                          {site.isCompleted && (
+                            <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                              Completed
                             </span>
-                            {employee.isActive === false && (
-                              <span className="text-[10px] text-destructive font-medium uppercase tracking-wide">
+                          )}
+                          {!site.isCompleted && !site.isActive && (
+                            <span className="text-[10px] text-destructive font-medium uppercase tracking-wide">
+                              Inactive
+                            </span>
+                          )}
+                          <span className="text-xs text-muted-foreground font-normal">
+                            ({site.jobs.length} {site.jobs.length === 1 ? "job" : "jobs"})
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {siteTotals.normal.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {siteTotals.ot.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {siteTotals.holiday.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right font-medium text-muted-foreground">
+                        {siteTotals.totalOT.toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+
+                    {/* Job rows */}
+                    {!isCollapsed &&
+                      site.jobs.map((job) => (
+                        <TableRow
+                          key={job.jobId}
+                          className={job.isCompleted || !job.isActive ? "opacity-50" : ""}
+                        >
+                          <TableCell className="pl-10">{job.jobCode || "—"}</TableCell>
+                          <TableCell>
+                            <span>{job.jobName || "—"}</span>
+                            {job.isCompleted && (
+                              <span className="ml-1.5 text-[10px] text-muted-foreground font-medium uppercase">
+                                Completed
+                              </span>
+                            )}
+                            {!job.isCompleted && !job.isActive && (
+                              <span className="ml-1.5 text-[10px] text-destructive font-medium uppercase">
                                 Inactive
                               </span>
                             )}
-                          </div>
-                        </TableCell>
+                          </TableCell>
+                          <TableCell className="text-right">{job.normalHours}</TableCell>
+                          <TableCell className="text-right">{job.overtimeHours}</TableCell>
+                          <TableCell className="text-right">{job.holidayHours}</TableCell>
+                          <TableCell className="text-right font-medium">{job.totalOTHours}</TableCell>
+                        </TableRow>
+                      ))}
+                  </SiteGroup>
+                )
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
 
-                        <TableCell>
-                          {
-                            employee.employeeId
-                          }
-                        </TableCell>
+function SiteGroup({ children }: { children: React.ReactNode }) {
+  return <>{children}</>
+}
 
-                        <TableCell className="capitalize">
-                          {
-                            employee.jobTitle
-                          }
-                        </TableCell>
+// =============================================================================
+// Page
+// =============================================================================
 
-                        <TableCell>
-                          {
-                            employee.fullDays
-                          }
-                        </TableCell>
+function MonthlyReport() {
+  return (
+    <div className="min-h-screen bg-muted/30 p-4 sm:p-6">
+      <div className="mx-auto max-w-7xl space-y-4">
+        <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
 
-                        <TableCell>
-                          {
-                            employee.halfDays
-                          }
-                        </TableCell>
+        <Tabs defaultValue="monthly">
+          <TabsList>
+            <TabsTrigger value="monthly">Monthly Attendance</TabsTrigger>
+            <TabsTrigger value="job">Job Report</TabsTrigger>
+          </TabsList>
 
-                        <TableCell>
-                          {
-                            employee.absentDays
-                          }
-                        </TableCell>
+          <TabsContent value="monthly">
+            <MonthlyAttendanceTab />
+          </TabsContent>
 
-                        <TableCell>
-                          {
-                            employee.attendancePercentage
-                          }
-                          %
-                        </TableCell>
-
-                        <TableCell>
-                          {
-                            employee.overtimeHours
-                          }
-                        </TableCell>
-
-                        <TableCell>
-                          {
-                            employee.payableDays
-                          }
-                        </TableCell>
-
-                        <TableCell>
-                          {employee.normalPay.toLocaleString()}
-                        </TableCell>
-
-                        <TableCell>
-                          {employee.overtimePay.toLocaleString()}
-                        </TableCell>
-
-                        <TableCell className="font-semibold">
-                          {employee.salary.toLocaleString()}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  )
-                )}
-              </TableBody>
-            </Table>
-        </Card>
+          <TabsContent value="job">
+            <JobReportTab />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )
 }
 
 export default MonthlyReport
-

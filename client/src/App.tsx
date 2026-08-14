@@ -16,7 +16,6 @@ const DemoLogin = lazy(() => import("./pages/DemoLogin"))
 
 const SitesPage = lazy(() => import("./pages/SitesPage"))
 const SiteDetail = lazy(() => import("./pages/SiteDetail"))
-const ManageEmployees = lazy(() => import("./pages/ManageEmployees"))
 
 const MarkAttendance = lazy(() => import("./pages/MarkAttendance"))
 const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
@@ -168,15 +167,6 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <SiteDetail />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="site/:id/manage-employees"
-          element={
-            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
-              <ManageEmployees />
             </ProtectedRoute>
           }
         />

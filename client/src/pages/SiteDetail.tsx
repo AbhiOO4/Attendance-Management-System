@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
-import { Link, useParams, useNavigate, useLocation } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { useParams, useNavigate, useLocation } from "react-router-dom"
 import {
-  Search,
   Plus,
   MapPin,
   ArrowLeft,
@@ -9,7 +8,6 @@ import {
   Briefcase,
   Users,
   CalendarDays,
-  Plane,
 } from "lucide-react"
 
 import toast from "react-hot-toast"
@@ -21,15 +19,6 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -39,37 +28,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
-import {
-  categoryOf,
-  CATEGORY_LABELS,
-  CATEGORY_IS_FOREIGN,
-  type RosterCategory,
-} from "@/lib/rosterUtils"
-
-interface Employee {
-  _id: string
-  name: string
-  employeeId: string
-  jobTitle: string
-  monthlySalary: number
-  currentSite: string | null
-  currentJob: { _id: string; name: string } | string | null
-  user?: string | null
-  nationality?: "foreign" | "omani"
-  collarType?: "skilled" | "staff"
-}
-
-interface Filters {
-  name: string
-  employeeId: string
-}
-
-interface EmployeesResponse {
-  employees: Employee[]
-  currentPage: number
-  totalPages: number
-  totalEmployees: number
-}
+import SiteRoster from "@/components/site/SiteRoster"
 
 interface Site {
   _id: string
@@ -98,9 +57,6 @@ interface SiteStats {
   totalCalendarDays: number
 }
 
-// "all" and "supervisor" sit alongside the four trade categories as filter tabs.
-type CategoryTab = "all" | RosterCategory | "supervisor"
-
 function SiteDetail() {
   const { id } = useParams()
 
@@ -109,13 +65,8 @@ function SiteDetail() {
 
   const [site, setSite] = useState<Site | null>(null)
 
-  const [employees, setEmployees] = useState<Employee[]>([])
-
-  const [loadingEmployees, setLoadingEmployees] = useState(false)
-
-  const [filters, setFilters] = useState<Filters>({ name: "", employeeId: "" })
-
-  const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
+  // Today-roster size, reported up from the embedded SiteRoster for the stat strip.
+  const [todayCount, setTodayCount] = useState<number | null>(null)
 
   const [deactivateOpen, setDeactivateOpen] = useState(false)
 
@@ -163,75 +114,6 @@ function SiteDetail() {
 
   const [loadingSiteStats, setLoadingSiteStats] = useState(false)
 
-  // Per-category counts over the fetched (search-filtered) roster. Supervisors
-  // are counted separately AND still fall in their trade category, so switching
-  // to a trade tab keeps showing them (with a badge).
-  const categoryCounts = useMemo(() => {
-    const counts: Record<RosterCategory, number> = {
-      foreignSkilled: 0,
-      foreignStaff: 0,
-      omaniSkilled: 0,
-      omaniStaff: 0,
-    }
-
-    let supervisor = 0
-
-    for (const emp of employees) {
-      counts[categoryOf(emp.collarType, emp.nationality)]++
-      if (emp.user) supervisor++
-    }
-
-    return { ...counts, supervisor, all: employees.length }
-  }, [employees])
-
-  const visibleEmployees = useMemo(() => {
-    if (categoryTab === "all") return employees
-    if (categoryTab === "supervisor")
-      return employees.filter((emp) => !!emp.user)
-    return employees.filter(
-      (emp) => categoryOf(emp.collarType, emp.nationality) === categoryTab
-    )
-  }, [employees, categoryTab])
-
-  const categoryTabs: {
-    key: CategoryTab
-    label: string
-    count: number
-    foreign: boolean
-  }[] = [
-    { key: "all", label: "All", count: categoryCounts.all, foreign: false },
-    {
-      key: "foreignSkilled",
-      label: CATEGORY_LABELS.foreignSkilled,
-      count: categoryCounts.foreignSkilled,
-      foreign: CATEGORY_IS_FOREIGN.foreignSkilled,
-    },
-    {
-      key: "foreignStaff",
-      label: CATEGORY_LABELS.foreignStaff,
-      count: categoryCounts.foreignStaff,
-      foreign: CATEGORY_IS_FOREIGN.foreignStaff,
-    },
-    {
-      key: "omaniSkilled",
-      label: CATEGORY_LABELS.omaniSkilled,
-      count: categoryCounts.omaniSkilled,
-      foreign: CATEGORY_IS_FOREIGN.omaniSkilled,
-    },
-    {
-      key: "omaniStaff",
-      label: CATEGORY_LABELS.omaniStaff,
-      count: categoryCounts.omaniStaff,
-      foreign: CATEGORY_IS_FOREIGN.omaniStaff,
-    },
-    {
-      key: "supervisor",
-      label: "Supervisors",
-      count: categoryCounts.supervisor,
-      foreign: false,
-    },
-  ]
-
   async function fetchSiteStats() {
     try {
       setLoadingSiteStats(true)
@@ -273,27 +155,6 @@ function SiteDetail() {
       setSite(res.data)
     } catch (error) {
       console.log(error)
-    }
-  }
-
-  async function fetchEmployees() {
-    try {
-      setLoadingEmployees(true)
-
-      const res = await api.get<EmployeesResponse>("/api/employees", {
-        params: {
-          ...filters,
-          site: id,
-        },
-      })
-
-      setEmployees(res.data.employees)
-    } catch (error) {
-      console.log(error)
-
-      setEmployees([])
-    } finally {
-      setLoadingEmployees(false)
     }
   }
 
@@ -373,14 +234,6 @@ function SiteDetail() {
       fetchJobs(true)
     }
   }, [id])
-
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      fetchEmployees()
-    }, 400)
-
-    return () => clearTimeout(timeout)
-  }, [filters, id])
 
   async function deactivateSite() {
     try {
@@ -653,7 +506,7 @@ function SiteDetail() {
                     Employees
                   </div>
                   <div className="mt-0.5 text-2xl font-bold">
-                    {loadingEmployees ? "--" : employees.length}
+                    {todayCount === null ? "--" : todayCount}
                   </div>
                 </div>
               </div>
@@ -695,157 +548,17 @@ function SiteDetail() {
 
         {/* Employees Section */}
         <Card className="rounded-3xl border bg-card p-6 shadow-sm sm:p-8">
-          <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mb-5 flex items-center justify-between">
             <h2 className="text-2xl font-bold tracking-tight">Employees</h2>
-
-            {isSiteActive ? (
-              <Link
-                to={`/attendance/${id}/hired-workers`}
-                state={{ from: "site-detail" }}
-              >
-                <Button className="rounded-xl">
-                  <Plus className="mr-2 h-4 w-4" />
-                  Manage Employees
-                </Button>
-              </Link>
-            ) : (
-              <Button disabled className="rounded-xl">
-                <Plus className="mr-2 h-4 w-4" />
-                Manage Employees
-              </Button>
-            )}
           </div>
 
-          {/* Category tabs */}
-          <div className="mb-5 flex items-center gap-0 overflow-x-auto border-b border-muted/30">
-            {categoryTabs.map((tab) => {
-              const isActive = categoryTab === tab.key
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setCategoryTab(tab.key)}
-                  className={`relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-4 pb-2.5 pt-1.5 text-sm font-semibold transition-colors ${
-                    isActive
-                      ? "text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {tab.foreign && (
-                    <Plane className="h-3.5 w-3.5 shrink-0" aria-label="Foreign" />
-                  )}
-                  {tab.label}
-                  <span
-                    className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold ${
-                      isActive
-                        ? "bg-primary/10 text-primary"
-                        : "bg-muted/60 text-muted-foreground"
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
-                  {isActive && (
-                    <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary" />
-                  )}
-                </button>
-              )
-            })}
-          </div>
-
-          <div className="mb-5 grid gap-3 md:grid-cols-2">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-
-              <Input
-                placeholder="Search by name..."
-                className="pl-10"
-                value={filters.name}
-                onChange={(e) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    name: e.target.value,
-                  }))
-                }
-              />
-            </div>
-
-            <Input
-              placeholder="Search by employee ID..."
-              value={filters.employeeId}
-              onChange={(e) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  employeeId: e.target.value,
-                }))
-              }
+          {id && (
+            <SiteRoster
+              siteId={id}
+              isSiteActive={!!isSiteActive}
+              onTodayCountChange={setTodayCount}
             />
-          </div>
-
-          <div className="overflow-hidden rounded-2xl border">
-            <Table wrapperClassName="h-[400px] overflow-y-auto">
-              <TableHeader className="sticky top-0 z-10 bg-background">
-                <TableRow>
-                  <TableHead className="w-16">Sl No</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Employee ID</TableHead>
-                  <TableHead>Job Title</TableHead>
-                  <TableHead>Current Job</TableHead>
-                </TableRow>
-              </TableHeader>
-
-              <TableBody>
-                {loadingEmployees ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="h-24 text-center">
-                      Loading employees...
-                    </TableCell>
-                  </TableRow>
-                ) : visibleEmployees.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={5}
-                      className="h-24 text-center text-muted-foreground"
-                    >
-                      No employees found
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  visibleEmployees.map((employee, index) => (
-                    <TableRow key={employee._id}>
-                      <TableCell>{index + 1}</TableCell>
-
-                      <TableCell className="font-medium">
-                        <div className="flex items-center gap-2">
-                          <span>{employee.name}</span>
-                          {employee.user && (
-                            <Badge
-                              variant="secondary"
-                              className="h-4 bg-indigo-50 px-1.5 py-0 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
-                            >
-                              Supervisor
-                            </Badge>
-                          )}
-                        </div>
-                      </TableCell>
-
-                      <TableCell>{employee.employeeId}</TableCell>
-
-                      <TableCell className="capitalize">
-                        {employee.jobTitle}
-                      </TableCell>
-
-                      <TableCell>
-                        {typeof employee.currentJob === "object" &&
-                        employee.currentJob !== null
-                          ? employee.currentJob.name
-                          : employee.currentJob || "-"}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
+          )}
         </Card>
 
         {/* Jobs Section */}

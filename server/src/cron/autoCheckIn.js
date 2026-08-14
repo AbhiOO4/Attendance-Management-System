@@ -90,13 +90,12 @@ async function processSites(sites, todayStr, checkInField, employeeIds) {
   }
 }
 
-// Per-category night check-in modes. Foreign Skilled on a 24h site prefill their check-in
-// on the roster (supervisor submits), so their night auto check-in excludes 24h sites.
+// Per-category night check-in modes.
 const CHECKIN_MODES = [
-  { field: 'nightDefaultCheckIn',           cat: 'foreignSkilled', exclude24: true  },
-  { field: 'staffNightDefaultCheckIn',      cat: 'foreignStaff',   exclude24: false },
-  { field: 'omaniNightDefaultCheckIn',      cat: 'omaniSkilled',   exclude24: false },
-  { field: 'omaniStaffNightDefaultCheckIn', cat: 'omaniStaff',     exclude24: false },
+  { field: 'nightDefaultCheckIn',           cat: 'foreignSkilled' },
+  { field: 'staffNightDefaultCheckIn',      cat: 'foreignStaff'   },
+  { field: 'omaniNightDefaultCheckIn',      cat: 'omaniSkilled'   },
+  { field: 'omaniStaffNightDefaultCheckIn', cat: 'omaniStaff'     },
 ];
 
 /**
@@ -115,7 +114,6 @@ async function runAutoCheckIn() {
       CHECKIN_MODES.map((m) =>
         Site.find({
           ...active,
-          ...(m.exclude24 ? { is24HourShift: { $ne: true } } : {}),
           [m.field]: currentTime,
         })
       )

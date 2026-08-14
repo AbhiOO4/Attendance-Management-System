@@ -1846,8 +1846,6 @@ export const updateSite = async (req, res) => {
       omaniStaffDefaultCheckOut,
       omaniStaffNightDefaultCheckIn,
       omaniStaffNightDefaultCheckOut,
-      is24HourShift,
-      shift24StartTime,
       updateTodayRecords,
     } = req.body;
 
@@ -1948,18 +1946,6 @@ export const updateSite = async (req, res) => {
       }
     }
 
-    // --- 24-HOUR SHIFT VALIDATION ---
-    // A 24h site needs exactly one valid start time; the shift is start → start (+1 day).
-    const effective24On = is24HourShift !== undefined ? !!is24HourShift : site.is24HourShift;
-    const effective24Start = shift24StartTime !== undefined ? shift24StartTime : site.shift24StartTime;
-    if (effective24On) {
-      if (!effective24Start || toMinutes(effective24Start) === null) {
-        return res.status(400).json({
-          message: "A 24-hour shift needs a valid start time (HH:mm)",
-        });
-      }
-    }
-
     // Capture previous default values BEFORE updating
     const prevDefaults = {
       defaultCheckIn: site.defaultCheckIn || '',
@@ -1990,10 +1976,6 @@ export const updateSite = async (req, res) => {
     if (omaniStaffDefaultCheckOut !== undefined) site.omaniStaffDefaultCheckOut = omaniStaffDefaultCheckOut;
     if (omaniStaffNightDefaultCheckIn !== undefined) site.omaniStaffNightDefaultCheckIn = omaniStaffNightDefaultCheckIn;
     if (omaniStaffNightDefaultCheckOut !== undefined) site.omaniStaffNightDefaultCheckOut = omaniStaffNightDefaultCheckOut;
-    if (is24HourShift !== undefined) site.is24HourShift = !!is24HourShift;
-    if (shift24StartTime !== undefined) site.shift24StartTime = shift24StartTime;
-    // Turning the 24h shift off clears its start time so a stale value can't linger.
-    if (is24HourShift === false) site.shift24StartTime = "";
 
     await site.save();
 

@@ -22,7 +22,14 @@ router.get('/reports/daily', authorizeRoles("admin", "supervisor"), attendanceCo
 
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
+router.get('/reports/job-report', authorizeRoles("superadmin"), attendanceController.jobReport)
+
 router.get('/employee/:employeeId', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeeAttendanceByMonth)
+
+// Cross-site visibility for the instant Add-Employee modal: an employee's sessions for a
+// day across all sites (read-only). Not site-scoped — it intentionally reveals other
+// sites' sessions so the adding supervisor can spot a same-day conflict before check-in.
+router.get('/employee-day-sessions', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeeDaySessions)
 
 // Backfill
 router.get('/missing', authorizeRoles("admin", "supervisor"), attendanceController.getMissingEmployees)

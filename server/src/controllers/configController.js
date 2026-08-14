@@ -1,49 +1,6 @@
 import workModel from '../models/workModel.js'
 import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
-import {
-  DEFAULT_OVERTIME_MULTIPLIER,
-  DEFAULT_MONTHLY_HOURS_DIVISOR,
-} from '../utils/payMath.js';
-
-/**
- * Backfill the relative-OT pay fields onto a config that predates them, and drop the
- * flat overtimeRatePerHour they replaced.
- *
- * Idempotent — called on boot. Not merely defensive: monthlyReport reads the config with
- * .lean(), which returns raw BSON and therefore SKIPS the schema defaults. Without this
- * write, a doc saved before these fields existed makes every overtimePay NaN.
- */
-export const ensureOvertimePayFields = async () => {
-  // Raw driver read, deliberately: Mongoose strips fields absent from the schema when it
-  // hydrates, which would hide the legacy overtimeRatePerHour we need to detect here.
-  const raw = await workModel.collection.findOne({ type: "default" });
-  if (!raw) return;
-
-  const missing = {};
-  if (typeof raw.overtimeMultiplier !== "number") {
-    missing.overtimeMultiplier = DEFAULT_OVERTIME_MULTIPLIER;
-  }
-  if (typeof raw.monthlyHoursDivisor !== "number") {
-    missing.monthlyHoursDivisor = DEFAULT_MONTHLY_HOURS_DIVISOR;
-  }
-
-  // Dropping a field from the schema does not remove it from stored docs — unset it so
-  // the collection matches the schema.
-  const hasLegacyRate = raw.overtimeRatePerHour !== undefined;
-
-  if (Object.keys(missing).length === 0 && !hasLegacyRate) return;
-
-  const update = {};
-  if (Object.keys(missing).length > 0) update.$set = missing;
-  if (hasLegacyRate) update.$unset = { overtimeRatePerHour: "" };
-
-  await workModel.collection.updateOne({ _id: raw._id }, update);
-
-  const changes = Object.entries(missing).map(([k, v]) => `${k}=${v}`);
-  if (hasLegacyRate) changes.push("dropped overtimeRatePerHour");
-  console.log(`[Config] Relative-OT pay migration: ${changes.join(", ")}`);
-};
 
 export const getWorkSchedule = async (req, res) => {
   try {
@@ -76,8 +33,6 @@ export const updateWorkSchedule = async (req, res) => {
       fullDayHours,
       halfDayHours,
       overtimeThreshold,
-      overtimeMultiplier,
-      monthlyHoursDivisor,
       weeklyHolidays,
       nightShiftCutoffHour,
       breakDurationMinutes,
@@ -108,27 +63,6 @@ export const updateWorkSchedule = async (req, res) => {
     if (overtimeThreshold !== undefined) {
       schedule.overtimeThreshold =
         overtimeThreshold;
-    }
-
-    if (overtimeMultiplier !== undefined) {
-      if (!Number.isFinite(Number(overtimeMultiplier)) || Number(overtimeMultiplier) < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Overtime multiplier must be a number of 0 or more",
-        });
-      }
-      schedule.overtimeMultiplier = Number(overtimeMultiplier);
-    }
-
-    if (monthlyHoursDivisor !== undefined) {
-      // A 0 divisor would make every hourly rate Infinity.
-      if (!Number.isFinite(Number(monthlyHoursDivisor)) || Number(monthlyHoursDivisor) <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Monthly hours divisor must be greater than 0",
-        });
-      }
-      schedule.monthlyHoursDivisor = Number(monthlyHoursDivisor);
     }
 
     if (weeklyHolidays !== undefined) {
@@ -361,7 +295,6 @@ const configController = {
     getAllHolidays,
     updateWorkSchedule,
     isHoliday,
-    ensureOvertimePayFields
 
 }
 

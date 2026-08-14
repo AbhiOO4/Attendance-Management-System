@@ -38,25 +38,6 @@ const workScheduleSchema = new mongoose.Schema(
       default: 8,
     },
 
-    // OT is paid at this multiple of the employee's normal hourly rate.
-    overtimeMultiplier: {
-      type: Number,
-      required: true,
-      min: 0,
-      default: 1.25,
-    },
-
-    // Hours per month used to derive an employee's normal hourly rate from their
-    // monthlySalary: hourlyRate = monthlySalary / monthlyHoursDivisor. Read both of
-    // these through utils/payMath.js — the monthly report loads this config with
-    // .lean(), which skips these defaults on docs written before the fields existed.
-    monthlyHoursDivisor: {
-      type: Number,
-      required: true,
-      min: 1,
-      default: 240,
-    },
-
     weeklyHolidays: {
       type: [String],
       enum: [

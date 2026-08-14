@@ -25,17 +25,10 @@ import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
 
-interface Site {
-  _id: string
-  siteName: string
-}
-
 type NewEmployee = {
   name: string
   employeeId: string
   jobTitle: string
-  currentSite: string
-  monthlySalary: number
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
 }
@@ -47,16 +40,14 @@ type JobTitle = {
 
 interface Props {
   onAdd: ( newEmployee: NewEmployee ) => Promise<void>
-  sites: Site []
 }
 
-function AddEmployee({ onAdd, sites }: Props) {
+function AddEmployee({ onAdd }: Props) {
   const [open, setOpen] = useState(false)
 
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
 
-  const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "",currentSite: " ", monthlySalary: 0, employmentType: "permanent", nationality: "foreign"})
-  const [salaryInput, setSalaryInput] = useState("")
+  const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "", employmentType: "permanent", nationality: "foreign"})
 
   const fetchTitles = async () => {
     try {
@@ -85,27 +76,15 @@ function AddEmployee({ onAdd, sites }: Props) {
       return
     }
 
-    const salary = parseFloat(salaryInput)
-    if (isNaN(salary) || salary <= 0) {
-      toast.error("Monthly salary must be greater than 0")
-      return
-    }
-
-    await onAdd({
-      ...formData,
-      monthlySalary: salary,
-    })
+    await onAdd({ ...formData })
 
     setFormData({
       name: "",
       employeeId: "",
       jobTitle: "",
-      currentSite: " ",
-      monthlySalary: 0,
       employmentType: "permanent",
       nationality: "foreign",
     })
-    setSalaryInput("")
 
     setOpen(false)
   }
@@ -167,33 +146,6 @@ function AddEmployee({ onAdd, sites }: Props) {
           />
 
           <Select
-            value={formData.currentSite}
-            onValueChange={(value) => setFormData({
-              ...formData,
-              currentSite: value
-            })}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Assign Site" />
-            </SelectTrigger>
-
-            <SelectContent>
-              <SelectItem value=" ">
-                Not Assigned
-              </SelectItem>
-
-              {sites.map((site) => (
-                <SelectItem
-                  key={site._id}
-                  value={site._id}
-                >
-                  {site.siteName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select
             value={formData.employmentType}
             onValueChange={(value) => setFormData({
               ...formData,
@@ -224,14 +176,6 @@ function AddEmployee({ onAdd, sites }: Props) {
               <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
-
-          <Input
-            type="number"
-            step="any"
-            placeholder="Monthly Salary"
-            value={salaryInput}
-            onChange={(e) => setSalaryInput(e.target.value)}
-          />
 
           <Button
             className="w-full"

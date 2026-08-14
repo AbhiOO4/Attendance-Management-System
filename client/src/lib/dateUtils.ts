@@ -20,8 +20,6 @@ export type WorkConfig = {
   fullDayHours: number;
   halfDayHours: number;
   overtimeThreshold: number;
-  overtimeMultiplier: number;
-  monthlyHoursDivisor: number;
   weeklyHolidays: string[];
   breakDurationMinutes: number;
 };

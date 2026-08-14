@@ -11,10 +11,72 @@ import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
-import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS } from '../utils/timeLocal.js';
+import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
-import { computeOvertimeRate } from '../utils/payMath.js';
+
+
+// --- CURRENT-JOB SYNC ---
+// Keep Employee.currentJob (the roster/"assigned job", scoped to currentSite) in step
+// with the LATEST session's job. Job flows one way otherwise: currentJob seeds a new
+// session's jobId, but a supervisor changing a session's job never flowed back. This
+// syncs the reverse — but ONLY for the employee's most-recent record at their current
+// site, so editing history (a past record) never rewrites the present roster. Setting
+// the latest session's job to none mirrors currentJob to null. Maintains each job's
+// employees[] like updateEmployeeJob (siteController). Pass the caller's mongoose
+// session when it runs in a transaction; otherwise it runs un-sessioned.
+async function syncCurrentJobFromLatestSession({ empId, siteId, recordDate, doc, session = null }) {
+  if (!empId || !siteId || !recordDate || !doc) return;
+
+  // Past edit? A newer record exists for this employee → leave currentJob alone.
+  const laterExists = await Attendance.exists({
+    employee: empId,
+    date: { $gt: recordDate },
+  }).session(session || null);
+  if (laterExists) return;
+
+  const employee = await Employee.findById(empId).session(session || null);
+  // currentJob belongs to currentSite — only a session at that site may move it.
+  if (!employee || !employee.currentSite || employee.currentSite.toString() !== siteId.toString()) {
+    return;
+  }
+
+  // The latest session at this site (by check-in); its job is the target (null allowed).
+  const siteSessions = (doc.sessions || []).filter(
+    (s) => s.siteId && s.siteId.toString() === siteId.toString()
+  );
+  if (siteSessions.length === 0) return;
+
+  const latest = [...siteSessions].sort(
+    (a, b) => new Date(a.checkIn || 0).getTime() - new Date(b.checkIn || 0).getTime()
+  ).at(-1);
+
+  const targetJob = latest?.jobId || null;
+  const currentJob = employee.currentJob || null;
+
+  if ((currentJob ? currentJob.toString() : null) === (targetJob ? targetJob.toString() : null)) {
+    return; // no change → skip (avoids needless job employees[] churn)
+  }
+
+  if (currentJob) {
+    await Job.findByIdAndUpdate(
+      currentJob,
+      { $pull: { employees: employee._id } },
+      { session: session || undefined }
+    );
+  }
+
+  employee.currentJob = targetJob;
+  await employee.save({ session: session || undefined });
+
+  if (targetJob) {
+    await Job.findByIdAndUpdate(
+      targetJob,
+      { $addToSet: { employees: employee._id } },
+      { session: session || undefined }
+    );
+  }
+}
 
 
 // --- SHIFT HELPERS ---
@@ -130,6 +192,17 @@ async function checkHolidayForDate(dateObj) {
   }
 
   return { isHoliday: false, reason: null };
+}
+
+/**
+ * Temporary workers get no holiday treatment — a holiday is an ordinary working
+ * day for them (normal hours + overtime, no holiday-hours credit). Collapse the
+ * day's holiday info to "not a holiday" so isHoliday/holidayReason/holidayHours
+ * are cleared and overtime is computed normally.
+ */
+function holidayInfoForEmployee(baseHolidayInfo, employmentType) {
+  if (employmentType === "temporary") return { isHoliday: false, reason: null };
+  return baseHolidayInfo;
 }
 
 /**
@@ -289,8 +362,6 @@ export const monthlyReport = async (req, res) => {
       0
     ).getDate();
 
-    const SALARY_DIVISOR = 26;
-
     const [employees, attendances, workConfig] =
       await Promise.all([
         empModel.find({}).lean(),
@@ -334,6 +405,10 @@ export const monthlyReport = async (req, res) => {
       }
     }
 
+    // Temporary workers have no days off — holidays are ordinary working days for
+    // them — so every calendar day counts as an expected working day.
+    const expectedWorkingDaysAllDays = lastDayToCount;
+
     const attendanceMap = new Map();
 
     for (const attendance of attendances) {
@@ -362,19 +437,18 @@ export const monthlyReport = async (req, res) => {
         let fullDays = 0;
         let halfDays = 0;
         let overtimeHours = 0;
+        let holidayHours = 0;
         let payableDays = 0;
-        let holidayRecords = 0;
         let absentDays = 0;
 
         for (const record of records) {
           // Holiday work:
           // - Ignore status
           // - No payable day
-          // - holidayHours (public → net hours; weekly → flat 15/10) paid at OT rate
+          // - holidayHours (public → net hours; weekly → flat 15/10) tracked
+          //   separately; on holidays overtime is already forced to 0 upstream.
           if (record.isHoliday) {
-            holidayRecords += 1;
-
-            overtimeHours +=
+            holidayHours +=
               record.holidayHours || 0;
 
             continue;
@@ -400,27 +474,16 @@ export const monthlyReport = async (req, res) => {
           }
         }
 
-        const dailySalary =
-          employee.monthlySalary /
-          SALARY_DIVISOR;
+        // OT and holiday hours are paid at the same rate, so they combine into a
+        // single "total OT" figure for reporting.
+        const totalOvertimeHours = overtimeHours + holidayHours;
 
-        const normalPay =
-          payableDays * dailySalary;
+        const expected = employee.employmentType === "temporary"
+          ? expectedWorkingDaysAllDays
+          : expectedWorkingDays;
 
-        // OT (and holiday hours, folded in above) is priced off this employee's own
-        // salary — see utils/payMath.js.
-        const overtimePay =
-          overtimeHours *
-          computeOvertimeRate(
-            employee.monthlySalary,
-            workConfig
-          );
-
-        const salary =
-          normalPay + overtimePay;
-
-        const attendancePercentage = expectedWorkingDays > 0
-          ? Math.min((payableDays / expectedWorkingDays) * 100, 100)
+        const attendancePercentage = expected > 0
+          ? Math.min((payableDays / expected) * 100, 100)
           : 0;
 
         return {
@@ -441,20 +504,12 @@ export const monthlyReport = async (req, res) => {
             overtimeHours
           ),
 
-          payableDays: round(
-            payableDays
+          holidayHours: round(
+            holidayHours
           ),
 
-          normalPay: round(
-            normalPay
-          ),
-
-          overtimePay: round(
-            overtimePay
-          ),
-
-          salary: round(
-            salary
+          totalOvertimeHours: round(
+            totalOvertimeHours
           ),
         };
       }
@@ -490,6 +545,99 @@ export const monthlyReport = async (req, res) => {
     });
   }
 }; //
+
+
+export const jobReport = async (req, res) => {
+  try {
+    const [jobs, results] = await Promise.all([
+      Job.find({ isDeleted: { $ne: true } })
+        .populate("site", "siteName isActive isPermanent isDeleted isCompleted")
+        .lean(),
+
+      Attendance.aggregate([
+        { $addFields: { _rawTotal: { $sum: "$sessions.workedHours" } } },
+        { $match: { _rawTotal: { $gt: 0 } } },
+        { $unwind: "$sessions" },
+        { $match: { "sessions.jobId": { $ne: null } } },
+        {
+          $group: {
+            _id: "$sessions.jobId",
+            normalHours: { $sum: { $ifNull: ["$sessions.workedHours", 0] } },
+            overtimeHours: {
+              $sum: {
+                $multiply: [
+                  { $ifNull: ["$overtimeHours", 0] },
+                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
+                ],
+              },
+            },
+            holidayHours: {
+              $sum: {
+                $multiply: [
+                  { $ifNull: ["$holidayHours", 0] },
+                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
+                ],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    const hoursMap = new Map();
+    for (const r of results) {
+      hoursMap.set(r._id.toString(), r);
+    }
+
+    const round = (n) => Number(n.toFixed(2));
+    const siteMap = new Map();
+
+    for (const job of jobs) {
+      if (!job.site) continue;
+      const siteId = job.site._id.toString();
+
+      if (!siteMap.has(siteId)) {
+        siteMap.set(siteId, {
+          siteId,
+          siteName: job.site.siteName,
+          isActive: job.site.isActive !== false,
+          isPermanent: job.site.isPermanent === true,
+          isCompleted: job.site.isCompleted === true,
+          jobs: [],
+        });
+      }
+
+      const h = hoursMap.get(job._id.toString());
+      const normal = h ? h.normalHours : 0;
+      const ot = h ? h.overtimeHours : 0;
+      const holiday = h ? h.holidayHours : 0;
+
+      siteMap.get(siteId).jobs.push({
+        jobId: job._id,
+        jobCode: job.jobCode,
+        jobName: job.name,
+        isActive: job.isActive !== false,
+        isCompleted: job.isCompleted === true,
+        normalHours: round(normal),
+        overtimeHours: round(ot),
+        holidayHours: round(holiday),
+        totalOTHours: round(ot + holiday),
+      });
+    }
+
+    const report = Array.from(siteMap.values()).sort((a, b) =>
+      a.siteName.localeCompare(b.siteName)
+    );
+
+    return res.status(200).json({ success: true, report });
+  } catch (error) {
+    console.error("jobReport error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to generate job report",
+    });
+  }
+};
 
 
 //GET /api/attendance/daily-summary
@@ -813,13 +961,24 @@ export const toggleHolidayStatus = async (req, res) => {
       .select("overtimeThreshold")
       .session(session))?.overtimeThreshold ?? 0
 
+    // When DECLARING a holiday, skip temporary workers — a holiday is a normal
+    // working day for them (no holiday hours, overtime not zeroed). Un-marking a
+    // holiday can safely apply to everyone (it just clears holiday state).
+    const dateMatch = { date: { $gte: startOfDay, $lte: endOfDay } }
+    const updateMatch = isHoliday
+      ? {
+          ...dateMatch,
+          employee: {
+            $nin: await empModel
+              .find({ employmentType: "temporary" })
+              .distinct("_id")
+              .session(session),
+          },
+        }
+      : dateMatch
+
     const result = await Attendance.updateMany(
-      {
-        date: {
-          $gte: startOfDay,
-          $lte: endOfDay,
-        },
-      },
+      updateMatch,
       isHoliday
         ? [
             {
@@ -996,8 +1155,12 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // indicator once attendance is saved). The stash itself is cleared after
       // save, below.
       const empPending = await empModel.findById(empId)
-        .select("pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId")
+        .select("pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId employmentType")
         .session(session)
+
+      // Temporary workers are exempt from holiday treatment — for them a holiday
+      // is a normal working day (normal hours + OT, no holiday-hours credit).
+      const effHolidayInfo = holidayInfoForEmployee(holidayInfo, empPending?.employmentType)
 
       const transferredFromForSite =
         empPending?.pendingTransferSiteId &&
@@ -1212,7 +1375,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         rawHours,
         workConfig,
         effectiveBreaksTaken,
-        holidayInfo
+        effHolidayInfo
       )
 
       attendanceDoc.totalWorkHours = netWorkHours
@@ -1221,8 +1384,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       if (breaksTaken !== undefined) {
         attendanceDoc.breaksTaken = breaksTaken
       }
-      attendanceDoc.isHoliday = holidayInfo.isHoliday
-      attendanceDoc.holidayReason = holidayInfo.reason
+      attendanceDoc.isHoliday = effHolidayInfo.isHoliday
+      attendanceDoc.holidayReason = effHolidayInfo.reason
       attendanceDoc.holidayHours = holidayHours
       // Soft: pass through the requested value; the pre-save hook force-clears it
       // if any session (this site or another) turns out to be filled.
@@ -1257,6 +1420,16 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         },
         { session }
       )
+
+      // Keep the roster job in step with the latest session's job (this record's
+      // site, and only when it is the employee's most-recent record).
+      await syncCurrentJobFromLatestSession({
+        empId,
+        siteId,
+        recordDate: attendanceDate,
+        doc: attendanceDoc,
+        session,
+      })
 
       processedRecords.push(attendanceDoc)
     }
@@ -1490,10 +1663,10 @@ export const getSiteAttendance = async (req, res) => {
 
     const result = await Attendance.aggregate(pipeline)
 
-    const isHoliday =
-      result.length > 0 ? (result[0].isHoliday ?? false) : false
-    const holidayReason =
-      result.length > 0 ? (result[0].holidayReason ?? null) : null
+    // Day-level holiday flag comes from the date itself, not from an employee's
+    // record — temporary workers now store isHoliday:false even on a holiday, so a
+    // temp row sorting first must not hide the banner.
+    const { isHoliday, reason: holidayReason } = await checkHolidayForDate(queryDate)
 
     return res.status(200).json({
       totalRecords: result.length,
@@ -1529,7 +1702,7 @@ export const getAttendanceRecords = async (req, res) => {
     // -----------------------------
     page = Number(page) || 1;
 
-    limit = Math.min(Number(limit) || 20, 20);
+    limit = Math.min(Number(limit) || 20, 100);
 
     const skip = (page - 1) * limit;
 
@@ -1726,15 +1899,14 @@ export const getAttendanceRecords = async (req, res) => {
         ),
       }));
 
-    // Common holiday flag
-    const isHoliday =
-      formattedRecords.length > 0
-        ? formattedRecords[0].isHoliday
-        : false;
-    const holidayReason =
-      formattedRecords.length > 0
-        ? formattedRecords[0].holidayReason
-        : null;
+    // Common holiday flag — derived from the date itself (temporary workers store
+    // isHoliday:false even on a holiday, so a temp row must not hide it). Only
+    // meaningful when a single date is queried.
+    const dayHoliday = date
+      ? await checkHolidayForDate(new Date(date))
+      : { isHoliday: false, reason: null };
+    const isHoliday = dayHoliday.isHoliday;
+    const holidayReason = dayHoliday.reason;
 
     return res.status(200).json({
       success: true,
@@ -1862,6 +2034,13 @@ export const bulkEditAttendance = async (
         continue;
       }
 
+      // Temporary workers are exempt from holiday treatment — for them a holiday
+      // is a normal working day (normal hours + OT, no holiday-hours credit).
+      const editEmp = await empModel.findById(employeeId)
+        .select("employmentType")
+        .session(session);
+      const effHolidayInfo = holidayInfoForEmployee(holidayInfo, editEmp?.employmentType);
+
       // CALCULATE WORKED HOURS
       let workedHours = 0;
 
@@ -1930,7 +2109,7 @@ export const bulkEditAttendance = async (
         rawHours,
         workConfig,
         effectiveBreaksTaken,
-        holidayInfo
+        effHolidayInfo
       );
 
       // UPDATE DOC
@@ -1940,8 +2119,8 @@ export const bulkEditAttendance = async (
       if (breaksTaken !== undefined) {
         attendanceDoc.breaksTaken = breaksTaken;
       }
-      attendanceDoc.isHoliday = holidayInfo.isHoliday;
-      attendanceDoc.holidayReason = holidayInfo.reason;
+      attendanceDoc.isHoliday = effHolidayInfo.isHoliday;
+      attendanceDoc.holidayReason = effHolidayInfo.reason;
       attendanceDoc.holidayHours = holidayHours;
       if (isSickLeave !== undefined) {
         // Soft: the pre-save hook clears it if the resulting session is filled.
@@ -2376,6 +2555,18 @@ export const updateAttendance = async (req, res) => {
     }
 
     await attendance.save();
+
+    // Keep the roster job in step with the latest session's job — only when sessions
+    // were edited for a specific site, and only if this is the employee's latest record
+    // (the helper's guard makes a past-record edit a no-op).
+    if (Array.isArray(sessions) && siteId) {
+      await syncCurrentJobFromLatestSession({
+        empId: attendance.employee,
+        siteId,
+        recordDate: attendance.date,
+        doc: attendance,
+      });
+    }
 
     const updatedAttendance =
       await Attendance.findById(
@@ -3106,6 +3297,15 @@ export const addSessionToAttendance = async (
 
     await attendance.save()
 
+    // Keep the roster job in step with the latest session's job (this site, latest
+    // record only). `session` here is the request-body session, not a mongoose session.
+    await syncCurrentJobFromLatestSession({
+      empId: attendance.employee,
+      siteId: session.siteId,
+      recordDate: attendance.date,
+      doc: attendance,
+    })
+
     const newSession =
       attendance.sessions[
         attendance.sessions.length - 1
@@ -3313,7 +3513,7 @@ export const getMissingEmployees = async (req, res) => {
     }
 
     page = Math.max(Number(page) || 1, 1);
-    limit = Math.min(Number(limit) || 10, 50);
+    limit = Math.min(Number(limit) || 10, 100);
     const skip = (page - 1) * limit;
 
     // Date range for the selected day
@@ -3363,7 +3563,7 @@ export const getMissingEmployees = async (req, res) => {
 
     const employees = await Employee.find(
       employeeFilter,
-      '_id name employeeId jobTitle currentSite currentJob'
+      '_id name employeeId jobTitle currentSite currentJob employmentType'
     )
       .populate('currentSite', 'siteName')
       .populate('currentJob', 'name')
@@ -3534,12 +3734,15 @@ export const backfillAttendance = async (req, res) => {
     const rawHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
 
     const holidayInfo = await checkHolidayForDate(attendanceDate);
+    // Temporary workers are exempt from holiday treatment — for them a holiday is a
+    // normal working day (normal hours + OT, no holiday-hours credit).
+    const effHolidayInfo = holidayInfoForEmployee(holidayInfo, employee.employmentType);
 
     const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
       rawHours,
       workConfig,
       breaksTaken,
-      holidayInfo
+      effHolidayInfo
     );
 
     const hasCrossedMidnight = detectCrossedMidnight(builtSessions, timezoneOffset);
@@ -3557,8 +3760,8 @@ export const backfillAttendance = async (req, res) => {
       siteId: primarySiteId,
       jobId: builtSessions.length > 0 ? (builtSessions[0].jobId || null) : null,
       markedBy,
-      isHoliday: holidayInfo.isHoliday,
-      holidayReason: holidayInfo.reason,
+      isHoliday: effHolidayInfo.isHoliday,
+      holidayReason: effHolidayInfo.reason,
       holidayHours,
       isSickLeave: !!isSickLeave,
       status,
@@ -3572,6 +3775,16 @@ export const backfillAttendance = async (req, res) => {
 
 
     await newAttendance.save();
+
+    // Backfilling a PAST day is a no-op here (a later record exists → the guard skips
+    // it); only if this is the employee's latest record at their current site does the
+    // roster job sync to the latest session.
+    await syncCurrentJobFromLatestSession({
+      empId: employeeMongoId,
+      siteId: primarySiteId,
+      recordDate: attendanceDate,
+      doc: newAttendance,
+    });
 
     // Populate for response
     const populated = await Attendance.findById(newAttendance._id)
@@ -4029,10 +4242,92 @@ export const assignNightShift = async (req, res) => {
 };
 
 
+// --- CROSS-SITE VISIBILITY (read-only) ---
+// Return an employee's attendance sessions for a single business day across ALL sites.
+// Used by the instant Add-Employee modal so a supervisor can SEE that the employee is
+// already recorded at another site today — a legitimate multi-site day, or a mistake to
+// fix out-of-band. Read-only: no writes, no locks, no overlap enforcement (the submit
+// path keeps its own guards). Intentionally NOT behind requireSiteAccess — the whole
+// point is to reveal OTHER sites' sessions; it exposes only site name + times.
+const getEmployeeDaySessions = async (req, res) => {
+  try {
+    const { employeeId, excludeSiteId, date } = req.query
+
+    if (!employeeId || !mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid employeeId is required",
+      })
+    }
+
+    // Default to today's local business day; match the stored UTC-midnight date the
+    // same way getSiteAttendance does.
+    const dayStr = date || getDateLocal(0)
+    const queryDate = new Date(dayStr)
+    if (Number.isNaN(queryDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date format",
+      })
+    }
+
+    const start = new Date(queryDate)
+    start.setUTCHours(0, 0, 0, 0)
+    const end = new Date(queryDate)
+    end.setUTCHours(23, 59, 59, 999)
+
+    const record = await Attendance.findOne({
+      employee: employeeId,
+      date: { $gte: start, $lte: end },
+    })
+      .select("sessions.siteId sessions.checkIn sessions.checkOut sessions.rawCheckIn sessions.rawCheckOut")
+      .populate({ path: "sessions.siteId", select: "siteName" })
+
+    const excludeId =
+      excludeSiteId && mongoose.Types.ObjectId.isValid(excludeSiteId)
+        ? excludeSiteId.toString()
+        : null
+
+    const sessions = (record?.sessions || [])
+      // Only real presences (must have a check-in) and, when asked, other sites only.
+      .filter((s) => {
+        if (!s.siteId || !s.checkIn) return false
+        const sid = (s.siteId._id || s.siteId).toString()
+        return excludeId ? sid !== excludeId : true
+      })
+      .map((s) => ({
+        siteId: (s.siteId._id || s.siteId).toString(),
+        siteName: s.siteId?.siteName || "Unknown site",
+        checkIn: s.checkIn || null,
+        checkOut: s.checkOut || null,
+        rawCheckIn: s.rawCheckIn || null,
+        rawCheckOut: s.rawCheckOut || null,
+        isOpen: !s.checkOut,
+      }))
+      .sort(
+        (a, b) => new Date(a.checkIn || 0).getTime() - new Date(b.checkIn || 0).getTime()
+      )
+
+    return res.status(200).json({
+      success: true,
+      message: "Employee day sessions fetched",
+      data: { sessions },
+    })
+  } catch (error) {
+    console.error("getEmployeeDaySessions error:", error)
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch employee day sessions",
+    })
+  }
+}
+
+
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
   monthlyReport,
+  jobReport,
   getSummary,
   unlockAttendance,
   updateAttendance,
@@ -4052,6 +4347,8 @@ const attendanceController = {
 
   getNightShiftCandidates,
   assignNightShift,
+
+  getEmployeeDaySessions,
 
 };
 

@@ -43,8 +43,6 @@ const seeWorkSchedule = async () => {
       halfDayHours: 4,
 
       overtimeThreshold: 8,
-      overtimeMultiplier: 1.25,
-      monthlyHoursDivisor: 240,
 
       weeklyHolidays: ["friday"],
     })
@@ -184,7 +182,6 @@ for (let i = 1; i <= 100; i++) {
     name: employeeNames[i-1],
     employeeId: `EMP${String(i).padStart(4, "0")}`,
     jobTitle: jobTitles[(i - 1) % jobTitles.length],
-    monthlySalary: 20000,
     isActive: true,
   });
 }
@@ -284,6 +281,14 @@ const recalculateExistingAttendance = async () => {
       customHolidays.map((h) => new Date(h.date).toISOString().slice(0, 10))
     );
 
+    // Temporary workers get no holiday treatment — a holiday is a normal working
+    // day for them (normal hours + OT, no holiday-hours credit). Preload their ids
+    // so we can clear any holiday state left on their existing records.
+    const tempIds = new Set(
+      (await employeeModel.find({ employmentType: "temporary" }).select("_id").lean())
+        .map((e) => String(e._id))
+    );
+
     const resolveHolidayReason = (record) => {
       if (!record.isHoliday) return null;
       const day = new Date(record.date);
@@ -305,15 +310,18 @@ const recalculateExistingAttendance = async () => {
       // Calculate raw work hours from sessions
       const rawHours = record.sessions.reduce((total, session) => total + (session.workedHours || 0), 0);
 
-      const holidayReason = resolveHolidayReason(record);
+      const isTemp = tempIds.has(String(record.employee));
+      const holidayReason = isTemp ? null : resolveHolidayReason(record);
+      const isHoliday = isTemp ? false : record.isHoliday;
 
       const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
         workConfig,
         record.breaksTaken ?? null,
-        { isHoliday: record.isHoliday, reason: holidayReason }
+        { isHoliday, reason: holidayReason }
       );
 
+      record.isHoliday = isHoliday;
       record.totalWorkHours = netWorkHours;
       record.status = status;
       record.overtimeHours = overtimeHours;

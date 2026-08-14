@@ -216,7 +216,7 @@ function EditPastAttendance() {
   // --- Missing employees (backfill) state ---
   const [missingEmployees, setMissingEmployees] = useState<MissingEmployee[]>([])
   const [missingLoading, setMissingLoading] = useState(false)
-  const [missingFilters, setMissingFilters] = useState({ name: "", employeeId: "", jobTitle: "", page: 1 })
+  const [missingFilters, setMissingFilters] = useState({ name: "", employeeId: "", jobTitle: "", page: 1, limit: 10 })
   const [missingTotalPages, setMissingTotalPages] = useState(1)
   const [missingTotalCount, setMissingTotalCount] = useState(0)
   const [backfillEmployee, setBackfillEmployee] = useState<MissingEmployee | null>(null)
@@ -368,7 +368,7 @@ function EditPastAttendance() {
           employeeId: missingFilters.employeeId || undefined,
           jobTitle: missingFilters.jobTitle || undefined,
           page: missingFilters.page,
-          limit: 10,
+          limit: missingFilters.limit,
         },
       })
       setMissingEmployees(res.data.data)
@@ -858,43 +858,72 @@ function EditPastAttendance() {
         </Card>
 
         <div className="flex items-center justify-between">
-          <Button
-            variant="outline"
-            disabled={
-              filters.page === 1
-            }
-            onClick={() =>
-              setFilters({
-                ...filters,
-                page:
-                  filters.page - 1,
-              })
-            }
-          >
-            Previous
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={
+                filters.page === 1
+              }
+              onClick={() =>
+                setFilters({
+                  ...filters,
+                  page:
+                    filters.page - 1,
+                })
+              }
+            >
+              Previous
+            </Button>
+
+            <Button
+              variant="outline"
+              disabled={
+                filters.page ===
+                totalPages
+              }
+              onClick={() =>
+                setFilters({
+                  ...filters,
+                  page:
+                    filters.page + 1,
+                })
+              }
+            >
+              Next
+            </Button>
+          </div>
 
           <p className="text-sm text-muted-foreground">
             Page {filters.page} of{" "}
             {totalPages}
           </p>
 
-          <Button
-            variant="outline"
-            disabled={
-              filters.page ===
-              totalPages
-            }
-            onClick={() =>
-              setFilters({
-                ...filters,
-                page:
-                  filters.page + 1,
-              })
-            }
-          >
-            Next
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground whitespace-nowrap">
+              Rows per page
+            </span>
+            <Select
+              value={String(filters.limit)}
+              onValueChange={(value) =>
+                setFilters({
+                  ...filters,
+                  limit: Number(value),
+                  page: 1,
+                })
+              }
+            >
+              <SelectTrigger className="w-[80px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[10, 25, 50, 100].map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* ============================================================ */}
@@ -992,7 +1021,7 @@ function EditPastAttendance() {
                                 : "bg-slate-50 dark:bg-slate-900/40"
                             }
                           >
-                            <TableCell>{(missingFilters.page - 1) * 10 + index + 1}</TableCell>
+                            <TableCell>{(missingFilters.page - 1) * missingFilters.limit + index + 1}</TableCell>
                             <TableCell className="font-medium">{emp.name}</TableCell>
                             <TableCell>{emp.employeeId}</TableCell>
                             <TableCell className="capitalize">{emp.jobTitle}</TableCell>
@@ -1019,29 +1048,56 @@ function EditPastAttendance() {
                 </div>
 
                 {/* PAGINATION */}
-                {missingTotalPages > 1 && (
-                  <div className="flex items-center justify-between pt-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={missingFilters.page === 1}
-                      onClick={() => setMissingFilters((f) => ({ ...f, page: f.page - 1 }))}
+                <div className="flex items-center justify-between pt-1">
+                  {missingTotalPages > 1 ? (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={missingFilters.page === 1}
+                        onClick={() => setMissingFilters((f) => ({ ...f, page: f.page - 1 }))}
+                      >
+                        Previous
+                      </Button>
+                      <p className="text-sm text-muted-foreground">
+                        Page {missingFilters.page} of {missingTotalPages}
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={missingFilters.page === missingTotalPages}
+                        onClick={() => setMissingFilters((f) => ({ ...f, page: f.page + 1 }))}
+                      >
+                        Next
+                      </Button>
+                    </>
+                  ) : (
+                    <div />
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground whitespace-nowrap">
+                      Rows per page
+                    </span>
+                    <Select
+                      value={String(missingFilters.limit)}
+                      onValueChange={(value) =>
+                        setMissingFilters((f) => ({ ...f, limit: Number(value), page: 1 }))
+                      }
                     >
-                      Previous
-                    </Button>
-                    <p className="text-sm text-muted-foreground">
-                      Page {missingFilters.page} of {missingTotalPages}
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={missingFilters.page === missingTotalPages}
-                      onClick={() => setMissingFilters((f) => ({ ...f, page: f.page + 1 }))}
-                    >
-                      Next
-                    </Button>
+                      <SelectTrigger className="w-[80px]" size="sm">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[10, 25, 50, 100].map((size) => (
+                          <SelectItem key={size} value={String(size)}>
+                            {size}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                )}
+                </div>
               </div>
             )}
           </CardContent>

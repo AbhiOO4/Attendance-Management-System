@@ -24,11 +24,6 @@ const employeeSchema = new mongoose.Schema({
     lowercase: true
   },
 
-  monthlySalary: {
-    type: Number,
-    default: 0
-  },
-
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User', //ref to supervisor id
@@ -122,8 +117,8 @@ const employeeSchema = new mongoose.Schema({
   // Nationality, orthogonal to collarType. Together they form the four roster
   // categories: (skilled|staff) × (foreign|omani) → Foreign Skilled Labours,
   // Foreign Staffs, Omani Labours, Omani Staffs. Each category has its own site
-  // default check-in/out; only Foreign Skilled Labours can run 24-hour shifts.
-  // Unlike collarType (derived from the job title), this is set on the employee.
+  // default check-in/out. Unlike collarType (derived from the job title), this is
+  // set on the employee.
   nationality: {
     type: String,
     enum: ['foreign', 'omani'],

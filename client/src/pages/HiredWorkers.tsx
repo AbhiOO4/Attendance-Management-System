@@ -45,7 +45,6 @@ interface Employee {
   name: string
   employeeId: string
   jobTitle: string
-  monthlySalary: number
   currentSite: string | null
   currentJob: { _id: string; name: string } | null
   user?: string | null
@@ -60,9 +59,13 @@ interface Filters {
   name: string
   employeeId: string
   jobTitle: string
+  job: string
   page: number
   limit: number
 }
+
+// Selectable page sizes for the roster table.
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 
 interface Job {
   _id: string
@@ -103,6 +106,7 @@ function HiredWorkers() {
     name: "",
     employeeId: "",
     jobTitle: "",
+    job: "",
     page: 1,
     limit: 10,
   })
@@ -341,7 +345,7 @@ function HiredWorkers() {
 
       {/* FILTER SECTION */}
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 flex-1 w-full">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 flex-1 w-full">
           <Input
             placeholder="Search by name"
             value={filters.name}
@@ -377,6 +381,30 @@ function HiredWorkers() {
               })
             }
           />
+
+          <Select
+            value={filters.job || "all"}
+            onValueChange={(val) =>
+              setFilters({
+                ...filters,
+                job: val === "all" ? "" : val,
+                page: 1,
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Filter by Job" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Jobs</SelectItem>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
+              {jobs.map((job) => (
+                <SelectItem key={job._id} value={job._id}>
+                  {job.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex items-center space-x-2 bg-card border px-4 py-2.5 rounded-lg shrink-0">
@@ -791,9 +819,33 @@ function HiredWorkers() {
           Previous
         </Button>
 
-        <p className="text-sm">
-          Page {currentPage} of {totalPages}
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-sm">
+            Page {currentPage} of {totalPages}
+          </p>
+
+          <Select
+            value={String(filters.limit)}
+            onValueChange={(val) =>
+              setFilters({
+                ...filters,
+                limit: Number(val),
+                page: 1,
+              })
+            }
+          >
+            <SelectTrigger size="sm" className="w-[130px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  {n} / page
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         <Button
           variant="outline"

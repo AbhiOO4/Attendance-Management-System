@@ -32,7 +32,6 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
-import { Switch } from "@/components/ui/switch"
 
 import {
   Dialog,
@@ -90,7 +89,6 @@ interface Employee {
   name: string
   employeeId: string
   jobTitle: string
-  monthlySalary: number
   currentSite: string | null
   currentJob: Job | null
   user: string | null
@@ -138,8 +136,6 @@ interface Site {
   omaniStaffDefaultCheckOut?: string
   omaniStaffNightDefaultCheckIn?: string
   omaniStaffNightDefaultCheckOut?: string
-  is24HourShift?: boolean
-  shift24StartTime?: string
 }
 
 export interface AttendanceSession {
@@ -280,6 +276,13 @@ const formatConflictingSessionTime = (overlap: OverlapError | null) => {
 const isSessionNonEmpty = (session?: { checkIn?: string | null; checkOut?: string | null }) => {
   return !!session?.checkIn || !!session?.checkOut
 }
+
+// A record has an open session while any session is checked in but not out.
+// Break auto-calc can't finalize until every session is closed, so the saved
+// display shows "Auto" instead of a provisional number in that state.
+const hasOpenSession = (
+  record: { sessions: Array<{ checkIn?: string | null; checkOut?: string | null }> }
+) => record.sessions.some((s) => !!s.checkIn && !s.checkOut)
 
 /**
  * Blank the draft sessions of employees who still have an open shift from yesterday.
@@ -1107,8 +1110,6 @@ function SiteAttendance() {
   const [editOmaniStaffDefaultCheckOut, setEditOmaniStaffDefaultCheckOut] = useState("")
   const [editOmaniStaffNightDefaultCheckIn, setEditOmaniStaffNightDefaultCheckIn] = useState("")
   const [editOmaniStaffNightDefaultCheckOut, setEditOmaniStaffNightDefaultCheckOut] = useState("")
-  const [edit24HourShift, setEdit24HourShift] = useState(false)
-  const [editShift24StartTime, setEditShift24StartTime] = useState("")
   const [savingDefaults, setSavingDefaults] = useState(false)
 
   // Update defaults dialog state
@@ -1153,8 +1154,6 @@ function SiteAttendance() {
       setEditOmaniStaffDefaultCheckOut(site.omaniStaffDefaultCheckOut || "")
       setEditOmaniStaffNightDefaultCheckIn(site.omaniStaffNightDefaultCheckIn || "")
       setEditOmaniStaffNightDefaultCheckOut(site.omaniStaffNightDefaultCheckOut || "")
-      setEdit24HourShift(!!site.is24HourShift)
-      setEditShift24StartTime(site.shift24StartTime || "")
     }
   }, [site])
 
@@ -1358,9 +1357,7 @@ function SiteAttendance() {
 
           // Each of the four categories prefills from its OWN day default check-in;
           // never fall back across categories — if the applicable default is empty, the
-          // check-in is left empty. The 24-hour shift overrides ONLY Foreign Skilled
-          // Labours (its scope): their check-in becomes the single 24h start time and the
-          // auto check-out cron closes it 24h later; the other categories are unaffected.
+          // check-in is left empty.
           const category = categoryOf(emp.collarType, emp.nationality)
           const dayDefaultByCategory: Record<RosterCategory, string> = {
             foreignSkilled: siteData.defaultCheckIn || "",
@@ -1368,13 +1365,7 @@ function SiteAttendance() {
             omaniSkilled: siteData.omaniDefaultCheckIn || "",
             omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
           }
-          const is24ForeignSkilled =
-            category === "foreignSkilled" &&
-            !!siteData.is24HourShift &&
-            !!siteData.shift24StartTime
-          const roleDefaultIn = is24ForeignSkilled
-            ? (siteData.shift24StartTime || "")
-            : dayDefaultByCategory[category]
+          const roleDefaultIn = dayDefaultByCategory[category]
           // Carryover employees default to ABSENT (empty) — they're still finishing
           // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
           const isCarryover = carryoverIds.has(emp._id)
@@ -2174,8 +2165,6 @@ function SiteAttendance() {
         omaniStaffDefaultCheckOut: editOmaniStaffDefaultCheckOut,
         omaniStaffNightDefaultCheckIn: editOmaniStaffNightDefaultCheckIn,
         omaniStaffNightDefaultCheckOut: editOmaniStaffNightDefaultCheckOut,
-        is24HourShift: edit24HourShift,
-        shift24StartTime: edit24HourShift ? editShift24StartTime : "",
         updateTodayRecords,
       })
 
@@ -2409,12 +2398,6 @@ function SiteAttendance() {
       }
     }
 
-    // --- 24-HOUR SHIFT VALIDATION ---
-    if (edit24HourShift && !editShift24StartTime) {
-      toast.error("Enter a start time for the 24-hour shift")
-      return
-    }
-
     // Detect what changed
     const changes = detectDefaultChanges()
 
@@ -2449,8 +2432,6 @@ function SiteAttendance() {
     setEditOmaniStaffDefaultCheckOut(site?.omaniStaffDefaultCheckOut || "")
     setEditOmaniStaffNightDefaultCheckIn(site?.omaniStaffNightDefaultCheckIn || "")
     setEditOmaniStaffNightDefaultCheckOut(site?.omaniStaffNightDefaultCheckOut || "")
-    setEdit24HourShift(!!site?.is24HourShift)
-    setEditShift24StartTime(site?.shift24StartTime || "")
   }
 
   // Open the modal with a fresh copy of the saved values.
@@ -3026,47 +3007,8 @@ function SiteAttendance() {
 
           <div className="flex flex-col gap-4 py-1 overflow-y-auto flex-1 min-h-0 pr-1">
 
-            {/* 24-hour shift section */}
-            <div className="rounded-lg border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/40 dark:bg-indigo-950/20 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-foreground flex items-center gap-1">
-                    24-hour shift
-                    <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-muted-foreground">
-                      <Plane className="h-2.5 w-2.5" /> Skilled Labour only
-                    </span>
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    One continuous shift from a single time to the same time the next day.
-                    Prefills Foreign Skilled Labours' check-in and auto-checks-out 24h later.
-                    Overrides only their day/night times below; other categories are unaffected.
-                  </p>
-                </div>
-                <Switch
-                  checked={edit24HourShift}
-                  onCheckedChange={setEdit24HourShift}
-                  className="mt-0.5"
-                />
-              </div>
-              {edit24HourShift && (
-                <div className="mt-3 flex items-center gap-2.5 rounded-lg border border-border bg-background p-2.5">
-                  <span className="text-xs font-semibold text-foreground shrink-0">Start</span>
-                  <Input
-                    type="time"
-                    value={editShift24StartTime}
-                    onChange={(e) => setEditShift24StartTime(e.target.value)}
-                    className="h-8 text-xs px-2 w-32 min-w-0 bg-background"
-                  />
-                  <span className="text-[11px] text-muted-foreground truncate">
-                    → {editShift24StartTime || "--:--"} next day&nbsp;·&nbsp;24h
-                  </span>
-                </div>
-              )}
-            </div>
-
             {/* Per-category day/night defaults, laid out as a 2×2 grid of tiles. Each
-                category prefills from its own times; the 24-hour shift overrides ONLY
-                Foreign Skilled Labours, so only that tile dims while the toggle is on. */}
+                category prefills from its own times. */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {(([
                 {
@@ -3098,18 +3040,14 @@ function SiteAttendance() {
                   ],
                 },
               ]) as { key: RosterCategory; label: string; foreign: boolean; staff: boolean; rows: { label: string; inVal: string; setIn: (v: string) => void; outVal: string; setOut: (v: string) => void }[] }[]).map((sec) => {
-                const dimmed = sec.key === "foreignSkilled" && edit24HourShift
                 return (
                   <div key={sec.key} className="rounded-xl border border-border bg-muted/[0.04] p-3">
                     <div className="flex items-center gap-1.5 mb-2.5">
                       <span className={cn("h-2 w-2 rounded-full shrink-0", sec.staff ? "bg-violet-500" : "bg-emerald-500")} />
                       {sec.foreign && <Plane className="h-3 w-3 text-muted-foreground shrink-0" />}
                       <span className="text-xs font-semibold text-foreground truncate">{sec.label}</span>
-                      {dimmed && (
-                        <span className="ml-auto shrink-0 rounded bg-indigo-50 dark:bg-indigo-950/40 px-1.5 text-[9px] font-medium text-indigo-600 dark:text-indigo-300">24h</span>
-                      )}
                     </div>
-                    <div className={cn("space-y-1.5", dimmed && "opacity-40 pointer-events-none")}>
+                    <div className="space-y-1.5">
                       {sec.rows.map((s) => {
                         const isDay = s.label === "Day"
                         return (
@@ -3520,9 +3458,20 @@ function SiteAttendance() {
                             ) : (
                               <span className="text-xs">
                                 {(() => {
-                                  const count = record.breaksTaken !== null && record.breaksTaken !== undefined
-                                    ? record.breaksTaken
-                                    : Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours);
+                                  const isAuto = record.breaksTaken === null || record.breaksTaken === undefined;
+                                  if (isAuto && hasOpenSession(record)) {
+                                    return (
+                                      <span
+                                        className="italic text-muted-foreground"
+                                        title="Auto-calculated once the session is checked out"
+                                      >
+                                        Auto
+                                      </span>
+                                    );
+                                  }
+                                  const count = isAuto
+                                    ? Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours)
+                                    : record.breaksTaken;
                                   return `${count}`;
                                 })()}
                               </span>
@@ -3962,9 +3911,20 @@ function SiteAttendance() {
                                   ) : (
                                     <span className="text-xs">
                                       {(() => {
-                                        const count = record.breaksTaken !== null && record.breaksTaken !== undefined
-                                          ? record.breaksTaken
-                                          : Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours);
+                                        const isAuto = record.breaksTaken === null || record.breaksTaken === undefined;
+                                        if (isAuto && hasOpenSession(record)) {
+                                          return (
+                                            <span
+                                              className="italic text-muted-foreground"
+                                              title="Auto-calculated once the session is checked out"
+                                            >
+                                              Auto
+                                            </span>
+                                          );
+                                        }
+                                        const count = isAuto
+                                          ? Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours)
+                                          : record.breaksTaken;
                                         return `${count}`;
                                       })()}
                                     </span>

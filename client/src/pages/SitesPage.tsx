@@ -131,7 +131,7 @@ export default function SitesPage() {
             />
           </div>
 
-          <div className="flex items-center space-x-3 rounded-xl border bg-background px-4 py-3 shadow-sm">
+          <div className="flex items-center space-x-3 rounded-xl border bg-background px-4 py-2.5">
             <Checkbox
               id="active-only"
               checked={activeOnly}
@@ -149,13 +149,13 @@ export default function SitesPage() {
           </div>
         </div>
 
-        <div className="space-y-5">
+        <div className="space-y-3">
           {loading ? (
             <div className="py-20 text-center text-muted-foreground">
               Loading sites...
             </div>
           ) : sites.length === 0 ? (
-            <div className="rounded-2xl border bg-background py-20 text-center">
+            <div className="rounded-xl border bg-background py-20 text-center">
               <p className="text-muted-foreground">
                 No sites found
               </p>
@@ -167,53 +167,52 @@ export default function SitesPage() {
                 key={site._id}
                 className="block"
               >
-                <Card className="group relative rounded-2xl border bg-card p-6 shadow-sm transition-all hover:-translate-y-1 hover:shadow-md">
-                  {/* Top section: info + badges */}
-                  <div>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <h2 className="text-2xl font-semibold transition-colors group-hover:text-primary">
+                <Card className="relative flex flex-col gap-4 rounded-xl border bg-card p-5 transition-colors hover:border-primary/50 md:flex-row md:items-center md:justify-between md:gap-6">
+                  {/* Info + status */}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-lg font-semibold tracking-tight">
                         {site.siteName}
                       </h2>
 
-                      <div
-                        className={`rounded-full px-3 py-1 text-xs font-medium ${
-                          site.isActive
-                            ? "bg-green-100 text-green-700"
-                            : "bg-red-100 text-red-700"
-                        }`}
-                      >
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            site.isActive
+                              ? "bg-emerald-500"
+                              : "bg-muted-foreground/40"
+                          }`}
+                        />
                         {site.isActive ? "Active" : "Inactive"}
-                      </div>
+                      </span>
 
-                      <div
-                        className={`rounded-full px-3 py-1 text-xs font-medium ${
-                          site.isCompleted
-                            ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
-                            : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
-                        }`}
-                      >
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            site.isCompleted ? "bg-indigo-500" : "bg-amber-500"
+                          }`}
+                        />
                         {site.isCompleted ? "Completed" : "In Progress"}
-                      </div>
+                      </span>
 
                       {site.isPermanent && (
-                        <div className="rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20">
-                          Permanent Home Site
-                        </div>
+                        <span className="inline-flex items-center rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-xs font-medium text-primary">
+                          Permanent Home
+                        </span>
                       )}
                     </div>
 
-                    <div className="mt-4 flex items-start gap-2 text-muted-foreground">
-                      <MapPin className="mt-1 h-4 w-4 shrink-0" />
-
-                      <p className="text-base leading-relaxed">
+                    <div className="mt-2.5 flex items-start gap-1.5 text-muted-foreground">
+                      <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <p className="text-sm leading-relaxed">
                         {site.locationDetails}
                       </p>
                     </div>
                   </div>
 
-                  {/* Action buttons – stacked below content on mobile, inline on desktop */}
+                  {/* Actions — stacked on mobile, right-aligned on desktop */}
                   {(site.isActive || !site.isPermanent) && (
-                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-4 md:mt-0 md:border-0 md:pt-0 md:justify-end md:absolute md:right-6 md:top-1/2 md:-translate-y-1/2">
+                    <div className="flex flex-wrap items-center gap-1.5 md:shrink-0">
                       {site.isActive && !site.isPermanent && (
                         <Button
                           variant="outline"
@@ -235,11 +234,7 @@ export default function SitesPage() {
                               toast.error(error?.response?.data?.message || "Failed to update site status")
                             }
                           }}
-                          className={`rounded-xl border transition-all min-h-[44px] min-w-[44px] ${
-                            site.isCompleted
-                              ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
-                              : "hover:bg-accent border-muted-foreground/20 text-muted-foreground"
-                          }`}
+                          className="rounded-lg text-muted-foreground"
                         >
                           {site.isCompleted ? "Reopen Site" : "Complete Site"}
                         </Button>
@@ -247,7 +242,7 @@ export default function SitesPage() {
 
                       {!site.isPermanent && (
                         <Button
-                          variant="destructive"
+                          variant="ghost"
                           size="sm"
                           onClick={(e) => {
                             e.preventDefault()
@@ -255,7 +250,7 @@ export default function SitesPage() {
                             setSiteToDelete(site)
                             setConfirmDeleteOpen(true)
                           }}
-                          className="rounded-xl min-h-[44px] min-w-[44px]"
+                          className="rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive"
                         >
                           <Trash2 className="mr-1 h-4 w-4" />
                           Delete

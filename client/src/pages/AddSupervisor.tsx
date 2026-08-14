@@ -127,169 +127,130 @@ function AddSupervisor() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto p-6 space-y-8">
-
-          <Button
-              variant="outline"
-              className="mb-2"
-              onClick={() => navigate(-1)}
-          >
-
-              <ArrowLeft className="w-4 h-4 mr-2" />
-
-              Back
-
-          </Button>
-
-      <div className="space-y-2">
-
-        <h1 className="text-4xl font-bold">
-          Create Supervisor Account
-        </h1>
-
-        <div className="border rounded-lg p-4 bg-muted/40">
-
-          <p className="text-sm text-muted-foreground leading-relaxed">
-
-            Copy the email id and password and send it to the
-            supervisor, they can log in first time with the
-            same email and password but they will be asked
-            to change the password to a new one to continue.
-
-          </p>
-
-        </div>
-
-      </div>
-
-      <div className="space-y-6">
-
-        {/* NAME */}
-
-        <div className="space-y-2">
-
-          <Label>
-            Name
-          </Label>
-
-          <Input
-            value={employee?.name || ""}
-            disabled
-          />
-
-        </div>
-
-        {/* EMPLOYEE ID */}
-
-        <div className="space-y-2">
-
-          <Label>
-            Employee ID
-          </Label>
-
-          <Input
-            value={employee?.employeeId || ""}
-            disabled
-          />
-
-        </div>
-
-        {/* EMAIL */}
-
-        <div className="space-y-2">
-
-          <Label>
-            Email
-          </Label>
-
-          <div className="flex gap-2">
-
-            <Input
-              type="email"
-              placeholder="Enter email"
-              value={email}
-              onChange={(e) =>
-                setEmail(e.target.value)
-              }
-            />
-
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() =>
-                copyToClipboard(email, "email")
-              }
-              disabled={!email}
-            >
-
-              {copiedEmail ? (
-                <Check className="w-4 h-4" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-
-            </Button>
-
-          </div>
-
-        </div>
-
-        {/* PASSWORD */}
-
-        <div className="space-y-2">
-
-          <Label>
-            Password
-          </Label>
-
-          <div className="flex gap-2">
-
-            <Input
-              type="text"
-              placeholder="Enter password"
-              value={password}
-              onChange={(e) =>
-                setPassword(e.target.value)
-              }
-            />
-
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={() =>
-                copyToClipboard(password, "password")
-              }
-              disabled={!password}
-            >
-
-              {copiedPassword ? (
-                <Check className="w-4 h-4" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-
-            </Button>
-
-          </div>
-
-        </div>
-
-        {/* SUBMIT */}
-
-        <Button
-          className="w-full"
-          onClick={handleCreateSupervisor}
-          disabled={loading}
+    <div className="min-h-screen bg-muted/30">
+      <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:px-10">
+        {/* Back */}
+        <button
+          onClick={() => navigate(-1)}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          {loading
-            ? "Creating Account..."
-            : "Create Supervisor Account"}
-        </Button>
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
 
+        {/* Header */}
+        <div className="mt-6 space-y-1.5">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Create supervisor account
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Generate login credentials for this employee. Share them with the
+            supervisor — they'll be asked to set a new password on first login.
+          </p>
+        </div>
+
+        {/* Card */}
+        <div className="mt-8 rounded-xl border bg-card p-6 sm:p-8">
+          {/* Employee context */}
+          <div className="flex items-center gap-3 rounded-lg border bg-muted/40 p-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-medium text-primary">
+              {employee?.name
+                ? employee.name
+                    .trim()
+                    .split(/\s+/)
+                    .map((w) => w[0])
+                    .slice(0, 2)
+                    .join("")
+                    .toUpperCase()
+                : "—"}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">
+                {employee?.name || "Loading…"}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                Employee ID: {employee?.employeeId || "—"}
+              </p>
+            </div>
+          </div>
+
+          {/* Credentials */}
+          <div className="mt-6 space-y-5">
+            {/* Email */}
+            <div className="space-y-2">
+              <Label htmlFor="sup-email" className="text-sm font-medium">
+                Email
+              </Label>
+              <div className="relative">
+                <Input
+                  id="sup-email"
+                  type="email"
+                  placeholder="supervisor@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(email, "email")}
+                  disabled={!email}
+                  aria-label="Copy email"
+                  className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                >
+                  {copiedEmail ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Password */}
+            <div className="space-y-2">
+              <Label htmlFor="sup-password" className="text-sm font-medium">
+                Temporary password
+              </Label>
+              <div className="relative">
+                <Input
+                  id="sup-password"
+                  type="text"
+                  placeholder="Enter a temporary password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(password, "password")}
+                  disabled={!password}
+                  aria-label="Copy password"
+                  className="absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                >
+                  {copiedPassword ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="mt-8 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="ghost" onClick={() => navigate(-1)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateSupervisor}
+              disabled={loading || !employee}
+            >
+              {loading ? "Creating…" : "Create account"}
+            </Button>
+          </div>
+        </div>
       </div>
-
     </div>
   )
 }
