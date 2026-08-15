@@ -20,6 +20,7 @@ const SiteDetail = lazy(() => import("./pages/SiteDetail"))
 const MarkAttendance = lazy(() => import("./pages/MarkAttendance"))
 const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
 const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
+const MissingEmployees = lazy(() => import("./pages/MissingEmployees"))
 
 const ManageJobEmployees = lazy(() => import("./pages/ManageJobEmployees"))
 const MonthlyReport = lazy(() => import("./pages/MonthlyReport"))
@@ -232,6 +233,15 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <EditPastAttendance />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="attendance/edit/missing"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <MissingEmployees />
             </ProtectedRoute>
           }
         />

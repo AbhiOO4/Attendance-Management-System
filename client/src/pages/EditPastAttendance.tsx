@@ -3,7 +3,6 @@ import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useEffect, useState } from "react"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
-import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -38,10 +37,8 @@ import {
   Loader2,
   Pencil,
   UserPlus,
-  ChevronDown,
-  ChevronUp,
 } from "lucide-react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
@@ -180,9 +177,15 @@ const getDisplayStatus = (record: AttendanceRecord) => {
 function EditPastAttendance() {
   const todayDateString = getCurrentTargetDateString()
 
-  const [date, setDate] = useState(todayDateString)
-
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // The initial date can arrive as ?date=YYYY-MM-DD (e.g. returning from the
+  // Missing Employees page) so the selected day round-trips; clamp to today.
+  const paramDate = searchParams.get("date")
+  const [date, setDate] = useState(
+    paramDate && paramDate <= todayDateString ? paramDate : todayDateString
+  )
 
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
@@ -213,15 +216,9 @@ function EditPastAttendance() {
 
   const [totalPages, setTotalPages] = useState(1)
 
-  // --- Missing employees (backfill) state ---
-  const [missingEmployees, setMissingEmployees] = useState<MissingEmployee[]>([])
-  const [missingLoading, setMissingLoading] = useState(false)
-  const [missingFilters, setMissingFilters] = useState({ name: "", employeeId: "", jobTitle: "", page: 1, limit: 10 })
-  const [missingTotalPages, setMissingTotalPages] = useState(1)
+  // Count of employees with no record for the selected date, shown as a badge on
+  // the header link to the Missing Employees page.
   const [missingTotalCount, setMissingTotalCount] = useState(0)
-  const [backfillEmployee, setBackfillEmployee] = useState<MissingEmployee | null>(null)
-  const [backfillOpen, setBackfillOpen] = useState(false)
-  const [missingExpanded, setMissingExpanded] = useState(false)
 
   const formattedDate = new Date(date).toLocaleDateString("en-IN", {
     weekday: "long",
@@ -358,26 +355,16 @@ function EditPastAttendance() {
   }
 
 
-  const fetchMissingEmployees = async () => {
+  // Lightweight count for the header link badge — how many employees have no
+  // record for the selected date.
+  const fetchMissingCount = async () => {
     try {
-      setMissingLoading(true)
       const res = await api.get("/api/attendance/missing", {
-        params: {
-          date,
-          name: missingFilters.name || undefined,
-          employeeId: missingFilters.employeeId || undefined,
-          jobTitle: missingFilters.jobTitle || undefined,
-          page: missingFilters.page,
-          limit: missingFilters.limit,
-        },
+        params: { date, limit: 1 },
       })
-      setMissingEmployees(res.data.data)
-      setMissingTotalPages(res.data.pagination.totalPages)
       setMissingTotalCount(res.data.pagination.totalEmployees)
-    } catch (error: any) {
-      toast.error(error?.response?.data?.message || "Failed to fetch missing employees")
-    } finally {
-      setMissingLoading(false)
+    } catch {
+      // Non-fatal: keep the previous count if the probe fails.
     }
   }
 
@@ -391,8 +378,8 @@ function EditPastAttendance() {
   }, [date, filters])
 
   useEffect(() => {
-    if (missingExpanded) fetchMissingEmployees()
-  }, [date, missingFilters, missingExpanded])
+    fetchMissingCount()
+  }, [date])
 
   const changeDate = ( direction: "prev" | "next" ) => {
     const current = new Date(date)
@@ -424,15 +411,6 @@ function EditPastAttendance() {
     )
   }
 
-  const handleBackfillCreated = (newRecord: AttendanceRecord) => {
-    // Add the new record to the top of the attendance table
-    setAttendance((prev) => [newRecord, ...prev])
-    // Remove from the missing list
-    setMissingEmployees((prev) => prev.filter((e) => e._id !== newRecord.employee?.toString()))
-    setMissingTotalCount((prev) => Math.max(prev - 1, 0))
-  }
-
- 
 
   
  
@@ -449,7 +427,7 @@ function EditPastAttendance() {
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back
               </Button>
-        <Card>
+        <Card className="sticky top-0 z-20">
           <CardContent className="space-y-6 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -462,7 +440,22 @@ function EditPastAttendance() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mr-1 gap-1.5"
+                  onClick={() => navigate(`/attendance/edit/missing?date=${date}`)}
+                >
+                  <UserPlus className="h-4 w-4 text-muted-foreground" />
+                  Missing
+                  {missingTotalCount > 0 && (
+                    <Badge variant="secondary" className="ml-0.5">
+                      {missingTotalCount}
+                    </Badge>
+                  )}
+                </Button>
+
                 <Button
                   variant="outline"
                   size="icon"
@@ -926,183 +919,6 @@ function EditPastAttendance() {
           </div>
         </div>
 
-        {/* ============================================================ */}
-        {/* MISSING EMPLOYEES — BACKFILL SECTION */}
-        {/* ============================================================ */}
-        <Card className="border-dashed">
-          <CardContent className="p-0">
-            {/* Collapsible header */}
-            <button
-              className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-muted/30 transition-colors rounded-xl"
-              onClick={() => {
-                setMissingExpanded((v) => !v)
-              }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-100 dark:bg-orange-900/30">
-                  <UserPlus className="h-4 w-4 text-orange-600 dark:text-orange-400" />
-                </div>
-                <div>
-                  <p className="font-semibold text-base">
-                    Missing Employees
-                    {missingTotalCount > 0 && (
-                      <Badge variant="secondary" className="ml-2 bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">
-                        {missingTotalCount}
-                      </Badge>
-                    )}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Employees with no attendance record for {formattedDate}
-                  </p>
-                </div>
-              </div>
-              {missingExpanded ? (
-                <ChevronUp className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              )}
-            </button>
-
-            {missingExpanded && (
-              <div className="px-6 pb-6 space-y-4 border-t pt-4">
-                {/* SEARCH FILTERS */}
-                <div className="grid gap-3 md:grid-cols-3">
-                  <Input
-                    placeholder="Search name"
-                    value={missingFilters.name}
-                    onChange={(e) => setMissingFilters({ ...missingFilters, name: e.target.value, page: 1 })}
-                  />
-                  <Input
-                    placeholder="Employee ID"
-                    value={missingFilters.employeeId}
-                    onChange={(e) => setMissingFilters({ ...missingFilters, employeeId: e.target.value, page: 1 })}
-                  />
-                  <Input
-                    placeholder="Job Title"
-                    value={missingFilters.jobTitle}
-                    onChange={(e) => setMissingFilters({ ...missingFilters, jobTitle: e.target.value, page: 1 })}
-                  />
-                </div>
-
-                {/* TABLE */}
-                <div className="overflow-x-auto rounded-xl border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>S.No</TableHead>
-                        <TableHead>Employee</TableHead>
-                        <TableHead>Employee ID</TableHead>
-                        <TableHead>Job Title</TableHead>
-                        <TableHead>Current Site</TableHead>
-                        <TableHead className="text-right">Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {missingLoading ? (
-                        <TableRow>
-                          <TableCell colSpan={6} className="h-32 text-center">
-                            <div className="flex items-center justify-center">
-                              <Loader2 className="h-6 w-6 animate-spin" />
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ) : missingEmployees.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
-                            🎉 All employees have records for this date
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        missingEmployees.map((emp, index) => (
-                          <TableRow key={emp._id}
-                            className={
-                              index % 2 === 0
-                                ? "bg-white dark:bg-background"
-                                : "bg-slate-50 dark:bg-slate-900/40"
-                            }
-                          >
-                            <TableCell>{(missingFilters.page - 1) * missingFilters.limit + index + 1}</TableCell>
-                            <TableCell className="font-medium">{emp.name}</TableCell>
-                            <TableCell>{emp.employeeId}</TableCell>
-                            <TableCell className="capitalize">{emp.jobTitle}</TableCell>
-                            <TableCell>{emp.currentSite?.siteName || <span className="text-muted-foreground">—</span>}</TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="gap-1.5 text-orange-600 border-orange-300 hover:bg-orange-50 dark:text-orange-400 dark:border-orange-700 dark:hover:bg-orange-950/30"
-                                onClick={() => {
-                                  setBackfillEmployee(emp)
-                                  setBackfillOpen(true)
-                                }}
-                              >
-                                <UserPlus className="h-3.5 w-3.5" />
-                                Backfill
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                {/* PAGINATION */}
-                <div className="flex items-center justify-between pt-1">
-                  {missingTotalPages > 1 ? (
-                    <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={missingFilters.page === 1}
-                        onClick={() => setMissingFilters((f) => ({ ...f, page: f.page - 1 }))}
-                      >
-                        Previous
-                      </Button>
-                      <p className="text-sm text-muted-foreground">
-                        Page {missingFilters.page} of {missingTotalPages}
-                      </p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={missingFilters.page === missingTotalPages}
-                        onClick={() => setMissingFilters((f) => ({ ...f, page: f.page + 1 }))}
-                      >
-                        Next
-                      </Button>
-                    </>
-                  ) : (
-                    <div />
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground whitespace-nowrap">
-                      Rows per page
-                    </span>
-                    <Select
-                      value={String(missingFilters.limit)}
-                      onValueChange={(value) =>
-                        setMissingFilters((f) => ({ ...f, limit: Number(value), page: 1 }))
-                      }
-                    >
-                      <SelectTrigger className="w-[80px]" size="sm">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {[10, 25, 50, 100].map((size) => (
-                          <SelectItem key={size} value={String(size)}>
-                            {size}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
         <AlertDialog
           open={openHolidayDialog}
           onOpenChange={setOpenHolidayDialog}
@@ -1145,17 +961,6 @@ function EditPastAttendance() {
         onUpdated={(updatedRecord) =>
           handleAttendanceUpdated(updatedRecord as AttendanceRecord)
         }
-      />
-
-      <BackfillModal
-        open={backfillOpen}
-        onClose={() => {
-          setBackfillOpen(false)
-          setBackfillEmployee(null)
-        }}
-        employee={backfillEmployee}
-        date={date}
-        onCreated={handleBackfillCreated}
       />
     </div>
   )

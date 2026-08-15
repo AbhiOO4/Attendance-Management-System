@@ -209,7 +209,10 @@ function Employees() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="px-6 pb-6 space-y-6">
+      {/* Sticky toolbar: title + filters stay pinned while the list scrolls
+          naturally with the page (no inner table scrollbar). */}
+      <div className="sticky top-0 z-20 -mx-6 space-y-4 border-b bg-background px-6 pt-6 pb-4">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <h1 className="text-4xl font-bold">
@@ -297,12 +300,13 @@ function Employees() {
           </SelectContent>
         </Select>
       </div>
+      </div>
 
       {/* TABLE */}
 
       <div className="border rounded-xl overflow-hidden">
-        <Table wrapperClassName="max-h-[calc(100vh-320px)] overflow-y-auto">
-          <TableHeader className="sticky top-0 z-10 bg-background">
+        <Table>
+          <TableHeader>
             <TableRow>
               <TableHead className="w-16">Sl No</TableHead>
               <TableHead>Name</TableHead>

@@ -36,14 +36,14 @@ import { Switch } from "@/components/ui/switch"
 
 import { Label } from "@/components/ui/label"
 
-import { Separator } from "@/components/ui/separator"
-
 import {
   Loader2,
   Plus,
   Save,
   Trash2,
   X,
+  Moon,
+  Sun,
 } from "lucide-react"
 
 import { api } from "@/lib/api"
@@ -691,430 +691,260 @@ const [sessionToDelete, setSessionToDelete] =
         }
       }}
     >
-      <DialogContent className="!w-[92vw] !max-w-[1000px] h-[92vh] overflow-hidden p-0 flex flex-col rounded-2xl">
+      <DialogContent className="!w-[95vw] !max-w-[540px] h-[90vh] max-h-[90vh] overflow-hidden p-0 flex flex-col rounded-2xl">
 
         {/* HEADER */}
-        <div className="border-b bg-background px-8 py-5">
+        <div className="border-b px-5 py-4 sm:px-6">
           <DialogHeader>
-            <DialogTitle className="text-2xl font-bold">
+            <DialogTitle className="text-lg font-semibold">
               Edit Attendance Record
             </DialogTitle>
           </DialogHeader>
+
+          {/* Employee info — compact inline */}
+          {record && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <span className="font-medium">{record.name}</span>
+              <span className="text-muted-foreground">{record.employeeId}</span>
+              {record.jobTitle && (
+                <Badge variant="secondary" className="text-xs font-normal">{record.jobTitle}</Badge>
+              )}
+            </div>
+          )}
         </div>
 
         {/* BODY */}
-        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6">
-
-          {/* EMPLOYEE INFO */}
-          <div className="rounded-2xl border bg-muted/20 p-6">
-            <h2 className="text-2xl font-bold">
-              {record?.name}
-            </h2>
-
-            <div className="mt-2 space-y-1">
-              <p className="text-sm text-muted-foreground">
-                Employee ID:{" "}
-                <span className="font-medium text-foreground">
-                  {record?.employeeId}
-                </span>
-              </p>
-
-              <p className="text-sm text-muted-foreground">
-                Job Title:{" "}
-                <span className="font-medium text-foreground">
-                  {record?.jobTitle}
-                </span>
-              </p>
-            </div>
-          </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 sm:px-6 space-y-5">
 
           {/* SESSIONS */}
-          {/* BREAK CONTROL — record-level, above sessions */}
-          {config.breakDurationMinutes > 0 && (
-            <div className="flex flex-wrap items-center gap-2 md:gap-3 rounded-xl border bg-muted/10 px-4 py-3">
-              <span className="text-sm text-muted-foreground shrink-0">☕ Breaks taken:</span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                  disabled={breaksTaken !== null && breaksTaken <= 0}
-                  onClick={() => setBreaksTaken((prev) => Math.max(0, (prev ?? Math.floor(sessions.reduce((s, x) => s + x.workedHours, 0) / config.fullDayHours)) - 1))}
-                >−</button>
+          <div className="space-y-3">
+            {sessions.map((session, index) => {
+              const selectedSite = sites.find((site) => site._id === session.siteId)
+              const inT = toTimeValue(session.checkIn)
+              const outT = toTimeValue(session.checkOut)
+              const night = session.isNightShift || (!!inT && !!outT && isCrossMidnight(inT, outT, session.isNightShift))
+              const hasIssue = overlapIndexes.includes(index) || !!sessionErrors[index]
 
-                <span className="min-w-[60px] text-center text-sm font-medium">
-                  {breaksTaken !== null
-                    ? `${breaksTaken}`
-                    : `Auto · ${Math.floor(sessions.reduce((s, x) => s + x.workedHours, 0) / config.fullDayHours)}`}
-                </span>
-
-                <button
-                  type="button"
-                  className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
-                  onClick={() => setBreaksTaken((prev) => (prev ?? Math.floor(sessions.reduce((s, x) => s + x.workedHours, 0) / config.fullDayHours)) + 1)}
-                >+</button>
-
-                {breaksTaken !== null && (
-                  <button
-                    type="button"
-                    className="ml-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setBreaksTaken(null)}
-                    title="Reset to auto"
-                  >✕ auto</button>
-                )}
-              </div>
-              <span className="text-xs text-muted-foreground sm:ml-auto">
-                ({config.breakDurationMinutes} min/break)
-              </span>
-            </div>
-          )}
-
-          {/* SESSIONS */}
-
-          <div className="space-y-5">
-            {sessions.map(
-              (session, index) => {
-                const selectedSite =
-                  sites.find(
-                    (site) =>
-                      site._id ===
-                      session.siteId
-                  )
-
-                return (
-                  <div
-                    key={
-                      session._id ||
-                      index
-                    }
-                    className={`rounded-2xl p-6 shadow-sm space-y-6 transition-colors ${
-                      (overlapIndexes.includes(index) || !!sessionErrors[index])
-                        ? "border-red-500 bg-red-50 dark:bg-red-950/20"
-                        : "border bg-background"
-                    }`}
-                  >
-                    {/* TOP */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-lg font-semibold">
-                          Session{" "}
-                          {index + 1}
-                        </h3>
-
-                        <p className="text-sm text-muted-foreground">
-                          Edit session details
-                        </p>
-
-                        {overlapIndexes.includes(index) && (
-                          <p className="text-sm text-red-600 font-medium mt-2">
-                            This session overlaps with another
-                            session.
-                          </p>
-                        )}
-                      </div>
-
-                      <Button
-                        variant="destructive"
-                        size="icon"
-                        onClick={() => {
-                          setSessionToDelete(index)
-                          setDeleteDialogOpen(true)
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-
-                    {/* FORM */}
-                    <div className="space-y-5">
-
-                      {/* TOP ROW */}
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-
-                        {/* SITE */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Site
-                          </p>
-
-                          <Select
-                            value={session.siteId}
-                            onValueChange={(value) =>
-                              updateSessionField(
-                                index,
-                                "siteId",
-                                value
-                              )
-                            }
-                          >
-                            <SelectTrigger className="w-full h-11">
-                              <SelectValue placeholder="Select site" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                              {sites.map((site) => (
-                                <SelectItem
-                                  key={site._id}
-                                  value={site._id}
-                                >
-                                  {site.siteName}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-
-                        {/* JOB */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Job
-                          </p>
-
-                          <Select
-                            value={session.jobId || ""}
-                            onValueChange={(value) =>
-                              updateSessionField(
-                                index,
-                                "jobId",
-                                value
-                              )
-                            }
-                          >
-                            <SelectTrigger className="w-full h-11">
-                              <SelectValue placeholder="Select job" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                              {selectedSite?.jobs.map(
-                                (job) => (
-                                  <SelectItem
-                                    key={job._id}
-                                    value={job._id}
-                                  >
-                                    {job.name}
-                                  </SelectItem>
-                                )
-                              )}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-
-                      {/* BOTTOM ROW */}
-                      <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
-
-                        {/* CHECK IN */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Check In
-                          </p>
-
-                          <Input
-                            className="w-full h-11"
-                            type="time"
-                            value={toTimeValue(
-                              session.checkIn
-                            )}
-                            onChange={(e) =>
-                              updateSessionField(
-                                index,
-                                "checkIn",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </div>
-
-                        {/* CHECK OUT */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Check Out
-                          </p>
-
-                          <Input
-                            className="w-full h-11"
-                            type="time"
-                            value={toTimeValue(
-                              session.checkOut
-                            )}
-                            onChange={(e) =>
-                              updateSessionField(
-                                index,
-                                "checkOut",
-                                e.target.value
-                              )
-                            }
-                          />
-                        </div>
-                        {/* SHIFT */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Shift
-                          </p>
-
-                          <div className="flex items-center gap-2 h-11">
-                            {(session.isNightShift || (toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? (
-                              <span className="inline-flex items-center gap-1.5 text-indigo-600 font-medium text-sm">
-                                🌙 Night
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground text-sm font-medium">☀️ Day</span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* WORKED HOURS */}
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium">
-                            Worked Hours
-                          </p>
-
-                          <Input
-                            readOnly
-                            className="h-11 font-medium"
-                            value={`${session.workedHours} hrs`}
-                          />
-                        </div>
-
-                      </div>
-
-                      {sessionErrors[index] && (
-                        <div className="text-red-500 text-sm font-medium mt-2">
-                          {sessionErrors[index]}
-                        </div>
+              return (
+                <div
+                  key={session._id || index}
+                  className={`rounded-xl border p-4 space-y-4 ${
+                    hasIssue ? "border-red-400 bg-red-50 dark:bg-red-950/20" : "bg-background"
+                  }`}
+                >
+                  {/* Session header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold">Session {index + 1}</h4>
+                      {night ? (
+                        <Badge variant="secondary" className="text-xs gap-1 font-normal">
+                          <Moon className="h-3 w-3" /> Night
+                        </Badge>
+                      ) : (inT || outT) ? (
+                        <Badge variant="secondary" className="text-xs gap-1 font-normal">
+                          <Sun className="h-3 w-3" /> Day
+                        </Badge>
+                      ) : null}
+                      {overlapIndexes.includes(index) && (
+                        <Badge variant="destructive" className="text-xs">Overlap</Badge>
                       )}
                     </div>
+
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      onClick={() => {
+                        setSessionToDelete(index)
+                        setDeleteDialogOpen(true)
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
-                )
-              }
-            )}
+
+                  {/* Site + Job */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">Site</label>
+                      <Select
+                        value={session.siteId}
+                        onValueChange={(value) => updateSessionField(index, "siteId", value)}
+                      >
+                        <SelectTrigger className="w-full h-10 text-sm">
+                          <SelectValue placeholder="Select site" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {sites.map((site) => (
+                            <SelectItem key={site._id} value={site._id}>{site.siteName}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">Job</label>
+                      <Select
+                        value={session.jobId || ""}
+                        onValueChange={(value) => updateSessionField(index, "jobId", value)}
+                      >
+                        <SelectTrigger className="w-full h-10 text-sm">
+                          <SelectValue placeholder="Select job" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedSite?.jobs.map((job) => (
+                            <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Time inputs */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">Check In</label>
+                      <Input
+                        className="h-10 text-sm"
+                        type="time"
+                        value={toTimeValue(session.checkIn)}
+                        onChange={(e) => updateSessionField(index, "checkIn", e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">Check Out</label>
+                      <Input
+                        className="h-10 text-sm"
+                        type="time"
+                        value={toTimeValue(session.checkOut)}
+                        onChange={(e) => updateSessionField(index, "checkOut", e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Worked hours */}
+                  <div className="flex items-center justify-between text-sm pt-1">
+                    <span className="text-muted-foreground">Worked</span>
+                    <span className="font-semibold">{session.workedHours} hrs</span>
+                  </div>
+
+                  {sessionErrors[index] && (
+                    <p className="text-xs text-red-500 font-medium">{sessionErrors[index]}</p>
+                  )}
+                </div>
+              )
+            })}
           </div>
 
           {/* ADD SESSION */}
           <Button
             variant="outline"
             onClick={addSession}
-            className="w-full border-dashed h-11"
+            className="w-full border-dashed h-9 text-sm"
           >
-            <Plus className="mr-2 h-4 w-4" />
+            <Plus className="mr-2 h-3.5 w-3.5" />
             Add New Session
           </Button>
 
+          {/* OVERLAP ERROR */}
           {overlapInfo && (
             <div className="rounded-xl border border-red-500 bg-red-50 p-4 dark:bg-red-950/20 dark:border-red-800/30">
-              <h4 className="font-semibold text-red-700 dark:text-red-200">
-                Session Overlap Detected
-              </h4>
-
+              <h4 className="font-semibold text-red-700 dark:text-red-200">Session Overlap Detected</h4>
               <div className="mt-3 text-sm text-red-700 dark:text-red-300 space-y-2">
                 <div>
-                  <strong>
-                    Session{" "}
-                    {overlapInfo.firstIndex + 1}
-                  </strong>
-
+                  <strong>Session {overlapInfo.firstIndex + 1}</strong>
                   <br />
-
                   Check In:{" "}
-                  {overlapInfo.sessionA.checkIn
-                    ? formatLocalTime12h(overlapInfo.sessionA.checkIn)
-                    : "-"}
-
+                  {overlapInfo.sessionA.checkIn ? formatLocalTime12h(overlapInfo.sessionA.checkIn) : "-"}
                   <br />
-
                   Check Out:{" "}
-                  {overlapInfo.sessionA.checkOut
-                    ? formatLocalTime12h(overlapInfo.sessionA.checkOut)
-                    : "-"}
+                  {overlapInfo.sessionA.checkOut ? formatLocalTime12h(overlapInfo.sessionA.checkOut) : "-"}
                 </div>
-
                 <div>
-                  <strong>
-                    Session{" "}
-                    {overlapInfo.secondIndex + 1}
-                  </strong>
-
+                  <strong>Session {overlapInfo.secondIndex + 1}</strong>
                   <br />
-
                   Check In:{" "}
-                  {overlapInfo.sessionB.checkIn
-                    ? formatLocalTime12h(overlapInfo.sessionB.checkIn)
-                    : "-"}
-
+                  {overlapInfo.sessionB.checkIn ? formatLocalTime12h(overlapInfo.sessionB.checkIn) : "-"}
                   <br />
-
                   Check Out:{" "}
-                  {overlapInfo.sessionB.checkOut
-                    ? formatLocalTime12h(overlapInfo.sessionB.checkOut)
-                    : "-"}
+                  {overlapInfo.sessionB.checkOut ? formatLocalTime12h(overlapInfo.sessionB.checkOut) : "-"}
                 </div>
               </div>
             </div>
           )}
 
-          {/* SUMMARY */}
-          <div className="rounded-2xl border bg-muted/20 p-6 space-y-4">
+          {/* BREAKS + SUMMARY — compact */}
+          <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+            {/* Breaks */}
+            {config.breakDurationMinutes > 0 && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm text-muted-foreground">☕ Breaks</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                    disabled={breaksTaken !== null && breaksTaken <= 0}
+                    onClick={() => setBreaksTaken((prev) => Math.max(0, (prev ?? autoBreaks) - 1))}
+                  >−</button>
 
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Total Work Hours
-              </p>
+                  <span className="min-w-[50px] text-center text-sm font-medium">
+                    {breaksTaken !== null ? breaksTaken : `${autoBreaks}`}
+                  </span>
 
-              <p className="text-3xl font-bold">
-                {totalWorkHours} hrs
-              </p>
-            </div>
+                  <button
+                    type="button"
+                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
+                    onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                  >+</button>
 
-            <Separator />
-
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Overtime Hours
-              </p>
-
-              <p className="text-3xl font-bold">
-                {overtimeHours} hrs
-              </p>
-            </div>
-
-            {record?.isHoliday && (
-              <>
-                <Separator />
-
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm text-muted-foreground">
-                      Holiday Hours
-                    </p>
-
-                    <Badge
-                      variant="secondary"
-                      className="bg-yellow-100 text-yellow-800 border-yellow-300 text-xs"
-                    >
-                      {record.holidayReason === "weekly"
-                        ? "Weekly Holiday"
-                        : "Public Holiday"}
-                    </Badge>
-                  </div>
-
-                  <p className="text-3xl font-bold">
-                    {holidayHours} hrs
-                  </p>
+                  {breaksTaken !== null && (
+                    <button
+                      type="button"
+                      className="ml-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setBreaksTaken(null)}
+                      title="Reset to auto"
+                    >reset</button>
+                  )}
                 </div>
-              </>
+              </div>
             )}
 
-            <Separator />
+            {/* Total */}
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Total Work Hours</span>
+              <span className="text-lg font-bold">{totalWorkHours} hrs</span>
+            </div>
 
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Attendance Status
-              </p>
+            {/* Overtime */}
+            {overtimeHours > 0 && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Overtime</span>
+                <span className="text-lg font-bold">{overtimeHours} hrs</span>
+              </div>
+            )}
 
+            {/* Holiday */}
+            {record?.isHoliday && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  Holiday Hours
+                  <Badge
+                    variant="secondary"
+                    className="bg-yellow-100 text-yellow-800 border-yellow-300 text-xs font-normal"
+                  >
+                    {record.holidayReason === "weekly" ? "Weekly" : "Public"}
+                  </Badge>
+                </span>
+                <span className="text-lg font-bold">{holidayHours} hrs</span>
+              </div>
+            )}
+
+            {/* Status */}
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Status</span>
               <Badge
-                variant={
-                  status === "absent" ? "destructive" : "secondary"
-                }
-                className={`mt-2 text-sm ${
+                variant={status === "absent" ? "destructive" : "secondary"}
+                className={`text-sm ${
                   status === "fullday"
                     ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-500/25 border-transparent"
                     : status === "pending"
@@ -1128,15 +958,11 @@ const [sessionToDelete, setSessionToDelete] =
               </Badge>
             </div>
 
-            <Separator />
-
-            {/* SICK LEAVE TOGGLE — only valid for a fully empty day */}
-            <div className="flex items-start justify-between gap-4">
+            {/* Sick leave toggle — only valid for a fully empty day */}
+            <div className="flex items-start justify-between gap-4 border-t pt-3">
               <div className="space-y-0.5">
-                <Label htmlFor="sick-leave" className="text-sm font-medium">
-                  Sick Leave
-                </Label>
-                <p className="text-xs text-muted-foreground max-w-md">
+                <Label htmlFor="sick-leave" className="text-sm font-medium">Sick Leave</Label>
+                <p className="text-xs text-muted-foreground max-w-[280px]">
                   {allSessionsEmpty
                     ? "Mark this absent day as sick leave. Has no effect on pay."
                     : "Clear all check-in/out times to mark this day as sick leave."}
@@ -1155,23 +981,17 @@ const [sessionToDelete, setSessionToDelete] =
         </div>
 
         {/* FOOTER */}
-        <div className="border-t bg-background px-8 py-5 flex justify-end gap-3">
-          <Button
-            variant="outline"
-            onClick={handleCloseAttempt}
-          >
+        <div className="border-t px-5 py-3 sm:px-6 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={handleCloseAttempt}>
             Cancel
           </Button>
 
-          <Button
-            onClick={updateARecord}
-            disabled={saving}
-          >
+          <Button size="sm" onClick={updateARecord} disabled={saving}>
             {saving ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <>
-                <Save className="mr-2 h-4 w-4" />
+                <Save className="mr-1.5 h-3.5 w-3.5" />
                 Save Changes
               </>
             )}
