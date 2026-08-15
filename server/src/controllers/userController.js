@@ -152,9 +152,12 @@ export async function getUsers(req, res) {
     }
 }
 
-export const addAdmin = async (req, res) => {
+// Shared creator for privileged (non-supervisor) accounts. `role` is fixed by the
+// caller, never taken from the request body.
+async function createPrivilegedUser(role, req, res) {
   try {
     const { name, email, password } = req.body;
+    const label = role === "superadmin" ? "Superadmin" : "Admin";
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -178,23 +181,73 @@ export const addAdmin = async (req, res) => {
       });
     }
 
-    const admin = new userModel({
+    const user = new userModel({
       name,
       email,
       password,
-      role: "admin",
+      role,
     });
 
-    await admin.save();
+    await user.save();
 
     res.status(201).json({
       success: true,
-      message: "Admin created successfully",
+      message: `${label} created successfully`,
       user: {
-        _id: admin._id,
-        name: admin.name,
-        email: admin.email,
-        role: admin.role,
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+}
+
+export const addAdmin = (req, res) => createPrivilegedUser("admin", req, res);
+
+export const addSuperadmin = (req, res) => createPrivilegedUser("superadmin", req, res);
+
+// Promote an existing admin to superadmin. Only admins can be promoted.
+export const promoteToSuperadmin = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await userModel.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.role === "superadmin") {
+      return res.status(400).json({
+        success: false,
+        message: "User is already a superadmin",
+      });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Only an admin can be promoted to superadmin",
+      });
+    }
+
+    user.role = "superadmin";
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Admin promoted to superadmin",
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
       },
     });
   } catch (error) {
@@ -301,16 +354,6 @@ export const demoLogin = async (req, res) => {
 
 export async function deleteUser(req, res) {
   const { userId } = req.params;
-  const deletePassword = req.body.deletePassword || req.headers['x-delete-password'] || req.query.deletePassword;
-
-  const configPassword = process.env.MAIN_ADMIN_DELETE_PASSWORD;
-  if (!configPassword) {
-    return res.status(500).json({ success: false, message: "Main admin delete password is not configured on the server." });
-  }
-
-  if (deletePassword !== configPassword) {
-    return res.status(403).json({ success: false, message: "Invalid delete password." });
-  }
 
   const session = await mongoose.startSession();
   session.startTransaction();

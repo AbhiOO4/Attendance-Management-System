@@ -43,7 +43,7 @@ router.delete('/:id', authorizeRoles("admin"), empController.deleteEmployee)//
 
 router.post('/Supervisor', authorizeRoles("admin"), supervisorValidation, empController.addSupervisor)// 
 
-router.delete('/Supervisor/:id', authorizeRoles("admin"), empController.deleteSupervisor)
+router.delete('/Supervisor/:id', authorizeRoles("superadmin"), empController.deleteSupervisor)
 
 
 

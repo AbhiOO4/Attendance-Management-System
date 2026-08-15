@@ -26,13 +26,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { 
-  Search, 
-  UserCheck, 
-  UserX, 
-  Users, 
-  Edit2, 
-  ShieldAlert, 
+import {
+  Search,
+  UserCheck,
+  UserX,
+  Users,
+  Edit2,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldPlus,
   KeyRound,
   Mail,
   User,
@@ -61,23 +63,37 @@ function ManageUsers() {
   const [search, setSearch] = useState("")
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [open, setOpen] = useState(false)
-  const [addAdminOpen, setAddAdminOpen] = useState(false)
-  
-  // New States to handle the Single lifted Delete Dialog safely
-  const [userToDelete, setUserToDelete] = useState<User | null>(null)
-  const [deletePassword, setDeletePassword] = useState("")
+  // Which kind of account the Add modal is creating (null = closed).
+  const [addUserRole, setAddUserRole] = useState<"admin" | "superadmin" | null>(null)
 
-  const handleDeleteUser = async (userId: string, deletePassword?: string) => {
+  // Single lifted Delete Dialog (role gate is at the route level: superadmin only).
+  const [userToDelete, setUserToDelete] = useState<User | null>(null)
+
+  // Promote-to-superadmin confirmation target.
+  const [userToPromote, setUserToPromote] = useState<User | null>(null)
+
+  const handleDeleteUser = async (userId: string) => {
     try {
-      await api.delete(`/api/user/${userId}`, {
-        data: { deletePassword }
-      })
+      await api.delete(`/api/user/${userId}`)
       fetchUsers()
       toast.success("User deleted successfully")
       setUserToDelete(null) // Reset on success
     } catch (error: any) {
       console.error(error)
       const errorMsg = error?.response?.data?.message || "Failed to delete user"
+      toast.error(errorMsg)
+    }
+  }
+
+  const handlePromoteUser = async (userId: string) => {
+    try {
+      await api.patch(`/api/user/promote/${userId}`)
+      fetchUsers()
+      toast.success("Admin promoted to superadmin")
+      setUserToPromote(null)
+    } catch (error: any) {
+      console.error(error)
+      const errorMsg = error?.response?.data?.message || "Failed to promote user"
       toast.error(errorMsg)
     }
   }
@@ -119,6 +135,10 @@ function ManageUsers() {
     return users.filter((user) => user.role === "admin")
   }, [users])
 
+  const superadmins = useMemo(() => {
+    return users.filter((user) => user.role === "superadmin")
+  }, [users])
+
   const filteredSupervisors = useMemo(() => {
     const searchValue = search.toLowerCase()
     return supervisors.filter((user) => {
@@ -140,10 +160,21 @@ function ManageUsers() {
     })
   }, [admins, search])
 
+  const filteredSuperadmins = useMemo(() => {
+    const searchValue = search.toLowerCase()
+    return superadmins.filter((user) => {
+      return (
+        user.name.toLowerCase().includes(searchValue) ||
+        user.email.toLowerCase().includes(searchValue)
+      )
+    })
+  }, [superadmins, search])
+
   const totalSupervisors = supervisors.length
   const assignedSupervisors = supervisors.filter((u) => u.assignedSite).length
   const unassignedSupervisors = supervisors.filter((u) => !u.assignedSite).length
   const totalAdmins = admins.length
+  const totalSuperadmins = superadmins.length
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto p-4 md:p-6">
@@ -170,23 +201,32 @@ function ManageUsers() {
           </div>
 
           <Button
-            onClick={() => setAddAdminOpen(true)}
+            variant="outline"
+            onClick={() => setAddUserRole("admin")}
             className="w-full sm:w-auto inline-flex items-center gap-1.5"
           >
             Add Admin
+          </Button>
+
+          <Button
+            onClick={() => setAddUserRole("superadmin")}
+            className="w-full sm:w-auto inline-flex items-center gap-1.5"
+          >
+            <ShieldPlus className="h-4 w-4" />
+            Add Superadmin
           </Button>
         </div>
       </div>
 
       {/* Statistics Cards */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-4">
+      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-xl border bg-card p-5 shadow-sm flex items-center gap-4 transition-all duration-200 hover:shadow-md">
-          <div className="p-3 rounded-lg bg-primary/10 text-primary">
-            <Users className="h-5 w-5" />
+          <div className="p-3 rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+            <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Supervisors</div>
-            <div className="text-2xl font-bold text-foreground mt-0.5">{totalSupervisors}</div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Superadmins</div>
+            <div className="text-2xl font-bold text-foreground mt-0.5">{totalSuperadmins}</div>
           </div>
         </div>
 
@@ -197,6 +237,16 @@ function ManageUsers() {
           <div>
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Admin Users</div>
             <div className="text-2xl font-bold text-foreground mt-0.5">{totalAdmins}</div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border bg-card p-5 shadow-sm flex items-center gap-4 transition-all duration-200 hover:shadow-md">
+          <div className="p-3 rounded-lg bg-primary/10 text-primary">
+            <Users className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Supervisors</div>
+            <div className="text-2xl font-bold text-foreground mt-0.5">{totalSupervisors}</div>
           </div>
         </div>
 
@@ -384,6 +434,16 @@ function ManageUsers() {
                         <Button
                           size="sm"
                           variant="outline"
+                          onClick={() => setUserToPromote(user)}
+                          className="inline-flex items-center gap-1.5 hover:bg-purple-600 hover:text-white hover:border-purple-600 transition-all duration-200"
+                        >
+                          <ShieldPlus className="h-3.5 w-3.5" />
+                          Promote
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="outline"
                           onClick={() => {
                             setSelectedUser(user)
                             setOpen(true)
@@ -415,6 +475,86 @@ function ManageUsers() {
         </div>
       </div>
 
+      {/* Superadmins Table Section */}
+      <div className="space-y-3 pt-4">
+        <h2 className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
+          <span>Superadmins</span>
+          <Badge variant="outline" className="text-xs font-normal">{filteredSuperadmins.length}</Badge>
+        </h2>
+        <div className="border rounded-xl bg-card shadow-sm overflow-hidden">
+          <Table>
+            <TableHeader className="bg-muted/40">
+              <TableRow>
+                <TableHead className="font-semibold text-foreground">Name</TableHead>
+                <TableHead className="font-semibold text-foreground">Email</TableHead>
+                <TableHead className="font-semibold text-foreground">Password</TableHead>
+                <TableHead className="font-semibold text-foreground text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+
+            <TableBody>
+              {filteredSuperadmins.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="h-24 text-center">
+                    <div className="flex flex-col items-center justify-center p-6 text-muted-foreground">
+                      <ShieldAlert className="h-8 w-8 mb-2 text-muted-foreground/60" />
+                      <p className="font-medium text-foreground">No superadmins found</p>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredSuperadmins.map((user) => (
+                  <TableRow key={user._id} className="transition-colors hover:bg-muted/30">
+                    <TableCell className="font-medium text-foreground py-3.5">
+                      <div className="flex items-center gap-2">
+                        <div className="h-7 w-7 rounded-full bg-purple-500/10 flex items-center justify-center text-xs font-bold text-purple-600 dark:text-purple-400">
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                        </div>
+                        <span>{user.name}</span>
+                        {currentUser?._id === user._id && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">You</Badge>
+                        )}
+                      </div>
+                    </TableCell>
+
+                    <TableCell className="text-muted-foreground text-sm">
+                      <div className="flex items-center gap-1.5">
+                        <Mail className="h-3.5 w-3.5 text-muted-foreground/50" />
+                        <span>{user.email}</span>
+                      </div>
+                    </TableCell>
+
+                    <TableCell>
+                      <div className="flex items-center gap-1.5 text-muted-foreground/50 font-mono text-xs">
+                        <KeyRound className="h-3.5 w-3.5 text-muted-foreground/30" />
+                        <span>••••••••</span>
+                      </div>
+                    </TableCell>
+
+                    <TableCell className="text-right py-3.5">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setOpen(true)
+                          }}
+                          className="inline-flex items-center gap-1.5 hover:bg-primary hover:text-primary-foreground transition-all duration-200"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit / Reset Password
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
       {/* Global Modals Modifiers */}
       <EditUserModal
         open={open}
@@ -425,8 +565,9 @@ function ManageUsers() {
       />
 
       <AddAdminModal
-        open={addAdminOpen}
-        onClose={() => setAddAdminOpen(false)}
+        open={addUserRole !== null}
+        role={addUserRole ?? "admin"}
+        onClose={() => setAddUserRole(null)}
         onSuccess={fetchUsers}
       />
 
@@ -436,38 +577,51 @@ function ManageUsers() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete User?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the account for <strong>{userToDelete?.name}</strong>. This action requires the Main Admin Delete Password.
+              This will permanently delete the account for <strong>{userToDelete?.name}</strong>. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="py-3">
-            <Input
-              type="password"
-              placeholder="Enter Delete Password"
-              value={deletePassword}
-              onChange={(e) => setDeletePassword(e.target.value)}
-              autoComplete="new-password"
-              name="main-admin-delete-password"
-              className="w-full bg-background"
-            />
-          </div>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => {
-              setUserToDelete(null)
-              setDeletePassword("")
-            }}>
+            <AlertDialogCancel onClick={() => setUserToDelete(null)}>
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              disabled={!deletePassword}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
                 if (userToDelete) {
-                  handleDeleteUser(userToDelete._id, deletePassword)
-                  setDeletePassword("")
+                  handleDeleteUser(userToDelete._id)
                 }
               }}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Promote-to-Superadmin Confirmation Dialog */}
+      <AlertDialog open={!!userToPromote} onOpenChange={(isOpen) => !isOpen && setUserToPromote(null)}>
+        <AlertDialogContent className="text-left">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Promote to Superadmin?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{userToPromote?.name}</strong> will be promoted from admin to
+              superadmin, gaining full control over users, sites, and system configuration.
+              This cannot be undone from this screen.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setUserToPromote(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-purple-600 text-white hover:bg-purple-700"
+              onClick={() => {
+                if (userToPromote) {
+                  handlePromoteUser(userToPromote._id)
+                }
+              }}
+            >
+              Promote
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

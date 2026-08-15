@@ -17,6 +17,7 @@ interface Props {
   open: boolean
   onClose: () => void
   onSuccess: () => void
+  role?: "admin" | "superadmin"
 }
 
 function getPasswordStrength(password: string): { score: number; label: string; color: string } {
@@ -47,7 +48,11 @@ function getPasswordStrength(password: string): { score: number; label: string; 
   return { score, label: labels[score], color: colors[score] }
 }
 
-function AddAdminModal({ open, onClose, onSuccess }: Props) {
+function AddAdminModal({ open, onClose, onSuccess, role = "admin" }: Props) {
+  const isSuperadmin = role === "superadmin"
+  const label = isSuperadmin ? "Superadmin" : "Admin"
+  const endpoint = isSuperadmin ? "/api/user/superadmin" : "/api/user/admin"
+
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -70,13 +75,13 @@ function AddAdminModal({ open, onClose, onSuccess }: Props) {
 
     try {
       setLoading(true)
-      await api.post("/api/user/admin", {
+      await api.post(endpoint, {
         name,
         email,
         password,
       })
 
-      toast.success("Admin created successfully")
+      toast.success(`${label} created successfully`)
       
       // Clear form
       setName("")
@@ -88,7 +93,7 @@ function AddAdminModal({ open, onClose, onSuccess }: Props) {
       onClose()
     } catch (error: any) {
       console.log(error)
-      toast.error(error?.response?.data?.message || "Failed to create admin")
+      toast.error(error?.response?.data?.message || `Failed to create ${label.toLowerCase()}`)
     } finally {
       setLoading(false)
     }
@@ -102,9 +107,11 @@ function AddAdminModal({ open, onClose, onSuccess }: Props) {
             <Shield className="h-6 w-6" />
           </div>
           <div>
-            <DialogTitle className="text-xl font-bold">Add Admin User</DialogTitle>
+            <DialogTitle className="text-xl font-bold">Add {label} User</DialogTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Create a new administrator account with full privileges.
+              {isSuperadmin
+                ? "Create a new superadmin account with full system control."
+                : "Create a new administrator account with full privileges."}
             </p>
           </div>
         </DialogHeader>
@@ -216,7 +223,7 @@ function AddAdminModal({ open, onClose, onSuccess }: Props) {
             disabled={loading || !canSubmit}
             className="w-full mt-4 font-semibold shadow-sm transition-all duration-200"
           >
-            {loading ? "Creating..." : "Create Admin"}
+            {loading ? "Creating..." : `Create ${label}`}
           </Button>
         </div>
       </DialogContent>

@@ -548,16 +548,6 @@ export const getSupervisors = async (req, res) => {
 
 export const deleteSupervisor = async (req, res) => {
   const { id } = req.params
-  const deletePassword = req.body.deletePassword || req.headers['x-delete-password'] || req.query.deletePassword;
-
-  const configPassword = process.env.MAIN_ADMIN_DELETE_PASSWORD;
-  if (!configPassword) {
-    return res.status(500).json({ message: "Main admin delete password is not configured on the server." });
-  }
-
-  if (deletePassword !== configPassword) {
-    return res.status(403).json({ message: "Invalid delete password." });
-  }
 
   const session = await mongoose.startSession();
   session.startTransaction();

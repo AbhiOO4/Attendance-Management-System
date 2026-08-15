@@ -8,6 +8,7 @@ import { Plus, Trash2, Search, ShieldCheck, Users } from "lucide-react"
 import toast from "react-hot-toast"
 
 import { api } from "@/lib/api"
+import { useAuth } from "@/context/AuthContext"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -77,6 +78,9 @@ interface Site {
 }
 
 function Supervisor() {
+  const { user } = useAuth()
+  const isSuperadmin = user?.role === "superadmin"
+
   const [employees, setEmployees] = useState<Employee[]>([])
   const [supervisors, setSupervisors] = useState<Employee[]>([])
 
@@ -107,8 +111,8 @@ function Supervisor() {
   const [siteMap, setSiteMap] = useState<Record<string, string>>({})
 
   // Delete flow: lifted to page level so state isn't shared across per-row dialogs.
+  // Deletion is superadmin-only (enforced by the API and gated in the UI below).
   const [supervisorToDelete, setSupervisorToDelete] = useState<Employee | null>(null)
-  const [deletePassword, setDeletePassword] = useState("")
 
   async function fetchEmployees() {
     try {
@@ -164,14 +168,11 @@ function Supervisor() {
   async function handleDeleteSupervisor() {
     if (!supervisorToDelete) return
     try {
-      await api.delete(`/api/employees/Supervisor/${supervisorToDelete._id}`, {
-        data: { deletePassword },
-      })
+      await api.delete(`/api/employees/Supervisor/${supervisorToDelete._id}`)
       fetchSupervisors()
       fetchEmployees()
       toast.success("Supervisor removed")
       setSupervisorToDelete(null)
-      setDeletePassword("")
     } catch (error: any) {
       console.log(error)
       toast.error(error?.response?.data?.message || "Couldn't remove supervisor")
@@ -333,15 +334,19 @@ function Supervisor() {
                           )}
                         </TableCell>
                         <TableCell className="pr-4 text-right">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => setSupervisorToDelete(supervisor)}
-                            aria-label={`Remove ${supervisor.name}`}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          {isSuperadmin ? (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() => setSupervisorToDelete(supervisor)}
+                              aria-label={`Remove ${supervisor.name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))
@@ -377,7 +382,6 @@ function Supervisor() {
           onOpenChange={(open) => {
             if (!open) {
               setSupervisorToDelete(null)
-              setDeletePassword("")
             }
           }}
         >
@@ -387,26 +391,14 @@ function Supervisor() {
                 Remove {supervisorToDelete?.name}?
               </AlertDialogTitle>
               <AlertDialogDescription>
-                Their supervisor account will be deleted. This requires the
-                main admin delete password.
+                Their supervisor account will be deleted and their site access
+                revoked. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
-
-            <div className="py-2">
-              <Input
-                type="password"
-                placeholder="Enter delete password"
-                value={deletePassword}
-                onChange={(e) => setDeletePassword(e.target.value)}
-                autoComplete="new-password"
-                name="main-admin-delete-password"
-              />
-            </div>
 
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
-                disabled={!deletePassword}
                 onClick={handleDeleteSupervisor}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
