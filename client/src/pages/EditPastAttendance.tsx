@@ -438,8 +438,8 @@ function EditPastAttendance() {
  
 
   return (
-    <div className="min-h-screen bg-muted/30 p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <div className="min-h-screen bg-muted/30 px-3 py-6 sm:px-4">
+      <div className="space-y-6">
               <Button
                   variant="outline"
                   size="sm"

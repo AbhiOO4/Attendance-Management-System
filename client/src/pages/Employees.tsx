@@ -301,8 +301,8 @@ function Employees() {
       {/* TABLE */}
 
       <div className="border rounded-xl overflow-hidden">
-        <Table>
-          <TableHeader>
+        <Table wrapperClassName="max-h-[calc(100vh-320px)] overflow-y-auto">
+          <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead className="w-16">Sl No</TableHead>
               <TableHead>Name</TableHead>
@@ -447,9 +447,38 @@ function Employees() {
           Previous
         </Button>
 
-        <p className="text-sm">
-          Page {currentPage} of {totalPages}
-        </p>
+        <div className="flex items-center gap-4">
+          <p className="text-sm">
+            Page {currentPage} of {totalPages}
+          </p>
+
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground whitespace-nowrap">
+              Rows per page
+            </span>
+            <Select
+              value={String(filters.limit)}
+              onValueChange={(value) =>
+                setFilters({
+                  ...filters,
+                  limit: Number(value),
+                  page: 1,
+                })
+              }
+            >
+              <SelectTrigger className="w-[80px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[10, 25, 50, 100].map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
 
         <Button
           variant="outline"
