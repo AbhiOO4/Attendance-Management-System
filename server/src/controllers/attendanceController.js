@@ -3987,7 +3987,7 @@ export const getNightShiftCandidates = async (req, res) => {
 
     const employees = await Employee.find(
       empFilter,
-      "_id name employeeId jobTitle currentSite currentJob"
+      "_id name employeeId jobTitle currentSite currentJob collarType nationality"
     )
       .populate("currentJob", "name")
       .sort({ name: 1 })
