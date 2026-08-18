@@ -46,6 +46,43 @@ async function runApplyScheduledAssignments() {
           continue;
         }
 
+        // Scheduled removal (Tomorrow-tab remove of an on-site employee) — checked
+        // BEFORE the move/job-only logic because a removal carries scheduledSiteId:null,
+        // which would otherwise read as a job-only change. Null the assignment now.
+        if (employee.scheduledRemoval) {
+          if (employee.currentJob) {
+            await jobModel.findByIdAndUpdate(
+              employee.currentJob,
+              { $pull: { employees: employee._id } },
+              { session }
+            );
+          }
+
+          // A supervisor being removed loses their auth scope too (mirrors the move branch).
+          if (employee.user) {
+            await userModel.findByIdAndUpdate(
+              employee.user,
+              { assignedSite: null },
+              { session }
+            );
+          }
+
+          employee.currentSite = null;
+          employee.currentJob = null;
+          employee.scheduledRemoval = false;
+          employee.scheduledSiteId = null;
+          employee.scheduledJobId = null;
+          employee.scheduledEffectiveDate = null;
+
+          await employee.save({ session });
+
+          await session.commitTransaction();
+          session.endSession();
+
+          console.log(`[ScheduledAssignments] Applied removal for employee ${employee._id}`);
+          continue;
+        }
+
         const isMove = !!employee.scheduledSiteId;
 
         // Guard: a scheduled add/move whose target site is gone is dropped, not applied.

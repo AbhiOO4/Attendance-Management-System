@@ -252,58 +252,95 @@ export const removeEmployee = async (req, res) => {
       });
     }
 
-    if (employee.currentSite && employee.currentSite.toString() !== siteId) {
+    // Home site = the employee's currentSite matches this site. Only then does removal
+    // touch the roster (currentSite/currentJob). A cross-site session-holder (their home
+    // is elsewhere, but they logged a session here today — the post-submit Today tab) is
+    // handled below as a session-only delete.
+    const onHomeSite =
+      employee.currentSite && employee.currentSite.toString() === siteId;
+
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+
+    // Strip this site's session from today's record, deleting the doc if it empties and
+    // recomputing derived totals from the remaining sessions otherwise (mirrors
+    // releaseTempWorker). Returns true if a session for this site was actually removed.
+    const stripTodaySession = async () => {
+      const record = await attendanceModel.findOne({
+        employee: employee._id,
+        date: today,
+      }).session(session);
+
+      if (!record) return false;
+
+      const before = record.sessions.length;
+      record.sessions = record.sessions.filter(
+        (s) => s.siteId.toString() !== siteId
+      );
+      if (record.sessions.length === before) return false; // no session here
+
+      if (record.sessions.length === 0) {
+        await attendanceModel.findByIdAndDelete(record._id, { session });
+        return true;
+      }
+
+      const workConfig = await workModel.findOne().session(session);
+      const fullDayHours = workConfig?.fullDayHours || 8;
+      const halfDayHours = workConfig?.halfDayHours || 4;
+      const overtimeThreshold = workConfig?.overtimeThreshold || 8;
+      const totalWorkHours = record.sessions.reduce(
+        (sum, s) => sum + (s.workedHours || 0),
+        0
+      );
+      record.totalWorkHours = totalWorkHours;
+      record.status =
+        totalWorkHours >= fullDayHours
+          ? "fullday"
+          : totalWorkHours >= halfDayHours
+          ? "halfday"
+          : "absent";
+      record.overtimeHours =
+        totalWorkHours > overtimeThreshold ? totalWorkHours - overtimeThreshold : 0;
+      await record.save({ session });
+      return true;
+    };
+
+    if (onHomeSite) {
+      // Full removal: unassign from the site + optionally delete today's session here.
+      if (employee.currentJob) {
+        await jobModel.findByIdAndUpdate(employee.currentJob, {
+          $pull: { employees: employee._id },
+        }, { session });
+      }
+
+      employee.currentSite = null;
+      employee.currentJob = null;
+      const saved = await employee.save({ session });
+
+      if (deleteAttendance) {
+        await stripTodaySession();
+      }
+
+      await session.commitTransaction();
+      session.endSession();
+      return res.status(200).json(saved);
+    }
+
+    // Cross-site session-holder: never touch currentSite/currentJob (their home is
+    // another site). Only delete their session at THIS site today.
+    const removed = await stripTodaySession();
+    if (!removed) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
-        message: "Employee is not currently assigned to this site",
+        message: "Employee is not assigned to this site and has no session here today",
       });
-    }
-
-    // Remove employee from current job employees array
-    if (employee.currentJob) {
-      await jobModel.findByIdAndUpdate(employee.currentJob, {
-        $pull: {
-          employees: employee._id,
-        },
-      }, { session });
-    }
-
-    const removedSiteId = employee.currentSite;
-
-    // Clear employee assignments
-    employee.currentSite = null;
-    employee.currentJob = null;
-
-    const saved = await employee.save({ session });
-
-    // Handle today's attendance record & session cleanup (conditional)
-    if (deleteAttendance && removedSiteId) {
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
-
-      const attendanceRecord = await attendanceModel.findOne({
-        employee: employee._id,
-        date: today
-      }).session(session);
-
-      if (attendanceRecord) {
-        attendanceRecord.sessions = attendanceRecord.sessions.filter(
-          (s) => s.siteId.toString() !== removedSiteId.toString()
-        );
-
-        if (attendanceRecord.sessions.length === 0) {
-          await attendanceModel.findByIdAndDelete(attendanceRecord._id, { session });
-        } else {
-          await attendanceRecord.save({ session });
-        }
-      }
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    res.status(200).json(saved);
+    return res.status(200).json({ message: "Session removed", sessionOnly: true });
 
   } catch (error) {
     await session.abortTransaction();
@@ -2181,8 +2218,8 @@ export const cancelScheduledAssignment = async (req, res) => {
     }
 
     // The pending change must belong to THIS site: either a scheduled add/move
-    // targeting it (scheduledSiteId), or a job-only change for an employee
-    // currently on it (scheduledSiteId null, currentSite === siteId).
+    // targeting it (scheduledSiteId), or a job-only change / scheduled removal for an
+    // employee currently on it (scheduledSiteId null, currentSite === siteId).
     const belongsToSite =
       (employee.scheduledSiteId && employee.scheduledSiteId.toString() === siteId) ||
       (!employee.scheduledSiteId &&
@@ -2199,6 +2236,7 @@ export const cancelScheduledAssignment = async (req, res) => {
     employee.scheduledSiteId = null;
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = null;
+    employee.scheduledRemoval = false; // clears a "leaving tomorrow" (Undo)
     await employee.save();
 
     return res.status(200).json({
@@ -2210,6 +2248,49 @@ export const cancelScheduledAssignment = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to cancel scheduled change",
+    });
+  }
+};
+
+// Deferred ("from tomorrow") removal — the Tomorrow-tab Remove on an employee currently
+// on this site. Does NOT touch currentSite/currentJob now; stashes scheduledRemoval with
+// tomorrow's local midnight so the applyScheduledAssignments cron nulls the assignment at
+// the day rollover. This preserves the invariant that a "tomorrow" action never mutates
+// anything "today" reads (today's roster still keys off the untouched currentSite).
+export const scheduleEmployeeRemoval = async (req, res) => {
+  try {
+    const { _id } = req.body;
+    const { siteId } = req.params;
+
+    const employee = await empModel.findById(_id);
+
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+
+    // Only an employee whose home is THIS site can be scheduled for removal from it.
+    if (!employee.currentSite || employee.currentSite.toString() !== siteId) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee is not currently assigned to this site",
+      });
+    }
+
+    employee.scheduledRemoval = true;
+    employee.scheduledSiteId = null;
+    employee.scheduledJobId = null;
+    employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+    await employee.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Removal scheduled — takes effect tomorrow",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to schedule removal",
     });
   }
 };
@@ -2242,7 +2323,8 @@ const siteController = {
     updateSite,
     toggleJobCompleted,
     updateEmployeeJob,
-    cancelScheduledAssignment
+    cancelScheduledAssignment,
+    scheduleEmployeeRemoval
 }
 
 export default siteController;

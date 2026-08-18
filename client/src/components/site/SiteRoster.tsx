@@ -53,7 +53,12 @@ import {
   type RosterCategory,
 } from "@/lib/rosterUtils"
 import AddTemporaryWorker from "@/components/AddTemporaryWorker"
-import RemoveEmployeeDialog from "@/components/site/RemoveEmployeeDialog"
+import RemoveEmployeeDialog, {
+  type RemoveMode,
+} from "@/components/site/RemoveEmployeeDialog"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
+import { getCurrentTargetDateString } from "@/lib/dateUtils"
 
 interface JobRef {
   _id: string
@@ -78,8 +83,14 @@ interface Employee {
   scheduledSiteId?: SiteRef | string | null
   scheduledJobId?: JobRef | string | null
   scheduledEffectiveDate?: string | null
+  // "Leaving tomorrow" — a deferred removal scheduled from the Tomorrow tab.
+  scheduledRemoval?: boolean
   nationality?: "foreign" | "omani"
   collarType?: "skilled" | "staff"
+  // Client-only markers for a post-submit session-holder whose home is another site
+  // (surfaced on the Today tab from the daily report, not the rosterForSite fetch).
+  __crossSite?: boolean
+  __sessionJobId?: string | null
 }
 
 interface Job {
@@ -108,11 +119,14 @@ function jobName(v: JobRef | string | null | undefined): string | null {
 
 // Embedded Today / Tomorrow roster for a site (admin-facing, lives in SiteDetail).
 // One rosterForSite fetch drives both tabs; membership is derived client-side:
-//   Today    = employees currently on the site.
-//   Tomorrow = today's members minus anyone scheduled to move to another site,
-//              plus incoming scheduled-adds targeting this site.
-// Today actions are instant; Tomorrow actions (job change) are deferred to the
-// day-rollover. Removal is always instant (via RemoveEmployeeDialog).
+//   Today    = employees currently on the site. Once today's attendance is submitted,
+//              it becomes session-based: currentSite members PLUS cross-site visitors
+//              who logged a session here (from the daily report).
+//   Tomorrow = today's members minus anyone scheduled to move to another site or
+//              scheduled for removal, plus incoming scheduled-adds targeting this site.
+// Today actions are instant (a cross-site remove deletes only the session). Tomorrow
+// actions — job change and removal — are deferred to the day-rollover cron and can be
+// undone before midnight.
 function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProps) {
   const navigate = useNavigate()
 
@@ -130,6 +144,14 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
 
   const [workerToRemove, setWorkerToRemove] = useState<Employee | null>(null)
   const [removeOpen, setRemoveOpen] = useState(false)
+  const [removeMode, setRemoveMode] = useState<RemoveMode>("today-home")
+
+  // Post-submit Today tab becomes session-based: once today's attendance is submitted
+  // for this site, the Today list is the set of session-holders (which includes
+  // cross-site visitors), not just the currentSite members.
+  const [todaySubmitted, setTodaySubmitted] = useState(false)
+  const [crossSiteRows, setCrossSiteRows] = useState<Employee[]>([])
+  const [hideLeaving, setHideLeaving] = useState(false)
 
   const [scheduleToCancel, setScheduleToCancel] = useState<Employee | null>(null)
   const [cancelScheduleOpen, setCancelScheduleOpen] = useState(false)
@@ -143,12 +165,71 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
       const res = await api.get<{ employees: Employee[] }>("/api/employees", {
         params: { rosterForSite: siteId },
       })
-      setEmployees(res.data.employees || [])
+      const list = res.data.employees || []
+      setEmployees(list)
+      await fetchTodayState(list)
     } catch (error) {
       console.log(error)
       setEmployees([])
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Determine whether today's attendance is submitted for this site and, if so, load the
+  // session-holders. Cross-site visitors (session here, but home is another site) are the
+  // daily-report rows whose employee id is NOT among this site's currentSite members.
+  async function fetchTodayState(homeList: Employee[]) {
+    if (!siteId) {
+      setTodaySubmitted(false)
+      setCrossSiteRows([])
+      return
+    }
+    try {
+      const today = getCurrentTargetDateString()
+      const pend = await api.post(`/api/site/${siteId}/check-pending`, { date: today })
+      const submitted = !!pend.data?.status
+      setTodaySubmitted(submitted)
+
+      if (!submitted) {
+        setCrossSiteRows([])
+        return
+      }
+
+      const rep = await api.get<{ data: any[] }>("/api/attendance/reports/daily", {
+        params: { date: today, siteId },
+      })
+      const rows = rep.data?.data || []
+      const homeIds = new Set(
+        homeList.filter((e) => e.currentSite === siteId).map((e) => e._id)
+      )
+
+      const cross: Employee[] = rows
+        .filter((r) => !homeIds.has(r.employee))
+        .map((r) => {
+          const sess =
+            (r.sessions || []).find((s: any) => refId(s.siteId) === siteId) ||
+            (r.sessions || [])[0]
+          return {
+            _id: r.employee,
+            name: r.name,
+            employeeId: r.employeeId,
+            jobTitle: r.jobTitle,
+            user: r.user ?? null,
+            employmentType: r.employmentType,
+            nationality: r.nationality,
+            collarType: r.collarType,
+            currentSite: null,
+            currentJob: null,
+            __crossSite: true,
+            __sessionJobId: sess ? refId(sess.jobId) : null,
+          }
+        })
+      setCrossSiteRows(cross)
+    } catch (error) {
+      console.log(error)
+      setTodaySubmitted(false)
+      setCrossSiteRows([])
     }
   }
 
@@ -278,7 +359,15 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
 
   // ---- per-mode derived lists ----
   function listForMode(mode: DayMode) {
-    const dayList = employees.filter(mode === "today" ? inToday : inTomorrow)
+    let dayList = employees.filter(mode === "today" ? inToday : inTomorrow)
+    // Post-submit, the Today list also includes cross-site session-holders.
+    if (mode === "today" && todaySubmitted) {
+      dayList = [...dayList, ...crossSiteRows]
+    }
+    // The "hide leaving" toggle drops scheduled-for-removal rows from Tomorrow.
+    if (mode === "tomorrow" && hideLeaving) {
+      dayList = dayList.filter((e) => !e.scheduledRemoval)
+    }
     const name = filters.name.trim().toLowerCase()
     const empId = filters.employeeId.trim().toLowerCase()
     const searched = dayList.filter(
@@ -339,28 +428,53 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
 
   // Per-row derived state for a given mode.
   function rowInfo(e: Employee, mode: DayMode) {
+    // Cross-site visitor (post-submit Today only): their home is another site, so the
+    // inline job control is read-only and shows the job from their session here. Their
+    // currentJob belongs to their home site and is not this site's to change.
+    if (e.__crossSite) {
+      const sessJobName = jobs.find((j) => j._id === e.__sessionJobId)?.name || null
+      return {
+        onSiteToday: false,
+        hasSchedule: false,
+        incoming: false,
+        movingAway: false,
+        jobChangePending: false,
+        leaving: false,
+        crossSite: true,
+        curJobName: sessJobName,
+        schedJobName: null,
+        displayJobName: sessJobName,
+        editable: false,
+        selectValue: "unassigned",
+      }
+    }
+
     const onSiteToday = e.currentSite === siteId
     const hasSchedule = !!e.scheduledEffectiveDate
     const sSite = refId(e.scheduledSiteId)
+    const leaving = !!e.scheduledRemoval // deferred removal ("leaving tomorrow")
     const incoming = mode === "tomorrow" && !onSiteToday
     const movingAway = hasSchedule && !!sSite && sSite !== siteId
-    const jobChangePending = hasSchedule && sSite === null // job-only change stays on site
+    // A removal also carries scheduledEffectiveDate with a null site; gate the
+    // job-only-change read on !leaving so it isn't mislabeled as a job change.
+    const jobChangePending = !leaving && hasSchedule && sSite === null
     const curJobName = jobName(e.currentJob)
     const schedJobName = jobName(e.scheduledJobId)
 
     // The job shown in this mode.
-    const displayJobName =
-      mode === "tomorrow"
-        ? incoming
-          ? schedJobName
-          : hasSchedule
-          ? schedJobName
-          : curJobName
+    const displayJobName = leaving
+      ? curJobName
+      : mode === "tomorrow"
+      ? incoming
+        ? schedJobName
+        : hasSchedule
+        ? schedJobName
         : curJobName
+      : curJobName
 
-    // Job cell is editable in both tabs. On Tomorrow this includes incoming
-    // scheduled-adds — editing their job updates scheduledJobId in place.
-    const editable = true
+    // Editable except for a leaving row (nothing to assign). Incoming scheduled-adds
+    // stay editable — editing their job updates scheduledJobId in place.
+    const editable = !leaving
 
     const selectValue =
       mode === "tomorrow" && hasSchedule
@@ -373,6 +487,8 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
       incoming,
       movingAway,
       jobChangePending,
+      leaving,
+      crossSite: false,
       curJobName,
       schedJobName,
       displayJobName,
@@ -481,6 +597,35 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
       )
     }
 
+    // Tomorrow, leaving (a scheduled removal): the action is Undo, not Remove.
+    if (mode === "tomorrow" && info.leaving) {
+      return (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+          disabled={cancelingId === e._id}
+          onClick={() => cancelSchedule(e._id)}
+        >
+          {cancelingId === e._id ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+          ) : (
+            <X className="mr-1 h-4 w-4" />
+          )}
+          Undo
+        </Button>
+      )
+    }
+
+    // Which removal this row/tab performs: Tomorrow schedules for midnight; Today is
+    // immediate (full unassign for a home worker, session-only for a cross-site visitor).
+    const rMode: RemoveMode =
+      mode === "tomorrow"
+        ? "tomorrow-deferred"
+        : e.__crossSite
+        ? "today-cross-site"
+        : "today-home"
+
     return (
       <div className="flex items-center justify-end gap-1">
         {mode === "tomorrow" && info.jobChangePending && (
@@ -508,6 +653,7 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
           className="text-destructive hover:bg-destructive/10"
           onClick={() => {
             setWorkerToRemove(e)
+            setRemoveMode(rMode)
             setRemoveOpen(true)
           }}
         >
@@ -529,6 +675,22 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             className="h-4 bg-amber-50 px-1.5 py-0 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
           >
             Temporary
+          </Badge>
+        )}
+        {info.crossSite && (
+          <Badge
+            variant="secondary"
+            className="h-4 bg-slate-100 px-1.5 py-0 text-[10px] text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
+          >
+            Visiting
+          </Badge>
+        )}
+        {info.leaving && (
+          <Badge
+            variant="secondary"
+            className="h-4 bg-rose-50 px-1.5 py-0 text-[10px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300"
+          >
+            Leaving tomorrow
           </Badge>
         )}
         {mode === "tomorrow" && info.incoming && (
@@ -754,9 +916,24 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
         </div>
 
         {dayTab === "tomorrow" && (
-          <div className="rounded-lg border border-amber-200/50 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-800/30 dark:bg-amber-950/40 dark:text-amber-300">
-            Adds and job changes made here take effect tomorrow. Removals are
-            always immediate.
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="rounded-lg border border-amber-200/50 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-800/30 dark:bg-amber-950/40 dark:text-amber-300">
+              Adds, job changes and removals made here take effect tomorrow. A
+              removal can be undone any time before midnight.
+            </div>
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <Switch
+                id="hide-leaving"
+                checked={hideLeaving}
+                onCheckedChange={setHideLeaving}
+              />
+              <Label
+                htmlFor="hide-leaving"
+                className="cursor-pointer whitespace-nowrap text-xs text-muted-foreground"
+              >
+                Hide leaving
+              </Label>
+            </div>
           </div>
         )}
 
@@ -793,6 +970,8 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
         onOpenChange={setRemoveOpen}
         siteId={siteId}
         employee={workerToRemove}
+        mode={removeMode}
+        submitted={todaySubmitted}
         onRemoved={fetchRoster}
       />
 

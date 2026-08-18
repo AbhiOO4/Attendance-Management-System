@@ -85,7 +85,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge

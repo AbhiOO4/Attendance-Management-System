@@ -93,6 +93,16 @@ const employeeSchema = new mongoose.Schema({
     default: null
   },
 
+  // Deferred removal from currentSite, set by the Tomorrow-tab remove on an on-site
+  // employee. Applied by the applyScheduledAssignments cron at local midnight (nulls
+  // currentSite/currentJob). Timed by scheduledEffectiveDate like the other scheduled*
+  // fields; needs its own flag because scheduledSiteId:null already means "job-only
+  // change, keep site". See cron/applyScheduledAssignments.js.
+  scheduledRemoval: {
+    type: Boolean,
+    default: false
+  },
+
   isActive: {
     type: Boolean,
     default: true

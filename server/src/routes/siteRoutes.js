@@ -25,6 +25,7 @@ router.post('/:siteId/insta-add-employee', authorizeRoles("admin", "supervisor")
 router.patch('/job/:jobId/status', authorizeRoles("admin", "supervisor"), siteController.changeJobStatus)
 router.patch('/job/:jobId/toggle-completed', authorizeRoles("admin", "supervisor"), siteController.toggleJobCompleted)
 router.patch('/:siteId/remove-employee', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.removeEmployee)
+router.patch('/:siteId/schedule-removal', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.scheduleEmployeeRemoval)
 
 // --- ADMIN ONLY routes ---
 router.post('/', authorizeRoles("admin"), siteController.createSite)
