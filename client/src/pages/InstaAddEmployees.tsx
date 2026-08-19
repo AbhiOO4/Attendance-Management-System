@@ -203,6 +203,8 @@ function InstaAddEmployees() {
         employeeId: "",
         jobTitle: "",
         currentSite: "",
+        nationality: "",
+        collarType: "",
     })
 
     const [activeFilters, setActiveFilters] = useState(filters)
@@ -248,6 +250,14 @@ function InstaAddEmployees() {
                         activeFilters.currentSite === "all"
                             ? ""
                             : activeFilters.currentSite,
+                    nationality:
+                        activeFilters.nationality === "all"
+                            ? ""
+                            : activeFilters.nationality,
+                    collarType:
+                        activeFilters.collarType === "all"
+                            ? ""
+                            : activeFilters.collarType,
                 }
 
                 const res =
@@ -470,7 +480,7 @@ function InstaAddEmployees() {
             <Card>
                 <CardContent className="pt-6">
 
-                    <div className="grid gap-4 md:grid-cols-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 
                         <Input
                             placeholder="Search Name"
@@ -517,6 +527,58 @@ function InstaAddEmployees() {
                                 )
                             }
                         />
+
+                        <Select
+                            value={filters.nationality}
+                            onValueChange={(value) =>
+                                setFilters((prev) => ({
+                                    ...prev,
+                                    nationality: value,
+                                }))
+                            }
+                        >
+                            <SelectTrigger>
+                                <SelectValue placeholder="Nationality" />
+                            </SelectTrigger>
+
+                            <SelectContent>
+                                <SelectItem value="all">
+                                    All Nationalities
+                                </SelectItem>
+                                <SelectItem value="foreign">
+                                    Foreign
+                                </SelectItem>
+                                <SelectItem value="omani">
+                                    Omani
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
+
+                        <Select
+                            value={filters.collarType}
+                            onValueChange={(value) =>
+                                setFilters((prev) => ({
+                                    ...prev,
+                                    collarType: value,
+                                }))
+                            }
+                        >
+                            <SelectTrigger>
+                                <SelectValue placeholder="Collar Type" />
+                            </SelectTrigger>
+
+                            <SelectContent>
+                                <SelectItem value="all">
+                                    All Collar Types
+                                </SelectItem>
+                                <SelectItem value="skilled">
+                                    Skilled Labour
+                                </SelectItem>
+                                <SelectItem value="staff">
+                                    Staff
+                                </SelectItem>
+                            </SelectContent>
+                        </Select>
 
                         <Select
                             value={filters.currentSite}
