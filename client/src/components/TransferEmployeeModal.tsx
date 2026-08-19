@@ -44,6 +44,7 @@ interface TransferEmployeeModalProps {
   employeeName: string
   fromSiteId: string
   date: string
+  isSupervisor?: boolean
   onTransferred?: (result: { pending: boolean }) => void
 }
 
@@ -54,12 +55,14 @@ function TransferEmployeeModal({
   employeeName,
   fromSiteId,
   date,
+  isSupervisor = false,
   onTransferred,
 }: TransferEmployeeModalProps) {
   const [sites, setSites] = useState<Site[]>([])
   const [loadingSites, setLoadingSites] = useState(false)
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [onlyForToday, setOnlyForToday] = useState(false)
   const [transferring, setTransferring] = useState(false)
 
   const fetchSites = async () => {
@@ -89,6 +92,7 @@ function TransferEmployeeModal({
     if (!open) {
       setSelectedSiteId(null)
       setSelectedJobId(null)
+      setOnlyForToday(false)
     }
   }, [open])
 
@@ -112,6 +116,7 @@ function TransferEmployeeModal({
         toSiteId: selectedSiteId,
         jobId: selectedJobId || null,
         date,
+        onlyForToday,
       })
       toast.success(res.data.message || "Employee transferred")
       onTransferred?.({ pending: !!res.data.pending })
@@ -200,6 +205,27 @@ function TransferEmployeeModal({
             </SelectContent>
           </Select>
         )}
+
+        <label className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover:bg-accent/50">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-primary mt-0.5"
+            checked={onlyForToday}
+            onChange={(e) => setOnlyForToday(e.target.checked)}
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium">Only for today</p>
+            <p className="text-xs text-muted-foreground">
+              {onlyForToday
+                ? isSupervisor
+                  ? "A visit for today only — their home site and attendance assignment stay unchanged; back on their own site tomorrow."
+                  : "A visit for today only — their home site stays unchanged; back on it tomorrow."
+                : isSupervisor
+                ? "Permanent move — their home site and attendance assignment move to the destination."
+                : "Permanent move — their home site moves to the destination from today."}
+            </p>
+          </div>
+        </label>
 
         <DialogFooter>
           <Button

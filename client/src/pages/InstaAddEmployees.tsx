@@ -189,6 +189,11 @@ function InstaAddEmployees() {
     const [submitting, setSubmitting] = useState(false)
     const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
 
+    // Instant add only: ON = carry a session for today without moving the employee's home
+    // site (a one-day visit); OFF (default) = permanently move them here. For a supervisor
+    // this also decides whether their attendance assignment follows (auth = home).
+    const [onlyForToday, setOnlyForToday] = useState(false)
+
     // Instant add only: the employee's existing sessions at OTHER sites today.
     const [daySessions, setDaySessions] = useState<DaySession[]>([])
     const [daySessionsLoading, setDaySessionsLoading] = useState(false)
@@ -343,6 +348,7 @@ function InstaAddEmployees() {
         setCheckInTime("")
         setOverlapError(null)
         setDaySessions([])
+        setOnlyForToday(false)
         setConfirmOpen(true)
     }
 
@@ -352,9 +358,16 @@ function InstaAddEmployees() {
                 empId: employeeId,
                 currentJob: jobId,
                 // Deferred adds carry no check-in — they only take effect tomorrow.
-                ...(deferred ? { deferred: true } : { checkInTime: checkIn }),
+                // onlyForToday applies to instant adds only (a one-day visit vs a move).
+                ...(deferred ? { deferred: true } : { checkInTime: checkIn, onlyForToday }),
             })
-            toast.success(deferred ? "Employee scheduled — starts tomorrow" : "Employee added successfully")
+            toast.success(
+                deferred
+                    ? "Employee scheduled — starts tomorrow"
+                    : onlyForToday
+                    ? "Session added for today"
+                    : "Employee added successfully"
+            )
 
             if (siteId) {
                 Object.keys(localStorage).forEach((key) => {
@@ -873,6 +886,27 @@ function InstaAddEmployees() {
                                         </p>
                                     </div>
                                 ) : null}
+
+                                <label className="flex items-start gap-3 rounded-xl border border-border bg-muted/30 p-3 cursor-pointer hover:border-primary/20 transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        className="h-4 w-4 accent-primary mt-0.5"
+                                        checked={onlyForToday}
+                                        onChange={(e) => setOnlyForToday(e.target.checked)}
+                                    />
+                                    <div className="flex-1 min-w-0 space-y-0.5">
+                                        <p className="text-sm font-semibold text-foreground">Only for today</p>
+                                        <p className="text-xs text-muted-foreground leading-snug">
+                                            {onlyForToday
+                                                ? selectedEmployee?.user
+                                                    ? "A visit for today only — home site and attendance assignment stay unchanged; back on their own site tomorrow."
+                                                    : "A visit for today only — home site stays unchanged; back on it tomorrow."
+                                                : selectedEmployee?.user
+                                                ? "Permanent — home site and attendance assignment move to this site."
+                                                : "Permanent — home site moves to this site from today."}
+                                        </p>
+                                    </div>
+                                </label>
 
                                 <div className="space-y-2.5">
                                     <div className="flex items-center gap-1.5">

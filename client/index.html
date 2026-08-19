@@ -11,7 +11,100 @@
     <title>NGDP AMS</title>
   </head>
   <body >
-    <div id="root"></div>
+    <!--
+      Instant boot splash. Rendered on HTML parse — before the JS bundle
+      downloads — so the first paint is never a blank black page (important on
+      the free-tier deploy, where bundle + cold start can be slow). React
+      replaces #root's contents on mount, so this clears itself.
+    -->
+    <div id="root">
+      <div id="boot-splash" aria-hidden="true">
+        <div class="boot-inner">
+          <div class="boot-badge">
+            <img src="/ngdp%20logo.png" alt="" />
+          </div>
+          <div class="boot-title">NGDP AMS</div>
+          <div class="boot-bar"><span></span></div>
+        </div>
+      </div>
+    </div>
+    <style>
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+        font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+      }
+      .boot-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .boot-badge {
+        width: 64px;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        border-radius: 16px;
+        background: rgba(0, 0, 0, 0.02);
+        animation: boot-pulse 1.4s ease-in-out infinite;
+      }
+      .boot-badge img {
+        width: 36px;
+        height: auto;
+        object-fit: contain;
+      }
+      .boot-title {
+        margin-top: 18px;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: #141414;
+      }
+      .boot-bar {
+        margin-top: 16px;
+        width: 176px;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+      }
+      .boot-bar span {
+        display: block;
+        width: 33%;
+        height: 100%;
+        border-radius: 999px;
+        background: rgba(20, 20, 20, 0.8);
+        animation: boot-slide 1.15s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0%   { transform: translateX(-120%); }
+        100% { transform: translateX(420%); }
+      }
+      @keyframes boot-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.5; }
+      }
+      @media (prefers-color-scheme: dark) {
+        #boot-splash { background: #0a0a0a; }
+        .boot-badge {
+          border-color: rgba(255, 255, 255, 0.12);
+          background: rgba(255, 255, 255, 0.04);
+        }
+        .boot-title { color: #fafafa; }
+        .boot-bar { background: rgba(255, 255, 255, 0.1); }
+        .boot-bar span { background: rgba(255, 255, 255, 0.85); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-badge { animation: none; }
+        .boot-bar span { animation: none; width: 100%; }
+      }
+    </style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1347,8 +1347,22 @@ function SiteAttendance() {
           }
         )
 
+      // The server's ?site= now also returns only-for-today visitors (pendingTransferSiteId
+      // = this site) whose home is elsewhere. Keep on-site members plus TODAY-dated
+      // visitors; drop stale pendingTransfer* rows an abandoned draft may have left behind
+      // (otherwise they'd render as apparently-present roster members).
+      const rosterEmployees = res.data.employees.filter((emp) => {
+        if (String(emp.currentSite) === String(siteData._id)) return true
+        return (
+          !!emp.pendingTransferSiteId &&
+          String(emp.pendingTransferSiteId) === String(siteData._id) &&
+          !!emp.pendingTransferDate &&
+          String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
+        )
+      })
+
       const mappedDraft =
-        res.data.employees.map((emp) => {
+        rosterEmployees.map((emp) => {
           const hasPendingTransfer =
             !!emp.pendingTransferSiteId &&
             String(emp.pendingTransferSiteId) === String(siteData._id) &&
@@ -2122,6 +2136,14 @@ function SiteAttendance() {
       { key: "staffDefaultCheckOut", label: "Staff Day Check-out", editVal: editStaffDefaultCheckOut, siteVal: site.staffDefaultCheckOut || "" },
       { key: "staffNightDefaultCheckIn", label: "Staff Night Check-in", editVal: editStaffNightDefaultCheckIn, siteVal: site.staffNightDefaultCheckIn || "" },
       { key: "staffNightDefaultCheckOut", label: "Staff Night Check-out", editVal: editStaffNightDefaultCheckOut, siteVal: site.staffNightDefaultCheckOut || "" },
+      { key: "omaniDefaultCheckIn", label: "Omani Day Check-in", editVal: editOmaniDefaultCheckIn, siteVal: site.omaniDefaultCheckIn || "" },
+      { key: "omaniDefaultCheckOut", label: "Omani Day Check-out", editVal: editOmaniDefaultCheckOut, siteVal: site.omaniDefaultCheckOut || "" },
+      { key: "omaniNightDefaultCheckIn", label: "Omani Night Check-in", editVal: editOmaniNightDefaultCheckIn, siteVal: site.omaniNightDefaultCheckIn || "" },
+      { key: "omaniNightDefaultCheckOut", label: "Omani Night Check-out", editVal: editOmaniNightDefaultCheckOut, siteVal: site.omaniNightDefaultCheckOut || "" },
+      { key: "omaniStaffDefaultCheckIn", label: "Omani Staff Day Check-in", editVal: editOmaniStaffDefaultCheckIn, siteVal: site.omaniStaffDefaultCheckIn || "" },
+      { key: "omaniStaffDefaultCheckOut", label: "Omani Staff Day Check-out", editVal: editOmaniStaffDefaultCheckOut, siteVal: site.omaniStaffDefaultCheckOut || "" },
+      { key: "omaniStaffNightDefaultCheckIn", label: "Omani Staff Night Check-in", editVal: editOmaniStaffNightDefaultCheckIn, siteVal: site.omaniStaffNightDefaultCheckIn || "" },
+      { key: "omaniStaffNightDefaultCheckOut", label: "Omani Staff Night Check-out", editVal: editOmaniStaffNightDefaultCheckOut, siteVal: site.omaniStaffNightDefaultCheckOut || "" },
     ]
 
     for (const { label, editVal, siteVal } of fieldMap) {
@@ -4191,6 +4213,7 @@ function SiteAttendance() {
         employeeName={transferTargetRecord?.name ?? ""}
         fromSiteId={id ?? ""}
         date={today}
+        isSupervisor={!!transferTargetRecord?.user}
         onTransferred={() => {
           setTransferModalOpen(false)
           setTransferTargetRecord(null)

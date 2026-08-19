@@ -38,7 +38,40 @@ import {
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
 import { computeAttendanceTotals } from './attendanceMath.js';
-import { getStaffEmployeeIds } from './collar.js';
+import { getEmployeeIdsByCategory } from './collar.js';
+
+/**
+ * Field metadata for the 16 default time fields — one per
+ * (roster category × day|night × check-in|check-out). Everything the propagator
+ * needs to classify a field derives from this single table:
+ *   - `category` is one of the four buckets from getEmployeeIdsByCategory(), so
+ *     each field only ever touches its own category's employees — no fallback,
+ *     and no cross-nationality leak between same-collar categories.
+ *   - `night` / `checkIn` drive shift matching and target-day selection.
+ * Adding or renaming a category is a single edit here.
+ */
+const FIELD_META = {
+  // Foreign skilled (blue-collar field workers)
+  defaultCheckIn:                 { category: 'foreignSkilled', night: false, checkIn: true },
+  defaultCheckOut:                { category: 'foreignSkilled', night: false, checkIn: false },
+  nightDefaultCheckIn:            { category: 'foreignSkilled', night: true,  checkIn: true },
+  nightDefaultCheckOut:           { category: 'foreignSkilled', night: true,  checkIn: false },
+  // Foreign staff (white-collar)
+  staffDefaultCheckIn:            { category: 'foreignStaff', night: false, checkIn: true },
+  staffDefaultCheckOut:           { category: 'foreignStaff', night: false, checkIn: false },
+  staffNightDefaultCheckIn:       { category: 'foreignStaff', night: true,  checkIn: true },
+  staffNightDefaultCheckOut:      { category: 'foreignStaff', night: true,  checkIn: false },
+  // Omani skilled
+  omaniDefaultCheckIn:            { category: 'omaniSkilled', night: false, checkIn: true },
+  omaniDefaultCheckOut:           { category: 'omaniSkilled', night: false, checkIn: false },
+  omaniNightDefaultCheckIn:       { category: 'omaniSkilled', night: true,  checkIn: true },
+  omaniNightDefaultCheckOut:      { category: 'omaniSkilled', night: true,  checkIn: false },
+  // Omani staff
+  omaniStaffDefaultCheckIn:       { category: 'omaniStaff', night: false, checkIn: true },
+  omaniStaffDefaultCheckOut:      { category: 'omaniStaff', night: false, checkIn: false },
+  omaniStaffNightDefaultCheckIn:  { category: 'omaniStaff', night: true,  checkIn: true },
+  omaniStaffNightDefaultCheckOut: { category: 'omaniStaff', night: true,  checkIn: false },
+};
 
 /**
  * Determine the target business day for a given field change.
@@ -51,7 +84,8 @@ import { getStaffEmployeeIds } from './collar.js';
  * All other fields target today's records.
  */
 function getTargetDate(field) {
-  if (field === 'nightDefaultCheckOut' || field === 'staffNightDefaultCheckOut') {
+  const meta = FIELD_META[field];
+  if (meta && meta.night && !meta.checkIn) {
     const offset = getAppOffsetMinutes();
     const localTime = new Date(Date.now() - offset * 60 * 1000);
     if (localTime.getUTCHours() < 12) {
@@ -68,37 +102,14 @@ function getTargetDate(field) {
  * Determine if a field targets night-shift sessions.
  */
 function isNightField(field) {
-  return (
-    field === 'nightDefaultCheckIn' ||
-    field === 'nightDefaultCheckOut' ||
-    field === 'staffNightDefaultCheckIn' ||
-    field === 'staffNightDefaultCheckOut'
-  );
-}
-
-/**
- * Determine if a field is a staff (white-collar) default, which targets only
- * staff employees' sessions (day or night depending on the field).
- */
-function isStaffField(field) {
-  return (
-    field === 'staffDefaultCheckIn' ||
-    field === 'staffDefaultCheckOut' ||
-    field === 'staffNightDefaultCheckIn' ||
-    field === 'staffNightDefaultCheckOut'
-  );
+  return !!(FIELD_META[field] && FIELD_META[field].night);
 }
 
 /**
  * Determine if a field is a check-in field (vs check-out).
  */
 function isCheckInField(field) {
-  return (
-    field === 'defaultCheckIn' ||
-    field === 'nightDefaultCheckIn' ||
-    field === 'staffDefaultCheckIn' ||
-    field === 'staffNightDefaultCheckIn'
-  );
+  return !!(FIELD_META[field] && FIELD_META[field].checkIn);
 }
 
 function skippedEntry(record, reason, field) {
@@ -129,16 +140,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
   let totalUpdated = 0;
   const allSkipped = [];
 
-  const fieldsToCheck = [
-    'defaultCheckIn',
-    'defaultCheckOut',
-    'nightDefaultCheckIn',
-    'nightDefaultCheckOut',
-    'staffDefaultCheckIn',
-    'staffDefaultCheckOut',
-    'staffNightDefaultCheckIn',
-    'staffNightDefaultCheckOut',
-  ];
+  const fieldsToCheck = Object.keys(FIELD_META);
 
   // Any real difference counts — including empty→time (fill) and time→empty (clear).
   const changedFields = fieldsToCheck.filter((field) => {
@@ -151,16 +153,15 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     return { updated: 0, skipped: [] };
   }
 
-  // Staff (white-collar) employees. Staff-default changes only touch staff
-  // sessions; field-worker (day/night) changes exclude staff so an identical
-  // time value on a staff member isn't rewritten by the wrong default.
-  const staffIds = await getStaffEmployeeIds();
+  // Roster categories: each field only ever touches its own category's
+  // employees, so a category is never rewritten by another's default and the
+  // two same-collar Foreign/Omani categories can't leak into each other.
+  const employeeIdsByCategory = await getEmployeeIdsByCategory();
 
   for (const field of changedFields) {
     const oldTimeStr = prevDefaults[field] || '';
     const newTimeStr = newDefaults[field] || '';
     const isNight = isNightField(field);
-    const isStaff = isStaffField(field);
     const isCheckIn = isCheckInField(field);
     const transition =
       oldTimeStr && newTimeStr ? 'update' : oldTimeStr ? 'clear' : 'fill';
@@ -169,11 +170,8 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);
 
-    // Scope by collar: staff fields → only staff employees; field-worker
-    // (day/night) fields → exclude staff employees.
-    const employeeFilter = isStaff
-      ? { employee: { $in: staffIds } }
-      : { employee: { $nin: staffIds } };
+    // Scope to exactly this field's roster category.
+    const employeeFilter = { employee: { $in: employeeIdsByCategory[FIELD_META[field].category] } };
 
     // Find attendance records for this site on the target date
     const records = await Attendance.find({

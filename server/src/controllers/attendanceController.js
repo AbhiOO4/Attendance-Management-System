@@ -3354,7 +3354,7 @@ export const addSessionToAttendance = async (
 // always create a session directly (destination site may not have any
 // saved attendance for today yet).
 export const transferEmployee = async (req, res) => {
-  const { employeeId, fromSiteId, toSiteId, jobId = null, date } = req.body
+  const { employeeId, fromSiteId, toSiteId, jobId = null, date, onlyForToday = false } = req.body
 
   if (!employeeId || !fromSiteId || !toSiteId || !date) {
     return res.status(400).json({
@@ -3462,20 +3462,28 @@ export const transferEmployee = async (req, res) => {
       employee.pendingTransferFromSiteId = fromSiteId
     }
 
-    const oldJobId = employee.currentJob
-    if (oldJobId) {
-      await Job.findByIdAndUpdate(
-        oldJobId,
-        { $pull: { employees: employee._id } },
-        { session: dbSession }
-      )
+    // onlyForToday: the session is carried above (push / pendingTransfer stash), but the
+    // employee's home is untouched — no currentSite/currentJob move, no job-membership
+    // change, and (for a supervisor) no assignedSite change. They're visiting for the
+    // day and return to their home site's roster tomorrow. The employee.save() below is
+    // still needed to persist the pendingTransfer* stash set above.
+    if (!onlyForToday) {
+      const oldJobId = employee.currentJob
+      if (oldJobId) {
+        await Job.findByIdAndUpdate(
+          oldJobId,
+          { $pull: { employees: employee._id } },
+          { session: dbSession }
+        )
+      }
+
+      employee.currentJob = jobId || null
+      employee.currentSite = toSiteId
     }
 
-    employee.currentJob = jobId || null
-    employee.currentSite = toSiteId
     await employee.save({ session: dbSession })
 
-    if (jobId) {
+    if (!onlyForToday && jobId) {
       await Job.findByIdAndUpdate(
         jobId,
         { $addToSet: { employees: employee._id } },
@@ -3483,7 +3491,9 @@ export const transferEmployee = async (req, res) => {
       )
     }
 
-    if (employee.user) {
+    // Auth follows the home: a permanent move repoints the supervisor's assignedSite;
+    // an only-for-today visit leaves it alone.
+    if (!onlyForToday && employee.user) {
       await userModel.findByIdAndUpdate(
         employee.user,
         { assignedSite: toSiteId },
@@ -3497,12 +3507,18 @@ export const transferEmployee = async (req, res) => {
     await employee.populate("currentJob", "name")
     await employee.populate("currentSite", "siteName")
 
+    const relocated = !onlyForToday
     return res.status(200).json({
       success: true,
-      message: targetHasSavedRecord
-        ? "Employee transferred; new session added at target site"
-        : "Employee transferred; check-in will apply when the target site's attendance is next opened or submitted",
+      message: onlyForToday
+        ? (targetHasSavedRecord
+            ? "Session added at target site for today; home site unchanged"
+            : "Session for today will apply when the target site's attendance is next opened or submitted; home site unchanged")
+        : (targetHasSavedRecord
+            ? "Employee transferred; new session added at target site"
+            : "Employee transferred; check-in will apply when the target site's attendance is next opened or submitted"),
       pending: !targetHasSavedRecord,
+      relocated,
       employee,
     })
   } catch (error) {

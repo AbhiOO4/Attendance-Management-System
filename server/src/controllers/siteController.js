@@ -1253,7 +1253,7 @@ export const instaAddEmployee = async (req, res) => {
   session.startTransaction();
   try {
     const { siteId } = req.params
-    const { empId, currentJob, checkInTime, deferred = false } = req.body
+    const { empId, currentJob, checkInTime, deferred = false, onlyForToday = false } = req.body
 
     const markedBy = req.user?.id
 
@@ -1510,12 +1510,17 @@ export const instaAddEmployee = async (req, res) => {
     // UPDATE EMPLOYEE ASSIGNMENT
     // ----------------------------------
 
-    employee.currentSite = siteId
-    employee.currentJob = currentJob
+    // onlyForToday: carry the session (pendingTransfer* above) but leave the employee's
+    // home untouched — no currentSite/currentJob move, no job-membership change, and
+    // (for a supervisor) no assignedSite change. They return to their home roster tomorrow.
+    if (!onlyForToday) {
+      employee.currentSite = siteId
+      employee.currentJob = currentJob
+    }
 
     await employee.save({ session })
 
-    if (oldJobId) {
+    if (!onlyForToday && oldJobId) {
       await jobModel.findByIdAndUpdate(
         oldJobId,
         {
@@ -1527,12 +1532,25 @@ export const instaAddEmployee = async (req, res) => {
       )
     }
 
+    // Auth follows the home: a permanent add of a supervisor makes this their assigned
+    // site. (The transfer path and the deferred cron already do this; the immediate add
+    // did not.)
+    if (!onlyForToday && employee.user) {
+      await userModel.findByIdAndUpdate(
+        employee.user,
+        { assignedSite: siteId },
+        { session }
+      )
+    }
+
     await session.commitTransaction();
     session.endSession();
 
     return res.status(200).json({
       success: true,
-      message: "Employee added successfully",
+      message: onlyForToday
+        ? "Session added for today; home site unchanged"
+        : "Employee added successfully",
     })
   } catch (error) {
     await session.abortTransaction();
@@ -1588,13 +1606,6 @@ export const getAvailableEmployeesForSite = async (
             {
               currentSite: null,
             },
-          ],
-        },
-        {
-          $or: [
-            { user: null },
-            { user: { $exists: false } },
-            { currentSite: null },
           ],
         },
       ],
@@ -1994,6 +2005,14 @@ export const updateSite = async (req, res) => {
       staffDefaultCheckOut: site.staffDefaultCheckOut || '',
       staffNightDefaultCheckIn: site.staffNightDefaultCheckIn || '',
       staffNightDefaultCheckOut: site.staffNightDefaultCheckOut || '',
+      omaniDefaultCheckIn: site.omaniDefaultCheckIn || '',
+      omaniDefaultCheckOut: site.omaniDefaultCheckOut || '',
+      omaniNightDefaultCheckIn: site.omaniNightDefaultCheckIn || '',
+      omaniNightDefaultCheckOut: site.omaniNightDefaultCheckOut || '',
+      omaniStaffDefaultCheckIn: site.omaniStaffDefaultCheckIn || '',
+      omaniStaffDefaultCheckOut: site.omaniStaffDefaultCheckOut || '',
+      omaniStaffNightDefaultCheckIn: site.omaniStaffNightDefaultCheckIn || '',
+      omaniStaffNightDefaultCheckOut: site.omaniStaffNightDefaultCheckOut || '',
     };
 
     if (locationDetails !== undefined) site.locationDetails = locationDetails;
@@ -2028,6 +2047,14 @@ export const updateSite = async (req, res) => {
         staffDefaultCheckOut: staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : prevDefaults.staffDefaultCheckOut,
         staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : prevDefaults.staffNightDefaultCheckIn,
         staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : prevDefaults.staffNightDefaultCheckOut,
+        omaniDefaultCheckIn: omaniDefaultCheckIn !== undefined ? omaniDefaultCheckIn : prevDefaults.omaniDefaultCheckIn,
+        omaniDefaultCheckOut: omaniDefaultCheckOut !== undefined ? omaniDefaultCheckOut : prevDefaults.omaniDefaultCheckOut,
+        omaniNightDefaultCheckIn: omaniNightDefaultCheckIn !== undefined ? omaniNightDefaultCheckIn : prevDefaults.omaniNightDefaultCheckIn,
+        omaniNightDefaultCheckOut: omaniNightDefaultCheckOut !== undefined ? omaniNightDefaultCheckOut : prevDefaults.omaniNightDefaultCheckOut,
+        omaniStaffDefaultCheckIn: omaniStaffDefaultCheckIn !== undefined ? omaniStaffDefaultCheckIn : prevDefaults.omaniStaffDefaultCheckIn,
+        omaniStaffDefaultCheckOut: omaniStaffDefaultCheckOut !== undefined ? omaniStaffDefaultCheckOut : prevDefaults.omaniStaffDefaultCheckOut,
+        omaniStaffNightDefaultCheckIn: omaniStaffNightDefaultCheckIn !== undefined ? omaniStaffNightDefaultCheckIn : prevDefaults.omaniStaffNightDefaultCheckIn,
+        omaniStaffNightDefaultCheckOut: omaniStaffNightDefaultCheckOut !== undefined ? omaniStaffNightDefaultCheckOut : prevDefaults.omaniStaffNightDefaultCheckOut,
       };
 
       try {

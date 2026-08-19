@@ -33,6 +33,7 @@ const HiredWorkers = lazy(() => import("./pages/HiredWorkers"))
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
 import PublicRoute from "./components/PublicRoute"
+import LoadingScreen from "./components/LoadingScreen"
 
 const RouteFallback = () => (
   <div className="flex h-[60vh] items-center justify-center">
@@ -43,13 +44,10 @@ const RouteFallback = () => (
 function App() {
   const { loading } = useAuth()
 
-  // ONLY block while fetching auth
+  // ONLY block while fetching auth. On the free-tier deploy this can span a
+  // cold start, so show the interactive branded loader rather than bare text.
   if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        Loading...
-      </div>
-    )
+    return <LoadingScreen />
   }
 
   return (

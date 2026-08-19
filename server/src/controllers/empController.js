@@ -60,7 +60,20 @@ export const getAllEmployees = async (req, res) => {
       if (site === "null") {
         filter.currentSite = null;
       } else {
-        filter.currentSite = site;
+        // On-site employees AND today's "only for today" visitors: such a transfer/add
+        // leaves currentSite elsewhere but stamps pendingTransferSiteId = this site, so
+        // without this they'd be missing from the draft and their carried session lost.
+        // (Permanent moves set currentSite = site, so they match either way.) Wrapped in
+        // $and so it never clashes with the notSupervisor $or above — same as rosterForSite.
+        filter.$and = [
+          ...(filter.$and || []),
+          {
+            $or: [
+              { currentSite: site },
+              { pendingTransferSiteId: site },
+            ],
+          },
+        ];
       }
     }
 
