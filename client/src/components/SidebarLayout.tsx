@@ -76,6 +76,11 @@ function getSupervisorNavItems(
       path: `/attendance/${assignedSite}`,
       icon: ClipboardCheck,
     })
+    items.push({
+      name: "Manage Employees",
+      path: `/site/${assignedSite}`,
+      icon: Users,
+    })
   }
 
   return items

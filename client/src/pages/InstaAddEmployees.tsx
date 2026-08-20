@@ -147,7 +147,7 @@ function InstaAddEmployees() {
     const deferred = from === "site-detail"
 
     // Where the back button returns to. The embedded SiteDetail roster passes its
-    // own path so Add returns there; other entry points fall back to hired-workers.
+    // own path so Add returns there; other entry points fall back to the site page.
     const returnTo = location.state?.returnTo as string | undefined
 
     const [loading, setLoading] =
@@ -447,7 +447,7 @@ function InstaAddEmployees() {
                             size="icon"
                             onClick={() =>
                                 navigate(
-                                    returnTo || `/attendance/${siteId}/hired-workers`,
+                                    returnTo || `/site/${siteId}`,
                                     { state: { from } }
                                 )
                             }

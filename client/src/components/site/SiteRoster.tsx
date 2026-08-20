@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import toast from "react-hot-toast"
 import axios from "axios"
@@ -48,8 +48,19 @@ import {
   Plus,
   ChevronLeft,
   ChevronRight,
+  MoreVertical,
+  Info,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
 
 import {
   categoryOf,
@@ -61,8 +72,12 @@ import AddTemporaryWorker from "@/components/AddTemporaryWorker"
 import RemoveEmployeeDialog, {
   type RemoveMode,
 } from "@/components/site/RemoveEmployeeDialog"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
 
 interface JobRef {
@@ -114,6 +129,9 @@ interface SiteRosterProps {
   onTodayCountChange?: (count: number) => void
   // Called after a job is created here so the parent can refresh its own job list.
   onJobsChanged?: () => void
+  // Whether the current user may create jobs (POST add-job is admin-only, so the
+  // supervisor view hides the inline "Add job" affordance). Defaults to true.
+  canCreateJobs?: boolean
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
@@ -142,6 +160,7 @@ function SiteRoster({
   isSiteActive,
   onTodayCountChange,
   onJobsChanged,
+  canCreateJobs = true,
 }: SiteRosterProps) {
   const navigate = useNavigate()
 
@@ -151,7 +170,11 @@ function SiteRoster({
 
   const [dayTab, setDayTab] = useState<DayMode>("today")
   const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
-  const [filters, setFilters] = useState({ name: "", employeeId: "" })
+  // Single search box matches either name or employee ID.
+  const [query, setQuery] = useState("")
+
+  // "Add hired worker" dialog, opened from the actions menu (Today tab only).
+  const [tempWorkerOpen, setTempWorkerOpen] = useState(false)
 
   // Filter the list by job ("all" | jobId | "none" for unassigned).
   const [jobFilter, setJobFilter] = useState<string>("all")
@@ -172,6 +195,16 @@ function SiteRoster({
   const [pageSize, setPageSize] = useState<number>(25)
   const [currentPage, setCurrentPage] = useState(1)
 
+  // The list is truly paginated now (no inner scroll), so a page can be tall.
+  // Paging jumps the roster back to the top so you don't land at the bottom.
+  const rosterRef = useRef<HTMLDivElement>(null)
+
+  // Stacked sticky tiers (md+): section header → category sub-tabs → table head.
+  // The header/sub-tab heights vary (Tomorrow banner, bulk bar, wrapping filters),
+  // so we measure them and publish the heights as CSS vars for the tiers below.
+  const headerRef = useRef<HTMLDivElement>(null)
+  const subtabsRef = useRef<HTMLDivElement>(null)
+
   const [editingJobEmployeeId, setEditingJobEmployeeId] = useState<string | null>(null)
   const [updatingJobMap, setUpdatingJobMap] = useState<Record<string, boolean>>({})
   const [cancelingId, setCancelingId] = useState<string | null>(null)
@@ -185,7 +218,11 @@ function SiteRoster({
   // cross-site visitors), not just the currentSite members.
   const [todaySubmitted, setTodaySubmitted] = useState(false)
   const [crossSiteRows, setCrossSiteRows] = useState<Employee[]>([])
-  const [hideLeaving, setHideLeaving] = useState(false)
+  // Leaving-tomorrow rows are hidden by default; revealed via the actions menu.
+  const [hideLeaving, setHideLeaving] = useState(true)
+
+  // Transient info tooltip shown briefly when switching to the Tomorrow tab.
+  const [tomorrowTipOpen, setTomorrowTipOpen] = useState(false)
 
   const [scheduleToCancel, setScheduleToCancel] = useState<Employee | null>(null)
   const [cancelScheduleOpen, setCancelScheduleOpen] = useState(false)
@@ -310,7 +347,46 @@ function SiteRoster({
   // Reset to the first page whenever the visible set changes.
   useEffect(() => {
     setCurrentPage(1)
-  }, [dayTab, jobFilter, filters.name, filters.employeeId, categoryTab, pageSize])
+  }, [dayTab, jobFilter, query, categoryTab, pageSize])
+
+  // Flash the "changes take effect tomorrow" note when switching to Tomorrow,
+  // then auto-dismiss so it doesn't take up permanent space.
+  useEffect(() => {
+    if (dayTab !== "tomorrow") {
+      setTomorrowTipOpen(false)
+      return
+    }
+    setTomorrowTipOpen(true)
+    const t = setTimeout(() => setTomorrowTipOpen(false), 4500)
+    return () => clearTimeout(t)
+  }, [dayTab])
+
+  function goToPage(page: number) {
+    setCurrentPage(page)
+    rosterRef.current?.scrollIntoView({ block: "start" })
+  }
+
+  // Keep the two upper sticky tiers' heights in CSS vars so the sub-tabs pin below
+  // the header and the table head pins below both. Re-runs when the header or the
+  // active sub-tabs node changes (tab switch / select mode); a ResizeObserver
+  // covers in-place height changes (filters wrapping on resize).
+  useLayoutEffect(() => {
+    const root = rosterRef.current
+    if (!root) return
+    const measure = () => {
+      if (headerRef.current) {
+        root.style.setProperty("--roster-header-h", `${headerRef.current.offsetHeight}px`)
+      }
+      if (subtabsRef.current) {
+        root.style.setProperty("--roster-subtabs-h", `${subtabsRef.current.offsetHeight}px`)
+      }
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (headerRef.current) ro.observe(headerRef.current)
+    if (subtabsRef.current) ro.observe(subtabsRef.current)
+    return () => ro.disconnect()
+  }, [dayTab, selectMode])
 
   function clearSiteDrafts() {
     Object.keys(localStorage).forEach((key) => {
@@ -496,12 +572,11 @@ function SiteRoster({
     if (mode === "tomorrow" && hideLeaving) {
       dayList = dayList.filter((e) => !e.scheduledRemoval)
     }
-    const name = filters.name.trim().toLowerCase()
-    const empId = filters.employeeId.trim().toLowerCase()
+    const q = query.trim().toLowerCase()
     const searched = dayList.filter(
       (e) =>
-        e.name.toLowerCase().includes(name) &&
-        e.employeeId.toLowerCase().includes(empId)
+        e.name.toLowerCase().includes(q) ||
+        e.employeeId.toLowerCase().includes(q)
     )
     // Filter by job — today keys off the current job, tomorrow off the effective
     // scheduled-or-current job (rowInfo.selectValue). "none" = unassigned / No job.
@@ -888,8 +963,13 @@ function SiteRoster({
 
     return (
       <>
-        {/* Category sub-tabs */}
-        <div className="mb-4 flex items-center gap-0 overflow-x-auto border-b border-muted/30">
+        {/* Category sub-tabs — tier 2: pins directly beneath the section header
+            (all viewports; the offset var is measured on every size). */}
+        <div
+          ref={subtabsRef}
+          style={{ top: "var(--roster-header-h, 0px)" }}
+          className="sticky z-20 mb-4 flex items-center gap-0 overflow-x-auto border-b border-muted/30 bg-card"
+        >
           {tabs.map((tab) => {
             const active = categoryTab === tab.key
             return (
@@ -924,10 +1004,22 @@ function SiteRoster({
           })}
         </div>
 
-        {/* Desktop table */}
-        <div className="hidden overflow-hidden rounded-2xl border md:block">
-          <Table wrapperClassName="max-h-[440px] overflow-y-auto">
-            <TableHeader className="sticky top-0 z-10 bg-background">
+        {/* Desktop table — no inner scroll (paginated). The border box and the table
+            wrapper must NOT be scroll containers, otherwise the sticky <thead> would
+            pin to them instead of the page. Trade-off: a very wide table scrolls the
+            page horizontally rather than scrolling inside its own box. */}
+        <div className="hidden rounded-2xl border md:block">
+          <Table
+            wrapperClassName="overflow-x-visible"
+            className="[&_td]:py-2 [&_th]:py-2 [&_th]:text-xs [&_td]:text-[13px]"
+          >
+            {/* Tier 3: table head pins below the header + sub-tabs (md+). */}
+            <TableHeader
+              className="bg-background md:sticky md:z-10"
+              style={{
+                top: "calc(var(--roster-header-h, 0px) + var(--roster-subtabs-h, 0px))",
+              }}
+            >
               <TableRow>
                 {selectMode && (
                   <TableHead className="w-12">
@@ -1014,7 +1106,7 @@ function SiteRoster({
         </div>
 
         {/* Mobile cards */}
-        <div className="block space-y-3 md:hidden">
+        <div className="block space-y-2 md:hidden">
           {loading ? (
             <div className="py-10 text-center">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
@@ -1031,48 +1123,50 @@ function SiteRoster({
               return (
                 <div
                   key={e._id}
-                  className="rounded-xl border bg-card p-4 shadow-sm"
+                  className="rounded-xl border bg-card p-3 shadow-sm"
                 >
-                  <div className="mb-2 flex items-start justify-between">
-                    <div className="flex items-start gap-3">
+                  <div className="mb-1.5 flex items-start justify-between gap-2">
+                    <div className="flex min-w-0 items-start gap-2.5">
                       {selectMode && selectable && (
                         <Checkbox
-                          className="mt-1"
+                          className="mt-0.5"
                           checked={selected.has(e._id)}
                           onCheckedChange={() => toggleSelect(e._id)}
                           aria-label={`Select ${e.name}`}
                         />
                       )}
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-lg font-bold">{e.name}</span>
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-sm font-semibold">{e.name}</span>
                           {nameBadges(e, mode)}
                         </div>
-                        <p className="font-mono text-xs text-muted-foreground">
+                        <p className="font-mono text-[11px] text-muted-foreground">
                           ID: {e.employeeId}
                         </p>
                       </div>
                     </div>
-                    <span className="rounded bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground">
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
                       #{start + index + 1}
                     </span>
                   </div>
-                  <div className="grid grid-cols-1 gap-3 border-t pt-3 text-sm">
-                    <div>
-                      <span className="block text-xs text-muted-foreground">
+                  <div className="space-y-1.5 border-t pt-2 text-[13px]">
+                    <div className="flex items-center gap-2">
+                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">
                         Job Title
                       </span>
-                      <span className="font-medium capitalize">{e.jobTitle}</span>
+                      <span className="min-w-0 truncate font-medium capitalize">
+                        {e.jobTitle}
+                      </span>
                     </div>
-                    <div>
-                      <span className="mb-1 block text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">
                         {mode === "today" ? "Current Job" : "Job (tomorrow)"}
                       </span>
-                      {renderJobCell(e, mode)}
+                      <div className="min-w-0">{renderJobCell(e, mode)}</div>
                     </div>
                   </div>
                   {canEdit && !selectMode && (
-                    <div className="mt-3 flex justify-end gap-2 border-t pt-3">
+                    <div className="mt-2 flex justify-end gap-2 border-t pt-2">
                       {renderActions(e, mode)}
                     </div>
                   )}
@@ -1112,7 +1206,7 @@ function SiteRoster({
                   variant="outline"
                   size="icon"
                   className="h-8 w-8"
-                  onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+                  onClick={() => goToPage(Math.max(1, safePage - 1))}
                   disabled={safePage <= 1}
                 >
                   <ChevronLeft className="h-4 w-4" />
@@ -1124,7 +1218,7 @@ function SiteRoster({
                   variant="outline"
                   size="icon"
                   className="h-8 w-8"
-                  onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
+                  onClick={() => goToPage(Math.min(totalPages, safePage + 1))}
                   disabled={safePage >= totalPages}
                 >
                   <ChevronRight className="h-4 w-4" />
@@ -1138,84 +1232,110 @@ function SiteRoster({
   }
 
   return (
-    <div className="space-y-5">
+    <div ref={rosterRef} className="space-y-5">
       <Tabs
         value={dayTab}
         onValueChange={(v) => changeDayTab(v as DayMode)}
         className="gap-5"
       >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <TabsList>
-            <TabsTrigger value="today">Today</TabsTrigger>
-            <TabsTrigger value="tomorrow">Tomorrow</TabsTrigger>
-          </TabsList>
+        {/* Sticky section header — the heading, the Today/Tomorrow switch and the
+            search/filter controls stay pinned while the roster list scrolls. md+
+            only: on phones the stacked filters would swallow most of the screen.
+            Relies on the parent Card being overflow-visible (see SiteDetail). */}
+        <div ref={headerRef} className="sticky top-0 z-30 space-y-3 bg-card pb-3 md:space-y-4 md:pb-4">
+          <h2 className="hidden text-xl font-bold tracking-tight md:block">
+            Employees
+          </h2>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <TabsList>
+                <TabsTrigger value="today">Today</TabsTrigger>
+                <TabsTrigger value="tomorrow">Tomorrow</TabsTrigger>
+              </TabsList>
+              {dayTab === "tomorrow" && (
+                <Tooltip open={tomorrowTipOpen} onOpenChange={setTomorrowTipOpen}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      aria-label="What happens on the Tomorrow tab"
+                    >
+                      <Info className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" align="start">
+                    Adds, job changes and removals made here take effect tomorrow.
+                    A removal can be undone any time before midnight.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+
             {canEdit && (
-              <Button
-                variant={selectMode ? "secondary" : "outline"}
-                onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
-              >
-                <ListChecks className="mr-2 h-4 w-4" />
-                Assign jobs
-              </Button>
-            )}
-            {canEdit && (
-              <Button variant="outline" onClick={goToAddEmployees}>
-                <UserPlus className="mr-2 h-4 w-4" />
-                Add Employees
-              </Button>
-            )}
-            {canEdit && dayTab === "today" && (
-              <AddTemporaryWorker onAdd={addTempWorker} assignedSiteId={siteId} />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                    <span className="sr-only">Roster actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuLabel>Manage roster</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      selectMode ? exitSelectMode() : setSelectMode(true)
+                    }
+                  >
+                    <ListChecks className="mr-2 h-4 w-4" />
+                    {selectMode ? "Exit assign mode" : "Assign jobs"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={goToAddEmployees}>
+                    <UserPlus className="mr-2 h-4 w-4" />
+                    Add employees
+                  </DropdownMenuItem>
+                  {dayTab === "today" && (
+                    <DropdownMenuItem
+                      onSelect={() => setTimeout(() => setTempWorkerOpen(true), 0)}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add hired worker
+                    </DropdownMenuItem>
+                  )}
+                  {dayTab === "tomorrow" && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuCheckboxItem
+                        checked={!hideLeaving}
+                        onCheckedChange={(v) => setHideLeaving(!v)}
+                      >
+                        Show leaving employees
+                      </DropdownMenuCheckboxItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
-        </div>
-
-        {dayTab === "tomorrow" && (
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="rounded-lg border border-amber-200/50 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-800/30 dark:bg-amber-950/40 dark:text-amber-300">
-              Adds, job changes and removals made here take effect tomorrow. A
-              removal can be undone any time before midnight.
-            </div>
-            <div className="flex items-center gap-2 self-end sm:self-auto">
-              <Switch
-                id="hide-leaving"
-                checked={hideLeaving}
-                onCheckedChange={setHideLeaving}
-              />
-              <Label
-                htmlFor="hide-leaving"
-                className="cursor-pointer whitespace-nowrap text-xs text-muted-foreground"
-              >
-                Hide leaving
-              </Label>
-            </div>
-          </div>
-        )}
 
         {/* Filters (shared across both tabs) */}
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="relative">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Search by name..."
+              placeholder="Search by name or ID..."
               className="pl-10"
-              value={filters.name}
-              onChange={(e) =>
-                setFilters((prev) => ({ ...prev, name: e.target.value }))
-              }
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <Input
-            placeholder="Search by employee ID..."
-            value={filters.employeeId}
-            onChange={(e) =>
-              setFilters((prev) => ({ ...prev, employeeId: e.target.value }))
-            }
-          />
           <Select value={jobFilter} onValueChange={setJobFilter}>
-            <SelectTrigger>
+            <SelectTrigger className="sm:w-56">
               <SelectValue placeholder="Filter by job" />
             </SelectTrigger>
             <SelectContent>
@@ -1252,15 +1372,17 @@ function SiteRoster({
                     ))}
                 </SelectContent>
               </Select>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-primary"
-                onClick={() => setAddJobOpen(true)}
-              >
-                <Plus className="mr-1 h-4 w-4" />
-                Add job
-              </Button>
+              {canCreateJobs && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-primary"
+                  onClick={() => setAddJobOpen(true)}
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  Add job
+                </Button>
+              )}
               <Button
                 size="sm"
                 disabled={assigning || selected.size === 0 || assignTarget === ""}
@@ -1278,6 +1400,7 @@ function SiteRoster({
             </div>
           </div>
         )}
+        </div>
 
         <TabsContent value="today">{renderBody("today")}</TabsContent>
         <TabsContent value="tomorrow">{renderBody("tomorrow")}</TabsContent>
@@ -1294,6 +1417,17 @@ function SiteRoster({
         submitted={todaySubmitted}
         onRemoved={fetchRoster}
       />
+
+      {/* Controlled "Add hired worker" dialog — triggered from the actions menu. */}
+      {canEdit && (
+        <AddTemporaryWorker
+          onAdd={addTempWorker}
+          assignedSiteId={siteId}
+          open={tempWorkerOpen}
+          onOpenChange={setTempWorkerOpen}
+          hideTrigger
+        />
+      )}
 
       <Dialog open={cancelScheduleOpen} onOpenChange={setCancelScheduleOpen}>
         <DialogContent className="sm:max-w-md">

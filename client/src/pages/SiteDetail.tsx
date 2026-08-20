@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog"
 
 import SiteRoster from "@/components/site/SiteRoster"
+import { useAuth } from "@/context/AuthContext"
 
 interface Site {
   _id: string
@@ -61,6 +62,12 @@ function SiteDetail() {
 
   const navigate = useNavigate()
   const location = useLocation()
+
+  const { user } = useAuth()
+  // Supervisors reach this page as their "Manage Employees" screen: they only
+  // manage the roster, never the site's config. They also may only view their
+  // own assigned site.
+  const isSupervisor = user?.role === "supervisor"
 
   const [site, setSite] = useState<Site | null>(null)
 
@@ -136,6 +143,15 @@ function SiteDetail() {
       console.log(error)
     }
   }
+
+  // A supervisor may only open their own assigned site; bounce any other id.
+  useEffect(() => {
+    if (!user) return
+    if (isSupervisor && (!user.assignedSite || id !== user.assignedSite)) {
+      navigate("/dashboard", { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, id])
 
   useEffect(() => {
     if (!id) return
@@ -215,7 +231,38 @@ function SiteDetail() {
 
   return (
     <div className="min-h-screen bg-muted/30 p-4 sm:p-6">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-4">
+        {/* Supervisor view: no site-config chrome, just a compact identity line. */}
+        {isSupervisor && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-1">
+            <h1 className="text-lg font-semibold tracking-tight">
+              {site?.siteName || "Site"}
+            </h1>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                site?.isActive
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  : "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
+              }`}
+            >
+              {site?.isActive ? "Active" : "Inactive"}
+            </span>
+            {site?.isCompleted && (
+              <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                Completed
+              </span>
+            )}
+            {site?.locationDetails && (
+              <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                <MapPin className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{site.locationDetails}</span>
+              </span>
+            )}
+          </div>
+        )}
+
+        {!isSupervisor && (
+          <>
         <button
           type="button"
           onClick={() => {
@@ -234,17 +281,17 @@ function SiteDetail() {
         </button>
 
         {/* Site Header */}
-        <Card className="rounded-3xl border bg-card p-6 shadow-sm sm:p-8">
-          <div className="flex flex-col gap-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 space-y-3">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <Card className="rounded-3xl border bg-card p-4 shadow-sm sm:p-5">
+          <div className="flex flex-col gap-3.5">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
                     {site?.siteName || "Site"}
                   </h1>
 
                   <span
-                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                       site?.isActive
                         ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
                         : "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
@@ -254,7 +301,7 @@ function SiteDetail() {
                   </span>
 
                   {site?.isCompleted && (
-                    <span className="rounded-full px-3 py-1 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                    <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
                       Completed
                     </span>
                   )}
@@ -266,8 +313,8 @@ function SiteDetail() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <MapPin className="h-4 w-4 shrink-0" />
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <MapPin className="h-3.5 w-3.5 shrink-0" />
                   <p className="truncate">{site?.locationDetails}</p>
                 </div>
               </div>
@@ -277,7 +324,8 @@ function SiteDetail() {
                   <>
                     <Button
                       variant="outline"
-                      className="rounded-xl"
+                      size="sm"
+                      className="rounded-lg"
                       onClick={() => {
                         if (site) {
                           setEditedLocationDetails(site.locationDetails)
@@ -291,7 +339,8 @@ function SiteDetail() {
                     {!site?.isPermanent && (
                       <Button
                         variant="outline"
-                        className={`rounded-xl transition-all ${
+                        size="sm"
+                        className={`rounded-lg transition-all ${
                           site?.isCompleted
                             ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
                             : "hover:bg-accent"
@@ -330,7 +379,11 @@ function SiteDetail() {
                       onOpenChange={setDeactivateOpen}
                     >
                       <DialogTrigger asChild>
-                        <Button variant="destructive" className="rounded-xl">
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="rounded-lg"
+                        >
                           Deactivate Site
                         </Button>
                       </DialogTrigger>
@@ -373,7 +426,8 @@ function SiteDetail() {
                     </Dialog>
                   ) : (
                     <Button
-                      className="rounded-xl"
+                      size="sm"
+                      className="rounded-lg"
                       disabled={reactivating}
                       onClick={reactivateSite}
                     >
@@ -384,86 +438,76 @@ function SiteDetail() {
                 {!site?.isPermanent && (
                   <Button
                     variant="destructive"
-                    className="rounded-xl"
+                    size="sm"
+                    className="rounded-lg"
                     onClick={() => setConfirmDeleteOpen(true)}
                   >
-                    <Trash2 className="mr-2 h-4 w-4" />
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     Delete Site
                   </Button>
                 )}
               </div>
             </div>
 
-            {/* Stat strip */}
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="flex items-center gap-3 rounded-2xl border bg-muted/40 p-4">
-                <div className="rounded-xl bg-background p-2.5 text-primary">
-                  <Users className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Employees
-                  </div>
-                  <div className="mt-0.5 text-2xl font-bold">
-                    {todayCount === null ? "--" : todayCount}
-                  </div>
-                </div>
+            {/* Stat strip — compact inline chips (one wrapping row instead of
+                three tall cards, which is the main height saving on mobile). */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-1.5">
+                <Users className="h-4 w-4 shrink-0 text-primary" />
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Employees
+                </span>
+                <span className="text-sm font-bold tabular-nums">
+                  {todayCount === null ? "--" : todayCount}
+                </span>
               </div>
 
               <button
                 type="button"
                 onClick={() => navigate(`/site/${id}/jobs`)}
-                className="group flex items-center gap-3 rounded-2xl border bg-muted/40 p-4 text-left transition hover:border-primary/30 hover:bg-muted/60"
+                className="group inline-flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-1.5 transition hover:border-primary/30 hover:bg-muted/60"
               >
-                <div className="rounded-xl bg-background p-2.5 text-primary">
-                  <Briefcase className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Active Jobs
-                  </div>
-                  <div className="mt-0.5 text-2xl font-bold">
-                    {loadingJobs
-                      ? "--"
-                      : jobs.filter((job) => job.isActive).length}
-                  </div>
-                  <div className="mt-0.5 text-xs font-medium text-primary">
-                    Manage jobs →
-                  </div>
-                </div>
+                <Briefcase className="h-4 w-4 shrink-0 text-primary" />
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Active Jobs
+                </span>
+                <span className="text-sm font-bold tabular-nums">
+                  {loadingJobs
+                    ? "--"
+                    : jobs.filter((job) => job.isActive).length}
+                </span>
+                <span className="ml-0.5 text-xs font-medium text-primary">
+                  Manage →
+                </span>
               </button>
 
-              <div className="flex items-center gap-3 rounded-2xl border bg-muted/40 p-4">
-                <div className="rounded-xl bg-background p-2.5 text-muted-foreground">
-                  <CalendarDays className="h-5 w-5" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Calendar Days
-                  </div>
-                  <div className="mt-0.5 text-2xl font-bold">
-                    {loadingSiteStats
-                      ? "--"
-                      : siteStats?.totalCalendarDays ?? 0}
-                  </div>
-                </div>
+              <div className="inline-flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-1.5">
+                <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Calendar Days
+                </span>
+                <span className="text-sm font-bold tabular-nums">
+                  {loadingSiteStats ? "--" : siteStats?.totalCalendarDays ?? 0}
+                </span>
               </div>
             </div>
           </div>
         </Card>
+          </>
+        )}
 
         {/* Employees Section */}
-        <Card className="rounded-3xl border bg-card p-6 shadow-sm sm:p-8">
-          <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-2xl font-bold tracking-tight">Employees</h2>
-          </div>
-
+        {/* overflow-visible overrides the base Card's overflow-hidden so the roster's
+            sticky section header (heading + filters) can pin to the page scroll
+            container instead of being clipped to this card. */}
+        <Card className="overflow-visible rounded-3xl border bg-card p-6 shadow-sm sm:p-8">
           {id && (
             <SiteRoster
               siteId={id}
               isSiteActive={!!isSiteActive}
               onTodayCountChange={setTodayCount}
               onJobsChanged={() => fetchJobs(true)}
+              canCreateJobs={!isSupervisor}
             />
           )}
         </Card>

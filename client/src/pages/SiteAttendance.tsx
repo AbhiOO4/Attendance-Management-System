@@ -2887,17 +2887,7 @@ function SiteAttendance() {
 
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-
-              <Button
-                variant="default"
-                onClick={() =>
-                  handleSafeNavigation(`/attendance/${id}/hired-workers`)
-                }
-              >
-                <Users className="h-4 w-4 mr-2" />
-                Manage Employees
-              </Button>
+            <div className="grid grid-cols-1 gap-2">
 
               {attendanceExists ? (
                 <Button disabled>

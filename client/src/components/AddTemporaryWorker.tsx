@@ -36,10 +36,28 @@ type JobTitle = {
 interface Props {
   onAdd: (newEmployee: NewEmployee) => Promise<void>
   assignedSiteId: string
+  // Optional controlled open state, so the dialog can be triggered from elsewhere
+  // (e.g. a dropdown-menu item) instead of its own button.
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  // Hide the built-in trigger button when the dialog is controlled externally.
+  hideTrigger?: boolean
 }
 
-function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
-  const [open, setOpen] = useState(false)
+function AddTemporaryWorker({
+  onAdd,
+  assignedSiteId,
+  open: openProp,
+  onOpenChange,
+  hideTrigger,
+}: Props) {
+  const [internalOpen, setInternalOpen] = useState(false)
+  const isControlled = openProp !== undefined
+  const open = isControlled ? openProp : internalOpen
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setInternalOpen(next)
+    onOpenChange?.(next)
+  }
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
   const [formData, setFormData] = useState<Omit<NewEmployee, "currentSite" | "employmentType">>({
     name: "",
@@ -96,11 +114,13 @@ function AddTemporaryWorker({ onAdd, assignedSiteId }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          Add Hired Worker
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button>
+            Add Hired Worker
+          </Button>
+        </DialogTrigger>
+      )}
 
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Link, useParams } from "react-router-dom"
-import { ArrowLeft, Briefcase, Plus, Trash2, Users } from "lucide-react"
+import { ArrowLeft, Briefcase, Loader2, Plus, Trash2, Users } from "lucide-react"
 import toast from "react-hot-toast"
 
 import { api } from "@/lib/api"
@@ -131,9 +131,20 @@ function SiteJobs() {
   async function toggleCompleted(job: Job) {
     try {
       setStatusBusyId(job._id)
-      await api.patch(`/api/site/job/${job._id}/toggle-completed`)
-      toast.success(`Job marked as ${!job.isCompleted ? "completed" : "incomplete"}`)
-      fetchJobs(false)
+      // The endpoint returns the updated job. Completing a job doesn't change any
+      // of the per-job stats (employeeCount / man-hours), so patch it into local
+      // state directly instead of triggering the heavy getSiteJobs refetch — the
+      // label flips as soon as this single round-trip resolves.
+      const res = await api.patch(`/api/site/job/${job._id}/toggle-completed`)
+      const updated = res.data
+      setJobs((prev) =>
+        prev.map((j) =>
+          j._id === job._id
+            ? { ...j, isCompleted: updated.isCompleted, isActive: updated.isActive }
+            : j
+        )
+      )
+      toast.success(`Job marked as ${updated.isCompleted ? "completed" : "incomplete"}`)
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Failed to update job status")
     } finally {
@@ -336,7 +347,11 @@ function SiteJobs() {
                         }`}
                         onClick={() => toggleCompleted(job)}
                       >
-                        {job.isCompleted ? "Reopen" : "Complete"}
+                        {statusBusyId === job._id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          job.isCompleted ? "Reopen" : "Complete"
+                        )}
                       </Button>
                     )}
 
