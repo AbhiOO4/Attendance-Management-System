@@ -22,7 +22,7 @@ const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
 const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
 const MissingEmployees = lazy(() => import("./pages/MissingEmployees"))
 
-const ManageJobEmployees = lazy(() => import("./pages/ManageJobEmployees"))
+const SiteJobs = lazy(() => import("./pages/SiteJobs"))
 const MonthlyReport = lazy(() => import("./pages/MonthlyReport"))
 const Configure = lazy(() => import("./pages/Configure"))
 const ManageUsers = lazy(() => import("./pages/ManageUsers"))
@@ -171,10 +171,10 @@ function App() {
         />
 
         <Route
-          path="site/job/:jobId"
+          path="site/:id/jobs"
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
-              <ManageJobEmployees />
+              <SiteJobs />
             </ProtectedRoute>
           }
         />

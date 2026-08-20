@@ -736,6 +736,125 @@ export const removeEmployeeFromJob = async (req, res) => {
   }
 };
 
+// Bulk-set the job for a list of on-site employees. `jobId` is the target job (or null for
+// "No job"/unassigned). Immediate by default; `deferred: true` schedules the change for
+// tomorrow's day-rollover (applyScheduledAssignments cron) instead. Mirrors updateEmployeeJob's
+// per-employee sync so currentJob AND each job's employees[] mirror stay in step. Employees
+// must already be on this site (a within-site job assignment, not a cross-site transfer).
+export const bulkSetEmployeeJob = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { siteId } = req.params;
+    const { empIds, jobId = null, deferred = false } = req.body;
+
+    if (!Array.isArray(empIds) || empIds.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "No employees selected",
+      });
+    }
+
+    // Validate the target job (only when assigning to one, not to "No job").
+    if (jobId) {
+      const job = await jobModel
+        .findOne({ _id: jobId, isDeleted: { $ne: true } })
+        .session(session);
+
+      if (!job || !job.isActive || job.site.toString() !== siteId.toString()) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Invalid target job for this site",
+        });
+      }
+    }
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const empId of empIds) {
+      const employee = await empModel.findById(empId).session(session);
+
+      // Only live employees currently on this site can be bulk-assigned.
+      if (
+        !employee ||
+        !employee.isActive ||
+        !employee.currentSite ||
+        employee.currentSite.toString() !== siteId.toString()
+      ) {
+        skipped++;
+        continue;
+      }
+
+      if (deferred) {
+        // Stash a from-tomorrow job-only change (keep the site); the cron applies it.
+        employee.scheduledSiteId = null;
+        employee.scheduledJobId = jobId || null;
+        employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+        await employee.save({ session });
+        updated++;
+        continue;
+      }
+
+      const oldJobId = employee.currentJob;
+
+      // No change needed (already in the target job, or already unassigned).
+      if ((oldJobId ? oldJobId.toString() : null) === (jobId || null)) {
+        skipped++;
+        continue;
+      }
+
+      // Pull out of the previous job's mirror first.
+      if (oldJobId) {
+        await jobModel.findByIdAndUpdate(
+          oldJobId,
+          { $pull: { employees: employee._id } },
+          { session }
+        );
+      }
+
+      employee.currentJob = jobId || null;
+      await employee.save({ session });
+
+      // Add to the new job's mirror (skip when unassigning to "No job").
+      if (jobId) {
+        await jobModel.findByIdAndUpdate(
+          jobId,
+          { $addToSet: { employees: employee._id } },
+          { session }
+        );
+      }
+
+      updated++;
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return res.status(200).json({
+      success: true,
+      message: deferred
+        ? `${updated} employee(s) scheduled for tomorrow`
+        : `${updated} employee(s) updated`,
+      updated,
+      skipped,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.log(error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+};
+
 export const jobManHoursAndDays = async (req,res) => {
   try {
     const { jobId } = req.params;
@@ -1578,6 +1697,8 @@ export const getAvailableEmployeesForSite = async (
       employeeId = "",
       jobTitle = "",
       currentSite = "",
+      collarType = "",
+      nationality = "",
     } = req.query
 
     const limit = 20
@@ -1658,6 +1779,25 @@ export const getAvailableEmployeesForSite = async (
       }
     }
 
+    // -----------------------
+    // ROSTER CATEGORY FILTERS (collarType × nationality)
+    // -----------------------
+    // Mirror the client's categoryOf() defaults: anything not explicitly 'staff'
+    // is skilled, anything not explicitly 'omani' is foreign. Using $ne keeps
+    // legacy docs (field missing) on the default side of each filter.
+
+    if (collarType === "staff") {
+      query.$and.push({ collarType: "staff" })
+    } else if (collarType === "skilled") {
+      query.$and.push({ collarType: { $ne: "staff" } })
+    }
+
+    if (nationality === "omani") {
+      query.$and.push({ nationality: "omani" })
+    } else if (nationality === "foreign") {
+      query.$and.push({ nationality: { $ne: "omani" } })
+    }
+
     const employees =
       await empModel
         .find(query)
@@ -1670,30 +1810,12 @@ export const getAvailableEmployeesForSite = async (
           "name"
         )
 
+    // Alphabetical only — supervisors are listed inline with regular
+    // employees rather than pinned to the top.
     const sortedEmployees =
-      employees.sort((a, b) => {
-        const aSupervisor =
-          a.user ? 1 : 0
-
-        const bSupervisor =
-          b.user ? 1 : 0
-
-        // supervisors first
-        if (
-          aSupervisor !==
-          bSupervisor
-        ) {
-          return (
-            bSupervisor -
-            aSupervisor
-          )
-        }
-
-        // then alphabetical
-        return a.name.localeCompare(
-          b.name
-        )
-      })
+      employees.sort((a, b) =>
+        a.name.localeCompare(b.name)
+      )
 
     const total =
       sortedEmployees.length
@@ -1722,6 +1844,8 @@ export const getAvailableEmployeesForSite = async (
         employeeId,
         jobTitle,
         currentSite,
+        collarType,
+        nationality,
       },
 
       employees: paginatedEmployees,
@@ -2335,6 +2459,7 @@ const siteController = {
     checkPending,
     addJob,
     addEmployeeToJob,
+    bulkSetEmployeeJob,
     jobManHoursAndDays,
     siteManHoursAndDays,
     deactivateSite,

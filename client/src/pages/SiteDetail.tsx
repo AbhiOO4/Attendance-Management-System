@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react"
 import { useParams, useNavigate, useLocation } from "react-router-dom"
 import {
-  Plus,
   MapPin,
   ArrowLeft,
   Trash2,
@@ -72,36 +71,16 @@ function SiteDetail() {
 
   const [deactivating, setDeactivating] = useState(false)
 
-  // jobs
+  // jobs — kept only for the "Active Jobs" stat; job management lives on /site/:id/jobs
   const [jobs, setJobs] = useState<Job[]>([])
 
   const [loadingJobs, setLoadingJobs] = useState(false)
-
-  const [jobDialogOpen, setJobDialogOpen] = useState(false)
-
-  const [creatingJob, setCreatingJob] = useState(false)
-
-  const [jobForm, setJobForm] = useState({
-    name: "",
-    jobCode: "",
-  })
-
-  const [jobErrors, setJobErrors] = useState({
-    name: "",
-    jobCode: "",
-    general: "",
-  })
 
   const [reactivating, setReactivating] = useState(false)
 
   // Delete Site states
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [deletingSite, setDeletingSite] = useState(false)
-
-  // Delete Job states
-  const [confirmDeleteJobOpen, setConfirmDeleteJobOpen] = useState(false)
-  const [jobToDelete, setJobToDelete] = useState<Job | null>(null)
-  const [deletingJob, setDeletingJob] = useState(false)
 
   // Edit Location state
   const [isEditingLocation, setIsEditingLocation] = useState(false)
@@ -155,70 +134,6 @@ function SiteDetail() {
       setSite(res.data)
     } catch (error) {
       console.log(error)
-    }
-  }
-
-  function validateJobForm() {
-    const errors = {
-      name: "",
-      jobCode: "",
-      general: "",
-    }
-
-    let valid = true
-
-    if (!jobForm.name.trim()) {
-      errors.name = "Job name is required"
-      valid = false
-    }
-
-    if (!jobForm.jobCode.trim()) {
-      errors.jobCode = "Job code is required"
-      valid = false
-    }
-
-    setJobErrors(errors)
-
-    return valid
-  }
-
-  async function createJob() {
-    try {
-      const isValid = validateJobForm()
-
-      if (!isValid) return
-
-      setCreatingJob(true)
-
-      await api.post(`/api/site/${id}/add-job`, {
-        name: jobForm.name.trim(),
-        jobCode: jobForm.jobCode.trim(),
-      })
-
-      setJobForm({
-        name: "",
-        jobCode: "",
-      })
-
-      setJobErrors({
-        name: "",
-        jobCode: "",
-        general: "",
-      })
-
-      setJobDialogOpen(false)
-
-      fetchJobs(true)
-    } catch (error: any) {
-      console.log(error)
-
-      setJobErrors((prev) => ({
-        ...prev,
-        general:
-          error?.response?.data?.message || "Failed to create job",
-      }))
-    } finally {
-      setCreatingJob(false)
     }
   }
 
@@ -295,22 +210,6 @@ function SiteDetail() {
       toast.error(error?.response?.data?.message || "Failed to delete site")
     } finally {
       setDeletingSite(false)
-    }
-  }
-
-  async function handleDeleteJob() {
-    if (!jobToDelete) return
-    try {
-      setDeletingJob(true)
-      await api.delete(`/api/site/job/${jobToDelete._id}`)
-      toast.success("Job soft-deleted successfully")
-      setConfirmDeleteJobOpen(false)
-      setJobToDelete(null)
-      fetchJobs(true)
-    } catch (error: any) {
-      toast.error(error?.response?.data?.message || "Failed to delete job")
-    } finally {
-      setDeletingJob(false)
     }
   }
 
@@ -511,11 +410,15 @@ function SiteDetail() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 rounded-2xl border bg-muted/40 p-4">
-                <div className="rounded-xl bg-background p-2.5 text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => navigate(`/site/${id}/jobs`)}
+                className="group flex items-center gap-3 rounded-2xl border bg-muted/40 p-4 text-left transition hover:border-primary/30 hover:bg-muted/60"
+              >
+                <div className="rounded-xl bg-background p-2.5 text-primary">
                   <Briefcase className="h-5 w-5" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Active Jobs
                   </div>
@@ -524,8 +427,11 @@ function SiteDetail() {
                       ? "--"
                       : jobs.filter((job) => job.isActive).length}
                   </div>
+                  <div className="mt-0.5 text-xs font-medium text-primary">
+                    Manage jobs →
+                  </div>
                 </div>
-              </div>
+              </button>
 
               <div className="flex items-center gap-3 rounded-2xl border bg-muted/40 p-4">
                 <div className="rounded-xl bg-background p-2.5 text-muted-foreground">
@@ -557,211 +463,11 @@ function SiteDetail() {
               siteId={id}
               isSiteActive={!!isSiteActive}
               onTodayCountChange={setTodayCount}
+              onJobsChanged={() => fetchJobs(true)}
             />
           )}
         </Card>
 
-        {/* Jobs Section */}
-        <Card className="rounded-3xl border bg-card p-6 shadow-sm sm:p-8">
-          <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-primary/10 p-2 text-primary">
-                <Briefcase className="h-5 w-5" />
-              </div>
-
-              <h2 className="text-2xl font-bold tracking-tight">Jobs</h2>
-            </div>
-
-            <Dialog open={jobDialogOpen} onOpenChange={setJobDialogOpen}>
-              <DialogTrigger asChild>
-                <Button className="rounded-xl" disabled={!isSiteActive}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Job
-                </Button>
-              </DialogTrigger>
-
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle className="text-2xl">Create New Job</DialogTitle>
-
-                  <DialogDescription>
-                    Add a new job under this site.
-                  </DialogDescription>
-                </DialogHeader>
-
-                <div className="space-y-5 py-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Job Name</label>
-
-                    <Input
-                      placeholder="Enter job name"
-                      value={jobForm.name}
-                      onChange={(e) =>
-                        setJobForm((prev) => ({
-                          ...prev,
-                          name: e.target.value,
-                        }))
-                      }
-                    />
-
-                    {jobErrors.name && (
-                      <p className="text-sm text-red-500">{jobErrors.name}</p>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Job Code</label>
-
-                    <Input
-                      placeholder="Enter job code"
-                      value={jobForm.jobCode}
-                      onChange={(e) =>
-                        setJobForm((prev) => ({
-                          ...prev,
-                          jobCode: e.target.value,
-                        }))
-                      }
-                    />
-
-                    {jobErrors.jobCode && (
-                      <p className="text-sm text-red-500">{jobErrors.jobCode}</p>
-                    )}
-                  </div>
-
-                  {jobErrors.general && (
-                    <p className="text-sm text-red-500">{jobErrors.general}</p>
-                  )}
-                </div>
-
-                <DialogFooter>
-                  <Button
-                    variant="outline"
-                    onClick={() => setJobDialogOpen(false)}
-                  >
-                    Cancel
-                  </Button>
-
-                  <Button disabled={creatingJob} onClick={createJob}>
-                    {creatingJob ? "Creating..." : "Create Job"}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </div>
-
-          {loadingJobs ? (
-            <div className="flex h-40 items-center justify-center text-muted-foreground">
-              Loading jobs...
-            </div>
-          ) : jobs.length === 0 ? (
-            <div className="flex h-40 flex-col items-center justify-center gap-3 text-center">
-              <div className="rounded-full bg-muted/60 p-3">
-                <Briefcase className="h-8 w-8 text-muted-foreground" />
-              </div>
-
-              <div>
-                <p className="font-medium">No jobs found</p>
-
-                <p className="text-sm text-muted-foreground">
-                  Create your first job for this site.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {jobs.map((job) => (
-                <div
-                  key={job._id}
-                  onClick={() => navigate(`/site/job/${job._id}`)}
-                  className="group cursor-pointer rounded-2xl border bg-background p-5 transition hover:border-primary/30 hover:shadow-md"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="rounded-xl bg-primary/10 p-2 text-primary">
-                        <Briefcase className="h-5 w-5" />
-                      </div>
-
-                      <div className="min-w-0">
-                        <h3 className="truncate text-lg font-semibold">
-                          {job.name}
-                        </h3>
-                        <p className="truncate text-sm text-muted-foreground">
-                          {job.jobCode}
-                        </p>
-                      </div>
-                    </div>
-
-                    <Button
-                      variant="destructive"
-                      size="icon-xs"
-                      className="h-7 w-7 shrink-0 rounded-lg p-0"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setJobToDelete(job)
-                        setConfirmDeleteJobOpen(true)
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-
-                  <div className="mt-4 flex items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          job.isActive
-                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-                            : "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300"
-                        }`}
-                      >
-                        {job.isActive ? "Active" : "Inactive"}
-                      </span>
-
-                      {job.isCompleted && (
-                        <span className="rounded-full px-2 py-0.5 text-[10px] font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
-                          Completed
-                        </span>
-                      )}
-                    </div>
-
-                    {isSiteActive && job.isActive && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-all ${
-                          job.isCompleted
-                            ? "bg-indigo-500 hover:bg-indigo-600 text-white border-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-700"
-                            : "hover:bg-accent"
-                        }`}
-                        onClick={async (e) => {
-                          e.stopPropagation()
-                          try {
-                            await api.patch(
-                              `/api/site/job/${job._id}/toggle-completed`
-                            )
-                            toast.success(
-                              `Job marked as ${
-                                !job.isCompleted ? "completed" : "incomplete"
-                              }`
-                            )
-                            fetchJobs(false)
-                          } catch (error: any) {
-                            toast.error(
-                              error?.response?.data?.message ||
-                                "Failed to update job status"
-                            )
-                          }
-                        }}
-                      >
-                        {job.isCompleted ? "Reopen" : "Complete"}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </Card>
       </div>
 
       {/* Delete Site Dialog */}
@@ -812,55 +518,6 @@ function SiteDetail() {
               onClick={handleDeleteSite}
             >
               {deletingSite ? "Deleting..." : "Confirm Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Job Dialog */}
-      <Dialog open={confirmDeleteJobOpen} onOpenChange={setConfirmDeleteJobOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold text-destructive flex items-center gap-2">
-              <Trash2 className="h-5 w-5" />
-              Delete Job?
-            </DialogTitle>
-            <DialogDescription className="pt-2 text-base">
-              Are you sure you want to delete job{" "}
-              <strong>{jobToDelete?.name}</strong> ({jobToDelete?.jobCode})?
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="my-4 rounded-xl border bg-destructive/5 border-destructive/10 p-4 text-sm text-destructive space-y-2">
-            <p className="font-semibold">
-              This action is permanent for the active roster:
-            </p>
-            <ul className="list-disc pl-4 space-y-1">
-              <li>
-                All employees assigned to this job will have their job
-                assignments cleared (set to null).
-              </li>
-              <li>The job will be removed from the site's jobs array.</li>
-            </ul>
-          </div>
-
-          <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button
-              variant="outline"
-              disabled={deletingJob}
-              onClick={() => {
-                setConfirmDeleteJobOpen(false)
-                setJobToDelete(null)
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deletingJob}
-              onClick={handleDeleteJob}
-            >
-              {deletingJob ? "Deleting..." : "Confirm Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

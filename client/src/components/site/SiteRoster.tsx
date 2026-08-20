@@ -44,7 +44,12 @@ import {
   X,
   Plane,
   Search,
+  ListChecks,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   categoryOf,
@@ -96,6 +101,7 @@ interface Employee {
 interface Job {
   _id: string
   name: string
+  isActive?: boolean
 }
 
 type DayMode = "today" | "tomorrow"
@@ -106,7 +112,11 @@ interface SiteRosterProps {
   isSiteActive: boolean
   // Reports the size of the Today roster so the parent's stat strip can show it.
   onTodayCountChange?: (count: number) => void
+  // Called after a job is created here so the parent can refresh its own job list.
+  onJobsChanged?: () => void
 }
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 
 // ---- small field helpers (the roster fields can be populated objects or ids) ----
 function refId(v: JobRef | SiteRef | string | null | undefined): string | null {
@@ -127,7 +137,12 @@ function jobName(v: JobRef | string | null | undefined): string | null {
 // Today actions are instant (a cross-site remove deletes only the session). Tomorrow
 // actions — job change and removal — are deferred to the day-rollover cron and can be
 // undone before midnight.
-function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProps) {
+function SiteRoster({
+  siteId,
+  isSiteActive,
+  onTodayCountChange,
+  onJobsChanged,
+}: SiteRosterProps) {
   const navigate = useNavigate()
 
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -137,6 +152,25 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
   const [dayTab, setDayTab] = useState<DayMode>("today")
   const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
   const [filters, setFilters] = useState({ name: "", employeeId: "" })
+
+  // Filter the list by job ("all" | jobId | "none" for unassigned).
+  const [jobFilter, setJobFilter] = useState<string>("all")
+
+  // Bulk "Assign jobs" selection mode.
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [assignTarget, setAssignTarget] = useState<string>("") // "" | jobId | "none"
+  const [assigning, setAssigning] = useState(false)
+
+  // Add-job modal.
+  const [addJobOpen, setAddJobOpen] = useState(false)
+  const [creatingJob, setCreatingJob] = useState(false)
+  const [jobForm, setJobForm] = useState({ name: "", jobCode: "" })
+  const [jobErrors, setJobErrors] = useState({ name: "", jobCode: "", general: "" })
+
+  // Pagination (client-side over the fully-loaded roster).
+  const [pageSize, setPageSize] = useState<number>(25)
+  const [currentPage, setCurrentPage] = useState(1)
 
   const [editingJobEmployeeId, setEditingJobEmployeeId] = useState<string | null>(null)
   const [updatingJobMap, setUpdatingJobMap] = useState<Record<string, boolean>>({})
@@ -273,6 +307,11 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayCount])
 
+  // Reset to the first page whenever the visible set changes.
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [dayTab, jobFilter, filters.name, filters.employeeId, categoryTab, pageSize])
+
   function clearSiteDrafts() {
     Object.keys(localStorage).forEach((key) => {
       if (key.startsWith(`attendance_draft_${siteId}_`)) {
@@ -355,6 +394,95 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
   function changeDayTab(next: DayMode) {
     setDayTab(next)
     setEditingJobEmployeeId(null)
+    // Selection is per-tab (today = immediate, tomorrow = deferred) — reset on switch.
+    setSelected(new Set())
+  }
+
+  // ---- bulk "Assign jobs" helpers ----
+  function isRowSelectable(e: Employee) {
+    // Only real on-site roster members can be bulk-assigned (not cross-site visitors).
+    return e.currentSite === siteId && !e.__crossSite
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false)
+    setSelected(new Set())
+    setAssignTarget("")
+  }
+
+  async function submitBulkAssign() {
+    const empIds = [...selected]
+    if (empIds.length === 0 || assignTarget === "") return
+    const deferred = dayTab === "tomorrow"
+    const jobId = assignTarget === "none" ? null : assignTarget
+    setAssigning(true)
+    try {
+      await api.patch(`/api/site/${siteId}/employees/job`, {
+        empIds,
+        jobId,
+        deferred,
+      })
+      toast.success(
+        deferred ? "Job change scheduled — starts tomorrow" : "Jobs updated"
+      )
+      if (!deferred) clearSiteDrafts()
+      exitSelectMode()
+      await fetchRoster()
+    } catch (error: any) {
+      console.log(error)
+      toast.error(error?.response?.data?.message || "Failed to assign jobs")
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  // ---- inline Add-job modal ----
+  function validateJobForm() {
+    const errors = { name: "", jobCode: "", general: "" }
+    let valid = true
+    if (!jobForm.name.trim()) {
+      errors.name = "Job name is required"
+      valid = false
+    }
+    if (!jobForm.jobCode.trim()) {
+      errors.jobCode = "Job code is required"
+      valid = false
+    }
+    setJobErrors(errors)
+    return valid
+  }
+
+  async function createJobInline() {
+    if (!validateJobForm()) return
+    setCreatingJob(true)
+    try {
+      await api.post(`/api/site/${siteId}/add-job`, {
+        name: jobForm.name.trim(),
+        jobCode: jobForm.jobCode.trim(),
+      })
+      setJobForm({ name: "", jobCode: "" })
+      setJobErrors({ name: "", jobCode: "", general: "" })
+      setAddJobOpen(false)
+      toast.success("Job created")
+      await fetchJobs()
+      onJobsChanged?.()
+    } catch (error: any) {
+      setJobErrors((prev) => ({
+        ...prev,
+        general: error?.response?.data?.message || "Failed to create job",
+      }))
+    } finally {
+      setCreatingJob(false)
+    }
   }
 
   // ---- per-mode derived lists ----
@@ -375,7 +503,18 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
         e.name.toLowerCase().includes(name) &&
         e.employeeId.toLowerCase().includes(empId)
     )
-    return searched
+    // Filter by job — today keys off the current job, tomorrow off the effective
+    // scheduled-or-current job (rowInfo.selectValue). "none" = unassigned / No job.
+    if (jobFilter === "all") return searched
+    return searched.filter((e) => {
+      const jid =
+        mode === "today"
+          ? refId(e.currentJob)
+          : rowInfo(e, mode).selectValue === "unassigned"
+          ? null
+          : rowInfo(e, mode).selectValue
+      return jobFilter === "none" ? jid === null : jid === jobFilter
+    })
   }
 
   function categoryTabsFor(list: Employee[]) {
@@ -556,7 +695,7 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             </span>
           )}
         </span>
-        {canEdit && info.editable && (
+        {canEdit && info.editable && !selectMode && (
           <Button
             variant="ghost"
             size="icon"
@@ -571,7 +710,7 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
   }
 
   function renderActions(e: Employee, mode: DayMode) {
-    if (!canEdit) return null
+    if (!canEdit || selectMode) return null
     const info = rowInfo(e, mode)
 
     // Tomorrow, incoming: the only action is to cancel the scheduled arrival.
@@ -734,6 +873,19 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
     const tabs = categoryTabsFor(searched)
     const visible = visibleFor(searched)
 
+    // Client-side pagination over the filtered list.
+    const totalItems = visible.length
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
+    const safePage = Math.min(currentPage, totalPages)
+    const start = (safePage - 1) * pageSize
+    const paged = visible.slice(start, start + pageSize)
+
+    // Select-all spans the whole filtered set (all pages), not just this page.
+    const selectableAll = visible.filter(isRowSelectable)
+    const allSelected =
+      selectableAll.length > 0 && selectableAll.every((e) => selected.has(e._id))
+    const colCount = selectMode ? 7 : 6
+
     return (
       <>
         {/* Category sub-tabs */}
@@ -777,6 +929,23 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
           <Table wrapperClassName="max-h-[440px] overflow-y-auto">
             <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
+                {selectMode && (
+                  <TableHead className="w-12">
+                    <Checkbox
+                      checked={allSelected}
+                      disabled={selectableAll.length === 0}
+                      onCheckedChange={(v) => {
+                        setSelected((prev) => {
+                          const next = new Set(prev)
+                          if (v) selectableAll.forEach((e) => next.add(e._id))
+                          else selectableAll.forEach((e) => next.delete(e._id))
+                          return next
+                        })
+                      }}
+                      aria-label="Select all"
+                    />
+                  </TableHead>
+                )}
                 <TableHead className="w-16">Sl No</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Employee ID</TableHead>
@@ -790,14 +959,14 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-10 text-center">
+                  <TableCell colSpan={colCount} className="py-10 text-center">
                     <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
                   </TableCell>
                 </TableRow>
-              ) : visible.length === 0 ? (
+              ) : paged.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={colCount}
                     className="py-8 text-center text-muted-foreground"
                   >
                     {mode === "today"
@@ -806,25 +975,39 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
                   </TableCell>
                 </TableRow>
               ) : (
-                visible.map((e, index) => (
-                  <TableRow key={e._id} className="transition-colors hover:bg-muted/50">
-                    <TableCell className="font-medium text-muted-foreground">
-                      {index + 1}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{e.name}</span>
-                        {nameBadges(e, mode)}
-                      </div>
-                    </TableCell>
-                    <TableCell>{e.employeeId}</TableCell>
-                    <TableCell className="capitalize">{e.jobTitle}</TableCell>
-                    <TableCell>{renderJobCell(e, mode)}</TableCell>
-                    <TableCell className="text-right">
-                      {renderActions(e, mode)}
-                    </TableCell>
-                  </TableRow>
-                ))
+                paged.map((e, index) => {
+                  const selectable = isRowSelectable(e)
+                  return (
+                    <TableRow key={e._id} className="transition-colors hover:bg-muted/50">
+                      {selectMode && (
+                        <TableCell>
+                          {selectable && (
+                            <Checkbox
+                              checked={selected.has(e._id)}
+                              onCheckedChange={() => toggleSelect(e._id)}
+                              aria-label={`Select ${e.name}`}
+                            />
+                          )}
+                        </TableCell>
+                      )}
+                      <TableCell className="font-medium text-muted-foreground">
+                        {start + index + 1}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{e.name}</span>
+                          {nameBadges(e, mode)}
+                        </div>
+                      </TableCell>
+                      <TableCell>{e.employeeId}</TableCell>
+                      <TableCell className="capitalize">{e.jobTitle}</TableCell>
+                      <TableCell>{renderJobCell(e, mode)}</TableCell>
+                      <TableCell className="text-right">
+                        {renderActions(e, mode)}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
               )}
             </TableBody>
           </Table>
@@ -836,55 +1019,120 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             <div className="py-10 text-center">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
             </div>
-          ) : visible.length === 0 ? (
+          ) : paged.length === 0 ? (
             <div className="rounded-xl border bg-card/50 py-8 text-center text-muted-foreground">
               {mode === "today"
                 ? "No employees on this site"
                 : "No employees scheduled for tomorrow"}
             </div>
           ) : (
-            visible.map((e, index) => (
-              <div
-                key={e._id}
-                className="rounded-xl border bg-card p-4 shadow-sm"
-              >
-                <div className="mb-2 flex items-start justify-between">
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-lg font-bold">{e.name}</span>
-                      {nameBadges(e, mode)}
+            paged.map((e, index) => {
+              const selectable = isRowSelectable(e)
+              return (
+                <div
+                  key={e._id}
+                  className="rounded-xl border bg-card p-4 shadow-sm"
+                >
+                  <div className="mb-2 flex items-start justify-between">
+                    <div className="flex items-start gap-3">
+                      {selectMode && selectable && (
+                        <Checkbox
+                          className="mt-1"
+                          checked={selected.has(e._id)}
+                          onCheckedChange={() => toggleSelect(e._id)}
+                          aria-label={`Select ${e.name}`}
+                        />
+                      )}
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-lg font-bold">{e.name}</span>
+                          {nameBadges(e, mode)}
+                        </div>
+                        <p className="font-mono text-xs text-muted-foreground">
+                          ID: {e.employeeId}
+                        </p>
+                      </div>
                     </div>
-                    <p className="font-mono text-xs text-muted-foreground">
-                      ID: {e.employeeId}
-                    </p>
-                  </div>
-                  <span className="rounded bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground">
-                    #{index + 1}
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 gap-3 border-t pt-3 text-sm">
-                  <div>
-                    <span className="block text-xs text-muted-foreground">
-                      Job Title
+                    <span className="rounded bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground">
+                      #{start + index + 1}
                     </span>
-                    <span className="font-medium capitalize">{e.jobTitle}</span>
                   </div>
-                  <div>
-                    <span className="mb-1 block text-xs text-muted-foreground">
-                      {mode === "today" ? "Current Job" : "Job (tomorrow)"}
-                    </span>
-                    {renderJobCell(e, mode)}
+                  <div className="grid grid-cols-1 gap-3 border-t pt-3 text-sm">
+                    <div>
+                      <span className="block text-xs text-muted-foreground">
+                        Job Title
+                      </span>
+                      <span className="font-medium capitalize">{e.jobTitle}</span>
+                    </div>
+                    <div>
+                      <span className="mb-1 block text-xs text-muted-foreground">
+                        {mode === "today" ? "Current Job" : "Job (tomorrow)"}
+                      </span>
+                      {renderJobCell(e, mode)}
+                    </div>
                   </div>
+                  {canEdit && !selectMode && (
+                    <div className="mt-3 flex justify-end gap-2 border-t pt-3">
+                      {renderActions(e, mode)}
+                    </div>
+                  )}
                 </div>
-                {canEdit && (
-                  <div className="mt-3 flex justify-end gap-2 border-t pt-3">
-                    {renderActions(e, mode)}
-                  </div>
-                )}
-              </div>
-            ))
+              )
+            })
           )}
         </div>
+
+        {/* Pagination */}
+        {!loading && totalItems > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>Rows per page</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => setPageSize(Number(v))}
+              >
+                <SelectTrigger className="h-8 w-[80px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <span className="tabular-nums">
+                {start + 1}–{Math.min(start + pageSize, totalItems)} of {totalItems}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+                  disabled={safePage <= 1}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="px-1 tabular-nums">
+                  {safePage} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
+                  disabled={safePage >= totalPages}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     )
   }
@@ -902,7 +1150,16 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
             <TabsTrigger value="tomorrow">Tomorrow</TabsTrigger>
           </TabsList>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {canEdit && (
+              <Button
+                variant={selectMode ? "secondary" : "outline"}
+                onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+              >
+                <ListChecks className="mr-2 h-4 w-4" />
+                Assign jobs
+              </Button>
+            )}
             {canEdit && (
               <Button variant="outline" onClick={goToAddEmployees}>
                 <UserPlus className="mr-2 h-4 w-4" />
@@ -937,8 +1194,8 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
           </div>
         )}
 
-        {/* Search filters (shared across both tabs) */}
-        <div className="grid gap-3 md:grid-cols-2">
+        {/* Filters (shared across both tabs) */}
+        <div className="grid gap-3 md:grid-cols-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -957,7 +1214,70 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
               setFilters((prev) => ({ ...prev, employeeId: e.target.value }))
             }
           />
+          <Select value={jobFilter} onValueChange={setJobFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Filter by job" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All jobs</SelectItem>
+              <SelectItem value="none">No job</SelectItem>
+              {jobs
+                .filter((j) => j.isActive !== false)
+                .map((j) => (
+                  <SelectItem key={j._id} value={j._id}>
+                    {j.name}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
         </div>
+
+        {/* Bulk assign bar (selection mode) */}
+        {selectMode && (
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+            <span className="text-sm font-medium">{selected.size} selected</span>
+            <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+              <Select value={assignTarget} onValueChange={setAssignTarget}>
+                <SelectTrigger className="h-9 w-[200px] bg-background">
+                  <SelectValue placeholder="Assign to job..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No job (unassigned)</SelectItem>
+                  {jobs
+                    .filter((j) => j.isActive !== false)
+                    .map((j) => (
+                      <SelectItem key={j._id} value={j._id}>
+                        {j.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-primary"
+                onClick={() => setAddJobOpen(true)}
+              >
+                <Plus className="mr-1 h-4 w-4" />
+                Add job
+              </Button>
+              <Button
+                size="sm"
+                disabled={assigning || selected.size === 0 || assignTarget === ""}
+                onClick={submitBulkAssign}
+              >
+                {assigning
+                  ? "Saving..."
+                  : dayTab === "tomorrow"
+                  ? `Assign tomorrow (${selected.size})`
+                  : `Assign (${selected.size})`}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={exitSelectMode}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
 
         <TabsContent value="today">{renderBody("today")}</TabsContent>
         <TabsContent value="tomorrow">{renderBody("tomorrow")}</TabsContent>
@@ -1030,6 +1350,53 @@ function SiteRoster({ siteId, isSiteActive, onTodayCountChange }: SiteRosterProp
               {!!scheduleToCancel && cancelingId === scheduleToCancel._id
                 ? "Cancelling..."
                 : "Cancel change"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Job modal */}
+      <Dialog open={addJobOpen} onOpenChange={setAddJobOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-2xl">Create New Job</DialogTitle>
+            <DialogDescription>Add a new job under this site.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 py-4">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Job Name</Label>
+              <Input
+                placeholder="Enter job name"
+                value={jobForm.name}
+                onChange={(e) => setJobForm((p) => ({ ...p, name: e.target.value }))}
+              />
+              {jobErrors.name && <p className="text-sm text-red-500">{jobErrors.name}</p>}
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Job Code</Label>
+              <Input
+                placeholder="Enter job code"
+                value={jobForm.jobCode}
+                onChange={(e) => setJobForm((p) => ({ ...p, jobCode: e.target.value }))}
+              />
+              {jobErrors.jobCode && (
+                <p className="text-sm text-red-500">{jobErrors.jobCode}</p>
+              )}
+            </div>
+
+            {jobErrors.general && (
+              <p className="text-sm text-red-500">{jobErrors.general}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddJobOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={creatingJob} onClick={createJobInline}>
+              {creatingJob ? "Creating..." : "Create Job"}
             </Button>
           </DialogFooter>
         </DialogContent>
