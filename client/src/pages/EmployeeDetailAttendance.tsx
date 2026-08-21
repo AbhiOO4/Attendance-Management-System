@@ -90,6 +90,13 @@ const getDisplayStatus = (record: AttendanceRecord) => {
       return "pending"
     }
   }
+  // A holiday (weekly like Friday, or public) with no work is not an absence —
+  // show it as "holiday" rather than a red "absent". Days actually worked on a
+  // holiday keep their fullday/halfday status. Temporary workers store
+  // isHoliday:false, so their Friday absences remain genuine absences.
+  if (record.isHoliday && record.status === "absent") {
+    return "holiday"
+  }
   return record.status
 }
 
@@ -893,13 +900,17 @@ function EmployeeAttendanceDetail() {
 
         acc.otHours += record.overtimeHours || 0
 
+        // Holidays (a weekly holiday like Friday, or a public holiday) are not
+        // working days, so they count toward NEITHER present nor absent — only
+        // their holiday hours are tracked. Being absent on a Friday is expected,
+        // not an absence. This mirrors the server monthly report, which skips
+        // holiday records entirely when tallying present/absent days.
         if (record.isHoliday) {
           acc.holidayHours += record.holidayHours || 0
         }
-
         // Half-days count as present; sick-leave days carry status "absent",
         // so they fall into the absent bucket alongside plain absences.
-        if (record.status === "fullday" || record.status === "halfday") {
+        else if (record.status === "fullday" || record.status === "halfday") {
           acc.daysPresent += 1
         } else {
           acc.daysAbsent += 1
