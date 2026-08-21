@@ -1111,14 +1111,15 @@ function SiteRoster({
             <div className="py-10 text-center">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-primary" />
             </div>
-          ) : paged.length === 0 ? (
+          ) : visible.length === 0 ? (
             <div className="rounded-xl border bg-card/50 py-8 text-center text-muted-foreground">
               {mode === "today"
                 ? "No employees on this site"
                 : "No employees scheduled for tomorrow"}
             </div>
           ) : (
-            paged.map((e, index) => {
+            // Mobile shows the full list (no pagination) — scroll to the end.
+            visible.map((e, index) => {
               const selectable = isRowSelectable(e)
               return (
                 <div
@@ -1146,7 +1147,7 @@ function SiteRoster({
                       </div>
                     </div>
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                      #{start + index + 1}
+                      #{index + 1}
                     </span>
                   </div>
                   <div className="space-y-1.5 border-t pt-2 text-[13px]">
@@ -1176,9 +1177,9 @@ function SiteRoster({
           )}
         </div>
 
-        {/* Pagination */}
+        {/* Pagination (desktop only — mobile scrolls the full list) */}
         {!loading && totalItems > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="hidden flex-wrap items-center justify-between gap-3 pt-1 md:flex">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Rows per page</span>
               <Select

@@ -44,7 +44,7 @@ import {
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { isCrossMidnight, combineFromOffset, deriveOffsets, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
-import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -243,7 +243,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   }, [sessions])
 
   const autoBreaks = useMemo(() => {
-    return config.fullDayHours > 0 ? Math.floor(rawHours / config.fullDayHours) : 0
+    return computeAutoBreaks(rawHours, config.fullDayHours)
   }, [rawHours, config.fullDayHours])
 
   const breaksApplied = useMemo(() => {

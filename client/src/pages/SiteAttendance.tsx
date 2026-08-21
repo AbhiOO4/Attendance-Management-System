@@ -1,4 +1,5 @@
 import { api } from "@/lib/api"
+import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment, memo } from "react"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
@@ -657,7 +658,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
                 disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
                 onClick={() => {
-                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
                   onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
                 }}
               >−</button>
@@ -670,7 +671,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
                 type="button"
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
                 onClick={() => {
-                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
                   onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
                 }}
               >+</button>
@@ -851,7 +852,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
                 disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
                 onClick={() => {
-                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
                   onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
                 }}
               >−</button>
@@ -864,7 +865,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 type="button"
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
                 onClick={() => {
-                  const auto = Math.floor((record.sessions[0]?.workedHours || 0) / fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
                   onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
                 }}
               >+</button>
@@ -3432,7 +3433,7 @@ function SiteAttendance() {
                                     const currentSessionHours = record.sessions[0]?.workedHours || 0
                                     const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                     const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                    const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
                                     setInlineEdit((prev) => ({
                                       ...prev,
                                       breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
@@ -3451,7 +3452,7 @@ function SiteAttendance() {
                                     const currentSessionHours = record.sessions[0]?.workedHours || 0
                                     const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                     const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                    const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
                                     setInlineEdit((prev) => ({
                                       ...prev,
                                       breaksTaken: (prev.breaksTaken ?? auto) + 1
@@ -3482,7 +3483,7 @@ function SiteAttendance() {
                                     );
                                   }
                                   const count = isAuto
-                                    ? Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours)
+                                    ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
                                     : record.breaksTaken;
                                   return `${count}`;
                                 })()}
@@ -3885,7 +3886,7 @@ function SiteAttendance() {
                                           const currentSessionHours = record.sessions[0]?.workedHours || 0
                                           const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                           const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                          const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                          const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
                                           setInlineEdit((prev) => ({
                                             ...prev,
                                             breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
@@ -3904,7 +3905,7 @@ function SiteAttendance() {
                                           const currentSessionHours = record.sessions[0]?.workedHours || 0
                                           const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                           const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                          const auto = Math.floor(newTotalRawHours / fullDayHours)
+                                          const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
                                           setInlineEdit((prev) => ({
                                             ...prev,
                                             breaksTaken: (prev.breaksTaken ?? auto) + 1
@@ -3935,7 +3936,7 @@ function SiteAttendance() {
                                           );
                                         }
                                         const count = isAuto
-                                          ? Math.floor((record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0)) / fullDayHours)
+                                          ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
                                           : record.breaksTaken;
                                         return `${count}`;
                                       })()}

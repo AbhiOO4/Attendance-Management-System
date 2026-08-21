@@ -3540,7 +3540,7 @@ export const transferEmployee = async (req, res) => {
 // GET /api/attendance/missing?date=&name=&employeeId=&jobTitle=&page=&limit=
 export const getMissingEmployees = async (req, res) => {
   try {
-    let { date, name, employeeId, jobTitle, page = 1, limit = 10 } = req.query;
+    let { date, name, employeeId, jobTitle, site, page = 1, limit = 10 } = req.query;
 
     if (!date) {
       return res.status(400).json({ success: false, message: 'date is required' });
@@ -3590,6 +3590,12 @@ export const getMissingEmployees = async (req, res) => {
     }
     if (jobTitle) {
       employeeFilter.jobTitle = { $regex: escapeRegExp(jobTitle), $options: 'i' };
+    }
+
+    // Narrow by currentSite (list convenience). Supervisors are already scoped to their
+    // assignedSite above, so only apply the client-supplied filter for admins/superadmins.
+    if (site && site !== 'all' && req.user.role !== 'supervisor') {
+      employeeFilter.currentSite = new mongoose.Types.ObjectId(site);
     }
 
     const totalEmployees = await Employee.countDocuments(employeeFilter);
@@ -3869,6 +3875,204 @@ export const backfillAttendance = async (req, res) => {
   } catch (error) {
     console.error('backfillAttendance error:', error);
     return res.status(500).json({ success: false, message: 'Failed to create attendance record', error: error.message });
+  }
+};
+
+// POST /api/attendance/backfill/bulk
+// Backfill ONE common session for MANY employees at once. Body:
+//   { date, employeeIds: [], siteId, jobId?, checkIn, checkOut,
+//     checkInNextDay?, checkOutNextDay?, breaksTaken? }
+// The site, job and times are shared; the day offsets are EXPLICIT (so a true 24h shift
+// like 08:00→08:00 works — the auto-derive in the single endpoint can't infer that). Each
+// employee gets an independent, non-transactional save so partial success is preserved:
+// employees who already have a record, or whose times collide with a neighbouring day's
+// record, are reported back rather than aborting the whole batch.
+export const bulkBackfillAttendance = async (req, res) => {
+  try {
+    const {
+      date,
+      employeeIds = [],
+      siteId,
+      jobId = null,
+      checkIn,
+      checkOut,
+      checkInNextDay = false,
+      checkOutNextDay = false,
+      breaksTaken = null,
+    } = req.body;
+
+    const markedBy = req.user?.id;
+    const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+      ? process.env.APP_TIMEZONE_OFFSET
+      : req.headers['x-timezone-offset'];
+
+    if (!date || !siteId) {
+      return res.status(400).json({ success: false, message: 'date and siteId are required' });
+    }
+    if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'employeeIds must be a non-empty array' });
+    }
+    if (!checkIn || !checkOut) {
+      return res.status(400).json({ success: false, message: 'Both checkIn and checkOut are required' });
+    }
+
+    const site = await Site.findById(siteId).select('siteName').lean();
+    if (!site) {
+      return res.status(404).json({ success: false, message: 'Site not found' });
+    }
+
+    const workConfig = await workModel.findOne({ type: 'default' });
+    if (!workConfig) {
+      return res.status(404).json({ success: false, message: 'Work schedule configuration not found' });
+    }
+
+    const attendanceDate = new Date(date);
+    attendanceDate.setUTCHours(0, 0, 0, 0);
+
+    // Build the common session once — explicit day offsets win.
+    const checkInDate = combineFromOffset(date, checkIn, !!checkInNextDay);
+    const checkOutDate = combineFromOffset(date, checkOut, !!checkOutNextDay);
+    if (!checkInDate || !checkOutDate) {
+      return res.status(400).json({ success: false, message: 'Invalid check-in/check-out time' });
+    }
+    const workedHours = (checkOutDate.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
+    if (workedHours <= 0 || workedHours > MAX_SHIFT_HOURS) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid shift duration — check the times or the next-day markers (max ${MAX_SHIFT_HOURS}h).`,
+      });
+    }
+    const isNightShift = !!checkInNextDay || !!checkOutNextDay;
+    const rawHours = Number(workedHours.toFixed(2));
+
+    // Holiday is date-based → resolve once; only the per-employee employmentType varies.
+    const holidayInfo = await checkHolidayForDate(attendanceDate);
+    const hasCrossedMidnight = detectCrossedMidnight(
+      [{ checkIn: checkInDate, checkOut: checkOutDate, isNightShift }],
+      timezoneOffset
+    );
+
+    const uniqueIds = [...new Set(employeeIds.filter(Boolean).map(String))];
+
+    const created = [];
+    const skipped = [];
+    const failed = [];
+
+    // Load the employees and the records they already have for this date, both in one query.
+    const employees = await Employee.find({ _id: { $in: uniqueIds }, isActive: true })
+      .select('_id name employeeId employmentType currentSite')
+      .lean();
+    const employeeById = new Map(employees.map((e) => [String(e._id), e]));
+
+    const existing = await Attendance.find({
+      employee: { $in: uniqueIds },
+      date: attendanceDate,
+    }).select('employee').lean();
+    const alreadyRecorded = new Set(existing.map((r) => String(r.employee)));
+
+    // Candidates that survive the cheap skips → run the cross-day overlap check on these.
+    const candidates = [];
+    for (const id of uniqueIds) {
+      const emp = employeeById.get(id);
+      if (!emp) {
+        skipped.push({ employeeId: id, name: null, reason: 'Employee not found or inactive' });
+        continue;
+      }
+      if (alreadyRecorded.has(id)) {
+        skipped.push({ employeeId: id, name: emp.name, reason: 'Already has a record for this date' });
+        continue;
+      }
+      candidates.push(emp);
+    }
+
+    const candidateSession = [{ checkIn: checkInDate, checkOut: checkOutDate }];
+    const crossDayConflict = await buildCrossDayOverlapChecker({
+      employeeIds: candidates.map((e) => String(e._id)),
+      date: attendanceDate,
+    });
+
+    for (const emp of candidates) {
+      const empId = String(emp._id);
+      try {
+        const conflict = crossDayConflict(empId, candidateSession);
+        if (conflict) {
+          failed.push({ employeeId: empId, name: emp.name, message: crossDayOverlapMessage(conflict) });
+          continue;
+        }
+
+        // Temporary workers get no holiday treatment (normal day + OT, no holiday credit).
+        const effHolidayInfo = holidayInfoForEmployee(holidayInfo, emp.employmentType);
+        const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+          rawHours,
+          workConfig,
+          breaksTaken,
+          effHolidayInfo
+        );
+
+        const newAttendance = new Attendance({
+          employee: empId,
+          date: attendanceDate,
+          siteId,
+          jobId: jobId || null,
+          markedBy,
+          isHoliday: effHolidayInfo.isHoliday,
+          holidayReason: effHolidayInfo.reason,
+          holidayHours,
+          isSickLeave: false,
+          status,
+          totalWorkHours: netWorkHours,
+          overtimeHours,
+          breaksTaken: breaksTaken !== undefined ? breaksTaken : null,
+          shiftType: hasCrossedMidnight ? 'night' : 'day',
+          crossedMidnight: hasCrossedMidnight,
+          sessions: [{
+            siteId,
+            jobId: jobId || null,
+            checkIn: checkInDate,
+            checkOut: checkOutDate,
+            workedHours: rawHours,
+            markedBy,
+            isNightShift,
+          }],
+        });
+
+        await newAttendance.save();
+
+        // Same roster sync as single backfill — a no-op unless this is the employee's
+        // latest record AND the common site happens to be their current site.
+        await syncCurrentJobFromLatestSession({
+          empId,
+          siteId,
+          recordDate: attendanceDate,
+          doc: newAttendance,
+        });
+
+        created.push({ employeeId: empId, name: emp.name, attendanceId: newAttendance._id });
+      } catch (err) {
+        console.error('bulkBackfillAttendance per-employee error:', empId, err);
+        failed.push({
+          employeeId: empId,
+          name: emp.name,
+          message: err?.message || 'Failed to create record',
+        });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Backfilled ${created.length} of ${uniqueIds.length} employee(s)`,
+      summary: {
+        createdCount: created.length,
+        skippedCount: skipped.length,
+        failedCount: failed.length,
+      },
+      created,
+      skipped,
+      failed,
+    });
+  } catch (error) {
+    console.error('bulkBackfillAttendance error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to bulk backfill attendance', error: error.message });
   }
 };
 
@@ -4377,6 +4581,7 @@ const attendanceController = {
   transferEmployee,
   getMissingEmployees,
   backfillAttendance,
+  bulkBackfillAttendance,
   getActiveSitesOverview,
 
   getNightShiftCandidates,

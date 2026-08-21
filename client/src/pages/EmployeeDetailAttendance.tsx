@@ -1,6 +1,7 @@
 
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { api } from "@/lib/api"
+import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 
 import ExcelJS from "exceljs"
@@ -472,7 +473,7 @@ function EmployeeAttendanceDetail() {
             ) => {
               const breakCount = record.breaksTaken !== null && record.breaksTaken !== undefined
                 ? record.breaksTaken
-                : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours)
+                : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
 
               const row =
                 worksheet.addRow([
@@ -1328,7 +1329,7 @@ function EmployeeAttendanceDetail() {
                                     {(() => {
                                       const count = record.breaksTaken !== null && record.breaksTaken !== undefined
                                         ? record.breaksTaken
-                                        : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours);
+                                        : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours);
                                       const hrs = (count * breakDurationMinutes) / 60;
                                       return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
                                     })()}

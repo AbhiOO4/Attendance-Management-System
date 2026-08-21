@@ -84,8 +84,12 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 `server/src/utils/attendanceMath.js` is the single source of truth for the hours math
 (used by the controller, crons, default propagation, and the seed recalc script):
 1. **Status** is derived from RAW session hours (break-agnostic) to avoid demotions.
-2. **Breaks** are proportional — `floor(rawHours / fullDayHours)` breaks by default,
-   each worth `breakDurationMinutes`, unless a supervisor overrides `breaksTaken`.
+2. **Breaks** are one-per-day — `computeAutoBreaks(rawHours, fullDayHours)`: the first
+   break is earned at a full day (`fullDayHours`), then +1 for each additional two full
+   days, i.e. `rawHours < fullDay ? 0 : 1 + floor((rawHours − fullDay) / (2·fullDay))`
+   (with a full day of 8h: <8h→0, 8–23h→1, 24h→2, 40h→3). Each worth
+   `breakDurationMinutes`, unless a supervisor overrides `breaksTaken`. The client
+   mirrors `computeAutoBreaks` in `client/src/lib/attendanceUtils.ts` — keep in sync.
 3. **Net hours** = raw − total break deduction (floored at 0).
 4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
 5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): public

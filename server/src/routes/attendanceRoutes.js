@@ -36,6 +36,8 @@ router.get('/missing', authorizeRoles("admin", "supervisor"), attendanceControll
 
 router.post('/backfill', authorizeRoles("admin"), attendanceController.backfillAttendance)
 
+router.post('/backfill/bulk', authorizeRoles("admin"), attendanceController.bulkBackfillAttendance)
+
 // Night shift bulk assignment
 router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getNightShiftCandidates)
 

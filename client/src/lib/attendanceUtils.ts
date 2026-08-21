@@ -11,6 +11,19 @@ export const WEEKLY_HOLIDAY_HOURS: Record<string, number> = {
 }
 
 /**
+ * Auto break count from a day's RAW (pre-deduction) worked hours. Mirror of the
+ * server's computeAutoBreaks (server/src/utils/attendanceMath.js) — keep in sync.
+ *
+ * One break per day: the first break is earned once the day reaches a full day
+ * (`fullDayHours`), and one further break is added for each ADDITIONAL two full
+ * days worked. With a full day of 8h: <8h → 0, 8–23h → 1, 24h → 2, 40h → 3.
+ */
+export function computeAutoBreaks(rawHours: number, fullDayHours: number): number {
+  if (!(fullDayHours > 0) || rawHours < fullDayHours) return 0
+  return 1 + Math.floor((rawHours - fullDayHours) / (2 * fullDayHours))
+}
+
+/**
  * Hours credited for working on a holiday.
  *  - public holiday → the day's net worked hours
  *  - weekly holiday → flat 15 (fullday) / 10 (halfday) / 0 (absent)

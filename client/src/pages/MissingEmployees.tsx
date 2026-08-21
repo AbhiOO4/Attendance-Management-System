@@ -1,12 +1,15 @@
 // MissingEmployees.tsx
 //
-// Standalone page listing employees with NO attendance record for a given date,
-// each with a one-click Backfill. Opened from the Edit Attendance header link
-// (`/attendance/edit/missing?date=YYYY-MM-DD`). Kept deliberately minimal — a
-// plain list rather than a full table — and lives on its own page so Backfill
-// opens over a page instead of stacking modal-on-modal.
+// Standalone page listing employees with NO attendance record for a given date. Opened
+// from the Edit Attendance header link (`/attendance/edit/missing?date=YYYY-MM-DD`).
+//
+// Two ways to backfill:
+//  - Single: each row's Backfill button opens the per-employee BackfillModal.
+//  - Bulk: the "Bulk Backfill" button enters selection mode (checkboxes on each row, a
+//    site filter to narrow by currentSite). Selecting employees + "Backfill selected"
+//    opens BulkBackfillModal, which applies one common site/job + check-in/out to all.
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { useNavigate, useSearchParams } from "react-router-dom"
@@ -14,6 +17,7 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   Select,
@@ -23,10 +27,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
-import { ArrowLeft, Loader2, UserPlus } from "lucide-react"
+import { ArrowLeft, Loader2, ListChecks, UserPlus, X } from "lucide-react"
 
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
+import BulkBackfillModal, { type BulkBackfillResult } from "@/components/BulkBackfillModal"
+
+type Job = { _id: string; name: string }
+type Site = { _id: string; siteName: string; jobs: Job[] }
 
 function MissingEmployees() {
   const navigate = useNavigate()
@@ -46,19 +54,36 @@ function MissingEmployees() {
   })
 
   const [employees, setEmployees] = useState<MissingEmployee[]>([])
+  const [sites, setSites] = useState<Site[]>([])
   const [loading, setLoading] = useState(false)
   const [filters, setFilters] = useState({
     name: "",
     employeeId: "",
     jobTitle: "",
+    site: "all",
     page: 1,
     limit: 10,
   })
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
 
+  // Single backfill
   const [backfillEmployee, setBackfillEmployee] = useState<MissingEmployee | null>(null)
   const [backfillOpen, setBackfillOpen] = useState(false)
+
+  // Bulk backfill
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkOpen, setBulkOpen] = useState(false)
+
+  const fetchSites = async () => {
+    try {
+      const res = await api.get("/api/site")
+      setSites(res.data || [])
+    } catch (error) {
+      console.log(error)
+    }
+  }
 
   const fetchMissing = async () => {
     try {
@@ -69,6 +94,7 @@ function MissingEmployees() {
           name: filters.name || undefined,
           employeeId: filters.employeeId || undefined,
           jobTitle: filters.jobTitle || undefined,
+          site: filters.site === "all" ? undefined : filters.site,
           page: filters.page,
           limit: filters.limit,
         },
@@ -84,14 +110,65 @@ function MissingEmployees() {
   }
 
   useEffect(() => {
+    fetchSites()
+  }, [])
+
+  // Any change to the date or filters reloads the list and clears the selection, so
+  // "select all (loaded)" always refers to exactly what is on screen.
+  useEffect(() => {
     fetchMissing()
+    setSelectedIds(new Set())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date, filters])
 
-  // On backfill, drop the row and decrement the count in place.
+  // On single backfill, drop the row and decrement the count in place.
   const handleBackfillCreated = (newRecord: any) => {
     setEmployees((prev) => prev.filter((e) => e._id !== newRecord.employee?.toString()))
     setTotalCount((prev) => Math.max(prev - 1, 0))
   }
+
+  const handleBulkCompleted = (_result: BulkBackfillResult) => {
+    // Created employees now have a record → refetch removes them; skipped/failed remain.
+    setSelectedIds(new Set())
+    setSelectionMode(false)
+    fetchMissing()
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const allLoadedSelected =
+    employees.length > 0 && employees.every((e) => selectedIds.has(e._id))
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      if (allLoadedSelected) {
+        // Deselect the loaded rows only.
+        const next = new Set(prev)
+        employees.forEach((e) => next.delete(e._id))
+        return next
+      }
+      const next = new Set(prev)
+      employees.forEach((e) => next.add(e._id))
+      return next
+    })
+  }
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const selectedEmployees = useMemo(
+    () => employees.filter((e) => selectedIds.has(e._id)),
+    [employees, selectedIds]
+  )
 
   return (
     <div className="px-4 py-6">
@@ -115,15 +192,28 @@ function MissingEmployees() {
               No attendance record for {formattedDate}
             </p>
           </div>
-          {totalCount > 0 && (
-            <Badge variant="secondary" className="shrink-0">
-              {totalCount} missing
-            </Badge>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {totalCount > 0 && (
+              <Badge variant="secondary" className="shrink-0">
+                {totalCount} missing
+              </Badge>
+            )}
+            {selectionMode ? (
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={exitSelectionMode}>
+                <X className="h-3.5 w-3.5" />
+                Cancel
+              </Button>
+            ) : (
+              <Button size="sm" className="gap-1.5" onClick={() => setSelectionMode(true)}>
+                <ListChecks className="h-3.5 w-3.5" />
+                Bulk Backfill
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Filters */}
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-4">
           <Input
             placeholder="Name"
             value={filters.name}
@@ -139,7 +229,49 @@ function MissingEmployees() {
             value={filters.jobTitle}
             onChange={(e) => setFilters({ ...filters, jobTitle: e.target.value, page: 1 })}
           />
+          <Select
+            value={filters.site}
+            onValueChange={(value) => setFilters({ ...filters, site: value, page: 1 })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Site" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sites</SelectItem>
+              {sites.map((site) => (
+                <SelectItem key={site._id} value={site._id}>
+                  {site.siteName}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
+
+        {/* Bulk selection toolbar */}
+        {selectionMode && (
+          <div className="sticky top-2 z-10 flex items-center justify-between rounded-lg border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <Checkbox
+                checked={allLoadedSelected}
+                onCheckedChange={toggleSelectAll}
+                disabled={employees.length === 0}
+              />
+              Select all ({employees.length})
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">
+                {selectedIds.size} selected
+              </span>
+              <Button
+                size="sm"
+                disabled={selectedIds.size === 0}
+                onClick={() => setBulkOpen(true)}
+              >
+                Backfill selected
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* List */}
         <div className="min-h-[160px] divide-y rounded-lg border">
@@ -152,32 +284,49 @@ function MissingEmployees() {
               🎉 Everyone has a record for this date
             </div>
           ) : (
-            employees.map((emp) => (
-              <div
-                key={emp._id}
-                className="flex items-center justify-between gap-3 px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{emp.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {emp.employeeId} · <span className="capitalize">{emp.jobTitle}</span>
-                    {emp.currentSite?.siteName ? ` · ${emp.currentSite.siteName}` : ""}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="shrink-0 gap-1.5"
-                  onClick={() => {
-                    setBackfillEmployee(emp)
-                    setBackfillOpen(true)
-                  }}
+            employees.map((emp) => {
+              const checked = selectedIds.has(emp._id)
+              return (
+                <div
+                  key={emp._id}
+                  className={`flex items-center justify-between gap-3 px-4 py-3 ${
+                    selectionMode ? "cursor-pointer hover:bg-muted/40" : ""
+                  } ${checked ? "bg-primary/5" : ""}`}
+                  onClick={selectionMode ? () => toggleSelect(emp._id) : undefined}
                 >
-                  <UserPlus className="h-3.5 w-3.5" />
-                  Backfill
-                </Button>
-              </div>
-            ))
+                  <div className="flex min-w-0 items-center gap-3">
+                    {selectionMode && (
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleSelect(emp._id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{emp.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {emp.employeeId} · <span className="capitalize">{emp.jobTitle}</span>
+                        {emp.currentSite?.siteName ? ` · ${emp.currentSite.siteName}` : ""}
+                      </p>
+                    </div>
+                  </div>
+                  {!selectionMode && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0 gap-1.5"
+                      onClick={() => {
+                        setBackfillEmployee(emp)
+                        setBackfillOpen(true)
+                      }}
+                    >
+                      <UserPlus className="h-3.5 w-3.5" />
+                      Backfill
+                    </Button>
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
 
@@ -231,6 +380,15 @@ function MissingEmployees() {
         employee={backfillEmployee}
         date={date}
         onCreated={handleBackfillCreated}
+      />
+
+      <BulkBackfillModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        date={date}
+        employees={selectedEmployees}
+        sites={sites}
+        onCompleted={handleBulkCompleted}
       />
     </div>
   )

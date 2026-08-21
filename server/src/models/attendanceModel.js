@@ -196,7 +196,8 @@ const attendanceSchema = new mongoose.Schema(
     },
 
     // Number of breaks the employee actually took.
-    // null  → auto-computed as floor(totalWorkHours / fullDayHours) at save time.
+    // null  → auto-computed by computeAutoBreaks(rawHours, fullDayHours) via
+    //         computeAttendanceTotals (one break per day; see attendanceMath.js).
     // 0+    → supervisor override (e.g. skipped one break out of two due).
     breaksTaken: {
       type: Number,

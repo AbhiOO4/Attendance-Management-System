@@ -58,8 +58,8 @@ const workScheduleSchema = new mongoose.Schema(
     // so no global business-day boundary hour exists any more.
 
     // Duration of a single break in minutes.
-    // Total break deduction = floor(rawHours / fullDayHours) * breakDurationMinutes / 60
-    // Set to 0 to disable break deductions entirely.
+    // Total break deduction = computeAutoBreaks(rawHours, fullDayHours) * breakDurationMinutes / 60
+    // (one break per day; see attendanceMath.js). Set to 0 to disable break deductions entirely.
     breakDurationMinutes: {
       type: Number,
       min: 0,

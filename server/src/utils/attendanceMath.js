@@ -9,12 +9,30 @@
 export const WEEKLY_HOLIDAY_HOURS = { fullday: 15, halfday: 10 };
 
 /**
+ * Auto break count from a day's RAW (pre-deduction) worked hours.
+ *
+ * One break per day: the first break is earned once the day reaches a full day
+ * (`fullDayHours`), and one further break is added for each ADDITIONAL two full
+ * days worked. With a full day of 8h that means: <8h → 0, 8–23h → 1, 24h → 2,
+ * 40h → 3. A supervisor may still override this via `breaksTaken`.
+ *
+ * @param {number} rawHours      Sum of all session workedHours
+ * @param {number} fullDayHours  WorkSchedule.fullDayHours
+ * @returns {number} whole number of breaks
+ */
+export function computeAutoBreaks(rawHours, fullDayHours) {
+  if (!(fullDayHours > 0) || rawHours < fullDayHours) return 0;
+  return 1 + Math.floor((rawHours - fullDayHours) / (2 * fullDayHours));
+}
+
+/**
  * Computes net work hours, attendance status, overtime and holiday hours
  * from raw session hours.
  *
  * Design rules:
  *  1. STATUS   — determined from RAW hours (break-agnostic) to prevent edge-case demotions.
- *  2. BREAKS   — proportional: floor(raw / fullDayHours) per day, unless supervisor overrides.
+ *  2. BREAKS   — one per day: first at fullDayHours, +1 per extra two full days
+ *                (see computeAutoBreaks), unless supervisor overrides.
  *  3. NET HRS  — raw minus total break deduction (never below 0).
  *  4. OVERTIME — calculated on NET hours against overtimeThreshold; forced to 0 on holidays.
  *  5. HOLIDAY  — public holiday credits NET hours; weekly holiday credits a flat
@@ -38,7 +56,7 @@ export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null
   else if (rawHours >= halfDayHours)  status = 'halfday';
 
   // STEP 2 – Number of breaks to apply
-  const autoBreaks = fullDayHours > 0 ? Math.floor(rawHours / fullDayHours) : 0;
+  const autoBreaks = computeAutoBreaks(rawHours, fullDayHours);
   const breaksApplied = (breaksTaken !== null && breaksTaken !== undefined && breaksTaken >= 0)
     ? breaksTaken
     : autoBreaks;

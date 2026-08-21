@@ -1,4 +1,5 @@
 import { api } from "@/lib/api"
+import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useEffect, useState } from "react"
 import toast from "react-hot-toast"
@@ -813,7 +814,7 @@ function EditPastAttendance() {
                                        {(() => {
                                          const count = record.breaksTaken !== null && record.breaksTaken !== undefined
                                            ? record.breaksTaken
-                                           : Math.floor(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0) / fullDayHours);
+                                           : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours);
                                          const hrs = (count * breakDurationMinutes) / 60;
                                          return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
                                        })()}

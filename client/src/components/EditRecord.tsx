@@ -50,7 +50,7 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
-import { computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -333,7 +333,7 @@ const [sessionToDelete, setSessionToDelete] =
   }, [sessions])
 
   const autoBreaks = useMemo(() => {
-    return config.fullDayHours > 0 ? Math.floor(rawHours / config.fullDayHours) : 0
+    return computeAutoBreaks(rawHours, config.fullDayHours)
   }, [rawHours, config.fullDayHours])
 
   const breaksApplied = useMemo(() => {
