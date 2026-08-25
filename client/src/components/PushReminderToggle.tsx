@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Bell, BellOff, BellRing } from "lucide-react"
+import { Bell, BellOff, BellRing, Loader2 } from "lucide-react"
 import toast from "react-hot-toast"
 import { cn } from "@/lib/utils"
 import {
@@ -94,7 +94,11 @@ export default function PushReminderToggle({
             : "text-muted-foreground hover:bg-muted"
         )}
       >
-        <Icon className="h-5 w-5" />
+        {busy ? (
+          <Loader2 className="h-5 w-5 animate-spin" />
+        ) : (
+          <Icon className="h-5 w-5" />
+        )}
       </button>
     )
   }
@@ -111,8 +115,12 @@ export default function PushReminderToggle({
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       )}
     >
-      <Icon className={cn("h-4 w-4 shrink-0", subscribed && "text-primary")} />
-      {label}
+      {busy ? (
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+      ) : (
+        <Icon className={cn("h-4 w-4 shrink-0", subscribed && "text-primary")} />
+      )}
+      {busy ? "Updating…" : label}
     </button>
   )
 }

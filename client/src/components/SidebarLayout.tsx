@@ -9,6 +9,7 @@ import ScrollToTop from "./ScrollToTop"
 import {
   Moon,
   Sun,
+  Loader2,
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
@@ -109,6 +110,17 @@ export default function SidebarLayout() {
       localStorage.setItem("sidebarCollapsed", String(next))
       return next
     })
+  }
+
+  // Theme switch is synchronous, but show a brief spinner so the toggle gives
+  // the same tactile "working…" feedback as the reminder button.
+  const [themeBusy, setThemeBusy] = useState(false)
+
+  const handleThemeToggle = () => {
+    if (themeBusy) return
+    setThemeBusy(true)
+    setTheme(theme === "dark" ? "light" : "dark")
+    window.setTimeout(() => setThemeBusy(false), 500)
   }
 
   const navigate = useNavigate()
@@ -215,14 +227,15 @@ export default function SidebarLayout() {
           <div className="mt-auto flex flex-col items-center gap-2">
             <PushReminderToggle collapsed />
             <button
-              onClick={() =>
-                setTheme(theme === "dark" ? "light" : "dark")
-              }
+              onClick={handleThemeToggle}
+              disabled={themeBusy}
               title={theme === "dark" ? "Light Mode" : "Dark Mode"}
               aria-label="Toggle theme"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted disabled:opacity-50"
             >
-              {theme === "dark" ? (
+              {themeBusy ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : theme === "dark" ? (
                 <Sun className="h-5 w-5" />
               ) : (
                 <Moon className="h-5 w-5" />
@@ -290,17 +303,18 @@ export default function SidebarLayout() {
             <div className="mt-4 flex flex-col gap-1 border-t pt-4">
               <PushReminderToggle />
               <button
-                onClick={() =>
-                  setTheme(theme === "dark" ? "light" : "dark")
-                }
-                className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                onClick={handleThemeToggle}
+                disabled={themeBusy}
+                className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
               >
-                {theme === "dark" ? (
+                {themeBusy ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                ) : theme === "dark" ? (
                   <Sun className="h-4 w-4 shrink-0" />
                 ) : (
                   <Moon className="h-4 w-4 shrink-0" />
                 )}
-                {theme === "dark" ? "Light Mode" : "Dark Mode"}
+                {themeBusy ? "Switching…" : theme === "dark" ? "Light Mode" : "Dark Mode"}
               </button>
               <button
                 onClick={() => setOpenModal(true)}
