@@ -17,7 +17,7 @@ There is no root package.json — each is installed and run separately.
 **Server** (`cd server`):
 - `npm run dev` — start API with nodemon (`src/server.js`)
 - `npm start` — start API with node
-- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST).
+- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots.
 
 **Client** (`cd client`):
 - `npm run dev` — Vite dev server (default http://localhost:5173)
@@ -176,13 +176,31 @@ with its own default time. Day modes fill today's sessions; night modes fill yes
 (a shift started last evening checks out this morning). They reuse the `timeLocal.js`
 helpers.
 
+`checkoutReminder.js` (every 10 min) is the flip side: it PUSH-notifies about open
+sessions the auto-checkout will NOT close. `utils/openSessionAudit.js` reproduces the
+cron's decision — a session is "forgotten" when its category has no check-out default
+(flagged after the config fallback `checkoutReminderTime`), a day default already
+passed by `checkoutReminderGraceMinutes` and it's still open, or it's an open session
+left on yesterday's record. It notifies the site's supervisor (deep-link
+`/attendance/<siteId>`) and an admin/superadmin digest (`/site`), capped 3×/day and
+≥1h apart via `User.checkoutReminder`. Delivery is `web-push` via `utils/webPush.js`
+(needs the VAPID env); subscriptions live on `User.pushSubscriptions`
+(`controllers/pushController.js`, routes under `/api/user/{vapid-public-key,
+push-subscription}`). The roster field↔category map is shared in `utils/rosterFields.js`
+(also used by `propagateDefaults.js`).
+
 ### Frontend
 React 19 + React Router 7 + Vite 8, Tailwind v4, shadcn/ui components (Radix) under
 `client/src/components/ui/`, `@` aliased to `client/src`. It's a PWA
 (`vite-plugin-pwa`, `registerType: 'autoUpdate'`, `skipWaiting`/`clientsClaim` so
 mobile clients auto-update). Pages in `client/src/pages/`, feature components in
 `client/src/components/`, API calls go through the shared `api` axios instance.
-Excel export via `exceljs`/`xlsx` for reports.
+Excel export via `exceljs`/`xlsx` for reports. PWA push: the generated Workbox SW is
+kept (`generateSW`) and the `push`/`notificationclick` handlers are layered on via
+`workbox.importScripts: ['push-sw.js']` → `client/public/push-sw.js`; the browser
+subscribe/unsubscribe flow is `client/src/lib/push.ts`, surfaced by the
+`PushReminderToggle` in the sidebar (self-hides where Web Push is unsupported, e.g.
+iOS before the PWA is installed to the home screen).
 
 ## Conventions
 - Server is ESM (`"type": "module"`) — use `import`/`export`, include `.js` extensions

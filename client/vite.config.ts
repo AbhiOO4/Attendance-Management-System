@@ -14,6 +14,11 @@ export default defineConfig({
       injectRegister: 'auto',
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        // Layer our hand-written push / notificationclick handlers onto the
+        // auto-generated Workbox SW (see public/push-sw.js). The generated sw.js
+        // runs importScripts('push-sw.js') at startup, so the listeners register
+        // in the SW scope without us owning the whole service worker.
+        importScripts: ['push-sw.js'],
         // Take over immediately on a new deploy instead of waiting for every
         // tab/PWA instance to close, and delete the previous build's precache.
         // This is what makes mobile clients pick up updates without a manual

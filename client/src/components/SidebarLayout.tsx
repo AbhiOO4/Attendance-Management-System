@@ -36,6 +36,7 @@ import {
 
 import toast from "react-hot-toast"
 import { useAuth } from "@/context/AuthContext"
+import PushReminderToggle from "./PushReminderToggle"
 
 type NavItem = {
   name: string
@@ -210,6 +211,7 @@ export default function SidebarLayout() {
 
           {/* Bottom actions */}
           <div className="mt-auto flex flex-col items-center gap-2">
+            <PushReminderToggle collapsed />
             <button
               onClick={() =>
                 setTheme(theme === "dark" ? "light" : "dark")
@@ -284,6 +286,7 @@ export default function SidebarLayout() {
 
             {/* Actions — kept high, right below the nav */}
             <div className="mt-4 flex flex-col gap-1 border-t pt-4">
+              <PushReminderToggle />
               <button
                 onClick={() =>
                   setTheme(theme === "dark" ? "light" : "dark")

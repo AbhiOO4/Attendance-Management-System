@@ -39,39 +39,7 @@ import {
 import { hasSessionOverlap } from './sessionOverlap.js';
 import { computeAttendanceTotals } from './attendanceMath.js';
 import { getEmployeeIdsByCategory } from './collar.js';
-
-/**
- * Field metadata for the 16 default time fields — one per
- * (roster category × day|night × check-in|check-out). Everything the propagator
- * needs to classify a field derives from this single table:
- *   - `category` is one of the four buckets from getEmployeeIdsByCategory(), so
- *     each field only ever touches its own category's employees — no fallback,
- *     and no cross-nationality leak between same-collar categories.
- *   - `night` / `checkIn` drive shift matching and target-day selection.
- * Adding or renaming a category is a single edit here.
- */
-const FIELD_META = {
-  // Foreign skilled (blue-collar field workers)
-  defaultCheckIn:                 { category: 'foreignSkilled', night: false, checkIn: true },
-  defaultCheckOut:                { category: 'foreignSkilled', night: false, checkIn: false },
-  nightDefaultCheckIn:            { category: 'foreignSkilled', night: true,  checkIn: true },
-  nightDefaultCheckOut:           { category: 'foreignSkilled', night: true,  checkIn: false },
-  // Foreign staff (white-collar)
-  staffDefaultCheckIn:            { category: 'foreignStaff', night: false, checkIn: true },
-  staffDefaultCheckOut:           { category: 'foreignStaff', night: false, checkIn: false },
-  staffNightDefaultCheckIn:       { category: 'foreignStaff', night: true,  checkIn: true },
-  staffNightDefaultCheckOut:      { category: 'foreignStaff', night: true,  checkIn: false },
-  // Omani skilled
-  omaniDefaultCheckIn:            { category: 'omaniSkilled', night: false, checkIn: true },
-  omaniDefaultCheckOut:           { category: 'omaniSkilled', night: false, checkIn: false },
-  omaniNightDefaultCheckIn:       { category: 'omaniSkilled', night: true,  checkIn: true },
-  omaniNightDefaultCheckOut:      { category: 'omaniSkilled', night: true,  checkIn: false },
-  // Omani staff
-  omaniStaffDefaultCheckIn:       { category: 'omaniStaff', night: false, checkIn: true },
-  omaniStaffDefaultCheckOut:      { category: 'omaniStaff', night: false, checkIn: false },
-  omaniStaffNightDefaultCheckIn:  { category: 'omaniStaff', night: true,  checkIn: true },
-  omaniStaffNightDefaultCheckOut: { category: 'omaniStaff', night: true,  checkIn: false },
-};
+import { FIELD_META } from './rosterFields.js';
 
 /**
  * Determine the target business day for a given field change.

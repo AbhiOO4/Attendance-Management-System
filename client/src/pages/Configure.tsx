@@ -41,6 +41,7 @@ type WorkSchedule = {
   overtimeThreshold: number;
   weeklyHolidays: string[];
   breakDurationMinutes: number;
+  checkoutReminderTime: string;
 };
 
 
@@ -92,6 +93,7 @@ export default function Configure() {
     overtimeThreshold: 8,
     weeklyHolidays: [],
     breakDurationMinutes: 60,
+    checkoutReminderTime: "20:00",
   });
 
   const [holidayForm, setHolidayForm] = useState({
@@ -167,6 +169,7 @@ export default function Configure() {
         overtimeThreshold: schedule.overtimeThreshold,
         weeklyHolidays: schedule.weeklyHolidays,
         breakDurationMinutes: schedule.breakDurationMinutes,
+        checkoutReminderTime: schedule.checkoutReminderTime,
       });
 
       if (res.data?.data) setSchedule(res.data.data);
@@ -456,6 +459,28 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     Duration of one break in minutes. 1 break is deducted per full day worked (e.g. 16h shift = 2 breaks). Set 0 to disable.
+                  </p>
+                </div>
+
+                {/* CHECKOUT REMINDER TIME */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Check-out Reminder Time
+                  </label>
+
+                  <Input
+                    type="time"
+                    value={schedule.checkoutReminderTime ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        checkoutReminderTime: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Push reminder sent after this time for open check-outs the auto-checkout won't close (e.g. a category with no default set). Clear to disable.
                   </p>
                 </div>
 

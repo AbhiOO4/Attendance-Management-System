@@ -140,7 +140,7 @@ export async function updateUser(req, res) {
 export async function getUsers(req, res) {
     try
     {
-        const users = await userModel.find({})
+        const users = await userModel.find({}).select("-pushSubscriptions -checkoutReminder")
         res.status(200).json(users)
     }
     catch (error) {

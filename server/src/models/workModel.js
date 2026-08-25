@@ -66,6 +66,25 @@ const workScheduleSchema = new mongoose.Schema(
       max: 480,
       default: 60,
     },
+
+    // Fallback "HH:mm" local time after which an open session that the
+    // auto-checkout cron will NOT close (e.g. a category with no default
+    // check-out set) triggers a push reminder to the supervisor. See
+    // utils/openSessionAudit.js and cron/checkoutReminder.js. Empty disables the
+    // fallback rule (sessions the cron does handle still auto-close as normal).
+    checkoutReminderTime: {
+      type: String,
+      default: "20:00",
+    },
+
+    // Minutes of slack after a session's expected auto-checkout time before it is
+    // treated as "forgotten" — gives the per-minute auto-checkout cron time to act.
+    checkoutReminderGraceMinutes: {
+      type: Number,
+      min: 0,
+      max: 240,
+      default: 15,
+    },
   },
   { timestamps: true }
 );

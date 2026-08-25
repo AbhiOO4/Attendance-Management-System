@@ -36,6 +36,8 @@ export const updateWorkSchedule = async (req, res) => {
       weeklyHolidays,
       nightShiftCutoffHour,
       breakDurationMinutes,
+      checkoutReminderTime,
+      checkoutReminderGraceMinutes,
     } = req.body;
 
 
@@ -83,6 +85,27 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.breakDurationMinutes = breakDurationMinutes;
+    }
+
+    if (checkoutReminderTime !== undefined) {
+      // Empty string disables the fallback reminder; otherwise require HH:mm.
+      if (checkoutReminderTime !== "" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(checkoutReminderTime)) {
+        return res.status(400).json({
+          success: false,
+          message: "Checkout reminder time must be in HH:mm format",
+        });
+      }
+      schedule.checkoutReminderTime = checkoutReminderTime;
+    }
+
+    if (checkoutReminderGraceMinutes !== undefined) {
+      if (checkoutReminderGraceMinutes < 0 || checkoutReminderGraceMinutes > 240) {
+        return res.status(400).json({
+          success: false,
+          message: "Checkout reminder grace must be between 0 and 240 minutes",
+        });
+      }
+      schedule.checkoutReminderGraceMinutes = checkoutReminderGraceMinutes;
     }
 
     // Optional validation

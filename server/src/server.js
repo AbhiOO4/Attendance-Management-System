@@ -18,6 +18,7 @@ import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
 import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
 import { startApplyScheduledAssignmentsCron } from './cron/applyScheduledAssignments.js'
+import { startCheckoutReminderCron } from './cron/checkoutReminder.js'
 // Night check-in is now pre-filled when a night shift is assigned (see
 // assignNightShift), so the auto check-in cron is no longer scheduled.
 
@@ -69,6 +70,7 @@ connectDB().then(async () => {
     await initializePermanentSite();
     startAutoCheckOutCron();
     startApplyScheduledAssignmentsCron();
+    startCheckoutReminderCron();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })
