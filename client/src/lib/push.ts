@@ -37,18 +37,38 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   return output
 }
 
+// navigator.serviceWorker.ready never resolves if no SW ever activates (dev mode,
+// or a failed registration). Race a timeout so callers don't hang forever.
+async function readyRegistration(
+  timeoutMs = 3000
+): Promise<ServiceWorkerRegistration | null> {
+  try {
+    return await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ])
+  } catch {
+    return null
+  }
+}
+
 /** Current push state for this device (safe to call even when unsupported). */
 export async function getPushState(): Promise<PushState> {
   if (!isPushSupported()) {
     return { supported: false, permission: "unsupported", subscribed: false }
   }
-  try {
-    const reg = await navigator.serviceWorker.ready
-    const sub = await reg.pushManager.getSubscription()
-    return { supported: true, permission: Notification.permission, subscribed: !!sub }
-  } catch {
-    return { supported: true, permission: Notification.permission, subscribed: false }
+  const reg = await readyRegistration()
+  let subscribed = false
+  if (reg) {
+    try {
+      subscribed = !!(await reg.pushManager.getSubscription())
+    } catch {
+      subscribed = false
+    }
   }
+  // Eligibility gates on permission too, so a timed-out "not subscribed" here
+  // can never mis-prompt an already-granted user.
+  return { supported: true, permission: Notification.permission, subscribed }
 }
 
 /**
@@ -72,7 +92,10 @@ export async function subscribeToPush(): Promise<boolean> {
     throw new Error("Push notifications aren't configured on the server.")
   }
 
-  const reg = await navigator.serviceWorker.ready
+  const reg = await readyRegistration(5000)
+  if (!reg) {
+    throw new Error("Service worker isn't ready yet. Please reload and try again.")
+  }
 
   // Reuse an existing subscription if present, else create one.
   let sub = await reg.pushManager.getSubscription()
@@ -90,8 +113,8 @@ export async function subscribeToPush(): Promise<boolean> {
 /** Unsubscribe this device and remove it from the server. */
 export async function unsubscribeFromPush(): Promise<boolean> {
   if (!isPushSupported()) return false
-  const reg = await navigator.serviceWorker.ready
-  const sub = await reg.pushManager.getSubscription()
+  const reg = await readyRegistration(5000)
+  const sub = reg ? await reg.pushManager.getSubscription() : null
   if (!sub) return true
 
   const endpoint = sub.endpoint

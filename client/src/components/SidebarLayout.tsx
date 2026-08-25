@@ -37,6 +37,7 @@ import {
 import toast from "react-hot-toast"
 import { useAuth } from "@/context/AuthContext"
 import PushReminderToggle from "./PushReminderToggle"
+import PushPermissionPrompts from "./PushPermissionPrompts"
 
 type NavItem = {
   name: string
@@ -352,6 +353,7 @@ export default function SidebarLayout() {
         id="main-scroll-container"
         className="flex-1 overflow-auto mt-14 md:mt-0"
       >
+        <PushPermissionPrompts />
         <Outlet />
       </main>
     </div>
