@@ -17,7 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 
-import { Loader2, Moon, Plane, Users } from "lucide-react"
+import { Loader2, Moon, Plane, Search, Users } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -73,11 +73,10 @@ function BulkAssignNightShift({
   const [loading, setLoading] = useState(false)
   const [assigning, setAssigning] = useState(false)
   const [showOnlyEmpty, setShowOnlyEmpty] = useState(true)
-  const [filters, setFilters] = useState({
-    name: "",
-    employeeId: "",
-    jobTitle: "",
-  })
+  // Single combined search box — matches across name, employee ID and job title.
+  // The candidate set is scoped to one site (small), so filtering happens
+  // client-side; the server fetch only re-runs on open / showOnlyEmpty change.
+  const [search, setSearch] = useState("")
 
   const fetchCandidates = async () => {
     if (!siteId || !date) return
@@ -90,9 +89,6 @@ function BulkAssignNightShift({
             siteId,
             date,
             showOnlyEmpty,
-            name: filters.name || undefined,
-            employeeId: filters.employeeId || undefined,
-            jobTitle: filters.jobTitle || undefined,
           },
         }
       )
@@ -107,29 +103,44 @@ function BulkAssignNightShift({
     }
   }
 
-  // Refetch when opened or when filters / toggle change
+  // Refetch when opened or when the showOnlyEmpty toggle changes. Text search is
+  // now client-side, so typing no longer hits the server.
   useEffect(() => {
     if (open) {
       fetchCandidates()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, showOnlyEmpty, filters.name, filters.employeeId, filters.jobTitle])
+  }, [open, showOnlyEmpty])
 
   // Reset selection and category filter when closed
   useEffect(() => {
     if (!open) {
       setSelected(new Set())
       setSelectedCategories(new Set())
+      setSearch("")
     }
   }, [open])
 
-  // Candidates in the currently-selected categories (empty filter = all of them).
+  // Candidates matching the current category filter (empty = all) AND the search
+  // box. The query is split into whitespace tokens, each of which must appear
+  // somewhere in the combined "name + id + job title" haystack — so "john welder"
+  // matches an employee named John whose job title is Welder.
   const visibleCandidates = useMemo(() => {
-    if (selectedCategories.size === 0) return candidates
-    return candidates.filter((c) =>
-      selectedCategories.has(categoryOf(c.collarType, c.nationality))
-    )
-  }, [candidates, selectedCategories])
+    const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    return candidates.filter((c) => {
+      if (
+        selectedCategories.size > 0 &&
+        !selectedCategories.has(categoryOf(c.collarType, c.nationality))
+      ) {
+        return false
+      }
+      if (tokens.length > 0) {
+        const haystack = `${c.name} ${c.employeeId} ${c.jobTitle}`.toLowerCase()
+        if (!tokens.every((t) => haystack.includes(t))) return false
+      }
+      return true
+    })
+  }, [candidates, selectedCategories, search])
 
   // Per-category counts for the chips (over the full candidate set, so a chip's
   // count doesn't change as you narrow the filter).
@@ -237,28 +248,14 @@ function BulkAssignNightShift({
           </DialogDescription>
         </DialogHeader>
 
-        {/* FILTERS */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {/* SEARCH: one box matching name, employee ID and job title at once. */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <Input
-            placeholder="Name"
-            value={filters.name}
-            onChange={(e) =>
-              setFilters((p) => ({ ...p, name: e.target.value }))
-            }
-          />
-          <Input
-            placeholder="Employee ID"
-            value={filters.employeeId}
-            onChange={(e) =>
-              setFilters((p) => ({ ...p, employeeId: e.target.value }))
-            }
-          />
-          <Input
-            placeholder="Job Title"
-            value={filters.jobTitle}
-            onChange={(e) =>
-              setFilters((p) => ({ ...p, jobTitle: e.target.value }))
-            }
+            className="pl-9"
+            placeholder="Search by name, ID or job title"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
