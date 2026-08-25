@@ -70,6 +70,7 @@ function getSupervisorNavItems(
 ): NavItem[] {
   const items: NavItem[] = [
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
+    { name: "Employees", path: "/employees", icon: Users },
   ]
 
   if (assignedSite) {

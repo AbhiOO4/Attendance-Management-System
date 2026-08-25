@@ -2,10 +2,11 @@
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   Table,
@@ -41,6 +42,10 @@ import AddEmployee from "@/components/AddEmployee"
 import axios from "axios"
 import { Link, useNavigate } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
+import { useWorkConfig } from "@/context/WorkConfigContext"
+import { useAuth } from "@/context/AuthContext"
+import { Download, Loader2, Search, X } from "lucide-react"
+import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
 interface Employee {
   _id: string
@@ -56,10 +61,9 @@ interface Employee {
 
 
 interface Filters {
-  name: string
-  employeeId: string
+  // One combined search box matching name, employee ID and job title at once.
+  search: string
   site: string
-  jobTitle: string
   page: number
   limit: number
 }
@@ -96,10 +100,8 @@ type UpdateInfo = {
 function Employees() {
   const navigate = useNavigate()
   const [filters, setFilters] = useState<Filters>({
-    name: "",
-    employeeId: "",
+    search: "",
     site: "",
-    jobTitle: "",
     page: 1,
     limit: 10,
   })
@@ -113,6 +115,30 @@ function Employees() {
   const [totalPages, setTotalPages] = useState(1)
   const [totalEmployees, setTotalEmployees] = useState(0)
 
+  const { config: workConfig } = useWorkConfig()
+
+  // Supervisors get read-only access: they can browse + export but not add/edit/delete.
+  const { user } = useAuth()
+  const canWrite = user?.role === "admin" || user?.role === "superadmin"
+
+  // --- Bulk timesheet export ---
+  const currentYear = new Date().getFullYear()
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [exportMonth, setExportMonth] = useState(
+    String(new Date().getMonth() + 1)
+  )
+  const [exportYear, setExportYear] = useState(String(currentYear))
+  const [selectingAll, setSelectingAll] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState<{
+    done: number
+    total: number
+  } | null>(null)
+  // Employee meta accumulated across every fetch (current page + "select all"),
+  // so selected ids on other pages still resolve their name/id/title at export time.
+  const employeeMetaRef = useRef<Map<string, Employee>>(new Map())
+
   async function fetchEmployees() {
     try {
       const res = await api.get<EmployeesResponse>(
@@ -123,6 +149,10 @@ function Employees() {
       )
 
       setEmployees(res.data.employees)
+
+      res.data.employees.forEach((e) =>
+        employeeMetaRef.current.set(e._id, e)
+      )
 
       setCurrentPage(res.data.currentPage)
 
@@ -208,6 +238,163 @@ function Employees() {
     }
   }
 
+  const toggleSelectionMode = () => {
+    setSelectionMode((prev) => {
+      // Leaving selection mode clears the current selection.
+      if (prev) setSelectedIds(new Set())
+      return !prev
+    })
+  }
+
+  const toggleOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const clearSelection = () => setSelectedIds(new Set())
+
+  // Select every employee matching the CURRENT filters (across all pages) by
+  // re-fetching the list without pagination — mirrors the page's own filters.
+  const selectAllMatching = async () => {
+    try {
+      setSelectingAll(true)
+
+      const params: Record<string, string> = {}
+      if (filters.search) params.search = filters.search
+      if (filters.site) params.site = filters.site
+
+      const res = await api.get<{ employees: Employee[] }>("/api/employees", {
+        params,
+      })
+
+      const all = res.data.employees || []
+      all.forEach((e) => employeeMetaRef.current.set(e._id, e))
+      setSelectedIds(new Set(all.map((e) => e._id)))
+    } catch (error) {
+      console.log(error)
+      toast.error("Failed to select all employees")
+    } finally {
+      setSelectingAll(false)
+    }
+  }
+
+  // Run async workers over ids with a fixed concurrency cap, reporting progress.
+  const runWithConcurrency = async <T,>(
+    ids: string[],
+    limit: number,
+    worker: (id: string) => Promise<T>
+  ): Promise<Array<{ id: string; value?: T; error?: unknown }>> => {
+    const results: Array<{ id: string; value?: T; error?: unknown }> = []
+    let cursor = 0
+
+    const runNext = async (): Promise<void> => {
+      const i = cursor++
+      if (i >= ids.length) return
+      const id = ids[i]
+      try {
+        results[i] = { id, value: await worker(id) }
+      } catch (error) {
+        results[i] = { id, error }
+      }
+      setExportProgress((p) => (p ? { ...p, done: p.done + 1 } : p))
+      await runNext()
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(limit, ids.length) }, () => runNext())
+    )
+
+    return results
+  }
+
+  const handleBulkExport = async () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) {
+      toast.error("Select at least one employee")
+      return
+    }
+
+    try {
+      setExporting(true)
+      setExportProgress({ done: 0, total: ids.length })
+
+      const results = await runWithConcurrency(ids, 5, (id) =>
+        api
+          .get(`/api/attendance/employee/${id}`, {
+            params: { month: exportMonth, year: exportYear },
+          })
+          .then((res) => (res.data.data || []) as AttendanceRecord[])
+      )
+
+      const succeeded = results.filter((r) => r && !r.error)
+      const failed = results.filter((r) => r && r.error)
+
+      if (succeeded.length === 0) {
+        toast.error("Failed to fetch attendance for the selected employees")
+        return
+      }
+
+      const employeesForExport = succeeded.map((r) => {
+        const meta = employeeMetaRef.current.get(r.id)
+        const records = (r.value || []) as AttendanceRecord[]
+        const fallback = records[0]
+        return {
+          name: meta?.name ?? fallback?.name ?? "",
+          employeeId: meta?.employeeId ?? fallback?.employeeId ?? "",
+          jobTitle: meta?.jobTitle ?? fallback?.jobTitle ?? "",
+          records,
+        }
+      })
+
+      // Lazy-load the exporter so exceljs stays out of this route's chunk until
+      // a bulk export is actually run.
+      const { exportBulkTimesheets } = await import("@/lib/timesheetExport")
+
+      await exportBulkTimesheets({
+        employees: employeesForExport,
+        month: exportMonth,
+        year: exportYear,
+        workConfig,
+        sortOrder: "asc",
+      })
+
+      if (failed.length > 0) {
+        toast.success(
+          `Exported ${succeeded.length} timesheet(s); ${failed.length} failed`
+        )
+      } else {
+        toast.success(`Exported ${succeeded.length} timesheet(s)`)
+      }
+    } catch (error) {
+      console.log(error)
+      toast.error("Failed to export timesheets")
+    } finally {
+      setExporting(false)
+      setExportProgress(null)
+    }
+  }
+
+  const pageIds = employees.map((e) => e._id)
+  const allPageSelected =
+    pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
+  const somePageSelected = pageIds.some((id) => selectedIds.has(id))
+
+  const togglePage = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allPageSelected) {
+        pageIds.forEach((id) => next.delete(id))
+      } else {
+        pageIds.forEach((id) => next.add(id))
+      }
+      return next
+    })
+  }
+
   return (
     <div className="px-6 pb-6 space-y-6">
       {/* Sticky toolbar: title + filters stay pinned while the list scrolls
@@ -223,47 +410,38 @@ function Employees() {
           </Badge>
         </div>
 
-        <AddEmployee onAdd={addEmployee} />
+        <div className="flex items-center gap-2">
+          <Button
+            variant={selectionMode ? "secondary" : "outline"}
+            onClick={toggleSelectionMode}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Bulk Export Timesheet
+          </Button>
+
+          {canWrite && <AddEmployee onAdd={addEmployee} />}
+        </div>
       </div>
 
       {/* FILTER SECTION */}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Input
-          placeholder="Search by name"
-          value={filters.name}
-          onChange={(e) =>
-            setFilters({
-              ...filters,
-              name: e.target.value,
-              page: 1,
-            })
-          }
-        />
-
-        <Input
-          placeholder="Employee ID"
-          value={filters.employeeId}
-          onChange={(e) =>
-            setFilters({
-              ...filters,
-              employeeId: e.target.value,
-              page: 1,
-            })
-          }
-        />
-
-        <Input
-          placeholder="Job Title"
-          value={filters.jobTitle}
-          onChange={(e) =>
-            setFilters({
-              ...filters,
-              jobTitle: e.target.value,
-              page: 1,
-            })
-          }
-        />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {/* SEARCH: one box matching name, employee ID and job title at once. */}
+        <div className="relative sm:col-span-2">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-9"
+            placeholder="Search by name, ID or job title"
+            value={filters.search}
+            onChange={(e) =>
+              setFilters({
+                ...filters,
+                search: e.target.value,
+                page: 1,
+              })
+            }
+          />
+        </div>
 
         {/* SITE FILTER */}
 
@@ -300,6 +478,103 @@ function Employees() {
           </SelectContent>
         </Select>
       </div>
+
+      {/* BULK EXPORT ACTION BAR */}
+      {selectionMode && (
+        <div className="flex flex-col gap-3 rounded-lg border bg-muted/40 p-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium">
+              {selectedIds.size} selected
+            </span>
+
+            {selectedIds.size < totalEmployees && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={selectAllMatching}
+                disabled={selectingAll || exporting}
+              >
+                {selectingAll && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                Select all {totalEmployees}
+              </Button>
+            )}
+
+            {selectedIds.size > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearSelection}
+                disabled={exporting}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* MONTH */}
+            <Select value={exportMonth} onValueChange={setExportMonth}>
+              <SelectTrigger className="w-[140px]">
+                <SelectValue placeholder="Month" />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: 12 }, (_, i) => (
+                  <SelectItem key={i + 1} value={String(i + 1)}>
+                    {new Date(0, i).toLocaleString("en-IN", {
+                      month: "long",
+                    })}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* YEAR */}
+            <Select value={exportYear} onValueChange={setExportYear}>
+              <SelectTrigger className="w-[110px]">
+                <SelectValue placeholder="Year" />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: 5 }, (_, i) => {
+                  const yr = currentYear - i
+                  return (
+                    <SelectItem key={yr} value={String(yr)}>
+                      {yr}
+                    </SelectItem>
+                  )
+                })}
+              </SelectContent>
+            </Select>
+
+            <Button
+              onClick={handleBulkExport}
+              disabled={exporting || selectedIds.size === 0}
+            >
+              {exporting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="mr-2 h-4 w-4" />
+              )}
+              {exporting && exportProgress
+                ? `Exporting ${exportProgress.done}/${exportProgress.total}`
+                : `Export Selected${
+                    selectedIds.size ? ` (${selectedIds.size})` : ""
+                  }`}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleSelectionMode}
+              disabled={exporting}
+              aria-label="Exit selection mode"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
       </div>
 
       {/* TABLE */}
@@ -308,58 +583,95 @@ function Employees() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-16">Sl No</TableHead>
+              {selectionMode && (
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={
+                      allPageSelected
+                        ? true
+                        : somePageSelected
+                          ? "indeterminate"
+                          : false
+                    }
+                    onCheckedChange={togglePage}
+                    aria-label="Select all on this page"
+                  />
+                </TableHead>
+              )}
+              <TableHead className="w-16 hidden md:table-cell">Sl No</TableHead>
               <TableHead>Name</TableHead>
 
-              <TableHead>
+              <TableHead className="hidden md:table-cell">
                 Employee ID
               </TableHead>
 
-              <TableHead>
+              <TableHead className="hidden md:table-cell">
                 Job Title
               </TableHead>
 
               <TableHead>Current Site</TableHead>
 
-              <TableHead className="text-right">
-                Actions
-              </TableHead>
+              {canWrite && (
+                <TableHead className="text-right">
+                  Actions
+                </TableHead>
+              )}
             </TableRow>
           </TableHeader>
 
           <TableBody>
             {employees.length > 0 ? (
               employees.map((employee, index) => (
-                <TableRow 
+                <TableRow
                   key={employee._id}
                   className="cursor-pointer hover:bg-muted/50 transition-colors"
                   onClick={() => navigate(`/employees/${employee._id}`)}
                 >
-                  <TableCell className="font-medium text-muted-foreground">
+                  {selectionMode && (
+                    <TableCell
+                      className="w-10"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Checkbox
+                        checked={selectedIds.has(employee._id)}
+                        onCheckedChange={() => toggleOne(employee._id)}
+                        aria-label={`Select ${employee.name}`}
+                      />
+                    </TableCell>
+                  )}
+                  <TableCell className="hidden md:table-cell font-medium text-muted-foreground">
                     {(currentPage - 1) * filters.limit + index + 1}
                   </TableCell>
 
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Link to={`/employees/${employee._id}`} className="hover:underline">{employee.name}</Link>
-                      {employee.user && (
-                        <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
-                          Supervisor
-                        </Badge>
-                      )}
-                      {employee.employmentType === 'temporary' && (
-                        <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
-                          Temporary
-                        </Badge>
-                      )}
+                  <TableCell className="whitespace-normal">
+                    <div className="flex flex-col gap-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link to={`/employees/${employee._id}`} className="font-medium hover:underline">{employee.name}</Link>
+                        {employee.user && (
+                          <Badge variant="secondary" className="bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-800/30 text-[10px] px-1.5 py-0 h-4">
+                            Supervisor
+                          </Badge>
+                        )}
+                        {employee.employmentType === 'temporary' && (
+                          <Badge variant="secondary" className="bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4">
+                            Temporary
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* Mobile-only: fold Employee ID + Job Title under the name */}
+                      <div className="flex flex-col gap-0.5 text-xs text-muted-foreground md:hidden">
+                        <span>ID: {employee.employeeId}</span>
+                        <span>{employee.jobTitle}</span>
+                      </div>
                     </div>
                   </TableCell>
 
-                  <TableCell>
+                  <TableCell className="hidden md:table-cell">
                     {employee.employeeId}
                   </TableCell>
 
-                  <TableCell>
+                  <TableCell className="hidden md:table-cell">
                     {employee.jobTitle}
                   </TableCell>
 
@@ -372,59 +684,61 @@ function Employees() {
                     </div>
                   </TableCell>
 
-                  <TableCell className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                    {/* EDIT */}
+                  {canWrite && (
+                    <TableCell className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end" onClick={(e) => e.stopPropagation()}>
+                      {/* EDIT */}
 
-                    <EditEmployee
-                      employee={employee}
-                      onSave={editEmployee}
-                    />
+                      <EditEmployee
+                        employee={employee}
+                        onSave={editEmployee}
+                      />
 
-                    {/* DELETE */}
+                      {/* DELETE */}
 
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="destructive">
-                          Delete
-                        </Button>
-                      </AlertDialogTrigger>
-
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>
-                            Delete Employee?
-                          </AlertDialogTitle>
-
-                          <AlertDialogDescription>
-                            This action cannot be
-                            undone.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>
-                            Cancel
-                          </AlertDialogCancel>
-
-                          <AlertDialogAction
-                            onClick={() =>
-                              removeEmployee(
-                                employee._id
-                              )
-                            }
-                          >
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="destructive">
                             Delete
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </TableCell>
+                          </Button>
+                        </AlertDialogTrigger>
+
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Delete Employee?
+                            </AlertDialogTitle>
+
+                            <AlertDialogDescription>
+                              This action cannot be
+                              undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>
+                              Cancel
+                            </AlertDialogCancel>
+
+                            <AlertDialogAction
+                              onClick={() =>
+                                removeEmployee(
+                                  employee._id
+                                )
+                              }
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={5 + (selectionMode ? 1 : 0) + (canWrite ? 1 : 0)}
                   className="text-center py-6"
                 >
                   No employees found
@@ -437,9 +751,10 @@ function Employees() {
 
       {/* PAGINATION */}
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Button
           variant="outline"
+          className="order-1 flex-1 sm:flex-none"
           disabled={currentPage === 1}
           onClick={() =>
             setFilters({
@@ -451,8 +766,8 @@ function Employees() {
           Previous
         </Button>
 
-        <div className="flex items-center gap-4">
-          <p className="text-sm">
+        <div className="order-3 flex w-full items-center justify-between gap-3 sm:order-2 sm:w-auto sm:justify-normal sm:gap-4">
+          <p className="text-sm whitespace-nowrap">
             Page {currentPage} of {totalPages}
           </p>
 
@@ -486,6 +801,7 @@ function Employees() {
 
         <Button
           variant="outline"
+          className="order-2 flex-1 sm:order-3 sm:flex-none"
           disabled={currentPage === totalPages}
           onClick={() =>
             setFilters({

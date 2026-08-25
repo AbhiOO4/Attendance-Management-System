@@ -20,6 +20,7 @@ export const getAllEmployees = async (req, res) => {
       employeeId,
       site,
       jobTitle,
+      search,
       job,
       page,
       limit,
@@ -95,6 +96,23 @@ export const getAllEmployees = async (req, res) => {
         $regex: `^${escapeRegExp(employeeId)}`,
         $options: "i",
       };
+    }
+
+    // Unified search box: split into whitespace tokens; each token must match
+    // (substring, case-insensitive) at least one of name / employeeId / jobTitle.
+    // So "john welder" matches John whose job title is Welder. Composed via $and
+    // so it never clashes with the notSupervisor $or or the site/roster $and.
+    if (search && search.trim()) {
+      const tokenClauses = search
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((tok) => {
+          const rx = { $regex: escapeRegExp(tok), $options: "i" };
+          return { $or: [{ name: rx }, { employeeId: rx }, { jobTitle: rx }] };
+        });
+
+      filter.$and = [...(filter.$and || []), ...tokenClauses];
     }
 
     let query = empModel.find(filter,

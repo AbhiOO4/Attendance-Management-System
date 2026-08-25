@@ -35,7 +35,7 @@ router.delete('/jobTitles/:id', authorizeRoles('admin'), empController.deleteJob
 router.get('/temp/pool', authorizeRoles("admin", "supervisor"), empController.getTempPool)
 router.post('/temp/assign', authorizeRoles("admin", "supervisor"), empController.assignTempWorker)
 
-router.get('/:id', authorizeRoles("admin"), empController.getEmployee)//
+router.get('/:id', authorizeRoles("admin", "supervisor"), empController.getEmployee)//
 
 router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.editEmployee)// 
 

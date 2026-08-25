@@ -1,11 +1,14 @@
 
 import { useWorkConfig } from "@/context/WorkConfigContext"
+import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
 import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
-
-import ExcelJS from "exceljs"
-import { saveAs } from "file-saver"
+import {
+  exportSingleTimesheet,
+  getDisplayStatus,
+  round2,
+} from "@/lib/timesheetExport"
 
 import {
   useEffect,
@@ -75,30 +78,8 @@ interface Employee {
   isActive: boolean
 }
 
-const round2 = (value: number) =>
-  Math.round(value * 100) / 100
-
-const getDisplayStatus = (record: AttendanceRecord) => {
-  if (record.isSickLeave) {
-    return "sick"
-  }
-  if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
-    const hasCheckInNoCheckOut = record.sessions.some(
-      (session) => session && session.checkIn && !session.checkOut
-    )
-    if (hasCheckInNoCheckOut) {
-      return "pending"
-    }
-  }
-  // A holiday (weekly like Friday, or public) with no work is not an absence —
-  // show it as "holiday" rather than a red "absent". Days actually worked on a
-  // holiday keep their fullday/halfday status. Temporary workers store
-  // isHoliday:false, so their Friday absences remain genuine absences.
-  if (record.isHoliday && record.status === "absent") {
-    return "holiday"
-  }
-  return record.status
-}
+// `round2` and `getDisplayStatus` now live in @/lib/timesheetExport (shared with
+// the bulk export) and are imported above.
 
 function EmployeeAttendanceDetail() {
   const { id } = useParams()
@@ -119,6 +100,11 @@ function EmployeeAttendanceDetail() {
   const { config: workConfig } = useWorkConfig()
   const fullDayHours = workConfig?.fullDayHours ?? 8
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
+
+  // Supervisors view this timesheet read-only: no per-record edit, export stays.
+  const { user } = useAuth()
+  const canWrite = user?.role === "admin" || user?.role === "superadmin"
+  const colCount = canWrite ? 14 : 13
 
 
 
@@ -186,647 +172,22 @@ function EmployeeAttendanceDetail() {
 
   const exportSpreadsheet = async () => {
     try {
-      // Grey palette (print-friendly). Fridays get a darker shade to mark the
-      // weekend; alternating rows keep the two-tone look, just in grey.
-      const HEADER_GREY = "D9D9D9"
-      const ROW_GREY = "EFEFEF"
-      const FRIDAY_GREY = "C0C0C0"
-      const TOTALS_GREY = "BFBFBF"
-
-      const workbook = new ExcelJS.Workbook()
-
-      const worksheet =
-        workbook.addWorksheet(
-          "Attendance",
-          {
-            pageSetup: {
-              paperSize: 9, // A4
-              orientation: "landscape",
-              fitToPage: true,
-              fitToWidth: 1,
-              fitToHeight: 1,
-              horizontalCentered: true,
-              margins: {
-                left: 0.3,
-                right: 0.3,
-                top: 0.4,
-                bottom: 0.4,
-                header: 0.2,
-                footer: 0.2,
-              },
-            },
-          }
-        )
-
-      // --------------------------
-      // LOGO
-      // --------------------------
-
-      const logoResponse = await fetch("/ngdp logo.png")
-      const logoBlob = await logoResponse.blob()
-      const logoBase64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader()
-        reader.onloadend = () => resolve((reader.result as string).split(",")[1])
-        reader.readAsDataURL(logoBlob)
+      // The workbook layout lives in the shared @/lib/timesheetExport module so
+      // the single-employee sheet stays byte-identical to the bulk export.
+      await exportSingleTimesheet({
+        employee,
+        records: attendance,
+        month,
+        year,
+        workConfig,
+        sortOrder,
       })
 
-      const logoId = workbook.addImage({
-        base64: logoBase64,
-        extension: "png",
-      })
-
-      worksheet.addImage(logoId, {
-        tl: { col: 10.6, row: 0 },
-        ext: { width: 64, height: 64 },
-      })
-
-      // --------------------------
-      // COMPANY NAME
-      // --------------------------
-
-      worksheet.mergeCells("A1:L1")
-      worksheet.getRow(1).height = 30
-
-      const companyCell = worksheet.getCell("A1")
-      companyCell.value = "NEW GULF DESSERT PROJECT LLC"
-      companyCell.font = { bold: true, size: 14 }
-      companyCell.alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      }
-
-      // --------------------------
-      // SUBTITLE
-      // --------------------------
-
-      worksheet.mergeCells("A2:L2")
-      worksheet.getRow(2).height = 22
-
-      const subtitleCell = worksheet.getCell("A2")
-      subtitleCell.value = "Monthly Time Card"
-      subtitleCell.font = { bold: true, size: 12 }
-      subtitleCell.alignment = {
-        horizontal: "center",
-        vertical: "middle",
-      }
-
-      // --------------------------
-      // EMPLOYEE INFO
-      // --------------------------
-
-      worksheet.addRow([])
-
-      const addInfoRow = (
-        leftLabel: string,
-        leftValue: string,
-        rightLabel: string,
-        rightValue: string
-      ) => {
-        const row = worksheet.addRow([
-          leftLabel,
-          "",
-          leftValue,
-          "",
-          "",
-          "",
-          rightLabel,
-          "",
-          rightValue,
-        ])
-
-        row.height = 18
-
-        const r = row.number
-        worksheet.mergeCells(r, 1, r, 2) // label
-        worksheet.mergeCells(r, 3, r, 6) // value
-        worksheet.mergeCells(r, 7, r, 8) // label
-        worksheet.mergeCells(r, 9, r, 12) // value
-
-        ;[1, 7].forEach((col) => {
-          row.getCell(col).font = { bold: true, size: 10 }
-        })
-        ;[3, 9].forEach((col) => {
-          row.getCell(col).font = { size: 10 }
-        })
-        ;[1, 3, 7, 9].forEach((col) => {
-          row.getCell(col).alignment = {
-            horizontal: "left",
-            vertical: "middle",
-          }
-        })
-      }
-
-      addInfoRow(
-        "Name:",
-        employee?.name || "-",
-        "Employee ID:",
-        employee?.employeeId || "-"
-      )
-
-      addInfoRow(
-        "Job Title:",
-        employee?.jobTitle || "-",
-        "Month:",
-        `${new Date(
-          Number(year),
-          Number(month) - 1
-        ).toLocaleString(
-          "en-IN",
-          {
-            month: "long",
-          }
-        )} ${year}`
-      )
-
-      worksheet.addRow([])
-
-      // --------------------------
-      // HEADERS
-      // --------------------------
-
-      const headerRow =
-        worksheet.addRow([
-          "Date",
-          "Site\nName",
-          "Job\nNo",
-          "Check\nIn",
-          "Check\nOut",
-          "Worked\nHours",
-          "Break",
-          "Total\nHours",
-          "OT\nHours",
-          "Holiday\nHours",
-          "Status",
-          "Sick\nLeave",
-        ])
-
-      headerRow.eachCell((cell) => {
-        cell.font = {
-          bold: true,
-          size: 8,
-        }
-
-        cell.alignment = {
-          horizontal: "center",
-          vertical: "middle",
-          wrapText: true,
-        }
-
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: {
-            argb: HEADER_GREY,
-          },
-        }
-
-        cell.border = {
-          top: {
-            style: "thin",
-          },
-          left: {
-            style: "thin",
-          },
-          bottom: {
-            style: "thin",
-          },
-          right: {
-            style: "thin",
-          },
-        }
-      })
-
-      // --------------------------
-      // DATA ROWS
-      // --------------------------
-
-      let currentRow = 8
-
-      exportDays.forEach(
-        ({ date, record }, index) => {
-          const shortDate =
-            date.toLocaleDateString("en-IN", { weekday: "short" }).slice(0, 3)
-            + " " + date.getDate()
-
-          // Fridays get a darker fill so they stand out on B&W printouts.
-          const isFriday = date.getDay() === 5
-
-          if (!record) {
-            const emptyRow = worksheet.addRow([
-              shortDate,
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-              "",
-            ])
-
-            for (let col = 1; col <= 12; col++) {
-              const cell = emptyRow.getCell(col)
-
-              cell.font = { size: 8 }
-
-              cell.alignment = {
-                horizontal: "center",
-                vertical: "middle",
-                wrapText: true,
-              }
-
-              cell.border = {
-                top: { style: "thin" },
-                left: { style: "thin" },
-                bottom: { style: "thin" },
-                right: { style: "thin" },
-              }
-
-              if (isFriday) {
-                cell.fill = {
-                  type: "pattern",
-                  pattern: "solid",
-                  fgColor: { argb: FRIDAY_GREY },
-                }
-              } else if (index % 2 !== 0) {
-                cell.fill = {
-                  type: "pattern",
-                  pattern: "solid",
-                  fgColor: { argb: ROW_GREY },
-                }
-              }
-            }
-
-            currentRow++
-
-            return
-          }
-
-          const sessions =
-            record.sessions.length > 0
-              ? record.sessions
-              : [null]
-
-          const startRow =
-            currentRow
-
-          sessions.forEach(
-            (
-              session,
-              sessionIndex
-            ) => {
-              const breakCount = record.breaksTaken !== null && record.breaksTaken !== undefined
-                ? record.breaksTaken
-                : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
-
-              const row =
-                worksheet.addRow([
-                  sessionIndex === 0
-                    ? shortDate
-                    : "",
-
-                  session?.siteName ||
-                  "-",
-
-                  session?.jobCode ||
-                  "-",
-
-                  session?.checkIn
-                    ? formatLocalTime12h(session.checkIn)
-                    : "-",
-
-                  session?.checkOut
-                    ? formatLocalTime12h(session.checkOut)
-                    : "-",
-
-                  session?.workedHours ??
-                  "-",
-
-                  sessionIndex === 0
-                    ? breakCount
-                    : "",
-
-                  sessionIndex === 0
-                    ? record.totalWorkHours
-                    : "",
-
-                  sessionIndex === 0
-                    ? (typeof record.overtimeHours === "number" ? Math.round(record.overtimeHours * 100) / 100 : record.overtimeHours)
-                    : "",
-
-                  sessionIndex === 0
-                    ? (record.isHoliday
-                        ? Math.round((record.holidayHours || 0) * 100) / 100
-                        : "-")
-                    : "",
-
-                  sessionIndex === 0
-                    ? (getDisplayStatus(record) === "sick"
-                        ? "Sick Leave"
-                        : getDisplayStatus(record))
-                    : "",
-
-                  sessionIndex === 0
-                    ? (record.isSickLeave ? "Yes" : "-")
-                    : "",
-                ])
-
-              row.eachCell((cell) => {
-                cell.font = {
-                  size: 8,
-                }
-
-                cell.alignment = {
-                  horizontal:
-                    "center",
-                  vertical:
-                    "middle",
-                  wrapText: true,
-                }
-
-                cell.border = {
-                  top: {
-                    style: "thin",
-                  },
-                  left: {
-                    style: "thin",
-                  },
-                  bottom: {
-                    style: "thin",
-                  },
-                  right: {
-                    style: "thin",
-                  },
-                }
-
-                if (isFriday) {
-                  cell.fill = {
-                    type: "pattern",
-                    pattern: "solid",
-                    fgColor: {
-                      argb: FRIDAY_GREY,
-                    },
-                  }
-                } else if (index % 2 !== 0) {
-                  cell.fill = {
-                    type: "pattern",
-                    pattern: "solid",
-                    fgColor: {
-                      argb: ROW_GREY,
-                    },
-                  }
-                }
-              })
-
-              currentRow++
-            }
-          )
-
-          const endRow =
-            currentRow - 1
-
-          // --------------------------
-          // MERGE COMMON CELLS
-          // --------------------------
-
-          if (
-            sessions.length > 1
-          ) {
-            ;[
-              1, // Date
-              7, // Break
-              8, // Total Hours
-              9, // OT Hours
-              10, // Holiday Hours
-              11, // Status
-              12, // Sick Leave
-            ].forEach((col) => {
-              worksheet.mergeCells(
-                startRow,
-                col,
-                endRow,
-                col
-              )
-            })
-          }
-        }
-      )
-
-      // --------------------------
-      // TOTALS
-      // --------------------------
-
-      const totalsRow = worksheet.addRow([
-        "TOTALS",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        round2(totals.totalHours),
-        round2(totals.otHours),
-        round2(totals.holidayHours),
-        "",
-        "",
-      ])
-
-      worksheet.mergeCells(
-        totalsRow.number,
-        1,
-        totalsRow.number,
-        7
-      )
-
-      totalsRow.eachCell((cell) => {
-        cell.font = {
-          bold: true,
-          size: 8,
-        }
-
-        cell.alignment = {
-          horizontal: "center",
-          vertical: "middle",
-        }
-
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: {
-            argb: TOTALS_GREY,
-          },
-        }
-
-        cell.border = {
-          top: {
-            style: "thin",
-          },
-          left: {
-            style: "thin",
-          },
-          bottom: {
-            style: "thin",
-          },
-          right: {
-            style: "thin",
-          },
-        }
-      })
-
-      // --------------------------
-      // HOURS SUMMARY
-      // --------------------------
-
-      worksheet.addRow([])
-
-      const summaryRows: [string, number][] = [
-        ["Total Normal Hours", round2(totals.totalHours - totals.otHours)],
-        [
-          "Total OT Hours (OT + Holiday)",
-          round2(totals.otHours + totals.holidayHours),
-        ],
-        ["Grand Total", round2(totals.totalHours + totals.holidayHours)],
-      ]
-
-      summaryRows.forEach(([label, value]) => {
-        const row = worksheet.addRow([
-          label,
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          `${value} hrs`,
-          "",
-          "",
-        ])
-
-        row.height = 18
-
-        worksheet.mergeCells(row.number, 1, row.number, 9) // label
-        worksheet.mergeCells(row.number, 10, row.number, 12) // value
-
-        const labelCell = row.getCell(1)
-        labelCell.font = { bold: true, size: 9 }
-        labelCell.alignment = { horizontal: "right", vertical: "middle" }
-
-        const valueCell = row.getCell(10)
-        valueCell.font = { bold: true, size: 9 }
-        valueCell.alignment = { horizontal: "center", vertical: "middle" }
-
-        ;[1, 10].forEach((col) => {
-          const cell = row.getCell(col)
-
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: ROW_GREY },
-          }
-
-          cell.border = {
-            top: { style: "thin" },
-            left: { style: "thin" },
-            bottom: { style: "thin" },
-            right: { style: "thin" },
-          }
-        })
-      })
-
-      // --------------------------
-      // SIGNATURES
-      // --------------------------
-
-      worksheet.addRow([])
-
-      const signatureLabels = [
-        "Employee Signature",
-        "Supervisor Signature",
-        "Manager Signature",
-      ]
-
-      signatureLabels.forEach((label) => {
-        const signatureRow =
-          worksheet.addRow([
-            `${label}: ______________________`,
-            "",
-            "",
-            "Date: ____________________",
-          ])
-
-        signatureRow.height = 24
-
-        worksheet.mergeCells(
-          signatureRow.number,
-          1,
-          signatureRow.number,
-          3
-        )
-
-        worksheet.mergeCells(
-          signatureRow.number,
-          4,
-          signatureRow.number,
-          6
-        )
-
-        ;[1, 4].forEach((col) => {
-          const cell =
-            signatureRow.getCell(col)
-
-          cell.font = {
-            size: 8,
-          }
-
-          cell.alignment = {
-            horizontal: "left",
-            vertical: "middle",
-          }
-        })
-
-        worksheet.addRow([])
-      })
-
-      // --------------------------
-      // COLUMN WIDTHS
-      // --------------------------
-
-      //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status Sick
-      const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 9, 7]
-      worksheet.columns =
-        worksheet.columns.map(
-          (column, index) => ({
-            ...column,
-            width: colWidths[index] || 10,
-          })
-        )
-
-      // --------------------------
-      // DOWNLOAD
-      // --------------------------
-
-      const buffer =
-        await workbook.xlsx.writeBuffer()
-
-      saveAs(
-        new Blob([buffer]),
-        `${employee?.name}-${month}-${year}-attendance.xlsx`
-      )
-
-      toast.success(
-        "Spreadsheet exported"
-      )
+      toast.success("Spreadsheet exported")
     } catch (error) {
       console.log(error)
 
-      toast.error(
-        "Failed to export spreadsheet"
-      )
+      toast.error("Failed to export spreadsheet")
     }
   }
 
@@ -856,42 +217,6 @@ function EmployeeAttendanceDetail() {
         }
       )
     }, [attendance, sortOrder])
-
-  // Every day of the selected month, with its record if one exists — days with no
-  // record become a date-only row in the export.
-  const exportDays = useMemo(() => {
-    const monthIndex = Number(month) - 1
-    const yearNumber = Number(year)
-
-    const byDay = new Map<number, AttendanceRecord>()
-
-    attendance.forEach((record) => {
-      const d = new Date(record.date)
-
-      if (
-        d.getFullYear() === yearNumber &&
-        d.getMonth() === monthIndex
-      ) {
-        byDay.set(d.getDate(), record)
-      }
-    })
-
-    const daysInMonth = new Date(
-      yearNumber,
-      monthIndex + 1,
-      0
-    ).getDate()
-
-    const days = Array.from(
-      { length: daysInMonth },
-      (_, i) => ({
-        date: new Date(yearNumber, monthIndex, i + 1),
-        record: byDay.get(i + 1) || null,
-      })
-    )
-
-    return sortOrder === "asc" ? days : days.reverse()
-  }, [attendance, month, year, sortOrder])
 
   const totals = useMemo(() => {
     return attendance.reduce(
@@ -1157,9 +482,11 @@ function EmployeeAttendanceDetail() {
 
                     <TableHead>Breaks</TableHead>
 
-                    <TableHead className="text-right">
-                      Actions
-                    </TableHead>
+                    {canWrite && (
+                      <TableHead className="text-right">
+                        Actions
+                      </TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
 
@@ -1167,7 +494,7 @@ function EmployeeAttendanceDetail() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={14}
+                        colSpan={colCount}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -1178,7 +505,7 @@ function EmployeeAttendanceDetail() {
                   ) : sortedAttendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={14}
+                        colSpan={colCount}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
@@ -1348,24 +675,26 @@ function EmployeeAttendanceDetail() {
                                   </TableCell>
 
 
-                                  <TableCell
-                                    rowSpan={
-                                      sessions.length
-                                    }
-                                    className="text-right"
-                                  >
-                                    <Button
-                                      size="icon"
-                                      variant="outline"
-                                      onClick={() =>
-                                        setEditingRecord(
-                                          record
-                                        )
+                                  {canWrite && (
+                                    <TableCell
+                                      rowSpan={
+                                        sessions.length
                                       }
+                                      className="text-right"
                                     >
-                                      <Pencil className="h-4 w-4" />
-                                    </Button>
-                                  </TableCell>
+                                      <Button
+                                        size="icon"
+                                        variant="outline"
+                                        onClick={() =>
+                                          setEditingRecord(
+                                            record
+                                          )
+                                        }
+                                      >
+                                        <Pencil className="h-4 w-4" />
+                                      </Button>
+                                    </TableCell>
+                                  )}
                                 </>
                               )}
                             </TableRow>
@@ -1398,7 +727,7 @@ function EmployeeAttendanceDetail() {
                         {round2(totals.holidayHours)} hrs
                       </TableCell>
 
-                      <TableCell colSpan={2} />
+                      <TableCell colSpan={canWrite ? 2 : 1} />
                     </TableRow>
                   </TableFooter>
                 )}
@@ -1408,17 +737,19 @@ function EmployeeAttendanceDetail() {
         </Card>
       </div>
 
-      {/* EDIT MODAL */}
-      <EditRecord
-        open={!!editingRecord}
-        onClose={() =>
-          setEditingRecord(null)
-        }
-        record={editingRecord}
-        onUpdated={(updatedRecord) =>
-          handleAttendanceUpdated(updatedRecord as AttendanceRecord)
-        }
-      />
+      {/* EDIT MODAL (write-only; never mounted for read-only supervisors) */}
+      {canWrite && (
+        <EditRecord
+          open={!!editingRecord}
+          onClose={() =>
+            setEditingRecord(null)
+          }
+          record={editingRecord}
+          onUpdated={(updatedRecord) =>
+            handleAttendanceUpdated(updatedRecord as AttendanceRecord)
+          }
+        />
+      )}
     </div>
   )
 }

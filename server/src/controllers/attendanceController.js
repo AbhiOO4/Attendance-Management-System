@@ -2756,14 +2756,10 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
     const { employeeId } =
       req.params;
 
-    if (req.user.role === 'supervisor') {
-      const user = await userModel.findById(req.user.id);
-      const employee = await Employee.findById(employeeId);
-      if (!user || !employee || !user.assignedSite || employee.currentSite?.toString() !== user.assignedSite.toString()) {
-        return res.status(403).json({ success: false, message: "Forbidden: Employee is not assigned to your site" });
-      }
-    }
-
+    // Timesheets are read-only and viewable by ANY supervisor, not just the one
+    // whose assigned site the employee currently belongs to. This mirrors the
+    // unscoped employee list (GET /api/employees) and single-employee read
+    // (GET /api/employees/:id), which are not site-scoped for supervisors either.
     const { month, year } =
       req.query;
 
