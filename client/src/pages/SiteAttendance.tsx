@@ -255,6 +255,10 @@ interface DraftAttendancePayload {
 
 type CategoryFilter = 'temporary' | null
 
+// Roster tab: the four collar × nationality categories, plus "all" — a synthetic
+// tab that shows every employee on the site so search can span all categories.
+type CollarTab = RosterCategory | 'all'
+
 type OverlapError = {
   employeeId: string
 
@@ -1323,9 +1327,10 @@ function SiteAttendance() {
     // Stay in the expanded focus mode — see handleCategoryFilterChange.
   }
 
-  // Active roster category tab (one of the four collar × nationality groups). Records
+  // Active roster tab. "all" spans every category (so search reaches the whole
+  // site roster); the other four are the collar × nationality groups. Records
   // without explicit collarType/nationality resolve to foreignSkilled (older data).
-  const [collarTab, setCollarTab] = useState<RosterCategory>("foreignSkilled")
+  const [collarTab, setCollarTab] = useState<CollarTab>("all")
 
   const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
     try {
@@ -2489,7 +2494,7 @@ function SiteAttendance() {
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        categoryOf(record.collarType, record.nationality) === collarTab &&
+        (collarTab === 'all' || categoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
         matchesQuery
       )
@@ -2510,7 +2515,7 @@ function SiteAttendance() {
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query)
       return (
-        categoryOf(record.collarType, record.nationality) === collarTab &&
+        (collarTab === 'all' || categoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
         matchesQuery
       )
@@ -2550,10 +2555,14 @@ function SiteAttendance() {
     }
   }, [id])
 
-  // Attendance statistics for the ACTIVE category tab.
+  // Attendance statistics for the ACTIVE tab ("all" spans every category).
   const stats = useMemo(() => {
     const source: StatsRecord[] = attendanceExists ? attendance : draftAttendance
-    return computeSiteStats(source.filter((rec) => categoryOf(rec.collarType, rec.nationality) === collarTab))
+    return computeSiteStats(
+      collarTab === 'all'
+        ? source
+        : source.filter((rec) => categoryOf(rec.collarType, rec.nationality) === collarTab)
+    )
   }, [attendanceExists, attendance, draftAttendance, collarTab, computeSiteStats])
 
   // Site-wide attendance statistics across ALL four categories (the top-of-page summary).
@@ -2844,13 +2853,15 @@ function SiteAttendance() {
                     variant="secondary"
                     className={cn(
                       "gap-1",
-                      (collarTab === "foreignStaff" || collarTab === "omaniStaff")
+                      collarTab === "all"
+                        ? "bg-muted text-muted-foreground border border-muted-foreground/10"
+                        : (collarTab === "foreignStaff" || collarTab === "omaniStaff")
                         ? "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border border-violet-200/50 dark:border-violet-800/30"
                         : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/30"
                     )}
                   >
-                    {CATEGORY_IS_FOREIGN[collarTab] && <Plane className="h-3 w-3" />}
-                    {CATEGORY_LABELS[collarTab]}
+                    {collarTab !== "all" && CATEGORY_IS_FOREIGN[collarTab] && <Plane className="h-3 w-3" />}
+                    {collarTab === "all" ? "All" : CATEGORY_LABELS[collarTab]}
                   </Badge>
                 </CardTitle>
 
@@ -3224,14 +3235,16 @@ function SiteAttendance() {
           )}
         </div>
 
-        {/* CATEGORY TABS: (Foreign) Skilled Labour / Staff — marked ✈️ — and Omani Labour / Omani Staff */}
+        {/* CATEGORY TABS: All (whole roster) first, then (Foreign) Skilled Labour / Staff
+            — marked ✈️ — and Omani Labour / Omani Staff */}
         <div className="flex items-center gap-0 border-t border-muted/20 pt-1 -mx-6 px-6 overflow-x-auto">
           {(([
+            { key: "all", label: "All", count: collarCounts.foreignSkilled + collarCounts.foreignStaff + collarCounts.omaniSkilled + collarCounts.omaniStaff, foreign: false },
             { key: "foreignSkilled", label: "Skilled Labour", count: collarCounts.foreignSkilled, foreign: true },
             { key: "foreignStaff", label: "Staff", count: collarCounts.foreignStaff, foreign: true },
             { key: "omaniSkilled", label: "Omani Labour", count: collarCounts.omaniSkilled, foreign: false },
             { key: "omaniStaff", label: "Omani Staff", count: collarCounts.omaniStaff, foreign: false },
-          ]) as { key: RosterCategory; label: string; count: number; foreign: boolean }[]).map((tab) => {
+          ]) as { key: CollarTab; label: string; count: number; foreign: boolean }[]).map((tab) => {
             const isActive = collarTab === tab.key
             return (
               <button
