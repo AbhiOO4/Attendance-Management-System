@@ -46,7 +46,12 @@ export const getAllEmployees = async (req, res) => {
 
     if (rosterForSite) {
       // Manage-Employees-from-SiteDetail roster: on-site employees (incl. those
-      // with a pending job change) AND incoming scheduled-adds targeting this site.
+      // with a pending job change), incoming scheduled-adds targeting this site,
+      // AND today's "only for today" visitors — an only-for-today add leaves
+      // currentSite at the home site but stamps pendingTransferSiteId = this site,
+      // so without this they'd be absent from the Today roster until attendance is
+      // submitted. (The client filters these to TODAY-dated ones and shows them as
+      // read-only "Visiting" rows; stale pendingTransfer* rows are dropped there.)
       // Wrapped in $and so it never clashes with the notSupervisor $or above.
       filter.$and = [
         ...(filter.$and || []),
@@ -54,6 +59,7 @@ export const getAllEmployees = async (req, res) => {
           $or: [
             { currentSite: rosterForSite },
             { scheduledSiteId: rosterForSite },
+            { pendingTransferSiteId: rosterForSite },
           ],
         },
       ];
