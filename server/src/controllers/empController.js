@@ -27,6 +27,7 @@ export const getAllEmployees = async (req, res) => {
       notSupervisor = "false",
       employmentType,
       rosterForSite,
+      status,
     } = req.query;
 
     let filter = {};
@@ -42,7 +43,14 @@ export const getAllEmployees = async (req, res) => {
       ];
     }
 
-    filter.isActive = true;
+    // Active-only by default. The Manage-Employees list can pass status=deactivated
+    // to see soft-deleted tombstones (rendered muted, with a Restore action) or
+    // status=all to see both. Every other consumer omits status → active-only.
+    if (status === "deactivated") {
+      filter.isActive = false;
+    } else if (status !== "all") {
+      filter.isActive = true;
+    }
 
     if (rosterForSite) {
       // Manage-Employees-from-SiteDetail roster: on-site employees (incl. those
@@ -122,17 +130,22 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
+      .populate("pendingTransferJobId", "name") // per-visit job for a cross-site visitor
       .sort({ name: 1 });
 
     // Only the manage-from-SiteDetail roster needs the pending target names resolved.
+    // pendingTransferSiteId is populated here (not globally) so the roster can name the
+    // site a home member is visiting today; the ?site= consumers compare it as a raw id
+    // (String()) and must keep receiving the unpopulated ObjectId.
     if (rosterForSite) {
       query = query
         .populate("scheduledSiteId", "siteName")
-        .populate("scheduledJobId", "name");
+        .populate("scheduledJobId", "name")
+        .populate("pendingTransferSiteId", "siteName");
     }
 
     // apply pagination only if both page and limit are provided
@@ -427,12 +440,15 @@ export const editEmployee = async (req, res) => {
 };
 
 
-// DELETE /api/employees/:id
+// DELETE /api/employees/:id            → soft delete (deactivate)
+// DELETE /api/employees/:id?mode=permanent → hard delete (only when it leaves no
+//   orphans: blocked if the employee has attendance history or a linked user)
 export const deleteEmployee = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const { id } = req.params;
+    const permanent = req.query.mode === "permanent";
 
     const employee = await empModel.findById(id).session(session);
 
@@ -440,6 +456,46 @@ export const deleteEmployee = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: "Employee doesnt exist" });
+    }
+
+    if (permanent) {
+      // A hard delete must not orphan attendance rows (keyed by employee _id) or a
+      // supervisor account. When either exists, force the caller to soft-delete.
+      const attendanceCount = await attendanceModel.countDocuments({
+        employee: id,
+      }).session(session);
+
+      if (attendanceCount > 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({
+          message: "Employee has attendance history — deactivate instead.",
+        });
+      }
+
+      if (employee.user) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({
+          message: "Employee is a supervisor — remove the supervisor account first.",
+        });
+      }
+
+      // Safe to remove: pull any lingering job membership, then drop the document.
+      if (employee.currentJob) {
+        await jobModel.updateOne(
+          { _id: employee.currentJob },
+          { $pull: { employees: employee._id } },
+          { session }
+        );
+      }
+
+      await empModel.deleteOne({ _id: id }, { session });
+
+      await session.commitTransaction();
+      session.endSession();
+
+      return res.status(200).json({ message: "Employee permanently deleted" });
     }
 
     if (employee.user) {
@@ -457,6 +513,70 @@ export const deleteEmployee = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
+    console.log(error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+
+// PATCH /api/employees/:id/restore — reactivate a soft-deleted employee. Comes back
+// UNASSIGNED (no site/job) and with all pending-transfer / scheduled state cleared,
+// so a returning worker is re-posted fresh by an admin. Keeps the same _id, so any
+// attendance history stays attached.
+export const restoreEmployee = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id } = req.params;
+
+    const employee = await empModel.findById(id).session(session);
+
+    if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: "Employee doesnt exist" });
+    }
+
+    if (employee.isActive) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(200).json({ message: "Employee is already active" });
+    }
+
+    // Soft delete never pulled the record from its job — do it now so "unassigned"
+    // is true at every level.
+    if (employee.currentJob) {
+      await jobModel.updateOne(
+        { _id: employee.currentJob },
+        { $pull: { employees: employee._id } },
+        { session }
+      );
+    }
+
+    employee.isActive = true;
+    employee.currentSite = null;
+    employee.currentJob = null;
+    employee.pendingTransferCheckIn = null;
+    employee.pendingTransferSiteId = null;
+    employee.pendingTransferFromSiteId = null;
+    employee.pendingTransferDate = null;
+    employee.pendingTransferJobId = null;
+    employee.scheduledSiteId = null;
+    employee.scheduledJobId = null;
+    employee.scheduledEffectiveDate = null;
+    employee.scheduledRemoval = false;
+
+    await employee.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({ message: "Employee restored" });
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.log(error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
@@ -992,6 +1112,7 @@ const empController = {
   getEmployee,
   getEmployeeBySite,
   deleteEmployee,
+  restoreEmployee,
   editEmployee,
   getSupervisors,
   deleteSupervisor,

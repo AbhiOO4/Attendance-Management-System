@@ -1,13 +1,15 @@
 import { api } from "@/lib/api"
 import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
+import BulkCheckoutModal from "@/components/BulkCheckoutModal"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   Card,
@@ -35,9 +37,12 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  ListChecks,
   Loader2,
+  LogOut,
   Pencil,
   UserPlus,
+  X,
 } from "lucide-react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
@@ -196,6 +201,12 @@ function EditPastAttendance() {
 
   const [editingRecord, setEditingRecord] =
   useState<AttendanceRecord | null>(null)
+
+  // Bulk check-out selection mode (close unclosed sessions in one shot). Only rows with an
+  // open session — the "pending" amber status — are selectable.
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkCheckoutOpen, setBulkCheckoutOpen] = useState(false)
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
   const [isWeeklyHoliday, setIsWeeklyHoliday] = useState<boolean>(false)
@@ -376,6 +387,8 @@ function EditPastAttendance() {
   useEffect(() => {
     checkHolidayStatus()
     fetchAttendance()
+    // Selection is per-loaded-page, so clear it whenever the list reloads.
+    setSelectedIds(new Set())
   }, [date, filters])
 
   useEffect(() => {
@@ -410,6 +423,53 @@ function EditPastAttendance() {
     setAttendance((prev) =>
       prev.map((record) => record.attendanceId === updatedRecord.attendanceId ? updatedRecord : record)
     )
+  }
+
+  // --- Bulk check-out selection ---
+  const pendingRecords = useMemo(
+    () => attendance.filter((r) => getDisplayStatus(r) === "pending"),
+    [attendance]
+  )
+  const allPendingSelected =
+    pendingRecords.length > 0 && pendingRecords.every((r) => selectedIds.has(r.attendanceId))
+  const selectedRecords = useMemo(
+    () => attendance.filter((r) => selectedIds.has(r.attendanceId)),
+    [attendance, selectedIds]
+  )
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  // "Select all" toggles the loaded pending rows only.
+  const toggleSelectAllPending = () => {
+    setSelectedIds((prev) => {
+      if (allPendingSelected) {
+        const next = new Set(prev)
+        pendingRecords.forEach((r) => next.delete(r.attendanceId))
+        return next
+      }
+      const next = new Set(prev)
+      pendingRecords.forEach((r) => next.add(r.attendanceId))
+      return next
+    })
+  }
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const handleBulkCheckoutCompleted = () => {
+    setBulkCheckoutOpen(false)
+    setSelectedIds(new Set())
+    setSelectionMode(false)
+    fetchAttendance()
   }
 
 
@@ -456,6 +516,28 @@ function EditPastAttendance() {
                     </Badge>
                   )}
                 </Button>
+
+                {selectionMode ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mr-1 gap-1.5"
+                    onClick={exitSelectionMode}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Cancel
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mr-1 gap-1.5"
+                    onClick={() => setSelectionMode(true)}
+                  >
+                    <ListChecks className="h-4 w-4 text-muted-foreground" />
+                    Bulk check-out
+                  </Button>
+                )}
 
                 <Button
                   variant="outline"
@@ -602,12 +684,38 @@ function EditPastAttendance() {
           </CardContent>
         </Card>
 
+        {selectionMode && (
+          <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <Checkbox
+                checked={allPendingSelected}
+                onCheckedChange={toggleSelectAllPending}
+                disabled={pendingRecords.length === 0}
+              />
+              Select all unclosed ({pendingRecords.length})
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
+              <Button
+                size="sm"
+                className="gap-1.5"
+                disabled={selectedIds.size === 0}
+                onClick={() => setBulkCheckoutOpen(true)}
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Check out selected
+              </Button>
+            </div>
+          </div>
+        )}
+
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {selectionMode && <TableHead className="w-10" />}
                     <TableHead>S.No</TableHead>
                     <TableHead>
                       Employee
@@ -658,7 +766,7 @@ function EditPastAttendance() {
                   {loading ? (
                     <TableRow>
                       <TableCell
-                        colSpan={14}
+                        colSpan={selectionMode ? 16 : 15}
                         className="h-40 text-center"
                       >
                         <div className="flex items-center justify-center">
@@ -669,7 +777,7 @@ function EditPastAttendance() {
                   ) : attendance.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={14}
+                        colSpan={selectionMode ? 16 : 15}
                         className="h-40 text-center text-muted-foreground"
                       >
                         No attendance records found
@@ -700,6 +808,16 @@ function EditPastAttendance() {
                               >
                                 {sessionIndex === 0 && (
                                   <>
+                                    {selectionMode && (
+                                      <TableCell rowSpan={sessions.length}>
+                                        <Checkbox
+                                          checked={selectedIds.has(record.attendanceId)}
+                                          disabled={getDisplayStatus(record) !== "pending"}
+                                          onCheckedChange={() => toggleSelect(record.attendanceId)}
+                                          aria-label={`Select ${record.name} for bulk check-out`}
+                                        />
+                                      </TableCell>
+                                    )}
                                     <TableCell
                                       rowSpan={sessions.length}
                                     >
@@ -962,6 +1080,13 @@ function EditPastAttendance() {
         onUpdated={(updatedRecord) =>
           handleAttendanceUpdated(updatedRecord as AttendanceRecord)
         }
+      />
+      <BulkCheckoutModal
+        open={bulkCheckoutOpen}
+        onClose={() => setBulkCheckoutOpen(false)}
+        date={date}
+        records={selectedRecords}
+        onCompleted={handleBulkCheckoutCompleted}
       />
     </div>
   )

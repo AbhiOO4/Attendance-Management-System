@@ -57,6 +57,7 @@ interface Employee {
   user?: string | null
   employmentType: 'permanent' | 'temporary'
   nationality?: 'foreign' | 'omani'
+  isActive?: boolean
 }
 
 
@@ -64,6 +65,8 @@ interface Filters {
   // One combined search box matching name, employee ID and job title at once.
   search: string
   site: string
+  // Which lifecycle bucket to list: active (default), soft-deleted, or both.
+  status: "active" | "deactivated" | "all"
   page: number
   limit: number
 }
@@ -102,6 +105,7 @@ function Employees() {
   const [filters, setFilters] = useState<Filters>({
     search: "",
     site: "",
+    status: "active",
     page: 1,
     limit: 10,
   })
@@ -216,11 +220,41 @@ function Employees() {
     try {
       await api.delete(`/api/employees/${id}`)
 
-      toast.success("Employee removed successfully")
+      toast.success("Employee deactivated")
 
       fetchEmployees()
     } catch (error) {
-      toast.error("Failed to remove employee")
+      toast.error("Failed to deactivate employee")
+      console.log(error)
+    }
+  }
+
+  const permanentlyDeleteEmployee = async (id: string) => {
+    try {
+      await api.delete(`/api/employees/${id}`, { params: { mode: "permanent" } })
+
+      toast.success("Employee permanently deleted")
+
+      fetchEmployees()
+    } catch (error) {
+      console.log(error)
+      if (axios.isAxiosError(error)) {
+        toast.error(error.response?.data?.message || "Failed to delete employee")
+      } else {
+        toast.error("Something went wrong")
+      }
+    }
+  }
+
+  const restoreEmployee = async (id: string) => {
+    try {
+      await api.patch(`/api/employees/${id}/restore`)
+
+      toast.success("Employee restored")
+
+      fetchEmployees()
+    } catch (error) {
+      toast.error("Failed to restore employee")
       console.log(error)
     }
   }
@@ -425,7 +459,7 @@ function Employees() {
 
       {/* FILTER SECTION */}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
         {/* SEARCH: one box matching name, employee ID and job title at once. */}
         <div className="relative sm:col-span-2">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -475,6 +509,28 @@ function Employees() {
                 {site.siteName}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+
+        {/* STATUS FILTER: active (default) / deactivated (soft-deleted) / all. */}
+        <Select
+          value={filters.status}
+          onValueChange={(value) =>
+            setFilters({
+              ...filters,
+              status: value as Filters["status"],
+              page: 1,
+            })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+
+          <SelectContent>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="deactivated">Deactivated</SelectItem>
+            <SelectItem value="all">All</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -624,7 +680,9 @@ function Employees() {
               employees.map((employee, index) => (
                 <TableRow
                   key={employee._id}
-                  className="cursor-pointer hover:bg-muted/50 transition-colors"
+                  className={`cursor-pointer hover:bg-muted/50 transition-colors ${
+                    employee.isActive === false ? "opacity-60" : ""
+                  }`}
                   onClick={() => navigate(`/employees/${employee._id}`)}
                 >
                   {selectionMode && (
@@ -657,6 +715,11 @@ function Employees() {
                             Temporary
                           </Badge>
                         )}
+                        {employee.isActive === false && (
+                          <Badge variant="secondary" className="bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200/50 dark:border-rose-800/30 text-[10px] px-1.5 py-0 h-4">
+                            Deactivated
+                          </Badge>
+                        )}
                       </div>
 
                       {/* Mobile-only: fold Employee ID + Job Title under the name */}
@@ -686,51 +749,76 @@ function Employees() {
 
                   {canWrite && (
                     <TableCell className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end" onClick={(e) => e.stopPropagation()}>
-                      {/* EDIT */}
+                      {employee.isActive === false ? (
+                        /* DEACTIVATED: only offer Restore */
+                        <Button
+                          variant="outline"
+                          onClick={() => restoreEmployee(employee._id)}
+                        >
+                          Restore
+                        </Button>
+                      ) : (
+                        <>
+                          {/* EDIT */}
 
-                      <EditEmployee
-                        employee={employee}
-                        onSave={editEmployee}
-                      />
+                          <EditEmployee
+                            employee={employee}
+                            onSave={editEmployee}
+                          />
 
-                      {/* DELETE */}
+                          {/* DELETE — deactivate (soft) or permanently delete (hard) */}
 
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="destructive">
-                            Delete
-                          </Button>
-                        </AlertDialogTrigger>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant="destructive">
+                                Delete
+                              </Button>
+                            </AlertDialogTrigger>
 
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>
-                              Delete Employee?
-                            </AlertDialogTitle>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>
+                                  Delete {employee.name}?
+                                </AlertDialogTitle>
 
-                            <AlertDialogDescription>
-                              This action cannot be
-                              undone.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
+                                <AlertDialogDescription>
+                                  <strong>Deactivate</strong> hides the employee but
+                                  keeps their record and attendance history — you can
+                                  restore them later.{" "}
+                                  <strong>Permanently delete</strong> removes them for
+                                  good and frees their Employee ID (only possible when
+                                  they have no attendance history).
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
 
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>
-                              Cancel
-                            </AlertDialogCancel>
+                              <AlertDialogFooter className="sm:justify-between">
+                                <AlertDialogCancel>
+                                  Cancel
+                                </AlertDialogCancel>
 
-                            <AlertDialogAction
-                              onClick={() =>
-                                removeEmployee(
-                                  employee._id
-                                )
-                              }
-                            >
-                              Delete
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                                <div className="flex flex-col gap-2 sm:flex-row">
+                                  <AlertDialogAction
+                                    onClick={() =>
+                                      removeEmployee(employee._id)
+                                    }
+                                  >
+                                    Deactivate
+                                  </AlertDialogAction>
+
+                                  <AlertDialogAction
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                    onClick={() =>
+                                      permanentlyDeleteEmployee(employee._id)
+                                    }
+                                  >
+                                    Permanently delete
+                                  </AlertDialogAction>
+                                </div>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </>
+                      )}
                     </TableCell>
                   )}
                 </TableRow>

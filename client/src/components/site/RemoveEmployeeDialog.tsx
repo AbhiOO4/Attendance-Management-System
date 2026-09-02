@@ -27,10 +27,16 @@ interface DaySession {
 
 // Which removal this dialog performs:
 //   today-home        — immediate: unassign from the site (+ delete today's session).
-//   today-cross-site  — immediate: delete ONLY this site's session (a visitor whose
-//                       home is another site); their assignment is untouched.
+//   today-cross-site  — immediate: delete ONLY this site's session (a post-submit visitor
+//                       whose home is another site); their assignment is untouched.
+//   today-visitor     — immediate: undo a pre-submit "only for today" add (clear the visit
+//                       stash, + delete a saved session if one exists); home is untouched.
 //   tomorrow-deferred — schedule removal for the day-rollover; undoable before midnight.
-export type RemoveMode = "today-home" | "today-cross-site" | "tomorrow-deferred"
+export type RemoveMode =
+  | "today-home"
+  | "today-cross-site"
+  | "today-visitor"
+  | "tomorrow-deferred"
 
 interface RemoveEmployeeDialogProps {
   open: boolean
@@ -111,6 +117,14 @@ function RemoveEmployeeDialog({
       if (mode === "tomorrow-deferred") {
         await api.patch(`/api/site/${siteId}/schedule-removal`, { _id: employee._id })
         toast.success("Removal scheduled for tomorrow")
+      } else if (mode === "today-visitor") {
+        // Undo the only-for-today add: server clears the visit stash (and deletes a saved
+        // session if one exists). currentSite/home assignment is left untouched.
+        await api.patch(`/api/site/${siteId}/remove-employee`, {
+          _id: employee._id,
+          deleteAttendance: true,
+        })
+        toast.success("Visit removed for today")
       } else if (mode === "today-cross-site") {
         // Server deletes only this site's session (currentSite is left untouched).
         await api.patch(`/api/site/${siteId}/remove-employee`, {
@@ -154,6 +168,7 @@ function RemoveEmployeeDialog({
 
   const isDeferred = mode === "tomorrow-deferred"
   const isCrossSite = mode === "today-cross-site"
+  const isVisitor = mode === "today-visitor"
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -170,6 +185,14 @@ function RemoveEmployeeDialog({
                 </strong>{" "}
                 will be removed from this site <strong>tomorrow</strong>. They stay
                 on today&apos;s roster, and you can undo this any time before midnight.
+              </>
+            ) : isVisitor ? (
+              <>
+                <strong className="font-semibold text-foreground">
+                  {employee?.name}
+                </strong>{" "}
+                was added to this site <strong>only for today</strong>. Removing them
+                undoes that add — their home-site assignment is not changed.
               </>
             ) : isCrossSite ? (
               <>
@@ -209,6 +232,17 @@ function RemoveEmployeeDialog({
             <div className="text-sm leading-relaxed">
               Only their session here is deleted. Their home-site assignment stays
               intact.
+            </div>
+          </div>
+        )}
+
+        {/* Only-for-today visit: undo note */}
+        {isVisitor && (
+          <div className="my-2 flex items-start gap-2 rounded-lg border border-slate-200/60 bg-slate-50 p-3 text-slate-700 dark:border-slate-700/50 dark:bg-slate-900/40 dark:text-slate-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="text-sm leading-relaxed">
+              Removes their visit here today (and clears any check-in already entered).
+              Their home-site assignment stays intact.
             </div>
           </div>
         )}

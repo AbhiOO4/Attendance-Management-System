@@ -37,7 +37,9 @@ router.post('/temp/assign', authorizeRoles("admin", "supervisor"), empController
 
 router.get('/:id', authorizeRoles("admin", "supervisor"), empController.getEmployee)//
 
-router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.editEmployee)// 
+router.put('/:id', authorizeRoles("admin"), employeeValidation ,  empController.editEmployee)//
+
+router.patch('/:id/restore', authorizeRoles("admin"), empController.restoreEmployee)//
 
 router.delete('/:id', authorizeRoles("admin"), empController.deleteEmployee)//
 

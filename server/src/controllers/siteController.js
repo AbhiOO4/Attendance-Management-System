@@ -326,21 +326,46 @@ export const removeEmployee = async (req, res) => {
       return res.status(200).json(saved);
     }
 
-    // Cross-site session-holder: never touch currentSite/currentJob (their home is
-    // another site). Only delete their session at THIS site today.
+    // Cross-site visitor: never touch currentSite/currentJob (their home is another site).
+    // Delete their session at THIS site today (post-submit case), AND undo an "only for
+    // today" visit stash pointing here (pre-submit case — a stash but no saved session yet;
+    // a locked-day add has both). Success if either was actually removed.
     const removed = await stripTodaySession();
-    if (!removed) {
+
+    const stashResult = await empModel.updateOne(
+      {
+        _id: employee._id,
+        pendingTransferSiteId: siteId,
+        pendingTransferDate: today,
+      },
+      {
+        $set: {
+          pendingTransferCheckIn: null,
+          pendingTransferSiteId: null,
+          pendingTransferDate: null,
+          pendingTransferFromSiteId: null,
+          pendingTransferJobId: null,
+        },
+      },
+      { session }
+    );
+    const stashCleared = stashResult.modifiedCount > 0;
+
+    if (!removed && !stashCleared) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
-        message: "Employee is not assigned to this site and has no session here today",
+        message: "Employee is not assigned to this site and has no visit or session here today",
       });
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    return res.status(200).json({ message: "Session removed", sessionOnly: true });
+    return res.status(200).json({
+      message: removed ? "Session removed" : "Visit removed",
+      sessionOnly: true,
+    });
 
   } catch (error) {
     await session.abortTransaction();
@@ -776,16 +801,47 @@ export const bulkSetEmployeeJob = async (req, res) => {
     let updated = 0;
     let skipped = 0;
 
+    // Today's business-day midnight — matches how insta-add/transfer stamp
+    // pendingTransferDate, so a today-dated visitor to this site is identified reliably.
+    const todayMidnight = new Date();
+    todayMidnight.setUTCHours(0, 0, 0, 0);
+
     for (const empId of empIds) {
       const employee = await empModel.findById(empId).session(session);
 
-      // Only live employees currently on this site can be bulk-assigned.
-      if (
-        !employee ||
-        !employee.isActive ||
-        !employee.currentSite ||
-        employee.currentSite.toString() !== siteId.toString()
-      ) {
+      if (!employee || !employee.isActive) {
+        skipped++;
+        continue;
+      }
+
+      const onSiteHere =
+        employee.currentSite &&
+        employee.currentSite.toString() === siteId.toString();
+
+      // Today-dated "only for today" visitor: set the per-visit job only. Never touches
+      // currentJob or Job.employees[] (their home stays put), and there's nothing to
+      // schedule for tomorrow (visitors don't appear on the Tomorrow tab). The target
+      // job was already validated to belong to this site above.
+      const isTodayVisitorHere =
+        !onSiteHere &&
+        employee.pendingTransferSiteId &&
+        employee.pendingTransferSiteId.toString() === siteId.toString() &&
+        employee.pendingTransferDate &&
+        new Date(employee.pendingTransferDate).getTime() === todayMidnight.getTime();
+
+      if (isTodayVisitorHere) {
+        if (deferred) {
+          skipped++;
+          continue;
+        }
+        employee.pendingTransferJobId = jobId || null;
+        await employee.save({ session });
+        updated++;
+        continue;
+      }
+
+      // Only live employees currently on this site can be (permanently) bulk-assigned.
+      if (!onSiteHere) {
         skipped++;
         continue;
       }
@@ -1624,6 +1680,10 @@ export const instaAddEmployee = async (req, res) => {
     employee.pendingTransferCheckIn = checkInDate
     employee.pendingTransferSiteId = siteId
     employee.pendingTransferDate = today
+    // Carry the job picked for this site so it lands on the visitor's session (via the
+    // destination draft) instead of defaulting to their home currentJob. Home job/site
+    // stay untouched for an only-for-today visit.
+    employee.pendingTransferJobId = currentJob || null
 
     // ----------------------------------
     // UPDATE EMPLOYEE ASSIGNMENT
@@ -2262,9 +2322,21 @@ export const updateEmployeeJob = async (req, res) => {
       employee.scheduledSiteId &&
       employee.scheduledSiteId.toString() === siteId;
 
-    // On-site employees can be edited directly; an incoming scheduled-add can only
-    // have its (inherently deferred) scheduled job changed.
-    if (!onSiteHere && !(isIncomingHere && deferred)) {
+    // Today-dated "only for today" visitor to this site (home is elsewhere). Matches how
+    // insta-add/transfer stamp pendingTransferDate (today's UTC-midnight).
+    const todayMidnight = new Date();
+    todayMidnight.setUTCHours(0, 0, 0, 0);
+    const isTodayVisitorHere =
+      !onSiteHere &&
+      employee.pendingTransferSiteId &&
+      employee.pendingTransferSiteId.toString() === siteId &&
+      employee.pendingTransferDate &&
+      new Date(employee.pendingTransferDate).getTime() === todayMidnight.getTime();
+
+    // On-site employees can be edited directly; an incoming scheduled-add can only have
+    // its (inherently deferred) scheduled job changed; a today-visitor can have its
+    // per-visit job set (handled below).
+    if (!onSiteHere && !isTodayVisitorHere && !(isIncomingHere && deferred)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
@@ -2291,6 +2363,25 @@ export const updateEmployeeJob = async (req, res) => {
           message: "Job does not belong to this site",
         });
       }
+    }
+
+    // Today-dated visitor: set the per-visit job only. Never touches currentJob or
+    // Job.employees[] (their home roster stays put); there's nothing to schedule for
+    // tomorrow since visitors return home at the day rollover.
+    if (isTodayVisitorHere) {
+      if (deferred) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          message: "A visiting (only-for-today) employee can't be scheduled for tomorrow",
+        });
+      }
+      employee.pendingTransferJobId = jobId || null;
+      await employee.save({ session });
+      await session.commitTransaction();
+      session.endSession();
+      await employee.populate("pendingTransferJobId", "name");
+      return res.status(200).json(employee);
     }
 
     // Deferred (from-tomorrow) job change via SiteDetail: stash the target job with

@@ -101,6 +101,9 @@ interface Employee {
   pendingTransferDate?: string | null
   // Populated source site of a pending transfer into the current site.
   pendingTransferFromSiteId?: { _id: string; siteName: string } | null
+  // Populated per-visit job for a cross-site visitor — used for this site's session
+  // instead of the home currentJob.
+  pendingTransferJobId?: { _id: string; name: string } | null
 }
 
 // Source site of an inbound transfer, shown as the "Transferred from" badge.
@@ -143,6 +146,12 @@ export interface AttendanceSession {
   _id?: string
 
   siteId: string,
+
+  // Resolved name of the session's site. Only populated by the carryover fetch
+  // (/reports/carryovers), where a session may belong to a DIFFERENT site than the
+  // one being viewed — used to label the open shift's home site and to open the
+  // close-modal against that site.
+  siteName?: string | null
 
   jobId: string | null,
 
@@ -361,17 +370,24 @@ const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
 // yesterday's record for this site. Persists all day (the prominent pinned card above
 // the roster only shows before noon; this row badge is what remains after — and stays
 // clickable so a forgotten check-out can still be closed once the card is gone).
-const CarryoverBadge = ({ onClick }: { onClick?: () => void }) => (
+// `siteName` is set only for an employee-scoped carryover whose open shift lives at a
+// DIFFERENT site than the one being viewed — it names that home site so the supervisor
+// knows where the dangling shift is from. Omitted/null for a same-site carryover.
+const CarryoverBadge = ({ onClick, siteName }: { onClick?: () => void; siteName?: string | null }) => (
   <Badge
     variant="secondary"
     onClick={onClick}
     className={cn(
-      "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4",
+      "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200/50 dark:border-amber-800/30 text-[10px] px-1.5 py-0 h-4 max-w-full",
       onClick && "cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-900/40"
     )}
-    title="Open check-out from yesterday's night shift — click to close it"
+    title={
+      siteName
+        ? `Open check-out from yesterday's shift at ${siteName} — click to close it`
+        : "Open check-out from yesterday's night shift — click to close it"
+    }
   >
-    ⏳ Carryover
+    <span className="truncate">⏳ Carryover{siteName ? ` · ${siteName}` : ""}</span>
   </Badge>
 )
 
@@ -512,6 +528,8 @@ interface DraftRowProps {
   showUndo: boolean
   /** True when this employee has an open (un-checked-out) session on yesterday's record. */
   hasCarryover?: boolean
+  /** Home site name of the carryover's open shift when it belongs to another site, else null. */
+  carryoverSiteName?: string | null
   /** Opens yesterday's carryover record for this employee so its check-out can be filled. */
   onOpenCarryover?: (employeeId: string) => void
   onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
@@ -535,6 +553,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   overlap,
   showUndo,
   hasCarryover,
+  carryoverSiteName,
   onOpenCarryover,
   onUpdateSession,
   onToggleSick,
@@ -573,7 +592,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               {record.transferredFrom && (
                 <TransferredFromBadge siteName={record.transferredFrom.name} />
               )}
-              {hasCarryover && <CarryoverBadge onClick={() => onOpenCarryover?.(record.employee._id)} />}
+              {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
             </div>
 
             <p className="text-sm text-muted-foreground">
@@ -743,6 +762,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   overlap,
   showUndo,
   hasCarryover,
+  carryoverSiteName,
   onOpenCarryover,
   onUpdateSession,
   onToggleSick,
@@ -781,7 +801,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 {record.transferredFrom && (
                   <TransferredFromBadge siteName={record.transferredFrom.name} />
                 )}
-                {hasCarryover && <CarryoverBadge onClick={() => onOpenCarryover?.(record.employee._id)} />}
+                {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
               </div>
 
               <p className="text-sm text-muted-foreground">
@@ -1005,6 +1025,24 @@ function SiteAttendance() {
     () => new Set(carryoverRecords.map((r) => String(r.employee))),
     [carryoverRecords]
   )
+  // employeeId → home site name of the carryover's OPEN shift, but ONLY when that shift
+  // belongs to a DIFFERENT site than the one being viewed (the employee moved here after
+  // leaving it open). null for a same-site carryover — the badge then needs no site label.
+  const carryoverAwaySiteByEmp = useMemo(() => {
+    const m = new Map<string, string | null>()
+    for (const rec of carryoverRecords) {
+      const openS = rec.sessions.find((s) => !!s.checkIn && !s.checkOut)
+      const away =
+        openS && String(openS.siteId) !== String(id) ? openS.siteName ?? null : null
+      m.set(String(rec.employee), away)
+    }
+    return m
+  }, [carryoverRecords, id])
+  // When closing a carryover whose OPEN shift belongs to a different site than the one
+  // being viewed (the employee moved here after leaving a shift open elsewhere), the edit
+  // modal is fed this home-site object instead of `site`, so EditSiteRecord loads, edits
+  // and writes against the shift's HOME site. null → same-site edit, use the current `site`.
+  const [editSiteOverride, setEditSiteOverride] = useState<Site | null>(null)
   const yesterdayOf = (todayStr: string) => {
     const [y, m, d] = todayStr.split("-").map(Number)
     const dt = new Date(Date.UTC(y, m - 1, d))
@@ -1165,9 +1203,37 @@ function SiteAttendance() {
   const openEditRecord = (
     record: AttendanceRecord
   ) => {
+    // Normal (same-site) edit — never carries a cross-site override.
+    setEditSiteOverride(null)
     setSelectedRecord(record)
     setEditOpen(true)
   }
+
+  // Open a carryover for check-out. Its OPEN shift may belong to a DIFFERENT site than
+  // the one being viewed (employee-scoped carryover: the employee moved here after
+  // leaving a shift open elsewhere). Resolve that home site — same site → edit as today;
+  // cross-site → fetch the home site so the modal targets/writes it.
+  const openCarryoverRecord = useCallback(
+    async (rec: AttendanceRecord) => {
+      const openSession = rec.sessions.find((s) => !!s.checkIn && !s.checkOut)
+      const homeSiteId = openSession?.siteId
+      if (homeSiteId && String(homeSiteId) !== String(id)) {
+        try {
+          const res = await api.get<Site>(`/api/site/${homeSiteId}`)
+          setEditSiteOverride(res.data)
+        } catch (error) {
+          console.log(error)
+          toast.error("Failed to open the shift's site")
+          return
+        }
+      } else {
+        setEditSiteOverride(null)
+      }
+      setSelectedRecord(rec)
+      setEditOpen(true)
+    },
+    [id]
+  )
 
   // Open yesterday's carryover record for an employee (from the row badge) so its
   // check-out can be filled. Stable across keystroke re-renders (depends only on the
@@ -1175,12 +1241,9 @@ function SiteAttendance() {
   const handleOpenCarryover = useCallback(
     (empId: string) => {
       const rec = carryoverRecords.find((r) => String(r.employee) === String(empId))
-      if (rec) {
-        setSelectedRecord(rec)
-        setEditOpen(true)
-      }
+      if (rec) openCarryoverRecord(rec)
     },
-    [carryoverRecords]
+    [carryoverRecords, openCarryoverRecord]
   )
 
   const handleRecordUpdated = (updatedRecord: AttendanceRecord) => {
@@ -1335,30 +1398,55 @@ function SiteAttendance() {
   const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
     try {
       const activeToday = today
+
+      // Fetch the roster first so BOTH the cached-draft and fresh-build paths can identify
+      // this site's members who are visiting ANOTHER site today. Such an employee — added
+      // elsewhere while THIS (home) site is still unsaved — is dropped here entirely: we
+      // create no record for them at home, because they're being recorded at the site they
+      // actually worked. (Once home is saved we load the saved records instead of rebuilding
+      // a draft, so a later visit can't remove anything — that's the multi-site case.) An
+      // offline fetch failure falls back to the cached draft unchanged.
+      let employeesList: Employee[] = []
+      try {
+        const res = await api.get<EmployeesResponse>("/api/employees", {
+          params: { site: id },
+        })
+        employeesList = res.data.employees
+      } catch (fetchErr) {
+        console.log(fetchErr)
+      }
+
+      const isVisitingElsewhere = (emp: Employee) =>
+        String(emp.currentSite) === String(siteData._id) &&
+        !!emp.pendingTransferSiteId &&
+        String(emp.pendingTransferSiteId) !== String(siteData._id) &&
+        !!emp.pendingTransferDate &&
+        String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
+
+      const awayVisitingIds = new Set(
+        employeesList.filter(isVisitingElsewhere).map((emp) => emp._id)
+      )
+
       const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
       if (cached) {
-        // A draft cached BEFORE the carryover appeared can still hold an auto-prefilled
-        // check-in for an employee who is now mid-shift from yesterday. Strip those so a
-        // carryover employee always starts today clear (their row is locked anyway).
-        setDraftAttendance(clearCarryoverSessions(JSON.parse(cached), carryoverIds))
+        // A draft cached BEFORE the carryover/visit appeared can still hold an auto-prefilled
+        // check-in for an employee now mid-shift from yesterday, or a row for one now visiting
+        // another site. Strip carryover check-ins and DROP the away-visitor rows so the
+        // restored draft matches a fresh build (no home record for someone working elsewhere).
+        const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
+          (rec) => !awayVisitingIds.has(String(rec.employee._id))
+        )
+        setDraftAttendance(restored)
         setIsDirty(true)
         return
       }
 
-      const res =
-        await api.get<EmployeesResponse>(
-          "/api/employees",
-          {
-            params: { site: id },
-          }
-        )
-
-      // The server's ?site= now also returns only-for-today visitors (pendingTransferSiteId
-      // = this site) whose home is elsewhere. Keep on-site members plus TODAY-dated
-      // visitors; drop stale pendingTransfer* rows an abandoned draft may have left behind
-      // (otherwise they'd render as apparently-present roster members).
-      const rosterEmployees = res.data.employees.filter((emp) => {
-        if (String(emp.currentSite) === String(siteData._id)) return true
+      // The server's ?site= also returns only-for-today visitors (pendingTransferSiteId = this
+      // site) whose home is elsewhere. Keep on-site members — EXCEPT those visiting another
+      // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
+      // stale pendingTransfer* rows an abandoned draft may have left behind.
+      const rosterEmployees = employeesList.filter((emp) => {
+        if (String(emp.currentSite) === String(siteData._id)) return !isVisitingElsewhere(emp)
         return (
           !!emp.pendingTransferSiteId &&
           String(emp.pendingTransferSiteId) === String(siteData._id) &&
@@ -1397,6 +1485,12 @@ function SiteAttendance() {
           // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
           // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
           const isNightShift = false
+          // A cross-site visitor works this site's job for the day (pendingTransferJobId),
+          // not their home currentJob — so their session's job (and thus job-hours
+          // attribution) records the visited site's job. Non-visitors keep currentJob.
+          const sessionJob = hasPendingTransfer
+            ? emp.pendingTransferJobId || null
+            : emp.currentJob
           return {
             employee: {
               _id: emp._id,
@@ -1414,12 +1508,12 @@ function SiteAttendance() {
             nationality: emp.nationality,
 
             jobId:
-              emp.currentJob?._id || null,
+              sessionJob?._id || null,
 
             sessions: [
               {
                 siteId: siteData._id,
-                job: emp.currentJob,
+                job: sessionJob,
                 checkIn: defaultIn,
                 checkOut: "",
                 workedHours: 0,
@@ -1540,20 +1634,20 @@ function SiteAttendance() {
     }
   }
 
-  // Fetch yesterday's OPEN sessions for this site (checked in, no check-out) — the
-  // carryover night shifts to surface today. Returns the set of employee ids so the
-  // draft build can skip auto-prefilling them (they default to absent). Rolling
+  // Fetch yesterday's OPEN sessions (checked in, no check-out) for the employees
+  // rostered HERE today — the carryover night shifts to surface. Employee-scoped: the
+  // open shift may live at a DIFFERENT site (the employee moved here after leaving it
+  // open), so it follows them and stays closable here. Returns the set of employee ids
+  // so the draft build can skip auto-prefilling them (they default to absent). Rolling
   // one-day window: only the day before `targetToday`.
   const fetchCarryovers = async (targetToday: string = today): Promise<Set<string>> => {
     try {
       const prevDate = yesterdayOf(targetToday)
-      const res = await api.get<FetchedAttendance>("/api/attendance/reports/daily", {
+      const res = await api.get<{ data: AttendanceRecord[] }>("/api/attendance/reports/carryovers", {
         params: { date: prevDate, siteId: id },
       })
       const open = (res.data.data || []).filter((rec) =>
-        rec.sessions?.some(
-          (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
-        )
+        rec.sessions?.some((s) => !!s.checkIn && !s.checkOut)
       )
       setCarryoverRecords(open)
       return new Set(open.map((r) => String(r.employee)))
@@ -3309,9 +3403,15 @@ function SiteAttendance() {
                 These employees have an open shift from yesterday. Enter their real check-out time before it's forgotten.
               </p>
               {carryoverRecords.map((rec) => {
+                // Employee-scoped: the open shift may belong to another site, so match by
+                // open-ness, not by current site. Show that home site when it differs.
                 const openSession = rec.sessions.find(
-                  (s) => String(s.siteId) === String(id) && !!s.checkIn && !s.checkOut
+                  (s) => !!s.checkIn && !s.checkOut
                 )
+                const awaySiteName =
+                  openSession && String(openSession.siteId) !== String(id)
+                    ? openSession.siteName
+                    : null
                 return (
                   <div
                     key={rec.attendanceId}
@@ -3321,13 +3421,14 @@ function SiteAttendance() {
                       <p className="text-sm font-medium truncate">{rec.name}</p>
                       <p className="text-xs text-muted-foreground">
                         {rec.employeeId} • in {openSession?.checkIn ? formatLocalTime12h(openSession.checkIn) : "—"}
+                        {awaySiteName ? ` • ${awaySiteName}` : ""}
                       </p>
                     </div>
                     <Button
                       size="sm"
                       variant="outline"
                       className="h-8 shrink-0 gap-1.5"
-                      onClick={() => openEditRecord(rec)}
+                      onClick={() => openCarryoverRecord(rec)}
                     >
                       <Clock3 className="h-4 w-4" />
                       Check out
@@ -3391,7 +3492,7 @@ function SiteAttendance() {
                                 <TransferredFromBadge siteName={record.transferredFrom.name} />
                               )}
                               {carryoverEmpIds.has(record.employee) && (
-                                <CarryoverBadge onClick={() => handleOpenCarryover(record.employee)} />
+                                <CarryoverBadge siteName={carryoverAwaySiteByEmp.get(record.employee) ?? null} onClick={() => handleOpenCarryover(record.employee)} />
                               )}
                             </div>
 
@@ -3781,7 +3882,7 @@ function SiteAttendance() {
                                           <TransferredFromBadge siteName={record.transferredFrom.name} />
                                         )}
                                         {carryoverEmpIds.has(record.employee) && (
-                                          <CarryoverBadge onClick={() => handleOpenCarryover(record.employee)} />
+                                          <CarryoverBadge siteName={carryoverAwaySiteByEmp.get(record.employee) ?? null} onClick={() => handleOpenCarryover(record.employee)} />
                                         )}
                                       </div>
 
@@ -4113,6 +4214,7 @@ function SiteAttendance() {
                       breakDurationMinutes={breakDurationMinutes}
                       fullDayHours={fullDayHours}
                       hasCarryover={carryoverEmpIds.has(record.employee._id)}
+                      carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                       onOpenCarryover={handleOpenCarryover}
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
@@ -4153,6 +4255,7 @@ function SiteAttendance() {
                         breakDurationMinutes={breakDurationMinutes}
                         fullDayHours={fullDayHours}
                         hasCarryover={carryoverEmpIds.has(record.employee._id)}
+                      carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                         onOpenCarryover={handleOpenCarryover}
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
@@ -4176,9 +4279,14 @@ function SiteAttendance() {
       </Card>
       <EditSiteRecord
         open={editOpen}
-        onClose={() => setEditOpen(false)}
+        onClose={() => {
+          setEditOpen(false)
+          setEditSiteOverride(null)
+        }}
         attendanceId={selectedRecord?.attendanceId ?? null}
-        site={site!}
+        // For a cross-site carryover close, the modal is fed the open shift's HOME site
+        // so it loads/edits/writes against that site (see openCarryoverRecord).
+        site={editSiteOverride ?? site!}
         onUpdated={(updatedRecord) => {
           const edited = selectedRecord
           const wasCarryover =

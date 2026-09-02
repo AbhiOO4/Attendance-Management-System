@@ -108,16 +108,21 @@ interface Employee {
   nationality?: "foreign" | "omani"
   collarType?: "skilled" | "staff"
   // "Only for today" visitor stash: their home stays at currentSite but they're marked
-  // present here today (see empModel pendingTransfer*). Cleared on submit.
-  pendingTransferSiteId?: string | null
+  // present here today (see empModel pendingTransfer*). Cleared on submit. Populated with
+  // the destination site's name (siteName) by the rosterForSite query, so a home member
+  // visiting ELSEWHERE today can be named on their home roster.
+  pendingTransferSiteId?: SiteRef | string | null
   pendingTransferDate?: string | null
   pendingTransferFromSiteId?: SiteRef | string | null
+  // Populated per-visit job — the job the visitor works at THIS site today. Set/changed
+  // via the roster's Assign jobs; it becomes the session's job on submit.
+  pendingTransferJobId?: JobRef | string | null
   // Client-only markers for a post-submit session-holder whose home is another site
   // (surfaced on the Today tab from the daily report, not the rosterForSite fetch).
   __crossSite?: boolean
   __sessionJobId?: string | null
   // Client-only marker for a PRE-submit "only for today" visitor (today-dated
-  // pendingTransferSiteId = this site), shown as a read-only "Visiting" row.
+  // pendingTransferSiteId = this site), shown as an editable "Visiting" row.
   __visitingToday?: boolean
 }
 
@@ -151,6 +156,9 @@ function refId(v: JobRef | SiteRef | string | null | undefined): string | null {
 }
 function jobName(v: JobRef | string | null | undefined): string | null {
   return v && typeof v === "object" ? v.name : null
+}
+function siteRefName(v: SiteRef | string | null | undefined): string | null {
+  return v && typeof v === "object" ? v.siteName : null
 }
 
 // Embedded Today / Tomorrow roster for a site (admin-facing, lives in SiteDetail).
@@ -248,6 +256,21 @@ function SiteRoster({
       e.currentSite !== siteId &&
       !!e.pendingTransferSiteId &&
       refId(e.pendingTransferSiteId) === siteId &&
+      !!e.pendingTransferDate &&
+      String(e.pendingTransferDate).slice(0, 10) === today
+    )
+  }
+
+  // The mirror of isTodayVisitor: a home member of THIS site who is on a one-day visit to
+  // ANOTHER site today (currentSite = this site, but pendingTransfer* points elsewhere for
+  // today). Mark Attendance drops them here (they're recorded at the visited site), so the
+  // roster flags them — otherwise they'd look like an ordinary present member who has
+  // mysteriously vanished from the attendance list.
+  function isVisitingElsewhere(e: Employee) {
+    return (
+      e.currentSite === siteId &&
+      !!e.pendingTransferSiteId &&
+      refId(e.pendingTransferSiteId) !== siteId &&
       !!e.pendingTransferDate &&
       String(e.pendingTransferDate).slice(0, 10) === today
     )
@@ -505,9 +528,10 @@ function SiteRoster({
 
   // ---- bulk "Assign jobs" helpers ----
   function isRowSelectable(e: Employee) {
-    // Only real on-site roster members can be bulk-assigned (not cross-site visitors,
-    // and not pre-submit "only for today" visitors).
-    return e.currentSite === siteId && !e.__crossSite && !e.__visitingToday
+    // On-site members and pre-submit "only for today" visitors can be bulk-assigned a job
+    // (members → currentJob, visitors → their per-visit job, routed server-side). Post-
+    // submit cross-site session-holders stay read-only.
+    return (e.currentSite === siteId || !!e.__visitingToday) && !e.__crossSite
   }
 
   function toggleSelect(id: string) {
@@ -594,9 +618,13 @@ function SiteRoster({
   // ---- per-mode derived lists ----
   function listForMode(mode: DayMode) {
     let dayList = employees.filter(mode === "today" ? inToday : inTomorrow)
-    // Post-submit, the Today list also includes cross-site session-holders.
+    // Post-submit, the Today list also includes cross-site session-holders. Prefer the
+    // session-based crossSite row over a lingering pre-submit visitor tag for the same
+    // person (a post-submit insta-add leaves both a visit stash and a saved session), so
+    // they never render twice.
     if (mode === "today" && todaySubmitted) {
-      dayList = [...dayList, ...crossSiteRows]
+      const crossIds = new Set(crossSiteRows.map((r) => r._id))
+      dayList = [...dayList.filter((e) => !crossIds.has(e._id)), ...crossSiteRows]
     }
     // The "hide leaving" toggle drops scheduled-for-removal rows from Tomorrow.
     if (mode === "tomorrow" && hideLeaving) {
@@ -608,13 +636,14 @@ function SiteRoster({
         e.name.toLowerCase().includes(q) ||
         e.employeeId.toLowerCase().includes(q)
     )
-    // Filter by job — today keys off the current job, tomorrow off the effective
-    // scheduled-or-current job (rowInfo.selectValue). "none" = unassigned / No job.
+    // Filter by job — today keys off the current job (or a visitor's per-visit job),
+    // tomorrow off the effective scheduled-or-current job (rowInfo.selectValue). "none" =
+    // unassigned / No job.
     if (jobFilter === "all") return searched
     return searched.filter((e) => {
       const jid =
         mode === "today"
-          ? refId(e.currentJob)
+          ? refId(e.__visitingToday ? e.pendingTransferJobId : e.currentJob)
           : rowInfo(e, mode).selectValue === "unassigned"
           ? null
           : rowInfo(e, mode).selectValue
@@ -672,12 +701,9 @@ function SiteRoster({
 
   // Per-row derived state for a given mode.
   function rowInfo(e: Employee, mode: DayMode) {
-    // Cross-site visitor: their home is another site, so the inline job control is
-    // read-only. Post-submit (__crossSite) shows the job from their logged session here;
-    // a pre-submit "only for today" visitor (__visitingToday) has no per-site job stored
-    // on the employee, so it shows Unassigned. Their currentJob belongs to their home
-    // site and is not this site's to change.
-    if (e.__crossSite || e.__visitingToday) {
+    // Post-submit cross-site session-holder: read-only, job comes from their logged
+    // session here (their currentJob belongs to their home site and isn't ours to change).
+    if (e.__crossSite) {
       const sessJobName = jobs.find((j) => j._id === e.__sessionJobId)?.name || null
       return {
         onSiteToday: false,
@@ -692,6 +718,27 @@ function SiteRoster({
         displayJobName: sessJobName,
         editable: false,
         selectValue: "unassigned",
+      }
+    }
+
+    // Pre-submit "only for today" visitor: their per-visit job (pendingTransferJobId) IS
+    // editable here — it's a today-only assignment on this site's job, kept separate from
+    // their home currentJob. Still flagged crossSite so the "Visiting" badge shows.
+    if (e.__visitingToday) {
+      const visitJobName = jobName(e.pendingTransferJobId)
+      return {
+        onSiteToday: false,
+        hasSchedule: false,
+        incoming: false,
+        movingAway: false,
+        jobChangePending: false,
+        leaving: false,
+        crossSite: true,
+        curJobName: visitJobName,
+        schedJobName: null,
+        displayJobName: visitJobName,
+        editable: canEdit,
+        selectValue: refId(e.pendingTransferJobId) || "unassigned",
       }
     }
 
@@ -818,10 +865,6 @@ function SiteRoster({
 
   function renderActions(e: Employee, mode: DayMode) {
     if (!canEdit || selectMode) return null
-    // Pre-submit "only for today" visitors are display-only: their session isn't saved
-    // yet, so the cross-site session-only remove has nothing to delete. They're consumed
-    // when attendance is submitted (or expire with the day).
-    if (e.__visitingToday) return null
     const info = rowInfo(e, mode)
 
     // Tomorrow, incoming: the only action is to cancel the scheduled arrival.
@@ -868,10 +911,13 @@ function SiteRoster({
     }
 
     // Which removal this row/tab performs: Tomorrow schedules for midnight; Today is
-    // immediate (full unassign for a home worker, session-only for a cross-site visitor).
+    // immediate — full unassign for a home worker, session-only for a post-submit
+    // cross-site visitor, or undo-the-visit for a pre-submit "only for today" visitor.
     const rMode: RemoveMode =
       mode === "tomorrow"
         ? "tomorrow-deferred"
+        : e.__visitingToday
+        ? "today-visitor"
         : e.__crossSite
         ? "today-cross-site"
         : "today-home"
@@ -933,6 +979,14 @@ function SiteRoster({
             className="h-4 bg-slate-100 px-1.5 py-0 text-[10px] text-slate-600 dark:bg-slate-800/60 dark:text-slate-300"
           >
             Visiting
+          </Badge>
+        )}
+        {mode === "today" && isVisitingElsewhere(e) && (
+          <Badge
+            variant="secondary"
+            className="h-4 bg-indigo-50 px-1.5 py-0 text-[10px] text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
+          >
+            At {siteRefName(e.pendingTransferSiteId) || "another site"} today
           </Badge>
         )}
         {info.leaving && (

@@ -20,6 +20,12 @@ router.get('/dashboard/active-sites', authorizeRoles("admin", "supervisor"), att
 
 router.get('/reports/daily', authorizeRoles("admin", "supervisor"), attendanceController.getSiteAttendance)
 
+// Employee-scoped carryover fetch: the prior-day open shifts of the employees rostered
+// at this site TODAY, wherever those shifts physically live (the "follow the employee"
+// flow). Site-scoped by the queried siteId, so requireSiteAccess confines a supervisor
+// to their own site.
+router.get('/reports/carryovers', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getSiteCarryovers)
+
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
 router.get('/reports/job-report', authorizeRoles("superadmin"), attendanceController.jobReport)
@@ -37,6 +43,10 @@ router.get('/missing', authorizeRoles("admin", "supervisor"), attendanceControll
 router.post('/backfill', authorizeRoles("admin"), attendanceController.backfillAttendance)
 
 router.post('/backfill/bulk', authorizeRoles("admin"), attendanceController.bulkBackfillAttendance)
+
+// Bulk close open (checked-in, no check-out) sessions with one shared check-out time —
+// the Edit-Past-Attendance recovery tool for sessions the auto-checkout cron never closed.
+router.post('/bulk-checkout', authorizeRoles("admin"), attendanceController.bulkCheckout)
 
 // Night shift bulk assignment
 router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getNightShiftCandidates)

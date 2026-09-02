@@ -15,6 +15,7 @@ import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTim
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
+import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 
 
 // --- CURRENT-JOB SYNC ---
@@ -1434,6 +1435,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
             pendingTransferSiteId: null,
             pendingTransferDate: null,
             pendingTransferFromSiteId: null,
+            pendingTransferJobId: null,
           },
         },
         { session }
@@ -1702,7 +1704,99 @@ export const getSiteAttendance = async (req, res) => {
   }
 }//
 
-//fetch attendance records 
+// Employee-scoped carryover fetch (the "follow the employee" flow). Unlike
+// getSiteAttendance (which surfaces only sessions AT this site), this returns the
+// PRIOR-DAY open sessions of the employees rostered here TODAY, regardless of which
+// site those open shifts physically live at. That lets an employee's forgotten
+// check-out surface — and be closed — on whatever site they have since moved to.
+// Roster anchor is `currentSite` (permanent/scheduled moves update it; a today-only
+// visit leaves it at the home site, so a visitor's carryover follows to their home
+// instead of appearing on a site they're only visiting).
+export const getSiteCarryovers = async (req, res) => {
+  try {
+    const { siteId, date } = req.query
+
+    if (!siteId || !mongoose.Types.ObjectId.isValid(siteId)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid siteId is required",
+      })
+    }
+
+    const siteObjectId = new mongoose.Types.ObjectId(siteId)
+
+    // The open sessions we surface live on the day BEFORE the target day (default:
+    // yesterday). Match the stored UTC-midnight `date` the same way getSiteAttendance does.
+    const prevDayStr = date || getDateLocal(-1)
+    const queryDate = new Date(prevDayStr)
+    if (Number.isNaN(queryDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date format",
+      })
+    }
+
+    const start = new Date(queryDate)
+    start.setUTCHours(0, 0, 0, 0)
+    const end = new Date(queryDate)
+    end.setUTCHours(23, 59, 59, 999)
+
+    // Employees rostered at this site today (home roster). A row exists on the board
+    // for these; the carryover badge hangs on that row all day.
+    const rosterEmployees = await Employee.find({
+      currentSite: siteObjectId,
+    }).select("_id")
+
+    const rosterIds = rosterEmployees.map((e) => e._id)
+    if (rosterIds.length === 0) {
+      return res.status(200).json({ success: true, data: [] })
+    }
+
+    // Their prior-day records that still carry an open session (any site).
+    const records = await Attendance.find({
+      employee: { $in: rosterIds },
+      date: { $gte: start, $lte: end },
+      sessions: { $elemMatch: { checkIn: { $ne: null }, checkOut: null } },
+    })
+      .populate({ path: "employee", select: "name employeeId" })
+      .populate({ path: "sessions.siteId", select: "siteName" })
+
+    // Shape to mirror getSiteAttendance's rows (attendanceId, employee = id, name,
+    // employeeId, sessions[]) but WITHOUT pre-filtering to one site, and carry each
+    // session's siteName so the client knows the open shift's HOME site.
+    const data = records.map((rec) => ({
+      attendanceId: rec._id,
+      date: rec.date,
+      employee: (rec.employee?._id || rec.employee)?.toString() || null,
+      name: rec.employee?.name || "",
+      employeeId: rec.employee?.employeeId || "",
+      sessions: (rec.sessions || []).map((s) => ({
+        _id: s._id,
+        siteId: (s.siteId?._id || s.siteId)?.toString() || null,
+        siteName: s.siteId?.siteName || null,
+        jobId: s.jobId || null,
+        checkIn: s.checkIn || null,
+        checkOut: s.checkOut || null,
+        rawCheckIn: s.rawCheckIn || null,
+        rawCheckOut: s.rawCheckOut || null,
+        workedHours: s.workedHours,
+        isNightShift: s.isNightShift,
+      })),
+    }))
+
+    data.sort((a, b) => a.name.localeCompare(b.name))
+
+    return res.status(200).json({ success: true, data })
+  } catch (error) {
+    console.error("getSiteCarryovers error:", error)
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to fetch carryovers",
+    })
+  }
+}
+
+//fetch attendance records
 export const getAttendanceRecords = async (req, res) => {
   try {
     let {
@@ -1791,7 +1885,16 @@ export const getAttendanceRecords = async (req, res) => {
       const user = await userModel.findById(req.user.id);
       attendanceFilter.siteId = user?.assignedSite || null;
     } else if (site) {
-      attendanceFilter.siteId = site
+      // Match either the record's anchor site OR any session's site, so an
+      // employee who worked a session at this site shows up under it even when
+      // the record is rooted elsewhere (multi-site day). The root-siteId branch
+      // keeps absent records (no sessions) visible under their own site. Both
+      // `siteId` and `sessions.siteId` are indexed with `date`, so each $or arm
+      // rides a compound index.
+      attendanceFilter.$or = [
+        { siteId: site },
+        { "sessions.siteId": site },
+      ]
     }
 
     // -----------------------------
@@ -2237,7 +2340,14 @@ export const updateAttendance = async (req, res) => {
       // primary/original site — a multi-site record can have sessions across
       // several sites, and a supervisor should be able to edit their own
       // site's session even if they weren't the one who created the doc.
-      if (!user || !user.assignedSite || !siteId || user.assignedSite.toString() !== siteId.toString()) {
+      const sameSite = !!(user && user.assignedSite && siteId && user.assignedSite.toString() === siteId.toString());
+      // Employee-scoped carryover exception: also allow closing another site's
+      // dangling open shift for an employee who has since moved onto this
+      // supervisor's roster (see utils/carryoverAccess.js).
+      const carryoverOk = !sameSite && user && user.assignedSite
+        ? await supervisorMayCloseCarryover(attendance, user.assignedSite, siteId)
+        : false;
+      if (!sameSite && !carryoverOk) {
         return res.status(403).json({
           success: false,
           message: "Forbidden: Access denied to this attendance record",
@@ -2971,14 +3081,21 @@ export const getAttendanceById = async (req, res) => {
       // Check against the specific site the caller is viewing (siteId), not
       // the doc's primary/original site — a multi-site record can contain
       // sessions for sites other than whichever one created the doc.
-      if (
-        !record ||
-        !user ||
-        !user.assignedSite ||
-        !siteId ||
-        user.assignedSite.toString() !== siteId.toString() ||
-        !record.sessions.some((s) => s.siteId.toString() === siteId.toString())
-      ) {
+      const sameSite = !!(
+        record &&
+        user &&
+        user.assignedSite &&
+        siteId &&
+        user.assignedSite.toString() === siteId.toString() &&
+        record.sessions.some((s) => s.siteId.toString() === siteId.toString())
+      );
+      // Employee-scoped carryover: also allow LOADING another site's record to
+      // close a dangling open shift for an employee now on this supervisor's
+      // roster (see utils/carryoverAccess.js). Mirrors the updateAttendance gate.
+      const carryoverOk = !sameSite && record && user && user.assignedSite
+        ? await supervisorMayCloseCarryover(record, user.assignedSite, siteId)
+        : false;
+      if (!sameSite && !carryoverOk) {
         return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
       }
     }
@@ -3456,6 +3573,9 @@ export const transferEmployee = async (req, res) => {
       employee.pendingTransferSiteId = toSiteId
       employee.pendingTransferDate = attendanceDate
       employee.pendingTransferFromSiteId = fromSiteId
+      // Carry the destination job so the visitor's session at the new site records it
+      // (parity with the immediate-session branch above, which sets jobId directly).
+      employee.pendingTransferJobId = jobId || null
     }
 
     // onlyForToday: the session is carried above (push / pendingTransfer stash), but the
@@ -4073,6 +4193,197 @@ export const bulkBackfillAttendance = async (req, res) => {
 };
 
 
+/**
+ * Bulk close open (checked-in, never-checked-out) sessions with ONE check-out time.
+ *
+ * Recovery tool for the Edit-Past-Attendance page: when the auto-checkout cron did not run
+ * (server down) or a site has no default check-out for a category, sessions are left open.
+ * This applies a single "HH:mm" check-out to EACH selected record's LATEST open session only,
+ * on that record's own business day. Non-transactional and per-record — one bad record never
+ * aborts the batch (mirrors bulkBackfillAttendance) — and the per-record close mirrors the
+ * auto-checkout cron (deriveOffsets → combineFromOffset → 26h bound → overlap → recompute).
+ *
+ * Body: { attendanceIds: string[], checkOut: "HH:mm", checkOutNextDay?: boolean }
+ *  - checkOutNextDay omitted → auto-roll to the next day when the time reads before the
+ *    check-in (same rule the cron uses); passed explicitly → it wins (standalone AM tail).
+ */
+export const bulkCheckout = async (req, res) => {
+  try {
+    const { attendanceIds = [], checkOut, checkOutNextDay } = req.body;
+
+    if (!Array.isArray(attendanceIds) || attendanceIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'attendanceIds must be a non-empty array' });
+    }
+    if (!checkOut || !/^\d{2}:\d{2}$/.test(checkOut)) {
+      return res.status(400).json({ success: false, message: 'A valid check-out time (HH:mm) is required' });
+    }
+
+    // Offset resolution — mirrors updateAttendance so toLocalTimeString reads the same
+    // wall-clock as the rest of the controller.
+    const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
+      ? process.env.APP_TIMEZONE_OFFSET
+      : req.headers['x-timezone-offset'];
+    let offsetVal = -330;
+    if (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "") {
+      const parsed = parseInt(process.env.APP_TIMEZONE_OFFSET, 10);
+      if (!isNaN(parsed)) offsetVal = parsed;
+    } else if (timezoneOffset !== null && timezoneOffset !== undefined) {
+      const parsed = parseInt(timezoneOffset, 10);
+      if (!isNaN(parsed)) offsetVal = parsed;
+    }
+
+    const explicitNextDay = typeof checkOutNextDay === 'boolean' ? checkOutNextDay : null;
+
+    const workConfig = await workModel.findOne({ type: 'default' });
+    if (!workConfig) {
+      return res.status(404).json({ success: false, message: 'Work schedule configuration not found' });
+    }
+
+    const uniqueIds = [...new Set(attendanceIds.filter(Boolean).map(String))];
+
+    const records = await Attendance.find({ _id: { $in: uniqueIds } })
+      .populate('employee', 'name employeeId');
+    const recordById = new Map(records.map((r) => [String(r._id), r]));
+
+    const closed = [];
+    const skipped = [];
+    const failed = [];
+
+    // Cross-day overlap: one checker per distinct business day, built up front over every
+    // employee on that day (a closed session may roll into the next day's record).
+    const byDate = new Map(); // dateStr -> { empIds:Set, checker }
+    for (const rec of records) {
+      const dateStr = new Date(rec.date).toISOString().split('T')[0];
+      if (!byDate.has(dateStr)) byDate.set(dateStr, { empIds: new Set(), checker: null });
+      byDate.get(dateStr).empIds.add(String(rec.employee?._id || rec.employee));
+    }
+    await Promise.all(
+      [...byDate.entries()].map(async ([dateStr, group]) => {
+        const anchor = new Date(dateStr);
+        anchor.setUTCHours(0, 0, 0, 0);
+        group.checker = await buildCrossDayOverlapChecker({
+          employeeIds: [...group.empIds],
+          date: anchor,
+        });
+      })
+    );
+
+    for (const id of uniqueIds) {
+      const record = recordById.get(id);
+      if (!record) {
+        skipped.push({ attendanceId: id, employeeId: null, name: null, reason: 'Record not found' });
+        continue;
+      }
+
+      const empId = String(record.employee?._id || record.employee);
+      const name = record.employee?.name || null;
+
+      try {
+        // Latest open session = checked in, no check-out, max check-in.
+        const openSessions = record.sessions.filter((s) => s.checkIn && !s.checkOut);
+        if (openSessions.length === 0) {
+          skipped.push({ attendanceId: id, employeeId: empId, name, reason: 'No open session to close' });
+          continue;
+        }
+        const session = openSessions.reduce((latest, s) =>
+          new Date(s.checkIn).getTime() > new Date(latest.checkIn).getTime() ? s : latest
+        );
+
+        const recordDateStr = new Date(record.date).toISOString().split('T')[0];
+        const inStr = toLocalTimeString(session.checkIn, offsetVal);
+
+        const outNextDay = explicitNextDay !== null
+          ? explicitNextDay
+          : deriveOffsets(inStr, checkOut, !!session.checkInNextDay).checkOutNextDay;
+
+        const checkOutDate = combineFromOffset(recordDateStr, checkOut, outNextDay);
+        if (!checkOutDate) {
+          failed.push({ attendanceId: id, employeeId: empId, name, message: 'Invalid check-out time' });
+          continue;
+        }
+
+        const workedHours =
+          (checkOutDate.getTime() - new Date(session.checkIn).getTime()) / (1000 * 60 * 60);
+        if (!(workedHours > 0 && workedHours <= MAX_SHIFT_HOURS)) {
+          skipped.push({
+            attendanceId: id,
+            employeeId: empId,
+            name,
+            reason:
+              workedHours <= 0
+                ? 'Check-out is before the check-in — close this one manually'
+                : `Check-out would make a ${workedHours.toFixed(1)}h shift (max ${MAX_SHIFT_HOURS}h) — close this one manually`,
+          });
+          continue;
+        }
+
+        // In-record overlap (the closed session vs the record's other sessions).
+        const candidate = record.sessions.map((s) =>
+          s._id.toString() === session._id.toString()
+            ? { checkIn: s.checkIn, checkOut: checkOutDate }
+            : { checkIn: s.checkIn, checkOut: s.checkOut }
+        );
+        if (hasSessionOverlap(candidate)) {
+          failed.push({ attendanceId: id, employeeId: empId, name, message: 'Check-out overlaps another session on this day' });
+          continue;
+        }
+
+        // Cross-day overlap (the closed session vs the neighbouring days' records).
+        const checker = byDate.get(recordDateStr)?.checker;
+        const conflict = checker
+          ? checker(empId, [{ checkIn: session.checkIn, checkOut: checkOutDate }])
+          : null;
+        if (conflict) {
+          failed.push({ attendanceId: id, employeeId: empId, name, message: crossDayOverlapMessage(conflict) });
+          continue;
+        }
+
+        // Close it — mirror the auto-checkout cron's mutation + totals recompute. The model
+        // pre-save hook re-derives rawCheckOut/offsets from the new checkOut Date.
+        session.checkOut = checkOutDate;
+        session.workedHours = Number(workedHours.toFixed(2));
+        if (outNextDay) session.isNightShift = true;
+
+        const rawHours = record.sessions.reduce((sum, s) => sum + (s.workedHours || 0), 0);
+        const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+          rawHours,
+          workConfig,
+          record.breaksTaken ?? null,
+          { isHoliday: record.isHoliday, reason: record.holidayReason }
+        );
+        record.totalWorkHours = netWorkHours;
+        record.status = status;
+        record.overtimeHours = overtimeHours;
+        record.holidayHours = holidayHours;
+
+        await record.save();
+
+        closed.push({ attendanceId: id, employeeId: empId, name });
+      } catch (err) {
+        console.error('bulkCheckout per-record error:', id, err);
+        failed.push({ attendanceId: id, employeeId: empId, name, message: err?.message || 'Failed to close session' });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Checked out ${closed.length} of ${uniqueIds.length} record(s)`,
+      summary: {
+        closedCount: closed.length,
+        skippedCount: skipped.length,
+        failedCount: failed.length,
+      },
+      closed,
+      skipped,
+      failed,
+    });
+  } catch (error) {
+    console.error('bulkCheckout error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to bulk check out', error: error.message });
+  }
+};
+
+
 const getActiveSitesOverview = async (req, res) => {
   try {
     const { tab = 'inprogress', skip = 0, limit = 5 } = req.query;
@@ -4568,6 +4879,7 @@ const attendanceController = {
   toggleHolidayStatus,
 
   getSiteAttendance,
+  getSiteCarryovers,
   bulkEditAttendance,
   getAttendanceRecords,
   getEmployeeAttendanceByMonth,
@@ -4578,6 +4890,7 @@ const attendanceController = {
   getMissingEmployees,
   backfillAttendance,
   bulkBackfillAttendance,
+  bulkCheckout,
   getActiveSitesOverview,
 
   getNightShiftCandidates,

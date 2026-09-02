@@ -70,6 +70,16 @@ const employeeSchema = new mongoose.Schema({
     default: null
   },
 
+  // Job the visitor works at the visited site TODAY (the "only for today" / transfer
+  // job). Kept out of currentJob so a cross-site visit never overwrites the home-site
+  // job or its Job.employees[] membership. Consumed by the destination site's draft
+  // (it becomes the session's jobId) and cleared with the rest of the stash on submit.
+  pendingTransferJobId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Job',
+    default: null
+  },
+
   // Deferred ("from tomorrow") assignment, written by SiteDetail-context actions
   // (admin) instead of mutating currentSite/currentJob now, and applied by the
   // applyScheduledAssignments cron at the local day rollover. Presence is keyed on

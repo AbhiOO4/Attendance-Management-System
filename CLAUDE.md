@@ -49,7 +49,11 @@ and never sees the token. Key pieces:
 - **Employee** — `employeeId` (unique), `jobTitle`, `currentSite`, `currentJob`,
   `employmentType` (permanent|temporary), `collarType` (skilled|staff, derived from the
   job title), `nationality` (foreign|omani, set on the employee), plus `pendingTransfer*`
-  fields used by the cross-site transfer flow. `collarType × nationality` gives the FOUR
+  fields used by the cross-site transfer / "only for today" visit flow — including
+  `pendingTransferJobId`, the job the visitor works at the visited site today (kept out of
+  `currentJob` so a visit never touches the home-site job/membership; it becomes the
+  session's `jobId` when that site's draft is built, and is cleared with the rest of the
+  stash on submit). `collarType × nationality` gives the FOUR
   roster categories: Foreign Skilled Labours, Foreign Staffs, Omani Labours, Omani Staffs.
 - **Site** — has `jobs[]`, day/night default check-in/out time strings, and flags
   (`isPermanent`, `isActive`, `isDeleted`, `isCompleted`). A permanent site
