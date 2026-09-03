@@ -21,6 +21,7 @@ import notificationModel from "../models/notificationModel.js"
 import { isAssignableSite } from "../utils/siteAssignable.js"
 import { getTodayLocal } from "../utils/timeLocal.js"
 import { notifyUser, notifyAdmins, findSiteSupervisor } from "../utils/notify.js"
+import { applyHandover } from "../utils/handover.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -256,33 +257,14 @@ export const acceptRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: "Destination site is no longer a valid target" })
     }
 
-    if (request.mode === "today") {
-      // Full-day visit via the pendingTransfer* stash (same rails as transferEmployee's
-      // no-saved-record branch). Fresh session → null carried check-in, so the
-      // destination draft uses its category default check-in. Home stays put.
-      employee.pendingTransferCheckIn = null
-      employee.pendingTransferSiteId = request.toSite
-      employee.pendingTransferFromSiteId = request.fromSite
-      employee.pendingTransferJobId = request.toJob || null
-      employee.pendingTransferDate = todayAttendanceDate()
-      await employee.save({ session })
-    } else {
-      // Permanent move: repoint home + job membership + supervisor auth (mirrors
-      // instaAddEmployee / transferEmployee's !onlyForToday branch).
-      const oldJobId = employee.currentJob
-      if (oldJobId) {
-        await Job.findByIdAndUpdate(oldJobId, { $pull: { employees: employee._id } }, { session })
-      }
-      employee.currentSite = request.toSite
-      employee.currentJob = request.toJob || null
-      await employee.save({ session })
-      if (request.toJob) {
-        await Job.findByIdAndUpdate(request.toJob, { $addToSet: { employees: employee._id } }, { session })
-      }
-      if (employee.user) {
-        await userModel.findByIdAndUpdate(employee.user, { assignedSite: request.toSite }, { session })
-      }
-    }
+    // Place the employee at the destination (shared with the source-push path).
+    await applyHandover({
+      employee,
+      toSiteId: request.toSite,
+      toJobId: request.toJob || null,
+      mode: request.mode,
+      session,
+    })
 
     request.status = "accepted"
     request.decidedBy = req.user.id

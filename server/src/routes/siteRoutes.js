@@ -22,6 +22,7 @@ router.post('/:siteId/check-pending', authorizeRoles("admin", "supervisor"), sit
 
 // --- SUPERVISOR & ADMIN WRITE routes (restricted to assigned site for Supervisor) ---
 router.post('/:siteId/insta-add-employee', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.instaAddEmployee)
+router.post('/:siteId/send-employee', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.sendEmployeeToSite)
 router.patch('/job/:jobId/status', authorizeRoles("admin", "supervisor"), siteController.changeJobStatus)
 router.patch('/job/:jobId/toggle-completed', authorizeRoles("admin", "supervisor"), siteController.toggleJobCompleted)
 router.patch('/:siteId/remove-employee', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.removeEmployee)

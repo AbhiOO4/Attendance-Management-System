@@ -50,6 +50,7 @@ import {
   ChevronRight,
   MoreVertical,
   Info,
+  SendHorizontal,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -72,6 +73,7 @@ import AddTemporaryWorker from "@/components/AddTemporaryWorker"
 import RemoveEmployeeDialog, {
   type RemoveMode,
 } from "@/components/site/RemoveEmployeeDialog"
+import SendToSiteDialog from "@/components/site/SendToSiteDialog"
 import { Label } from "@/components/ui/label"
 import {
   Tooltip,
@@ -228,6 +230,10 @@ function SiteRoster({
   const [workerToRemove, setWorkerToRemove] = useState<Employee | null>(null)
   const [removeOpen, setRemoveOpen] = useState(false)
   const [removeMode, setRemoveMode] = useState<RemoveMode>("today-home")
+
+  // Source-initiated "Send to site" (pre-save push of a home member to another site).
+  const [sendTarget, setSendTarget] = useState<Employee | null>(null)
+  const [sendOpen, setSendOpen] = useState(false)
 
   // Post-submit Today tab becomes session-based: once today's attendance is submitted
   // for this site, the Today list is the set of session-holders (which includes
@@ -922,8 +928,30 @@ function SiteRoster({
         ? "today-cross-site"
         : "today-home"
 
+    // "Send to site": only for a Today draft HOME row that isn't already visiting
+    // elsewhere. A pre-save push of the owner's own employee to another site.
+    const canSend =
+      mode === "today" &&
+      !todaySubmitted &&
+      rMode === "today-home" &&
+      !isVisitingElsewhere(e)
+
     return (
       <div className="flex items-center justify-end gap-1">
+        {canSend && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-indigo-700 hover:bg-indigo-500/10 dark:text-indigo-300"
+            onClick={() => {
+              setSendTarget(e)
+              setSendOpen(true)
+            }}
+          >
+            <SendHorizontal className="mr-1 h-4 w-4" />
+            Send to site
+          </Button>
+        )}
         {mode === "tomorrow" && info.jobChangePending && (
           <Button
             variant="ghost"
@@ -1507,6 +1535,14 @@ function SiteRoster({
         mode={removeMode}
         submitted={todaySubmitted}
         onRemoved={fetchRoster}
+      />
+
+      <SendToSiteDialog
+        open={sendOpen}
+        onOpenChange={setSendOpen}
+        siteId={siteId}
+        employee={sendTarget ? { _id: sendTarget._id, name: sendTarget.name } : null}
+        onSent={fetchRoster}
       />
 
       {/* Controlled "Add hired worker" dialog — triggered from the actions menu. */}

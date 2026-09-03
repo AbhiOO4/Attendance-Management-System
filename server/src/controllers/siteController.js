@@ -14,6 +14,8 @@ import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import { isAssignableSite } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
+import { applyHandover } from '../utils/handover.js'
+import { notifyUser, findSiteSupervisor } from '../utils/notify.js'
 
 
 //Admin
@@ -2605,6 +2607,101 @@ export const scheduleEmployeeRemoval = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// POST /api/site/:siteId/send-employee — source-initiated "Send to site"
+// ---------------------------------------------------------------------------
+// The owner of an employee hands them to another site for the day, before saving
+// attendance. A push: no approval (you may freely give your own employee away),
+// the destination supervisor is only NOTIFIED. Requester picks today vs permanent.
+// requireSiteAccess (on :siteId) already confirms the caller owns the source site.
+export const sendEmployeeToSite = async (req, res) => {
+  const session = await mongoose.startSession()
+  session.startTransaction()
+  try {
+    const { siteId } = req.params
+    const { empId, toSiteId, toJobId = null, mode } = req.body
+
+    if (!siteId || !empId || !toSiteId || !mode) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "siteId, empId, toSiteId and mode are required" })
+    }
+    if (mode !== "today" && mode !== "permanent") {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "mode must be 'today' or 'permanent'" })
+    }
+    if (toSiteId.toString() === siteId.toString()) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "Destination must be a different site" })
+    }
+
+    const employee = await empModel.findById(empId).session(session)
+    if (!employee) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(404).json({ success: false, message: "Employee not found" })
+    }
+
+    // Owner check: the employee must be homed at the source site the caller owns.
+    if (!employee.currentSite || employee.currentSite.toString() !== siteId.toString()) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "This employee is not homed at your site" })
+    }
+
+    const toSite = await siteModel.findById(toSiteId).session(session)
+    if (!isAssignableSite(toSite)) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "Destination site is not a valid target" })
+    }
+    if (toJobId) {
+      const job = await jobModel.findById(toJobId).session(session)
+      if (!job || job.site.toString() !== toSiteId.toString()) {
+        await session.abortTransaction(); session.endSession()
+        return res.status(400).json({ success: false, message: "Job does not belong to the destination site" })
+      }
+    }
+
+    // Clean pre-save handover only — a marked employee is a midday case (use Transfer).
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0)
+    const att = await attendanceModel.findOne({ employee: empId, date: today }).session(session)
+    if (att && att.sessions.some((s) => s.checkIn)) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(409).json({
+        success: false,
+        message: "Employee is already marked today. Use the Transfer option on the attendance record for a midday move.",
+      })
+    }
+
+    await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
+
+    await session.commitTransaction()
+    session.endSession()
+
+    // Notify the destination supervisor (best-effort, after commit; skip if it's the caller).
+    try {
+      const destSup = await findSiteSupervisor(toSiteId)
+      if (destSup && destSup._id.toString() !== req.user.id.toString()) {
+        await notifyUser(destSup._id, {
+          type: "transfer_arrived",
+          title: "Employee sent to your site",
+          body: `${employee.name} was sent to your site${mode === "permanent" ? " (permanent)" : " for today"}.`,
+          url: `/attendance/${toSiteId}`,
+        })
+      }
+    } catch (e) {
+      console.error("[send-employee] arrival notify failed:", e.message)
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: mode === "permanent" ? "Employee moved to the destination site" : "Employee sent for today",
+    })
+  } catch (error) {
+    await session.abortTransaction()
+    session.endSession()
+    console.error("[send-employee] error:", error)
+    return res.status(500).json({ success: false, message: "Failed to send employee" })
+  }
+}
+
 const siteController = {
     getSites,
     getSite,
@@ -2635,7 +2732,8 @@ const siteController = {
     toggleJobCompleted,
     updateEmployeeJob,
     cancelScheduledAssignment,
-    scheduleEmployeeRemoval
+    scheduleEmployeeRemoval,
+    sendEmployeeToSite
 }
 
 export default siteController;
