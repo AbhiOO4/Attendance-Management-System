@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { Menu } from "lucide-react"
@@ -21,6 +21,7 @@ import {
   Building2,
   Settings,
   ShieldCheck,
+  Inbox,
   type LucideIcon,
 } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -53,6 +54,7 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Reports", path: "/reports", icon: BarChart3 },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
+  { name: "Requests", path: "/requests", icon: Inbox },
   { name: "Configure", path: "/configure", icon: Settings },
   { name: "Manage Users", path: "/manage-users", icon: ShieldCheck },
 ]
@@ -63,6 +65,7 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
+  { name: "Requests", path: "/requests", icon: Inbox },
   { name: "Configure", path: "/configure", icon: Settings },
 ]
 
@@ -86,6 +89,8 @@ function getSupervisorNavItems(
       icon: Users,
     })
   }
+
+  items.push({ name: "Requests", path: "/requests", icon: Inbox })
 
   return items
 }
@@ -155,6 +160,43 @@ export default function SidebarLayout() {
     return []
   }, [user])
 
+  // Requests nav badge: pending incoming decisions + unread notifications. Polled
+  // lightly (90s, paused when the tab is hidden) with a cheap indexed count, plus
+  // a refetch on tab focus and on the in-app "requests:updated" event. No sockets.
+  const [requestsCount, setRequestsCount] = useState(0)
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+
+    const fetchSummary = async () => {
+      if (document.hidden) return
+      try {
+        const res = await api.get("/api/requests/summary")
+        const d = res.data?.data
+        if (!cancelled && d) setRequestsCount((d.pendingIncoming || 0) + (d.unread || 0))
+      } catch {
+        /* best-effort */
+      }
+    }
+
+    fetchSummary()
+    const id = window.setInterval(fetchSummary, 90000)
+    const onVisible = () => {
+      if (!document.hidden) fetchSummary()
+    }
+    const onUpdate = () => fetchSummary()
+    document.addEventListener("visibilitychange", onVisible)
+    window.addEventListener("requests:updated", onUpdate)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener("requests:updated", onUpdate)
+    }
+  }, [user])
+
   if (loading) {
     return <div>Loading...</div>
   }
@@ -202,25 +244,33 @@ export default function SidebarLayout() {
 
           {/* Icon-only nav */}
           <nav className="mt-2 flex flex-col items-center gap-2">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                end={item.path === "/"}
-                title={item.name}
-                aria-label={item.name}
-                className={({ isActive }) =>
-                  cn(
-                    "inline-flex h-10 w-10 items-center justify-center rounded-xl transition",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-muted"
-                  )
-                }
-              >
-                <item.icon className="h-5 w-5" />
-              </NavLink>
-            ))}
+            {navItems.map((item) => {
+              const count = item.path === "/requests" ? requestsCount : 0
+              return (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  end={item.path === "/"}
+                  title={item.name}
+                  aria-label={item.name}
+                  className={({ isActive }) =>
+                    cn(
+                      "relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted"
+                    )
+                  }
+                >
+                  <item.icon className="h-5 w-5" />
+                  {count > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold ring-2 ring-background">
+                      {count > 9 ? "9+" : count}
+                    </span>
+                  )}
+                </NavLink>
+              )
+            })}
           </nav>
 
           {/* Bottom actions */}
@@ -278,25 +328,33 @@ export default function SidebarLayout() {
 
             {/* Nav */}
             <nav className="flex flex-col gap-1">
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  end={item.path === "/"}
-                  onClick={() => setOpen(false)}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                      isActive
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  {item.name}
-                </NavLink>
-              ))}
+              {navItems.map((item) => {
+                const count = item.path === "/requests" ? requestsCount : 0
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    end={item.path === "/"}
+                    onClick={() => setOpen(false)}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                        isActive
+                          ? "bg-muted font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                      )
+                    }
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    <span className="flex-1">{item.name}</span>
+                    {count > 0 && (
+                      <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-semibold">
+                        {count > 9 ? "9+" : count}
+                      </span>
+                    )}
+                  </NavLink>
+                )
+              })}
             </nav>
 
             {/* Actions — kept high, right below the nav */}

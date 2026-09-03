@@ -13,6 +13,7 @@ import { getStaffEmployeeIds } from '../utils/collar.js'
 import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import { isAssignableSite } from '../utils/siteAssignable.js'
+import TransferRequest from '../models/transferRequestModel.js'
 
 
 //Admin
@@ -1476,6 +1477,20 @@ export const instaAddEmployee = async (req, res) => {
       })
     }
 
+    // Supervisors may only instant-add UNASSIGNED (pool) employees. An employee
+    // homed at another site must be brought over via a transfer Request so that
+    // site's supervisor is aware. Admins/superadmins keep direct add; the deferred
+    // (tomorrow) path is unaffected — tomorrow's roster is set up freely.
+    if (!deferred && req.user?.role === "supervisor" && employee.currentSite) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({
+        success: false,
+        message:
+          "This employee is assigned to another site. Use Request to bring them over so their supervisor is notified.",
+      })
+    }
+
     // ----------------------------------
     // DEFERRED (from-tomorrow) ADD via SiteDetail
     // ----------------------------------
@@ -1858,6 +1873,17 @@ export const getAvailableEmployeesForSite = async (
       query.$and.push({ nationality: { $ne: "omani" } })
     }
 
+    // Exclude anyone who already has a session at THIS site today — they're already
+    // on today's roster here, so there's nothing to add/request for them.
+    const today = new Date()
+    today.setUTCHours(0, 0, 0, 0)
+    const sessionHereIds = await attendanceModel
+      .find({ date: today, "sessions.siteId": siteId })
+      .distinct("employee")
+    if (sessionHereIds.length > 0) {
+      query.$and.push({ _id: { $nin: sessionHereIds } })
+    }
+
     const employees =
       await empModel
         .find(query)
@@ -1886,6 +1912,48 @@ export const getAvailableEmployeesForSite = async (
         skip + limit
       )
 
+    // -----------------------
+    // PER-ROW CONTEXT (Add vs Request lane)
+    // -----------------------
+    // Enrich only the 20 rows on this page: whether the employee is assigned
+    // (→ Request) or unassigned (→ Add), whether a request is already pending,
+    // and the state of attendance at their HOME site today (so the requester can
+    // see whether it's been saved there yet).
+    const pageEmpIds = paginatedEmployees.map((e) => e._id)
+    const homeSiteIds = paginatedEmployees
+      .map((e) => e.currentSite?._id)
+      .filter(Boolean)
+
+    const [pendingReqDocs, todaysAttendance, homeLocks] = await Promise.all([
+      TransferRequest.find({ employee: { $in: pageEmpIds }, status: "pending" }).select("employee"),
+      attendanceModel.find({ employee: { $in: pageEmpIds }, date: today }).select("employee sessions"),
+      AttendanceLock.find({ siteId: { $in: homeSiteIds }, date: today, isLocked: true }).select("siteId"),
+    ])
+
+    const pendingSet = new Set(pendingReqDocs.map((r) => r.employee.toString()))
+    const attByEmp = new Map(todaysAttendance.map((a) => [a.employee.toString(), a]))
+    const lockedHomeSet = new Set(homeLocks.map((l) => l.siteId.toString()))
+
+    const enriched = paginatedEmployees.map((emp) => {
+      const obj = emp.toObject()
+      const assigned = !!emp.currentSite
+      obj.assigned = assigned
+      obj.hasPendingRequest = pendingSet.has(emp._id.toString())
+
+      let homeStatus = "unassigned"
+      if (assigned) {
+        const homeSiteId = emp.currentSite._id.toString()
+        const att = attByEmp.get(emp._id.toString())
+        const homeSession = att?.sessions?.find((s) => s.siteId?.toString() === homeSiteId)
+        if (homeSession?.checkIn && homeSession?.checkOut) homeStatus = "checked-out"
+        else if (homeSession?.checkIn) homeStatus = "present"
+        else if (lockedHomeSet.has(homeSiteId)) homeStatus = "submitted"
+        else homeStatus = "not-marked"
+      }
+      obj.homeStatus = homeStatus
+      return obj
+    })
+
     return res.status(200).json({
       success: true,
 
@@ -1908,7 +1976,7 @@ export const getAvailableEmployeesForSite = async (
         nationality,
       },
 
-      employees: paginatedEmployees,
+      employees: enriched,
     })
   } catch (error) {
     console.error(error)

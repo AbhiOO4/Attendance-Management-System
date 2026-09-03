@@ -16,6 +16,7 @@ import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage 
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
+import { notifyUser, findSiteSupervisor } from '../utils/notify.js';
 
 
 // --- CURRENT-JOB SYNC ---
@@ -3619,6 +3620,23 @@ export const transferEmployee = async (req, res) => {
 
     await dbSession.commitTransaction()
     dbSession.endSession()
+
+    // Notify the destination site's supervisor that an employee arrived via a
+    // midday transfer they did not request (the "unknowingly" case). Best-effort,
+    // after commit; skip if the acting user is that supervisor (they already know).
+    try {
+      const destSup = await findSiteSupervisor(toSiteId)
+      if (destSup && destSup._id.toString() !== req.user.id.toString()) {
+        await notifyUser(destSup._id, {
+          type: "transfer_arrived",
+          title: "Employee transferred in",
+          body: `${employee.name} was transferred to your site today.`,
+          url: `/attendance/${toSiteId}`,
+        })
+      }
+    } catch (e) {
+      console.error("[transfer] arrival notify failed:", e.message)
+    }
 
     await employee.populate("currentJob", "name")
     await employee.populate("currentSite", "siteName")

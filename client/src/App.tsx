@@ -28,6 +28,7 @@ const Configure = lazy(() => import("./pages/Configure"))
 const ManageUsers = lazy(() => import("./pages/ManageUsers"))
 const EmployeeDetailAttendance = lazy(() => import("./pages/EmployeeDetailAttendance"))
 const InstaAddEmployees = lazy(() => import("./pages/InstaAddEmployees"))
+const Requests = lazy(() => import("./pages/Requests"))
 
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
@@ -212,6 +213,15 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <InstaAddEmployees />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="requests"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
+              <Requests />
             </ProtectedRoute>
           }
         />

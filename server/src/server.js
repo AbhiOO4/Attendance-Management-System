@@ -19,6 +19,7 @@ import Site from './models/siteModel.js'
 import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
 import { startApplyScheduledAssignmentsCron } from './cron/applyScheduledAssignments.js'
 import { startCheckoutReminderCron } from './cron/checkoutReminder.js'
+import { startExpireTransferRequestsCron } from './cron/expireTransferRequests.js'
 // Night check-in is now pre-filled when a night shift is assigned (see
 // assignNightShift), so the auto check-in cron is no longer scheduled.
 
@@ -29,6 +30,7 @@ import userRoutes from '../src/routes/userRoutes.js'
 import attendanceRoutes from '../src/routes/attendanceRoutes.js'
 import siteRoutes from '../src/routes/siteRoutes.js'
 import configRoutes from '../src/routes/configRoutes.js'
+import requestRoutes from '../src/routes/requestRoutes.js'
 
 app.use(cookieParser())
 
@@ -38,6 +40,7 @@ app.use('/api/user', userRoutes)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/site', siteRoutes)
 app.use('/api/config', configRoutes)
+app.use('/api/requests', requestRoutes)
 
 
 
@@ -71,6 +74,7 @@ connectDB().then(async () => {
     startAutoCheckOutCron();
     startApplyScheduledAssignmentsCron();
     startCheckoutReminderCron();
+    startExpireTransferRequestsCron();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })

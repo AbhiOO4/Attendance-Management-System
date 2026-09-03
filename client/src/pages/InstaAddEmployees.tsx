@@ -50,8 +50,12 @@ import {
     MapPin,
     Briefcase,
     Clock3,
-    AlertCircle
+    AlertCircle,
+    Send,
+    ArrowLeftRight,
 } from "lucide-react"
+
+import { useAuth } from "@/context/AuthContext"
 
 import {
     Select,
@@ -93,6 +97,14 @@ interface Employee {
     } | null
 
     employmentType?: 'permanent' | 'temporary'
+
+    // Per-row context from the server (see getAvailableEmployeesForSite):
+    //   assigned         — homed at another site (→ Request) vs unassigned (→ Add)
+    //   hasPendingRequest— an open transfer request already exists for this employee
+    //   homeStatus       — attendance state at their HOME site today
+    assigned?: boolean
+    hasPendingRequest?: boolean
+    homeStatus?: 'unassigned' | 'not-marked' | 'present' | 'checked-out' | 'submitted'
 }
 
 interface EmployeeResponse {
@@ -140,6 +152,12 @@ function InstaAddEmployees() {
     const navigate = useNavigate()
 
     const location = useLocation()
+
+    const { user } = useAuth()
+    // Supervisors are gated: they may only directly Add UNASSIGNED employees. An
+    // employee homed at another site must be brought over with a Request so that
+    // site's supervisor is notified. Admins/superadmins keep direct Add.
+    const isSupervisor = user?.role === "supervisor"
 
     // Opened from SiteDetail (admin) → schedule the add for tomorrow: no check-in,
     // no today session. Opened from SiteAttendance → instant add (unchanged).
@@ -197,6 +215,13 @@ function InstaAddEmployees() {
     // Instant add only: the employee's existing sessions at OTHER sites today.
     const [daySessions, setDaySessions] = useState<DaySession[]>([])
     const [daySessionsLoading, setDaySessionsLoading] = useState(false)
+
+    // Request lane (supervisor requests an employee homed at another site).
+    const [requestOpen, setRequestOpen] = useState(false)
+    const [requestEmployee, setRequestEmployee] = useState<Employee | null>(null)
+    const [requestJob, setRequestJob] = useState<string | null>(null)
+    const [requestMode, setRequestMode] = useState<"today" | "permanent">("today")
+    const [requestSubmitting, setRequestSubmitting] = useState(false)
 
     const [filters, setFilters] = useState({
         name: "",
@@ -424,6 +449,115 @@ function InstaAddEmployees() {
             setCheckInTime("")
             setOverlapError(null)
         }
+    }
+
+    const openRequestModal = (employee: Employee) => {
+        setRequestEmployee(employee)
+        setRequestJob(null)
+        setRequestMode("today")
+        setRequestOpen(true)
+    }
+
+    const submitRequest = async () => {
+        if (!requestEmployee || !siteId) return
+        setRequestSubmitting(true)
+        try {
+            await api.post("/api/requests", {
+                employeeId: requestEmployee._id,
+                toSiteId: siteId,
+                toJobId: requestJob,
+                mode: requestMode,
+            })
+            toast.success("Request sent to their site's supervisor")
+            setEmployees((prev) =>
+                prev.map((e) => (e._id === requestEmployee._id ? { ...e, hasPendingRequest: true } : e))
+            )
+            window.dispatchEvent(new Event("requests:updated"))
+            setRequestOpen(false)
+            setRequestEmployee(null)
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                toast.error(error.response?.data?.message || "Couldn't send request")
+                // Already-pending (409) — reflect it so the row shows "Requested".
+                if (error.response?.status === 409) {
+                    setEmployees((prev) =>
+                        prev.map((e) => (e._id === requestEmployee._id ? { ...e, hasPendingRequest: true } : e))
+                    )
+                }
+            } else {
+                toast.error("Couldn't send request")
+            }
+        } finally {
+            setRequestSubmitting(false)
+        }
+    }
+
+    // Add (unassigned / admins) vs Request (supervisor + employee homed elsewhere).
+    const renderRowAction = (employee: Employee) => {
+        const assigned = !!employee.currentSite
+        if (!deferred && isSupervisor && assigned) {
+            if (employee.hasPendingRequest) {
+                return (
+                    <Button size="sm" variant="secondary" disabled className="shrink-0">
+                        <Clock3 className="h-4 w-4 mr-1.5" />
+                        Requested
+                    </Button>
+                )
+            }
+            return (
+                <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openRequestModal(employee)}
+                    className="shrink-0 transition-transform active:scale-95 duration-100"
+                >
+                    <Send className="h-4 w-4 mr-1.5" />
+                    Request
+                </Button>
+            )
+        }
+        return (
+            <Button
+                size="sm"
+                onClick={() => openConfirmModal(employee)}
+                className="shrink-0 transition-transform active:scale-95 duration-100"
+            >
+                <UserPlus className="h-4 w-4 mr-1.5" />
+                Add
+            </Button>
+        )
+    }
+
+    // Attendance state at the employee's HOME site today — answers "has it been saved
+    // there yet?" so a requester isn't blind to the other site's progress.
+    const homeStatusBadge = (employee: Employee) => {
+        const status = employee.homeStatus
+        if (!status || status === "unassigned") return null
+        const map: Record<string, { label: string; cls: string }> = {
+            "not-marked": {
+                label: "Home: not marked",
+                cls: "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300 border-slate-200/60 dark:border-slate-700/40",
+            },
+            present: {
+                label: "Home: present",
+                cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200/60 dark:border-emerald-800/30",
+            },
+            "checked-out": {
+                label: "Home: checked out",
+                cls: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-200/60 dark:border-blue-800/30",
+            },
+            submitted: {
+                label: "Home: submitted",
+                cls: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border-violet-200/60 dark:border-violet-800/30",
+            },
+        }
+        const m = map[status]
+        if (!m) return null
+        return (
+            <Badge variant="outline" className={`text-[10px] font-medium py-0 px-2 ${m.cls}`}>
+                {m.label}
+            </Badge>
+        )
     }
 
     if (loading) {
@@ -665,16 +799,10 @@ function InstaAddEmployees() {
                                                                 Temporary
                                                             </Badge>
                                                         )}
+                                                        {homeStatusBadge(employee)}
                                                     </div>
                                                 </div>
-                                                <Button
-                                                    size="sm"
-                                                    onClick={() => openConfirmModal(employee)}
-                                                    className="shrink-0 transition-transform active:scale-95 duration-100"
-                                                >
-                                                    <UserPlus className="h-4 w-4 mr-1.5" />
-                                                    Add
-                                                </Button>
+                                                {renderRowAction(employee)}
                                             </div>
 
                                             <div className="mt-4 pt-3 border-t border-border/60 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
@@ -745,19 +873,16 @@ function InstaAddEmployees() {
                                                         {employee.jobTitle}
                                                     </TableCell>
                                                     <TableCell className="font-medium text-foreground text-sm">
-                                                        {employee.currentSite?.siteName || "-"}
+                                                        <div className="flex flex-col gap-1">
+                                                            <span>{employee.currentSite?.siteName || "-"}</span>
+                                                            {homeStatusBadge(employee)}
+                                                        </div>
                                                     </TableCell>
                                                     <TableCell className="text-sm text-muted-foreground">
                                                         {employee.currentJob?.name || "-"}
                                                     </TableCell>
                                                     <TableCell className="text-right">
-                                                        <Button
-                                                            size="sm"
-                                                            onClick={() => openConfirmModal(employee)}
-                                                        >
-                                                            <UserPlus className="h-4 w-4 mr-2" />
-                                                            Add
-                                                        </Button>
+                                                        {renderRowAction(employee)}
                                                     </TableCell>
                                                 </TableRow>
                                             ))}
@@ -1038,6 +1163,124 @@ function InstaAddEmployees() {
                                 <>
                                     <UserPlus className="h-4 w-4" />
                                     {deferred ? "Schedule for Tomorrow" : "Confirm Add"}
+                                </>
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Request Transfer dialog (supervisor → home site's supervisor) */}
+            <Dialog open={requestOpen} onOpenChange={setRequestOpen}>
+                <DialogContent className="sm:max-w-[460px] rounded-2xl overflow-hidden p-0 border border-border bg-card shadow-2xl">
+                    <DialogHeader className="px-6 pt-6 pb-4 bg-muted/30 border-b border-border/40">
+                        <DialogTitle className="text-xl font-bold flex items-center gap-2 text-foreground">
+                            <ArrowLeftRight className="h-5 w-5 text-primary" />
+                            Request Transfer
+                        </DialogTitle>
+                    </DialogHeader>
+
+                    <div className="p-6 space-y-6">
+                        {requestEmployee && (
+                            <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-2">
+                                <div className="font-bold text-foreground leading-tight">{requestEmployee.name}</div>
+                                <p className="text-xs text-muted-foreground">{requestEmployee.jobTitle}</p>
+                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                    <MapPin className="h-3.5 w-3.5 shrink-0" />
+                                    <span className="truncate">
+                                        From <strong className="text-foreground">{requestEmployee.currentSite?.siteName || "their site"}</strong>
+                                        {" → "}
+                                        <strong className="text-foreground">{site?.siteName}</strong>
+                                    </span>
+                                </div>
+                                <div>{homeStatusBadge(requestEmployee)}</div>
+                            </div>
+                        )}
+
+                        {/* Job at this site */}
+                        <div className="space-y-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Briefcase className="h-4 w-4 text-muted-foreground" />
+                                <label className="text-sm font-semibold text-foreground">Assign Job Role</label>
+                            </div>
+                            <Select
+                                value={requestJob ?? "none"}
+                                onValueChange={(value) => setRequestJob(value === "none" ? null : value)}
+                            >
+                                <SelectTrigger className="w-full bg-background border-input shadow-sm hover:border-accent">
+                                    <SelectValue placeholder="Select job (optional)" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="none">Don't assign job</SelectItem>
+                                    {site?.jobs?.filter(job => job.isActive !== false && !job.isDeleted && !job.isCompleted).map((job) => (
+                                        <SelectItem key={job._id} value={job._id}>
+                                            {job.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {/* Transfer type */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-semibold text-foreground">Transfer type</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setRequestMode("today")}
+                                    className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "today" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
+                                >
+                                    <div className="font-semibold text-sm text-foreground">For today</div>
+                                    <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                        Full day here; back on their site tomorrow.
+                                    </div>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setRequestMode("permanent")}
+                                    className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "permanent" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
+                                >
+                                    <div className="font-semibold text-sm text-foreground">Permanent</div>
+                                    <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                        Home site moves here from today.
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                            <span>
+                                This sends a request to{" "}
+                                <strong className="text-foreground">{requestEmployee?.currentSite?.siteName || "their site"}</strong>'s
+                                supervisor. The employee joins your roster only once they accept.
+                            </span>
+                        </div>
+                    </div>
+
+                    <DialogFooter className="px-6 py-4 bg-muted/30 border-t border-border/40 flex sm:justify-end gap-2">
+                        <Button
+                            variant="outline"
+                            onClick={() => setRequestOpen(false)}
+                            disabled={requestSubmitting}
+                            className="w-full sm:w-auto"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={submitRequest}
+                            disabled={requestSubmitting}
+                            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
+                        >
+                            {requestSubmitting ? (
+                                <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Sending...
+                                </>
+                            ) : (
+                                <>
+                                    <Send className="h-4 w-4" />
+                                    Send Request
                                 </>
                             )}
                         </Button>
