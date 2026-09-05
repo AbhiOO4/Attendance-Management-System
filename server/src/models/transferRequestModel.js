@@ -1,25 +1,40 @@
 import mongoose from "mongoose"
 
 /**
- * A cross-site transfer request: a destination site's supervisor asks the home
- * site's supervisor (the employee's owner) to hand an employee over for TODAY.
- * This is the "Request" lane — a COMPLETE handover of the day, distinct from the
- * source-initiated midday "Transfer" (a second session). See requestController.js.
+ * A cross-site transfer request. Two directions share this model, told apart by
+ * `direction`:
  *
- * `mode` is chosen by the requester:
+ *   - "pull" (default) — the DESTINATION site's supervisor asks the HOME site's
+ *     supervisor to hand an employee over for a clean full-day handover (the employee
+ *     is not yet marked today). The HOME site (fromSite) decides. Created via
+ *     POST /api/requests.
+ *   - "push" — a SOURCE site's supervisor transfers an employee MID-DAY (already
+ *     marked and checked out at the source) to another site; the DESTINATION site
+ *     (toSite) must accept before the arrival is placed. Created inside
+ *     attendanceController.transferEmployee (admins bypass and transfer immediately).
+ *
+ * The deciding site is fromSite for "pull" and toSite for "push" — resolved in
+ * requestController (incomingFilterFor / mayDecide). See requestController.js.
+ *
+ * `mode` is chosen by the requester (pull) or derived from the "only for today"
+ * toggle (push):
  *   - "today"     → a full-day visit at the destination; home currentSite/currentJob
  *                   are untouched (back home tomorrow). Applied via the pendingTransfer*
  *                   stash on the employee (empModel.js), same rails as transferEmployee.
  *   - "permanent" → the employee's home moves to the destination going forward
  *                   (currentSite/currentJob repoint + job membership + supervisor auth).
  *
- * `approver` is a REPRESENTATIVE home-site supervisor kept for display; null means
- * the home site had no supervisor at creation, so the request falls to admins. It is
+ * `carriedCheckIn` is set only for a "push": the source check-out snapshotted at
+ * request time, replayed as the destination check-in when the request is accepted.
+ *
+ * `approver` is a REPRESENTATIVE supervisor of the DECIDING site kept for display; null
+ * means that site had no supervisor at creation, so the request falls to admins. It is
  * NOT the authorization key — a site may have several supervisors and ANY of them (or
- * an admin) may decide, resolved by fromSite === assignedSite in requestController.
+ * an admin) may decide, resolved by the deciding site === assignedSite in requestController.
  * Lifecycle:
  *   pending → accepted | rejected | cancelled | expired
- * A partial-unique index enforces at most one pending request per employee.
+ * A partial-unique index enforces at most one pending request per employee (either
+ * direction), which also blocks a push while a pull is pending and vice versa.
  */
 const transferRequestSchema = new mongoose.Schema(
   {
@@ -63,13 +78,31 @@ const transferRequestSchema = new mongoose.Schema(
       required: true,
     },
 
+    // Which way the request flows (see the header comment). "pull" = destination asks
+    // home (home decides); "push" = source sends, destination decides. Absent on
+    // pre-existing docs → treated as "pull".
+    direction: {
+      type: String,
+      enum: ["pull", "push"],
+      default: "pull",
+      index: true,
+    },
+
+    // "push" only: the source check-out carried forward as the destination check-in
+    // when the request is accepted (a midday second session). null for "pull".
+    carriedCheckIn: {
+      type: Date,
+      default: null,
+    },
+
     requestedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
 
-    // Home-site supervisor who decides. null → no site supervisor, admins decide.
+    // Representative supervisor of the DECIDING site (fromSite for pull, toSite for
+    // push), kept for display. null → that site had no supervisor, admins decide.
     approver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -116,9 +149,11 @@ transferRequestSchema.index(
 )
 
 // Fast inbox lookups + the badge count.
-// Supervisor inbox is site-based (any supervisor of the home site decides); admins
-// still query by approver (self / null), so both indexes earn their keep.
+// Supervisor inbox is site-based (any supervisor of the deciding site decides): pull
+// requests key off fromSite, push requests off toSite. Admins still query by approver
+// (self / null), so all these indexes earn their keep.
 transferRequestSchema.index({ fromSite: 1, status: 1 })
+transferRequestSchema.index({ toSite: 1, status: 1 })
 transferRequestSchema.index({ approver: 1, status: 1 })
 transferRequestSchema.index({ requestedBy: 1, status: 1 })
 // Expiry sweep.

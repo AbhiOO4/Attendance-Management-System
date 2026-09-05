@@ -12,12 +12,14 @@ import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
-import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal } from '../utils/timeLocal.js';
+import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
-import { notifySiteSupervisors } from '../utils/notify.js';
+import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
+import { placeMiddayArrival } from '../utils/handover.js';
+import TransferRequest from '../models/transferRequestModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
 
@@ -3668,88 +3670,101 @@ export const transferEmployee = async (req, res) => {
 
     const carriedCheckIn = sourceSession.checkOut
 
-    const targetHasSavedRecord = await Attendance.exists({
-      date: attendanceDate,
-      "sessions.siteId": toSiteId,
-    }).session(dbSession)
+    // Supervisor-initiated midday transfer → a request the DESTINATION site's
+    // supervisors must accept before the employee lands there (verification that the
+    // move goes to the right site). Admins/superadmins bypass and transfer immediately.
+    if (req.user.role === "supervisor") {
+      const mode = onlyForToday ? "today" : "permanent"
+      const destSupervisors = await findSiteSupervisors(toSiteId)
 
-    if (targetHasSavedRecord) {
-      const incompleteAtTarget = attendanceDoc.sessions.find(
-        (s) => s.siteId.toString() === toSiteId.toString() && (!s.checkIn || !s.checkOut)
-      )
-
-      if (incompleteAtTarget) {
-        throwValidationError(400, "Employee already has an incomplete session at the target site today")
-      }
-
-      attendanceDoc.sessions.push({
-        siteId: toSiteId,
-        jobId: jobId || null,
-        checkIn: carriedCheckIn,
-        checkOut: null,
-        workedHours: 0,
-        markedBy: req.user.id,
-        transferredFromSiteId: fromSiteId,
-      })
-
-      await attendanceDoc.save({ session: dbSession })
-
-      // --- Audit: a session was added via cross-site transfer (joins the txn) ---
-      await recordAttendanceAudit({
-        attendance: attendanceDoc,
-        actor: await resolveActor(req),
-        type: "transferred_in",
-        summary: "Session added via transfer",
-        session: dbSession,
-      })
-    } else {
-      employee.pendingTransferCheckIn = carriedCheckIn
-      employee.pendingTransferSiteId = toSiteId
-      employee.pendingTransferDate = attendanceDate
-      employee.pendingTransferFromSiteId = fromSiteId
-      // Carry the destination job so the visitor's session at the new site records it
-      // (parity with the immediate-session branch above, which sets jobId directly).
-      employee.pendingTransferJobId = jobId || null
-    }
-
-    // onlyForToday: the session is carried above (push / pendingTransfer stash), but the
-    // employee's home is untouched — no currentSite/currentJob move, no job-membership
-    // change, and (for a supervisor) no assignedSite change. They're visiting for the
-    // day and return to their home site's roster tomorrow. The employee.save() below is
-    // still needed to persist the pendingTransfer* stash set above.
-    if (!onlyForToday) {
-      const oldJobId = employee.currentJob
-      if (oldJobId) {
-        await Job.findByIdAndUpdate(
-          oldJobId,
-          { $pull: { employees: employee._id } },
+      let created
+      try {
+        created = await TransferRequest.create(
+          [
+            {
+              employee: employee._id,
+              fromSite: fromSiteId,
+              fromJob: employee.currentJob || null,
+              toSite: toSiteId,
+              toJob: jobId || null,
+              mode,
+              direction: "push",
+              carriedCheckIn,
+              requestedBy: req.user.id,
+              approver: destSupervisors[0]?._id ?? null,
+              status: "pending",
+              dateLocal: getTodayLocal(),
+            },
+          ],
           { session: dbSession }
         )
+      } catch (err) {
+        if (err.code === 11000) {
+          throwValidationError(409, "A transfer for this employee is already pending")
+        }
+        throw err
+      }
+      const request = created[0]
+
+      await dbSession.commitTransaction()
+      dbSession.endSession()
+
+      // Notify the destination site's decider(s) (best-effort, after commit).
+      try {
+        const requester = await userModel.findById(req.user.id).select("name")
+        const payload = {
+          type: "request_received",
+          title: "New transfer request",
+          body: `${requester?.name || "A supervisor"} wants to transfer ${employee.name} to your site${mode === "permanent" ? " (permanent)" : " for today"}.`,
+          url: "/requests",
+          relatedRequest: request._id,
+        }
+        if (destSupervisors.length) await Promise.all(destSupervisors.map((s) => notifyUser(s._id, payload)))
+        else await notifyAdmins(payload)
+      } catch (e) {
+        console.error("[transfer] request notify failed:", e.message)
       }
 
-      employee.currentJob = jobId || null
-      employee.currentSite = toSiteId
+      // --- Site activity: a midday transfer request was sent (best-effort; both feeds) ---
+      try {
+        const reqActor = await resolveActor(req)
+        const fromSiteDoc = await Site.findById(fromSiteId).select("siteName")
+        await recordSiteActivity({
+          type: "request_sent",
+          actor: reqActor,
+          employee: employee._id,
+          employeeName: employee.name,
+          fromSiteId,
+          toSiteId,
+          summary: `${reqActor.actorName} requested a midday transfer of ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${mode === "permanent" ? "permanent" : "for today"})`,
+        })
+      } catch (e) {
+        console.error("[transfer] request activity log failed:", e.message)
+      }
+
+      return res.status(201).json({
+        success: true,
+        requested: true,
+        pending: true,
+        message: `Transfer request sent to ${toSite?.siteName || "the site"} — awaiting their approval`,
+        data: request,
+      })
     }
 
-    await employee.save({ session: dbSession })
-
-    if (!onlyForToday && jobId) {
-      await Job.findByIdAndUpdate(
-        jobId,
-        { $addToSet: { employees: employee._id } },
-        { session: dbSession }
-      )
-    }
-
-    // Auth follows the home: a permanent move repoints the supervisor's assignedSite;
-    // an only-for-today visit leaves it alone.
-    if (!onlyForToday && employee.user) {
-      await userModel.findByIdAndUpdate(
-        employee.user,
-        { assignedSite: toSiteId },
-        { session: dbSession }
-      )
-    }
+    // Admin/superadmin: apply the transfer immediately (shared placement helper).
+    const { pending: isPending } = await placeMiddayArrival({
+      employee,
+      fromSiteId,
+      toSiteId,
+      jobId: jobId || null,
+      carriedCheckIn,
+      attendanceDate,
+      onlyForToday,
+      markedById: req.user.id,
+      actor: await resolveActor(req),
+      session: dbSession,
+      attendanceDoc,
+    })
 
     await dbSession.commitTransaction()
     dbSession.endSession()
@@ -3796,13 +3811,13 @@ export const transferEmployee = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: onlyForToday
-        ? (targetHasSavedRecord
+        ? (!isPending
             ? "Session added at target site for today; home site unchanged"
             : "Session for today will apply when the target site's attendance is next opened or submitted; home site unchanged")
-        : (targetHasSavedRecord
+        : (!isPending
             ? "Employee transferred; new session added at target site"
             : "Employee transferred; check-in will apply when the target site's attendance is next opened or submitted"),
-      pending: !targetHasSavedRecord,
+      pending: isPending,
       relocated,
       employee,
     })

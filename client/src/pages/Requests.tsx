@@ -33,6 +33,11 @@ type TransferRequest = {
   fromJob: Ref
   toJob: Ref
   mode: "today" | "permanent"
+  // "pull" = a destination asked for this employee (home decides); "push" = a source
+  // is sending this employee mid-day into a site (destination decides). Absent on
+  // legacy docs → treated as "pull".
+  direction?: "pull" | "push"
+  carriedCheckIn?: string | null
   status: RequestStatus
   requestedBy: Ref
   approver: Ref
@@ -105,6 +110,14 @@ function RequestCard({
         <div className="flex flex-col items-end gap-1 shrink-0">
           <StatusBadge status={req.status} />
           <ModeBadge mode={req.mode} />
+          {req.direction === "push" && (
+            <Badge
+              variant="outline"
+              className="text-[11px] bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200/60 dark:border-amber-800/30"
+            >
+              Mid-day
+            </Badge>
+          )}
         </div>
       </div>
 

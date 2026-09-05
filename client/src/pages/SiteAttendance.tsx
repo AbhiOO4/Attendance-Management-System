@@ -2,6 +2,7 @@ import { api } from "@/lib/api"
 import { computeAutoBreaks } from "@/lib/attendanceUtils"
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment, memo } from "react"
 import { useWorkConfig } from "@/context/WorkConfigContext"
+import { useAuth } from "@/context/AuthContext"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
@@ -1042,6 +1043,10 @@ function SiteAttendance() {
   // date — a night shift that runs past midnight stays on the day it started, and is closed
   // the next morning through the carryover flow below.
   const { config: workConfig, loading: configLoading } = useWorkConfig()
+  const { user } = useAuth()
+  // Supervisors' transfers are held as requests the destination must accept; admins
+  // and superadmins transfer immediately.
+  const transferNeedsApproval = user?.role === "supervisor"
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
   const fullDayHours = workConfig?.fullDayHours ?? 8
 
@@ -4388,6 +4393,7 @@ function SiteAttendance() {
         fromSiteId={id ?? ""}
         date={today}
         isSupervisor={!!transferTargetRecord?.user}
+        willRequest={transferNeedsApproval}
         onTransferred={() => {
           setTransferModalOpen(false)
           setTransferTargetRecord(null)

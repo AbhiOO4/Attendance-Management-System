@@ -45,7 +45,10 @@ interface TransferEmployeeModalProps {
   fromSiteId: string
   date: string
   isSupervisor?: boolean
-  onTransferred?: (result: { pending: boolean }) => void
+  // The acting user's transfer will be held as a request the destination site's
+  // supervisors must accept (true for supervisors; admins transfer immediately).
+  willRequest?: boolean
+  onTransferred?: (result: { pending: boolean; requested?: boolean }) => void
 }
 
 function TransferEmployeeModal({
@@ -56,6 +59,7 @@ function TransferEmployeeModal({
   fromSiteId,
   date,
   isSupervisor = false,
+  willRequest = false,
   onTransferred,
 }: TransferEmployeeModalProps) {
   const [sites, setSites] = useState<Site[]>([])
@@ -119,7 +123,7 @@ function TransferEmployeeModal({
         onlyForToday,
       })
       toast.success(res.data.message || "Employee transferred")
-      onTransferred?.({ pending: !!res.data.pending })
+      onTransferred?.({ pending: !!res.data.pending, requested: !!res.data.requested })
       onClose()
     } catch (error: any) {
       toast.error(
@@ -141,11 +145,13 @@ function TransferEmployeeModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ArrowLeftRight className="h-5 w-5" />
-            Transfer Employee
+            {willRequest ? "Request Transfer" : "Transfer Employee"}
           </DialogTitle>
           <DialogDescription>
             Transfer {employeeName || "this employee"} to another site. Their
             check-out here becomes their check-in there.
+            {willRequest &&
+              " The destination site's supervisors must accept before the employee is added there."}
           </DialogDescription>
         </DialogHeader>
 
@@ -244,7 +250,7 @@ function TransferEmployeeModal({
             ) : (
               <ArrowLeftRight className="h-4 w-4 mr-2" />
             )}
-            Transfer
+            {willRequest ? "Request transfer" : "Transfer"}
           </Button>
         </DialogFooter>
       </DialogContent>

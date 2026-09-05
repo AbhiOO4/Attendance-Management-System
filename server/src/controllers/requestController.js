@@ -21,7 +21,7 @@ import notificationModel from "../models/notificationModel.js"
 import { isAssignableSite } from "../utils/siteAssignable.js"
 import { getTodayLocal } from "../utils/timeLocal.js"
 import { notifyUser, notifyAdmins, findSiteSupervisors } from "../utils/notify.js"
-import { applyHandover } from "../utils/handover.js"
+import { applyHandover, placeMiddayArrival } from "../utils/handover.js"
 import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
@@ -167,10 +167,12 @@ export const createRequest = async (req, res) => {
 /**
  * The "incoming" filter — requests this user is responsible for deciding.
  * - Admins: requests routed to them, or to no supervisor (approver null).
- * - Supervisors: EVERY request against their site (fromSite === their assignedSite).
- *   A site may have several supervisors and any of them can decide, so this is
- *   site-based rather than the single stored `approver` (only a representative, kept
- *   for display). Matches nothing when a supervisor has no assigned site.
+ * - Supervisors: EVERY request whose DECIDING site is theirs. The deciding site is
+ *   fromSite for a "pull" (a destination asking for their employee) and toSite for a
+ *   "push" (a source sending an employee into their site). Site-based rather than the
+ *   single stored `approver` (a representative kept for display), since a site may have
+ *   several supervisors and any may decide. A missing `direction` on legacy docs is
+ *   treated as "pull". Matches nothing when a supervisor has no assigned site.
  */
 async function incomingFilterFor(user) {
   if (isAdmin(user.role)) {
@@ -178,7 +180,12 @@ async function incomingFilterFor(user) {
   }
   const me = await userModel.findById(user.id).select("assignedSite")
   if (!me?.assignedSite) return { _id: { $in: [] } }
-  return { fromSite: me.assignedSite }
+  return {
+    $or: [
+      { fromSite: me.assignedSite, direction: { $ne: "push" } },
+      { toSite: me.assignedSite, direction: "push" },
+    ],
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,14 +227,15 @@ export const listRequests = async (req, res) => {
 
 /**
  * Authorization for accept/reject: an admin, or ANY supervisor of the request's
- * home site (fromSite === their assignedSite). Site-based so every supervisor of the
- * site qualifies — not just the single stored `approver`.
+ * DECIDING site (toSite for a "push", fromSite for a "pull"). Site-based so every
+ * supervisor of that site qualifies — not just the single stored `approver`.
  */
 async function mayDecide(request, user) {
   if (isAdmin(user.role)) return true
   const me = await userModel.findById(user.id).select("assignedSite role")
   if (!me || me.role !== "supervisor" || !me.assignedSite) return false
-  return me.assignedSite.toString() === request.fromSite.toString()
+  const decidingSite = request.direction === "push" ? request.toSite : request.fromSite
+  return me.assignedSite.toString() === decidingSite.toString()
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +263,62 @@ export const acceptRequest = async (req, res) => {
       await session.abortTransaction()
       session.endSession()
       return res.status(404).json({ success: false, message: "Employee not found" })
+    }
+
+    // A source-initiated midday transfer (push): the employee is marked at the source
+    // by design, so the pull-lane drift/marked-today guards below don't apply. Place the
+    // arrival exactly as the immediate transfer does (carried check-in, second session).
+    if (request.direction === "push") {
+      const toSitePush = await Site.findById(request.toSite).session(session)
+      if (!isAssignableSite(toSitePush)) {
+        await session.abortTransaction()
+        session.endSession()
+        return res.status(400).json({ success: false, message: "Destination site is no longer a valid target" })
+      }
+
+      const pushActor = await resolveActor(req)
+      await placeMiddayArrival({
+        employee,
+        fromSiteId: request.fromSite,
+        toSiteId: request.toSite,
+        jobId: request.toJob || null,
+        carriedCheckIn: request.carriedCheckIn,
+        attendanceDate: todayAttendanceDate(),
+        onlyForToday: request.mode === "today",
+        markedById: req.user.id,
+        actor: pushActor,
+        session,
+      })
+
+      request.status = "accepted"
+      request.decidedBy = req.user.id
+      request.decidedAt = new Date()
+      await request.save({ session })
+
+      await session.commitTransaction()
+      session.endSession()
+
+      const empNamePush = employee.name
+      await notifyUser(request.requestedBy, {
+        type: "request_accepted",
+        title: "Transfer request accepted",
+        body: `${empNamePush} was accepted at ${toSitePush?.siteName || "the destination site"}${request.mode === "permanent" ? " (permanent)" : " for today"}.`,
+        url: "/requests",
+        relatedRequest: request._id,
+      })
+
+      const pushFromSite = await Site.findById(request.fromSite).select("siteName")
+      await recordSiteActivity({
+        type: "request_accepted",
+        actor: pushActor,
+        employee: employee._id,
+        employeeName: empNamePush,
+        fromSiteId: request.fromSite,
+        toSiteId: request.toSite,
+        summary: `${pushActor.actorName} accepted the midday transfer of ${empNamePush} from ${pushFromSite?.siteName || "their site"} to ${toSitePush?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})`,
+      })
+
+      return res.status(200).json({ success: true, message: "Request accepted", data: request })
     }
 
     // Drift guard: the employee must still be homed at the requested site.
@@ -339,7 +403,10 @@ export const acceptRequest = async (req, res) => {
     await session.abortTransaction()
     session.endSession()
     console.error("[requests] acceptRequest error:", error)
-    return res.status(500).json({ success: false, message: "Failed to accept request" })
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.status ? error.message : "Failed to accept request",
+    })
   }
 }
 
