@@ -14,8 +14,10 @@ import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import { isAssignableSite } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
+import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover } from '../utils/handover.js'
-import { notifyUser, findSiteSupervisor } from '../utils/notify.js'
+import { notifySiteSupervisors } from '../utils/notify.js'
+import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
 
 
 //Admin
@@ -231,6 +233,23 @@ export const assignEmployee = async (req , res) => {
         }
         employee.currentSite = siteId
         const saved = await employee.save()
+
+        // --- Site activity: employee added to this site (best-effort) ---
+        try {
+          const addActor = await resolveActor(req)
+          const siteDoc = await siteModel.findById(siteId).select("siteName")
+          await recordSiteActivity({
+            type: "employee_added",
+            actor: addActor,
+            employee: employee._id,
+            employeeName: employee.name,
+            siteId,
+            summary: `${addActor.actorName} added ${employee.name} to ${siteDoc?.siteName || "the site"}`,
+          })
+        } catch (e) {
+          console.error("[assign-employee] activity log failed:", e.message)
+        }
+
         res.status(200).json(saved)
     }
     catch(error){
@@ -326,6 +345,23 @@ export const removeEmployee = async (req, res) => {
 
       await session.commitTransaction();
       session.endSession();
+
+      // --- Site activity: employee removed from this site's roster (best-effort) ---
+      try {
+        const remActor = await resolveActor(req)
+        const siteDoc = await siteModel.findById(siteId).select("siteName")
+        await recordSiteActivity({
+          type: "employee_removed",
+          actor: remActor,
+          employee: employee._id,
+          employeeName: employee.name,
+          siteId,
+          summary: `${remActor.actorName} removed ${employee.name} from ${siteDoc?.siteName || "the site"}`,
+        })
+      } catch (e) {
+        console.error("[remove-employee] activity log failed:", e.message)
+      }
+
       return res.status(200).json(saved);
     }
 
@@ -1142,9 +1178,21 @@ export const deactivateSite = async (req, res) => {
       { session }
     );
 
-    
+
+    // DISASSOCIATE SUPERVISORS
+    // Deactivation strips supervisors' auth scope for this site (mirrors deleteSite).
+    // Completion deliberately does NOT — isCompleted is easily toggled by accident,
+    // so it must not carry this irreversible side effect.
+
+    await userModel.updateMany(
+      { assignedSite: siteId, role: "supervisor" },
+      { $set: { assignedSite: null } },
+      { session }
+    );
+
+
     // DEACTIVATE SITE
-   
+
 
     site.isActive = false;
 
@@ -1770,6 +1818,11 @@ export const getAvailableEmployeesForSite = async (
 
     const {
       page = 1,
+      limit: limitParam,
+      // `search` is the unified box (name / employeeId / jobTitle in one).
+      // The individual name/employeeId/jobTitle params are kept for backward
+      // compatibility with any older caller.
+      search = "",
       name = "",
       employeeId = "",
       jobTitle = "",
@@ -1778,7 +1831,12 @@ export const getAvailableEmployeesForSite = async (
       nationality = "",
     } = req.query
 
-    const limit = 20
+    // Clamp the page size to a small allowed set so a client can't ask for an
+    // unbounded page; default to 20.
+    const ALLOWED_LIMITS = [10, 20, 50, 100]
+    const limit = ALLOWED_LIMITS.includes(Number(limitParam))
+      ? Number(limitParam)
+      : 20
 
     const skip =
       (Number(page) - 1) * limit
@@ -1812,6 +1870,21 @@ export const getAvailableEmployeesForSite = async (
     // -----------------------
     // SEARCH FILTERS
     // -----------------------
+
+    // Unified search box: match the term against name, employeeId OR jobTitle.
+    if (search.trim()) {
+      const rx = {
+        $regex: escapeRegExp(search.trim()),
+        $options: "i",
+      }
+      query.$and.push({
+        $or: [
+          { name: rx },
+          { employeeId: rx },
+          { jobTitle: rx },
+        ],
+      })
+    }
 
     if (name.trim()) {
       query.$and.push({
@@ -1970,6 +2043,7 @@ export const getAvailableEmployeesForSite = async (
       ),
 
       filters: {
+        search,
         name,
         employeeId,
         jobTitle,
@@ -2594,6 +2668,22 @@ export const scheduleEmployeeRemoval = async (req, res) => {
     employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
     await employee.save();
 
+    // --- Site activity: deferred removal scheduled for tomorrow (best-effort) ---
+    try {
+      const schedActor = await resolveActor(req)
+      const siteDoc = await siteModel.findById(siteId).select("siteName")
+      await recordSiteActivity({
+        type: "scheduled_removal",
+        actor: schedActor,
+        employee: employee._id,
+        employeeName: employee.name,
+        siteId,
+        summary: `${schedActor.actorName} scheduled removal of ${employee.name} from ${siteDoc?.siteName || "the site"} (effective tomorrow)`,
+      })
+    } catch (e) {
+      console.error("[schedule-removal] activity log failed:", e.message)
+    }
+
     return res.status(200).json({
       success: true,
       message: "Removal scheduled — takes effect tomorrow",
@@ -2625,9 +2715,9 @@ export const sendEmployeeToSite = async (req, res) => {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ success: false, message: "siteId, empId, toSiteId and mode are required" })
     }
-    if (mode !== "today" && mode !== "permanent") {
+    if (mode !== "today" && mode !== "permanent" && mode !== "scheduled") {
       await session.abortTransaction(); session.endSession()
-      return res.status(400).json({ success: false, message: "mode must be 'today' or 'permanent'" })
+      return res.status(400).json({ success: false, message: "mode must be 'today', 'permanent' or 'scheduled'" })
     }
     if (toSiteId.toString() === siteId.toString()) {
       await session.abortTransaction(); session.endSession()
@@ -2659,46 +2749,128 @@ export const sendEmployeeToSite = async (req, res) => {
       }
     }
 
-    // Clean pre-save handover only — a marked employee is a midday case (use Transfer).
-    const today = new Date(); today.setUTCHours(0, 0, 0, 0)
-    const att = await attendanceModel.findOne({ employee: empId, date: today }).session(session)
-    if (att && att.sessions.some((s) => s.checkIn)) {
-      await session.abortTransaction(); session.endSession()
-      return res.status(409).json({
-        success: false,
-        message: "Employee is already marked today. Use the Transfer option on the attendance record for a midday move.",
-      })
-    }
+    if (mode === "scheduled") {
+      // A move that takes effect at tomorrow's rollover (applyScheduledAssignments cron):
+      // the employee stays on this site's roster today and repoints to the destination at
+      // local midnight. Today's attendance is untouched, so no marked-today guard applies.
+      // Don't stack it on top of another pending change — the outcome would be silently
+      // overwritten — so require the existing schedule be cancelled first.
+      if (employee.scheduledEffectiveDate) {
+        await session.abortTransaction(); session.endSession()
+        return res.status(409).json({
+          success: false,
+          message: "This employee already has a change scheduled for tomorrow. Cancel it first.",
+        })
+      }
+      employee.scheduledSiteId = toSiteId
+      employee.scheduledJobId = toJobId || null
+      employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
+      employee.scheduledRemoval = false
+      await employee.save({ session })
+    } else {
+      // today / permanent — a same-day handover, so it must be a clean pre-save move.
+      // A marked employee is a midday case (use Transfer instead).
+      const today = new Date(); today.setUTCHours(0, 0, 0, 0)
+      const att = await attendanceModel.findOne({ employee: empId, date: today }).session(session)
+      if (att && att.sessions.some((s) => s.checkIn)) {
+        await session.abortTransaction(); session.endSession()
+        return res.status(409).json({
+          success: false,
+          message: "Employee is already marked today. Use the Transfer option on the attendance record for a midday move.",
+        })
+      }
 
-    await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
+      await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
+    }
 
     await session.commitTransaction()
     session.endSession()
 
-    // Notify the destination supervisor (best-effort, after commit; skip if it's the caller).
+    // Notify the destination supervisor(s) (best-effort, after commit; skip the caller).
     try {
-      const destSup = await findSiteSupervisor(toSiteId)
-      if (destSup && destSup._id.toString() !== req.user.id.toString()) {
-        await notifyUser(destSup._id, {
+      await notifySiteSupervisors(
+        toSiteId,
+        {
           type: "transfer_arrived",
           title: "Employee sent to your site",
-          body: `${employee.name} was sent to your site${mode === "permanent" ? " (permanent)" : " for today"}.`,
-          url: `/attendance/${toSiteId}`,
-        })
-      }
+          body: `${employee.name} was sent to your site${
+            mode === "permanent"
+              ? " (permanent)"
+              : mode === "scheduled"
+              ? " (starts tomorrow)"
+              : " for today"
+          }.`,
+          // A scheduled move shows on the destination's Tomorrow roster, not today's
+          // attendance — deep-link there; the same-day modes link to attendance.
+          url: mode === "scheduled" ? `/site/${toSiteId}` : `/attendance/${toSiteId}`,
+        },
+        { exceptUserId: req.user.id }
+      )
     } catch (e) {
       console.error("[send-employee] arrival notify failed:", e.message)
     }
 
+    // --- Site activity: source-initiated send-to-site (best-effort; both sites' feeds) ---
+    try {
+      const sendActor = await resolveActor(req)
+      const fromSiteDoc = await siteModel.findById(siteId).select("siteName")
+      await recordSiteActivity({
+        type: "sent_to_site",
+        actor: sendActor,
+        employee: employee._id,
+        employeeName: employee.name,
+        fromSiteId: siteId,
+        toSiteId,
+        summary: `${sendActor.actorName} sent ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${mode === "permanent" ? "permanent" : mode === "scheduled" ? "starts tomorrow" : "for today"})`,
+      })
+    } catch (e) {
+      console.error("[send-employee] activity log failed:", e.message)
+    }
+
     return res.status(200).json({
       success: true,
-      message: mode === "permanent" ? "Employee moved to the destination site" : "Employee sent for today",
+      message:
+        mode === "permanent"
+          ? "Employee moved to the destination site"
+          : mode === "scheduled"
+          ? "Employee scheduled — starts tomorrow"
+          : "Employee sent for today",
     })
   } catch (error) {
     await session.abortTransaction()
     session.endSession()
     console.error("[send-employee] error:", error)
     return res.status(500).json({ success: false, message: "Failed to send employee" })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/site/:siteId/activity?date=YYYY-MM-DD — per-site, per-day movement feed
+// ---------------------------------------------------------------------------
+// The site-level activity log: transfer requests, direct/permanent transfers, send-to-site,
+// and add/remove events touching this site on the given business day (default: today). A
+// transfer is matched on any of its site roles, so it shows in both the source and the
+// destination site's feed. Route is site-scoped (:siteId → requireSiteAccess), so no extra
+// authorization here.
+export const getSiteActivity = async (req, res) => {
+  try {
+    const { siteId } = req.params
+    const date = (req.query.date || getDateLocal(0)).toString()
+
+    const entries = await siteActivityModel
+      .find({
+        dateLocal: date,
+        $or: [{ siteId }, { fromSiteId: siteId }, { toSiteId: siteId }],
+      })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .select("type actorName employeeName summary createdAt")
+      .lean()
+
+    return res.status(200).json({ success: true, data: { date, entries } })
+  } catch (error) {
+    console.error("getSiteActivity error:", error)
+    return res.status(500).json({ success: false, message: "Failed to load site activity" })
   }
 }
 
@@ -2733,7 +2905,8 @@ const siteController = {
     updateEmployeeJob,
     cancelScheduledAssignment,
     scheduleEmployeeRemoval,
-    sendEmployeeToSite
+    sendEmployeeToSite,
+    getSiteActivity
 }
 
 export default siteController;

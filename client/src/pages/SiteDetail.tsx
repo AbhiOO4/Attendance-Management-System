@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/dialog"
 
 import SiteRoster from "@/components/site/SiteRoster"
+import SiteActivityLog from "@/components/SiteActivityLog"
+import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import { useAuth } from "@/context/AuthContext"
 
 interface Site {
@@ -320,6 +322,7 @@ function SiteDetail() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                {id && <SiteActivityLog siteId={id} date={getCurrentTargetDateString()} />}
                 {isSiteActive && (
                   <>
                     <Button

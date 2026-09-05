@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useLocation } from "react-router-dom"
 import toast from "react-hot-toast"
 import axios from "axios"
 
@@ -181,12 +181,19 @@ function SiteRoster({
   canCreateJobs = true,
 }: SiteRosterProps) {
   const navigate = useNavigate()
+  const location = useLocation()
 
   const [employees, setEmployees] = useState<Employee[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(false)
 
-  const [dayTab, setDayTab] = useState<DayMode>("today")
+  // Returning from "Add employees" (or any nav that stamps rosterTab) reopens the tab
+  // it was launched from — a deferred add launched from Tomorrow should land on Tomorrow.
+  const initialDayTab: DayMode =
+    (location.state as { rosterTab?: DayMode } | null)?.rosterTab === "tomorrow"
+      ? "tomorrow"
+      : "today"
+  const [dayTab, setDayTab] = useState<DayMode>(initialDayTab)
   const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
   // Single search box matches either name or employee ID.
   const [query, setQuery] = useState("")
@@ -232,8 +239,10 @@ function SiteRoster({
   const [removeMode, setRemoveMode] = useState<RemoveMode>("today-home")
 
   // Source-initiated "Send to site" (pre-save push of a home member to another site).
+  // Today tab = same-day handover; Tomorrow tab (sendDeferred) = scheduled move.
   const [sendTarget, setSendTarget] = useState<Employee | null>(null)
   const [sendOpen, setSendOpen] = useState(false)
+  const [sendDeferred, setSendDeferred] = useState(false)
 
   // Post-submit Today tab becomes session-based: once today's attendance is submitted
   // for this site, the Today list is the set of session-holders (which includes
@@ -928,23 +937,30 @@ function SiteRoster({
         ? "today-cross-site"
         : "today-home"
 
-    // "Send to site": only for a Today draft HOME row that isn't already visiting
-    // elsewhere. A pre-save push of the owner's own employee to another site.
+    // "Send to site": a pre-save push of the owner's own employee to another site.
+    //  • Today tab  — same-day handover, only for a draft HOME row not already visiting
+    //                 elsewhere.
+    //  • Tomorrow tab — scheduled move at the day rollover, only for a clean home member
+    //                 with no other pending scheduled change (hasSchedule covers a pending
+    //                 job change / move / removal; incoming & leaving rows return earlier).
     const canSend =
       mode === "today" &&
       !todaySubmitted &&
       rMode === "today-home" &&
       !isVisitingElsewhere(e)
+    const canSendTomorrow =
+      mode === "tomorrow" && info.onSiteToday && !info.hasSchedule
 
     return (
       <div className="flex items-center justify-end gap-1">
-        {canSend && (
+        {(canSend || canSendTomorrow) && (
           <Button
             variant="ghost"
             size="sm"
             className="text-indigo-700 hover:bg-indigo-500/10 dark:text-indigo-300"
             onClick={() => {
               setSendTarget(e)
+              setSendDeferred(mode === "tomorrow")
               setSendOpen(true)
             }}
           >
@@ -1542,6 +1558,7 @@ function SiteRoster({
         onOpenChange={setSendOpen}
         siteId={siteId}
         employee={sendTarget ? { _id: sendTarget._id, name: sendTarget.name } : null}
+        deferred={sendDeferred}
         onSent={fetchRoster}
       />
 

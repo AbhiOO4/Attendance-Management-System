@@ -9,6 +9,13 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -38,7 +45,8 @@ import {
   KeyRound,
   Mail,
   User,
-  Trash2
+  Trash2,
+  Building2
 } from "lucide-react"
 
 interface User {
@@ -61,6 +69,8 @@ function ManageUsers() {
   const [sites, setSites] = useState<Site[]>([])
   const [siteMap, setSiteMap] = useState<Record<string, string>>({})
   const [search, setSearch] = useState("")
+  // Supervisor site filter: "all" | "unassigned" | a specific siteId.
+  const [siteFilter, setSiteFilter] = useState<string>("all")
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [open, setOpen] = useState(false)
   // Which kind of account the Add modal is creating (null = closed).
@@ -139,16 +149,30 @@ function ManageUsers() {
     return users.filter((user) => user.role === "superadmin")
   }, [users])
 
+  // Sites that actually have a supervisor assigned, for the filter dropdown.
+  const supervisedSiteOptions = useMemo(() => {
+    const ids = new Set<string>()
+    for (const user of supervisors) {
+      if (user.assignedSite) ids.add(user.assignedSite)
+    }
+    return Array.from(ids)
+      .map((id) => ({ id, name: siteMap[id] || "Unknown site" }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [supervisors, siteMap])
+
   const filteredSupervisors = useMemo(() => {
     const searchValue = search.toLowerCase()
     return supervisors.filter((user) => {
-      return (
+      const matchesSite =
+        siteFilter === "all" ||
+        (siteFilter === "unassigned" ? !user.assignedSite : user.assignedSite === siteFilter)
+      const matchesSearch =
         user.name.toLowerCase().includes(searchValue) ||
         (user.employeeId && user.employeeId.toLowerCase().includes(searchValue)) ||
         user.email.toLowerCase().includes(searchValue)
-      )
+      return matchesSite && matchesSearch
     })
-  }, [supervisors, search])
+  }, [supervisors, search, siteFilter])
 
   const filteredAdmins = useMemo(() => {
     const searchValue = search.toLowerCase()
@@ -199,6 +223,22 @@ function ManageUsers() {
               className="pl-9 w-full bg-background border-input shadow-sm hover:border-accent focus:ring-primary"
             />
           </div>
+
+          <Select value={siteFilter} onValueChange={setSiteFilter}>
+            <SelectTrigger className="w-full sm:w-[200px] bg-background shadow-sm">
+              <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+              <SelectValue placeholder="Filter by site" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sites</SelectItem>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
+              {supervisedSiteOptions.map((site) => (
+                <SelectItem key={site.id} value={site.id}>
+                  {site.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
           <Button
             variant="outline"

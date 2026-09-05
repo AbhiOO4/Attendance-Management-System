@@ -1,5 +1,6 @@
 import Attendance from '../models/attendanceModel.js';
 import AttendanceLock from '../models/lockModel.js'
+import attendanceAuditModel from '../models/attendanceAuditModel.js'
 import Employee from '../models/empModel.js';
 import empModel from '../models/empModel.js';
 import mongoose from 'mongoose';
@@ -16,7 +17,9 @@ import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage 
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
-import { notifyUser, findSiteSupervisor } from '../utils/notify.js';
+import { notifySiteSupervisors } from '../utils/notify.js';
+import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
+import { recordSiteActivity } from '../utils/siteActivity.js';
 
 
 // --- CURRENT-JOB SYNC ---
@@ -1128,6 +1131,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       dbSession: session,
     });
 
+    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
+    const auditActor = await resolveActor(req);
+    const auditRows = [];
+
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
     // -----------------------------
@@ -1169,6 +1176,12 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           sessions: [],
         })
       }
+
+      // Snapshot state before mutation for the audit log: whether this is the first save
+      // of the day (submitted) vs a merge/edit into an existing record, and the prior
+      // break override so a change can be logged distinctly.
+      const wasNew = attendanceDoc.isNew;
+      const prevBreaks = attendanceDoc.breaksTaken ?? null;
 
       // Look up a pending transfer targeting THIS site/date so the resulting
       // session carries its source site (powers the "Transferred from <Site>"
@@ -1453,6 +1466,18 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       })
 
       processedRecords.push(attendanceDoc)
+
+      // --- Audit rows for this record (flushed in one insertMany below) ---
+      const newBreaks = attendanceDoc.breaksTaken ?? null;
+      if (!wasNew && newBreaks !== prevBreaks) {
+        auditRows.push(buildAuditRow(attendanceDoc, auditActor, "breaks_changed", breaksChangeSummary(prevBreaks, newBreaks)));
+      }
+      auditRows.push(buildAuditRow(
+        attendanceDoc,
+        auditActor,
+        wasNew ? "submitted" : "edited",
+        wasNew ? "Attendance submitted" : "Attendance edited"
+      ));
     }
 
     // -----------------------------
@@ -1465,6 +1490,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       lockedBy: markedBy,
       lockedAt: new Date(),
     }], { session })
+
+    // Audit log joins the same transaction (best-effort inside the helper).
+    await recordAttendanceAuditBatch(auditRows, session);
 
     await session.commitTransaction();
     session.endSession();
@@ -2133,6 +2161,10 @@ export const bulkEditAttendance = async (
     const processedRecords = [];
     const holidayInfo = await checkHolidayForDate(attendanceDate);
 
+    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
+    const auditActor = await resolveActor(req);
+    const auditRows = [];
+
     // PROCESS EACH EMPLOYEE
     for (const entry of attendance) {
       const {
@@ -2155,6 +2187,9 @@ export const bulkEditAttendance = async (
       if (!attendanceDoc) {
         continue;
       }
+
+      // Snapshot the break override before mutation, so a change can be logged distinctly.
+      const prevBreaks = attendanceDoc.breaksTaken ?? null;
 
       // Temporary workers are exempt from holiday treatment — for them a holiday
       // is a normal working day (normal hours + OT, no holiday-hours credit).
@@ -2254,6 +2289,13 @@ export const bulkEditAttendance = async (
       await attendanceDoc.save({ session });
 
       processedRecords.push(attendanceDoc);
+
+      // --- Audit rows for this record (flushed in one insertMany below) ---
+      const newBreaks = attendanceDoc.breaksTaken ?? null;
+      if (newBreaks !== prevBreaks) {
+        auditRows.push(buildAuditRow(attendanceDoc, auditActor, "breaks_changed", breaksChangeSummary(prevBreaks, newBreaks)));
+      }
+      auditRows.push(buildAuditRow(attendanceDoc, auditActor, "edited", "Attendance edited"));
     }
 
     // LOCK AFTER EDIT
@@ -2274,6 +2316,9 @@ export const bulkEditAttendance = async (
         session,
       }
     );
+
+    // Audit log joins the same transaction (best-effort inside the helper).
+    await recordAttendanceAuditBatch(auditRows, session);
 
     await session.commitTransaction();
     session.endSession();
@@ -2334,6 +2379,19 @@ export const updateAttendance = async (req, res) => {
         message: "Attendance record not found",
       });
     }
+
+    // Snapshot state before any edit, so the audit log can describe exactly what changed:
+    // the break override, the status/sick flags, and each session's identity + raw times.
+    const prevBreaks = attendance.breaksTaken ?? null;
+    const prevStatus = attendance.status;
+    const prevSick = attendance.isSickLeave;
+    const prevSessionsSnap = attendance.sessions.map((s) => ({
+      _id: s._id,
+      siteId: s.siteId,
+      jobId: s.jobId,
+      rawCheckIn: s.rawCheckIn,
+      rawCheckOut: s.rawCheckOut,
+    }));
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id);
@@ -2684,6 +2742,57 @@ export const updateAttendance = async (req, res) => {
     }
 
     await attendance.save();
+
+    // --- Audit: log what changed (best-effort; no transaction on this path) ---
+    const auditActor = await resolveActor(req);
+    const newBreaks = (breaksTaken !== undefined) ? (breaksTaken ?? null) : prevBreaks;
+    if (breaksTaken !== undefined && newBreaks !== prevBreaks) {
+      await recordAttendanceAudit({
+        attendance,
+        actor: auditActor,
+        type: "breaks_changed",
+        summary: breaksChangeSummary(prevBreaks, newBreaks),
+      });
+    }
+    if (Array.isArray(sessions)) {
+      // Resolve job/site names once (small indexed lookups) so the diff can read
+      // "New session created for Welder" instead of an ObjectId.
+      const jobIds = [...new Set(attendance.sessions.map((s) => s.jobId).filter(Boolean).map(String))];
+      const siteIds = [...new Set(attendance.sessions.map((s) => s.siteId).filter(Boolean).map(String))];
+      const [jobDocs, siteDocs] = await Promise.all([
+        jobIds.length ? Job.find({ _id: { $in: jobIds } }).select("name").lean() : [],
+        siteIds.length ? Site.find({ _id: { $in: siteIds } }).select("siteName").lean() : [],
+      ]);
+      const jobNames = Object.fromEntries(jobDocs.map((j) => [String(j._id), j.name]));
+      const siteNames = Object.fromEntries(siteDocs.map((s) => [String(s._id), s.siteName]));
+
+      const parts = summarizeAttendanceEdit({
+        prevSessions: prevSessionsSnap,
+        newSessions: attendance.sessions,
+        prevStatus,
+        newStatus: attendance.status,
+        prevSick,
+        newSick: attendance.isSickLeave,
+        jobNames,
+        siteNames,
+      });
+
+      const breaksChanged = breaksTaken !== undefined && newBreaks !== prevBreaks;
+      // Log a detailed entry when something changed; skip a redundant generic entry when the
+      // only change was breaks (already logged above).
+      if (parts.length > 0) {
+        await recordAttendanceAudit({ attendance, actor: auditActor, type: "edited", summary: joinChangeParts(parts) });
+      } else if (!breaksChanged) {
+        await recordAttendanceAudit({ attendance, actor: auditActor, type: "edited", summary: "Attendance edited" });
+      }
+    } else if (isSickLeave !== undefined) {
+      await recordAttendanceAudit({
+        attendance,
+        actor: auditActor,
+        type: "edited",
+        summary: isSickLeave ? "Marked sick leave" : "Cleared sick leave",
+      });
+    }
 
     // Keep the roster job in step with the latest session's job — only when sessions
     // were edited for a specific site, and only if this is the employee's latest record
@@ -3429,6 +3538,21 @@ export const addSessionToAttendance = async (
 
     await attendance.save()
 
+    // --- Audit: a session was added (best-effort; no transaction on this path) ---
+    let addedLabel = ""
+    try {
+      if (session.jobId) {
+        const j = await Job.findById(session.jobId).select("name").lean()
+        if (j?.name) addedLabel = ` for ${j.name}`
+      }
+    } catch { /* label is best-effort */ }
+    await recordAttendanceAudit({
+      attendance,
+      actor: await resolveActor(req),
+      type: "session_added",
+      summary: `New session created${addedLabel}`,
+    })
+
     // Keep the roster job in step with the latest session's job (this site, latest
     // record only). `session` here is the request-body session, not a mongoose session.
     await syncCurrentJobFromLatestSession({
@@ -3569,6 +3693,15 @@ export const transferEmployee = async (req, res) => {
       })
 
       await attendanceDoc.save({ session: dbSession })
+
+      // --- Audit: a session was added via cross-site transfer (joins the txn) ---
+      await recordAttendanceAudit({
+        attendance: attendanceDoc,
+        actor: await resolveActor(req),
+        type: "transferred_in",
+        summary: "Session added via transfer",
+        session: dbSession,
+      })
     } else {
       employee.pendingTransferCheckIn = carriedCheckIn
       employee.pendingTransferSiteId = toSiteId
@@ -3621,21 +3754,39 @@ export const transferEmployee = async (req, res) => {
     await dbSession.commitTransaction()
     dbSession.endSession()
 
-    // Notify the destination site's supervisor that an employee arrived via a
+    // Notify the destination site's supervisor(s) that an employee arrived via a
     // midday transfer they did not request (the "unknowingly" case). Best-effort,
-    // after commit; skip if the acting user is that supervisor (they already know).
+    // after commit; skip the acting user if they supervise the site (already know).
     try {
-      const destSup = await findSiteSupervisor(toSiteId)
-      if (destSup && destSup._id.toString() !== req.user.id.toString()) {
-        await notifyUser(destSup._id, {
+      await notifySiteSupervisors(
+        toSiteId,
+        {
           type: "transfer_arrived",
           title: "Employee transferred in",
           body: `${employee.name} was transferred to your site today.`,
           url: `/attendance/${toSiteId}`,
-        })
-      }
+        },
+        { exceptUserId: req.user.id }
+      )
     } catch (e) {
       console.error("[transfer] arrival notify failed:", e.message)
+    }
+
+    // --- Site activity: direct midday/permanent transfer (best-effort; both sites' feeds) ---
+    try {
+      const transferActor = await resolveActor(req)
+      const fromSiteDoc = await Site.findById(fromSiteId).select("siteName")
+      await recordSiteActivity({
+        type: onlyForToday ? "transfer_today" : "transfer_permanent",
+        actor: transferActor,
+        employee: employee._id,
+        employeeName: employee.name,
+        fromSiteId,
+        toSiteId,
+        summary: `${transferActor.actorName} transferred ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${onlyForToday ? "for today" : "permanent"})`,
+      })
+    } catch (e) {
+      console.error("[transfer] activity log failed:", e.message)
     }
 
     await employee.populate("currentJob", "name")
@@ -3950,6 +4101,14 @@ export const backfillAttendance = async (req, res) => {
 
     await newAttendance.save();
 
+    // --- Audit: a past-day record was created after the fact (best-effort) ---
+    await recordAttendanceAudit({
+      attendance: newAttendance,
+      actor: await resolveActor(req),
+      type: "backfilled",
+      summary: "Record backfilled",
+    });
+
     // Backfilling a PAST day is a no-op here (a later record exists → the guard skips
     // it); only if this is the employee's latest record at their current site does the
     // roster job sync to the latest session.
@@ -4125,6 +4284,10 @@ export const bulkBackfillAttendance = async (req, res) => {
       date: attendanceDate,
     });
 
+    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
+    const auditActor = await resolveActor(req);
+    const auditRows = [];
+
     for (const emp of candidates) {
       const empId = String(emp._id);
       try {
@@ -4182,6 +4345,7 @@ export const bulkBackfillAttendance = async (req, res) => {
         });
 
         created.push({ employeeId: empId, name: emp.name, attendanceId: newAttendance._id });
+        auditRows.push(buildAuditRow(newAttendance, auditActor, "backfilled", "Record backfilled (bulk)"));
       } catch (err) {
         console.error('bulkBackfillAttendance per-employee error:', empId, err);
         failed.push({
@@ -4191,6 +4355,8 @@ export const bulkBackfillAttendance = async (req, res) => {
         });
       }
     }
+
+    await recordAttendanceAuditBatch(auditRows);
 
     return res.status(200).json({
       success: true,
@@ -4286,6 +4452,10 @@ export const bulkCheckout = async (req, res) => {
       })
     );
 
+    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
+    const auditActor = await resolveActor(req);
+    const auditRows = [];
+
     for (const id of uniqueIds) {
       const record = recordById.get(id);
       if (!record) {
@@ -4377,11 +4547,14 @@ export const bulkCheckout = async (req, res) => {
         await record.save();
 
         closed.push({ attendanceId: id, employeeId: empId, name });
+        auditRows.push(buildAuditRow(record, auditActor, "bulk_checkout", `Checked out (bulk) at ${checkOut}`));
       } catch (err) {
         console.error('bulkCheckout per-record error:', id, err);
         failed.push({ attendanceId: id, employeeId: empId, name, message: err?.message || 'Failed to close session' });
       }
     }
+
+    await recordAttendanceAuditBatch(auditRows);
 
     return res.status(200).json({
       success: true,
@@ -4641,6 +4814,10 @@ export const assignNightShift = async (req, res) => {
 
     let processedCount = 0;
 
+    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
+    const auditActor = await resolveActor(req);
+    const auditRows = [];
+
     for (const empId of employeeIds) {
       const emp = await Employee.findById(empId)
         .select("currentSite currentJob collarType")
@@ -4782,7 +4959,12 @@ export const assignNightShift = async (req, res) => {
 
       await attendanceDoc.save({ session: dbSession });
       processedCount++;
+
+      auditRows.push(buildAuditRow(attendanceDoc, auditActor, "night_shift_assigned", "Night shift assigned"));
     }
+
+    // Audit log joins the same transaction (best-effort inside the helper).
+    await recordAttendanceAuditBatch(auditRows, dbSession);
 
     await dbSession.commitTransaction();
     dbSession.endSession();
@@ -4886,6 +5068,88 @@ const getEmployeeDaySessions = async (req, res) => {
 }
 
 
+// --- ATTENDANCE RECORD EDIT-LOG (read) + SUPERVISOR REMARK (write) ---
+
+// Shared authorization for the per-record history/remark endpoints: admins/superadmins
+// reach any record; a supervisor reaches only records at their assignedSite (the record's
+// primary site OR any session's site — a multi-site record can carry their site's session).
+// Mirrors the supervisor same-site check in updateAttendance. requireSiteAccess can't gate
+// these routes because the param is an attendance id, not a site id.
+const authorizeRecordAccess = async (attendanceId, reqUser) => {
+  const record = await Attendance.findById(attendanceId);
+  if (!record) return { ok: false, status: 404, message: "Attendance record not found" };
+  if (reqUser.role === "supervisor") {
+    const user = await userModel.findById(reqUser.id).select("assignedSite");
+    const assigned = user?.assignedSite?.toString();
+    const sitesOnRecord = new Set(
+      [record.siteId?.toString(), ...record.sessions.map((s) => s.siteId?.toString())].filter(Boolean)
+    );
+    if (!assigned || !sitesOnRecord.has(assigned)) {
+      return { ok: false, status: 403, message: "Forbidden: Access denied to this attendance record" };
+    }
+  }
+  return { ok: true, record };
+};
+
+// GET /api/attendance/:attendanceId/history — the on-demand popover fetch. Returns the
+// current remark + the reverse-chronological edit log in one payload.
+export const getAttendanceHistory = async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const auth = await authorizeRecordAccess(attendanceId, req.user);
+    if (!auth.ok) return res.status(auth.status).json({ success: false, message: auth.message });
+
+    const entries = await attendanceAuditModel
+      .find({ attendance: attendanceId })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .select("actorName type summary createdAt")
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: { remark: auth.record.remark || "", entries },
+    });
+  } catch (error) {
+    console.error("getAttendanceHistory error:", error);
+    return res.status(500).json({ success: false, message: "Failed to load attendance history" });
+  }
+};
+
+// PATCH /api/attendance/:attendanceId/remark — set/overwrite the single supervisor remark.
+// Uses updateOne so the model pre-save hook (session offset re-derivation) is not re-run
+// for a note-only change; the change is captured in the audit log so remark history survives.
+export const updateAttendanceRemark = async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const { remark = "" } = req.body;
+
+    if (typeof remark !== "string" || remark.length > 500) {
+      return res.status(400).json({ success: false, message: "Remark must be text up to 500 characters" });
+    }
+
+    const auth = await authorizeRecordAccess(attendanceId, req.user);
+    if (!auth.ok) return res.status(auth.status).json({ success: false, message: auth.message });
+
+    const trimmed = remark.trim();
+    await Attendance.updateOne({ _id: attendanceId }, { $set: { remark: trimmed } });
+    auth.record.remark = trimmed;
+
+    await recordAttendanceAudit({
+      attendance: auth.record,
+      actor: await resolveActor(req),
+      type: "remark_updated",
+      summary: trimmed ? `Remark updated: "${trimmed}"` : "Remark cleared",
+    });
+
+    return res.status(200).json({ success: true, data: { remark: trimmed } });
+  } catch (error) {
+    console.error("updateAttendanceRemark error:", error);
+    return res.status(500).json({ success: false, message: "Failed to update remark" });
+  }
+};
+
+
 // --- DEFAULT EXPORT ---
 
 const attendanceController = {
@@ -4915,6 +5179,9 @@ const attendanceController = {
   assignNightShift,
 
   getEmployeeDaySessions,
+
+  getAttendanceHistory,
+  updateAttendanceRemark,
 
 };
 

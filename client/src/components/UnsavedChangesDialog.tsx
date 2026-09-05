@@ -27,23 +27,25 @@ export function UnsavedChangesDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Unsaved Changes
+            Leave without saving?
           </AlertDialogTitle>
 
           <AlertDialogDescription>
-            You have unsaved attendance changes.
-            If you leave this page, your changes
-            will be lost.
+            You haven't submitted today's attendance yet.
+            Your entries are kept as a draft on this device
+            and will be here when you come back — but they
+            won't appear in reports or lock the day until
+            you save.
           </AlertDialogDescription>
         </AlertDialogHeader>
 
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onStay}>
-            Stay
+            Keep editing
           </AlertDialogCancel>
 
           <AlertDialogAction onClick={onLeave}>
-            Leave Page
+            Leave
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

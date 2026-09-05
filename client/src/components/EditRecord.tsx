@@ -32,6 +32,8 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
+import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
+
 import { Switch } from "@/components/ui/switch"
 
 import { Label } from "@/components/ui/label"
@@ -709,6 +711,7 @@ const [sessionToDelete, setSessionToDelete] =
               {record.jobTitle && (
                 <Badge variant="secondary" className="text-xs font-normal">{record.jobTitle}</Badge>
               )}
+              <AttendanceRecordHistory attendanceId={record.attendanceId} title={record.name} className="ml-auto" />
             </div>
           )}
         </div>

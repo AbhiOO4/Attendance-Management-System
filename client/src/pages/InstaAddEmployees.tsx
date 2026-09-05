@@ -53,6 +53,9 @@ import {
     AlertCircle,
     Send,
     ArrowLeftRight,
+    Search,
+    SlidersHorizontal,
+    X,
 } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
@@ -64,6 +67,12 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
+
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover"
 
 import {
     Dialog,
@@ -180,6 +189,9 @@ function InstaAddEmployees() {
     const [page, setPage] =
         useState(1)
 
+    const [pageSize, setPageSize] =
+        useState(20)
+
     const [totalPages, setTotalPages] =
         useState(1)
 
@@ -224,15 +236,30 @@ function InstaAddEmployees() {
     const [requestSubmitting, setRequestSubmitting] = useState(false)
 
     const [filters, setFilters] = useState({
-        name: "",
-        employeeId: "",
-        jobTitle: "",
+        // Unified search box — matches name, employee ID or job title.
+        search: "",
         currentSite: "",
         nationality: "",
         collarType: "",
     })
 
     const [activeFilters, setActiveFilters] = useState(filters)
+
+    // Count of narrowing filters (excludes the search box and the "all" defaults)
+    // — surfaced as a badge on the filter button.
+    const activeFilterCount = [
+        filters.currentSite,
+        filters.nationality,
+        filters.collarType,
+    ].filter((v) => v && v !== "all").length
+
+    const clearFilters = () =>
+        setFilters((prev) => ({
+            ...prev,
+            currentSite: "",
+            nationality: "",
+            collarType: "",
+        }))
 
     const fetchSites = async () => {
         try {
@@ -268,9 +295,8 @@ function InstaAddEmployees() {
 
                 const params = {
                     page,
-                    name: activeFilters.name,
-                    employeeId: activeFilters.employeeId,
-                    jobTitle: activeFilters.jobTitle,
+                    limit: pageSize,
+                    search: activeFilters.search,
                     currentSite:
                         activeFilters.currentSite === "all"
                             ? ""
@@ -329,10 +355,10 @@ function InstaAddEmployees() {
         }
     }, [filters])
 
-    // Re-fetch when page or active filters change
+    // Re-fetch when page, page size or active filters change
     useEffect(() => {
         fetchEmployees()
-    }, [page, activeFilters])
+    }, [page, pageSize, activeFilters])
 
     // Instant add only: when the confirm modal opens for an employee, fetch any sessions
     // they already have at OTHER sites today so the supervisor can spot a same-day
@@ -582,7 +608,10 @@ function InstaAddEmployees() {
                             onClick={() =>
                                 navigate(
                                     returnTo || `/site/${siteId}`,
-                                    { state: { from } }
+                                    // Carry the originating roster tab back so SiteDetail
+                                    // reopens Tomorrow when the add was launched from it
+                                    // (deferred), instead of always landing on Today.
+                                    { state: { from, rosterTab: deferred ? "tomorrow" : "today" } }
                                 )
                             }
                         >
@@ -591,14 +620,14 @@ function InstaAddEmployees() {
 
                         <div>
 
-                            <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
+                            <h1 className="text-lg sm:text-3xl font-bold tracking-tight flex items-center gap-2 sm:gap-3">
                                 Add New Employees
                                 {searching && (
-                                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                                    <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin text-primary" />
                                 )}
                             </h1>
 
-                            <p className="text-sm text-muted-foreground mt-1">
+                            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 sm:mt-1">
                                 {deferred
                                     ? "Assign employees to this site — the change takes effect tomorrow."
                                     : "Quickly assign employees to this site and today's attendance."}
@@ -611,149 +640,165 @@ function InstaAddEmployees() {
                 </CardHeader>
             </Card>
 
-            <Card>
-                <CardContent className="pt-6">
+            {/* Sticky, compact search + filter bar. One search box (name / ID /
+                job title) with the category filters tucked behind a popover so the
+                bar stays small on mobile. */}
+            <div className="sticky top-0 z-20 -mx-6 border-b border-border bg-background/95 px-6 py-3 backdrop-blur">
+                <div className="flex items-center gap-2">
 
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-
+                    <div className="relative flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
-                            placeholder="Search Name"
-                            value={filters.name}
+                            className="pl-9"
+                            placeholder="Search by name, ID or job title"
+                            value={filters.search}
                             onChange={(e) =>
-                                setFilters(
-                                    (prev) => ({
-                                        ...prev,
-                                        name:
-                                            e.target.value,
-                                    })
-                                )
-                            }
-                        />
-
-                        <Input
-                            placeholder="Employee ID"
-                            value={
-                                filters.employeeId
-                            }
-                            onChange={(e) =>
-                                setFilters(
-                                    (prev) => ({
-                                        ...prev,
-                                        employeeId:
-                                            e.target.value,
-                                    })
-                                )
-                            }
-                        />
-
-                        <Input
-                            placeholder="Job Title"
-                            value={
-                                filters.jobTitle
-                            }
-                            onChange={(e) =>
-                                setFilters(
-                                    (prev) => ({
-                                        ...prev,
-                                        jobTitle:
-                                            e.target.value,
-                                    })
-                                )
-                            }
-                        />
-
-                        <Select
-                            value={filters.nationality}
-                            onValueChange={(value) =>
                                 setFilters((prev) => ({
                                     ...prev,
-                                    nationality: value,
+                                    search: e.target.value,
                                 }))
                             }
-                        >
-                            <SelectTrigger>
-                                <SelectValue placeholder="Nationality" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                                <SelectItem value="all">
-                                    All Nationalities
-                                </SelectItem>
-                                <SelectItem value="foreign">
-                                    Foreign
-                                </SelectItem>
-                                <SelectItem value="omani">
-                                    Omani
-                                </SelectItem>
-                            </SelectContent>
-                        </Select>
-
-                        <Select
-                            value={filters.collarType}
-                            onValueChange={(value) =>
-                                setFilters((prev) => ({
-                                    ...prev,
-                                    collarType: value,
-                                }))
-                            }
-                        >
-                            <SelectTrigger>
-                                <SelectValue placeholder="Collar Type" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-                                <SelectItem value="all">
-                                    All Collar Types
-                                </SelectItem>
-                                <SelectItem value="skilled">
-                                    Skilled Labour
-                                </SelectItem>
-                                <SelectItem value="staff">
-                                    Staff
-                                </SelectItem>
-                            </SelectContent>
-                        </Select>
-
-                        <Select
-                            value={filters.currentSite}
-                            onValueChange={(value) =>
-                                setFilters((prev) => ({
-                                    ...prev,
-                                    currentSite: value,
-                                }))
-                            }
-                        >
-                            <SelectTrigger>
-                                <SelectValue placeholder="Current Site" />
-                            </SelectTrigger>
-
-                            <SelectContent>
-
-                                <SelectItem value="all">
-                                    All Sites
-                                </SelectItem>
-
-                                <SelectItem value="unassigned">
-                                    Unassigned
-                                </SelectItem>
-
-                                {sites.filter((site) => site._id !== siteId)
-                                    .map((site) => (
-                                        <SelectItem
-                                            key={site._id}
-                                            value={site._id}
-                                        >
-                                            {site.siteName}
-                                        </SelectItem>
-                                    ))}
-
-                            </SelectContent>
-                        </Select>
-
+                        />
                     </div>
 
-                </CardContent>
-            </Card>
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <Button
+                                variant="outline"
+                                size="icon"
+                                className="relative shrink-0"
+                                aria-label="Filters"
+                            >
+                                <SlidersHorizontal className="h-4 w-4" />
+                                {activeFilterCount > 0 && (
+                                    <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground">
+                                        {activeFilterCount}
+                                    </span>
+                                )}
+                            </Button>
+                        </PopoverTrigger>
+
+                        <PopoverContent align="end" className="w-72 gap-4 p-4">
+                            <div className="flex items-center justify-between">
+                                <span className="text-sm font-semibold text-foreground">
+                                    Filters
+                                </span>
+                                {activeFilterCount > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={clearFilters}
+                                        className="inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                                    >
+                                        <X className="h-3 w-3" />
+                                        Clear
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">
+                                    Nationality
+                                </Label>
+                                <Select
+                                    value={filters.nationality}
+                                    onValueChange={(value) =>
+                                        setFilters((prev) => ({
+                                            ...prev,
+                                            nationality: value,
+                                        }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="All Nationalities" />
+                                    </SelectTrigger>
+
+                                    <SelectContent>
+                                        <SelectItem value="all">
+                                            All Nationalities
+                                        </SelectItem>
+                                        <SelectItem value="foreign">
+                                            Foreign
+                                        </SelectItem>
+                                        <SelectItem value="omani">
+                                            Omani
+                                        </SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">
+                                    Collar Type
+                                </Label>
+                                <Select
+                                    value={filters.collarType}
+                                    onValueChange={(value) =>
+                                        setFilters((prev) => ({
+                                            ...prev,
+                                            collarType: value,
+                                        }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="All Collar Types" />
+                                    </SelectTrigger>
+
+                                    <SelectContent>
+                                        <SelectItem value="all">
+                                            All Collar Types
+                                        </SelectItem>
+                                        <SelectItem value="skilled">
+                                            Skilled Labour
+                                        </SelectItem>
+                                        <SelectItem value="staff">
+                                            Staff
+                                        </SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">
+                                    Current Site
+                                </Label>
+                                <Select
+                                    value={filters.currentSite}
+                                    onValueChange={(value) =>
+                                        setFilters((prev) => ({
+                                            ...prev,
+                                            currentSite: value,
+                                        }))
+                                    }
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="All Sites" />
+                                    </SelectTrigger>
+
+                                    <SelectContent>
+                                        <SelectItem value="all">
+                                            All Sites
+                                        </SelectItem>
+
+                                        <SelectItem value="unassigned">
+                                            Unassigned
+                                        </SelectItem>
+
+                                        {sites.filter((site) => site._id !== siteId)
+                                            .map((site) => (
+                                                <SelectItem
+                                                    key={site._id}
+                                                    value={site._id}
+                                                >
+                                                    {site.siteName}
+                                                </SelectItem>
+                                            ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </PopoverContent>
+                    </Popover>
+                </div>
+            </div>
 
             <Card>
                 <CardContent className="pt-6">
@@ -890,40 +935,65 @@ function InstaAddEmployees() {
                                     </Table>
                                 </div>
 
-                                <div className="flex justify-between items-center mt-6">
-                                    <Button
-                                        variant="outline"
-                                        disabled={page === 1}
-                                        onClick={() =>
-                                            setPage(
-                                                (prev) =>
-                                                    prev - 1
-                                            )
-                                        }
-                                    >
-                                        Previous
-                                    </Button>
+                                <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-muted-foreground">
+                                            Rows
+                                        </span>
+                                        <Select
+                                            value={String(pageSize)}
+                                            onValueChange={(value) => {
+                                                setPageSize(Number(value))
+                                                setPage(1)
+                                            }}
+                                        >
+                                            <SelectTrigger className="h-9 w-[72px]">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="10">10</SelectItem>
+                                                <SelectItem value="20">20</SelectItem>
+                                                <SelectItem value="50">50</SelectItem>
+                                                <SelectItem value="100">100</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
 
-                                    <span className="text-sm text-muted-foreground">
-                                        Page {page} of{" "}
-                                        {totalPages}
-                                    </span>
+                                    <div className="flex items-center gap-3">
+                                        <Button
+                                            variant="outline"
+                                            disabled={page === 1}
+                                            onClick={() =>
+                                                setPage(
+                                                    (prev) =>
+                                                        prev - 1
+                                                )
+                                            }
+                                        >
+                                            Previous
+                                        </Button>
 
-                                    <Button
-                                        variant="outline"
-                                        disabled={
-                                            page ===
-                                            totalPages
-                                        }
-                                        onClick={() =>
-                                            setPage(
-                                                (prev) =>
-                                                    prev + 1
-                                            )
-                                        }
-                                    >
-                                        Next
-                                    </Button>
+                                        <span className="text-sm text-muted-foreground whitespace-nowrap">
+                                            Page {page} of{" "}
+                                            {totalPages}
+                                        </span>
+
+                                        <Button
+                                            variant="outline"
+                                            disabled={
+                                                page ===
+                                                totalPages
+                                            }
+                                            onClick={() =>
+                                                setPage(
+                                                    (prev) =>
+                                                        prev + 1
+                                                )
+                                            }
+                                        >
+                                            Next
+                                        </Button>
+                                    </div>
                                 </div>
                             </>
                         )}

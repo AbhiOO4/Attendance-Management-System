@@ -13,8 +13,11 @@ import mongoose from "mongoose"
  *   - "permanent" → the employee's home moves to the destination going forward
  *                   (currentSite/currentJob repoint + job membership + supervisor auth).
  *
- * `approver` is the resolved home-site supervisor; null means the home site has no
- * supervisor, so the request falls to admins/superadmins. Lifecycle:
+ * `approver` is a REPRESENTATIVE home-site supervisor kept for display; null means
+ * the home site had no supervisor at creation, so the request falls to admins. It is
+ * NOT the authorization key — a site may have several supervisors and ANY of them (or
+ * an admin) may decide, resolved by fromSite === assignedSite in requestController.
+ * Lifecycle:
  *   pending → accepted | rejected | cancelled | expired
  * A partial-unique index enforces at most one pending request per employee.
  */
@@ -113,6 +116,9 @@ transferRequestSchema.index(
 )
 
 // Fast inbox lookups + the badge count.
+// Supervisor inbox is site-based (any supervisor of the home site decides); admins
+// still query by approver (self / null), so both indexes earn their keep.
+transferRequestSchema.index({ fromSite: 1, status: 1 })
 transferRequestSchema.index({ approver: 1, status: 1 })
 transferRequestSchema.index({ requestedBy: 1, status: 1 })
 // Expiry sweep.

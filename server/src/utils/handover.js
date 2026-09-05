@@ -8,14 +8,15 @@
  *                      currentSite/currentJob are untouched (back home tomorrow).
  *                      A fresh session → null carried check-in, so the destination
  *                      draft uses its category default check-in.
- *   mode 'permanent' — the home moves: repoint currentSite/currentJob, fix job
- *                      membership, and follow the supervisor's User.assignedSite.
+ *   mode 'permanent' — the home moves: repoint currentSite/currentJob and fix job
+ *                      membership. This is the WORKER record only; a supervisor's
+ *                      User.assignedSite (auth scope) is decoupled and admin-owned,
+ *                      so it is deliberately NOT touched here.
  *
  * Runs inside the caller's mongoose session (a transaction). Does NOT notify — the
  * caller sends the arrival notification AFTER commit.
  */
 import jobModel from "../models/jobModel.js"
-import userModel from "../models/userModel.js"
 
 function todayAttendanceDate() {
   const d = new Date()
@@ -44,8 +45,5 @@ export async function applyHandover({ employee, toSiteId, toJobId = null, mode, 
   await employee.save({ session })
   if (toJobId) {
     await jobModel.findByIdAndUpdate(toJobId, { $addToSet: { employees: employee._id } }, { session })
-  }
-  if (employee.user) {
-    await userModel.findByIdAndUpdate(employee.user, { assignedSite: toSiteId }, { session })
   }
 }

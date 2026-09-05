@@ -32,6 +32,8 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
+import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
+
 import {
   Loader2,
   Plus,
@@ -818,6 +820,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
               {record.jobTitle && (
                 <Badge variant="secondary" className="text-xs font-normal">{record.jobTitle}</Badge>
               )}
+              <AttendanceRecordHistory attendanceId={attendanceId} title={record.name} className="ml-auto" />
             </div>
           )}
         </div>

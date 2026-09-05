@@ -20,8 +20,9 @@ import TransferRequest from "../models/transferRequestModel.js"
 import notificationModel from "../models/notificationModel.js"
 import { isAssignableSite } from "../utils/siteAssignable.js"
 import { getTodayLocal } from "../utils/timeLocal.js"
-import { notifyUser, notifyAdmins, findSiteSupervisor } from "../utils/notify.js"
+import { notifyUser, notifyAdmins, findSiteSupervisors } from "../utils/notify.js"
 import { applyHandover } from "../utils/handover.js"
+import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -107,7 +108,11 @@ export const createRequest = async (req, res) => {
     }
 
     const fromSite = employee.currentSite
-    const supervisor = await findSiteSupervisor(fromSite)
+    // A site may have several supervisors; any of them (or an admin) decides
+    // (resolved by fromSite === assignedSite in the inbox/mayDecide). We record ONE
+    // representative `approver` for display + the admin fallback, and notify all of
+    // them below so no one is left unaware.
+    const supervisors = await findSiteSupervisors(fromSite)
 
     let request
     try {
@@ -119,7 +124,7 @@ export const createRequest = async (req, res) => {
         toJob: toJobId || null,
         mode,
         requestedBy: req.user.id,
-        approver: supervisor ? supervisor._id : null,
+        approver: supervisors[0]?._id ?? null,
         status: "pending",
         dateLocal: getTodayLocal(),
       })
@@ -138,14 +143,42 @@ export const createRequest = async (req, res) => {
     const title = "New transfer request"
     const body = `${requester.name || "A supervisor"} requests ${employee.name} (${mode === "permanent" ? "permanent" : "for today"}) from ${fromSiteDoc?.siteName || "their site"} to ${toSite.siteName}`
     const payload = { type: "request_received", title, body, url: "/requests", relatedRequest: request._id }
-    if (supervisor) await notifyUser(supervisor._id, payload)
+    if (supervisors.length) await Promise.all(supervisors.map((s) => notifyUser(s._id, payload)))
     else await notifyAdmins(payload)
+
+    // --- Site activity: a transfer request was sent (best-effort; shows in both sites' feeds) ---
+    await recordSiteActivity({
+      type: "request_sent",
+      actor: { actorId: req.user.id, actorName: requester.name || "Unknown" },
+      employee: employee._id,
+      employeeName: employee.name,
+      fromSiteId: fromSite,
+      toSiteId,
+      summary: `${requester.name || "A supervisor"} requested transfer of ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite.siteName} (${mode === "permanent" ? "permanent" : "for today"})`,
+    })
 
     return res.status(201).json({ success: true, message: "Request sent", data: request })
   } catch (error) {
     console.error("[requests] createRequest error:", error)
     return res.status(500).json({ success: false, message: "Failed to create request" })
   }
+}
+
+/**
+ * The "incoming" filter — requests this user is responsible for deciding.
+ * - Admins: requests routed to them, or to no supervisor (approver null).
+ * - Supervisors: EVERY request against their site (fromSite === their assignedSite).
+ *   A site may have several supervisors and any of them can decide, so this is
+ *   site-based rather than the single stored `approver` (only a representative, kept
+ *   for display). Matches nothing when a supervisor has no assigned site.
+ */
+async function incomingFilterFor(user) {
+  if (isAdmin(user.role)) {
+    return { $or: [{ approver: user.id }, { approver: null }] }
+  }
+  const me = await userModel.findById(user.id).select("assignedSite")
+  if (!me?.assignedSite) return { _id: { $in: [] } }
+  return { fromSite: me.assignedSite }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,10 +192,8 @@ export const listRequests = async (req, res) => {
     let filter
     if (box === "outgoing") {
       filter = { requestedBy: me.id }
-    } else if (isAdmin(me.role)) {
-      filter = { $or: [{ approver: me.id }, { approver: null }] }
     } else {
-      filter = { approver: me.id }
+      filter = await incomingFilterFor(me)
     }
 
     if (status && ["pending", "accepted", "rejected", "cancelled", "expired"].includes(status)) {
@@ -187,10 +218,16 @@ export const listRequests = async (req, res) => {
   }
 }
 
-/** Shared authorization for accept/reject: the resolved approver, or any admin. */
-function mayDecide(request, user) {
+/**
+ * Authorization for accept/reject: an admin, or ANY supervisor of the request's
+ * home site (fromSite === their assignedSite). Site-based so every supervisor of the
+ * site qualifies — not just the single stored `approver`.
+ */
+async function mayDecide(request, user) {
   if (isAdmin(user.role)) return true
-  return request.approver && request.approver.toString() === user.id.toString()
+  const me = await userModel.findById(user.id).select("assignedSite role")
+  if (!me || me.role !== "supervisor" || !me.assignedSite) return false
+  return me.assignedSite.toString() === request.fromSite.toString()
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +244,7 @@ export const acceptRequest = async (req, res) => {
       return res.status(404).json({ success: false, message: "Request not found or already handled" })
     }
 
-    if (!mayDecide(request, req.user)) {
+    if (!(await mayDecide(request, req.user))) {
       await session.abortTransaction()
       session.endSession()
       return res.status(403).json({ success: false, message: "You are not allowed to decide this request" })
@@ -284,6 +321,19 @@ export const acceptRequest = async (req, res) => {
       relatedRequest: request._id,
     })
 
+    // --- Site activity: request accepted, employee handed over (best-effort, after commit) ---
+    const acceptActor = await resolveActor(req)
+    const acceptFromSite = await Site.findById(request.fromSite).select("siteName")
+    await recordSiteActivity({
+      type: "request_accepted",
+      actor: acceptActor,
+      employee: employee._id,
+      employeeName: empName,
+      fromSiteId: request.fromSite,
+      toSiteId: request.toSite,
+      summary: `${acceptActor.actorName} accepted transfer of ${empName} from ${acceptFromSite?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})`,
+    })
+
     return res.status(200).json({ success: true, message: "Request accepted", data: request })
   } catch (error) {
     await session.abortTransaction()
@@ -303,7 +353,7 @@ export const rejectRequest = async (req, res) => {
     if (!request || request.status !== "pending") {
       return res.status(404).json({ success: false, message: "Request not found or already handled" })
     }
-    if (!mayDecide(request, req.user)) {
+    if (!(await mayDecide(request, req.user))) {
       return res.status(403).json({ success: false, message: "You are not allowed to decide this request" })
     }
 
@@ -320,6 +370,22 @@ export const rejectRequest = async (req, res) => {
       body: `Your request for ${employee?.name || "the employee"} was declined${note ? `: ${note}` : "."}`,
       url: "/requests",
       relatedRequest: request._id,
+    })
+
+    // --- Site activity: request rejected (best-effort) ---
+    const rejectActor = await resolveActor(req)
+    const [rejFromSite, rejToSite] = await Promise.all([
+      Site.findById(request.fromSite).select("siteName"),
+      Site.findById(request.toSite).select("siteName"),
+    ])
+    await recordSiteActivity({
+      type: "request_rejected",
+      actor: rejectActor,
+      employee: request.employee,
+      employeeName: employee?.name || "",
+      fromSiteId: request.fromSite,
+      toSiteId: request.toSite,
+      summary: `${rejectActor.actorName} rejected the transfer request for ${employee?.name || "the employee"} (${rejFromSite?.siteName || "?"} → ${rejToSite?.siteName || "?"})${note ? `: ${note}` : ""}`,
     })
 
     return res.status(200).json({ success: true, message: "Request rejected", data: request })
@@ -347,6 +413,23 @@ export const cancelRequest = async (req, res) => {
     request.decidedAt = new Date()
     await request.save()
 
+    // --- Site activity: requester withdrew the request (best-effort) ---
+    const cancelActor = await resolveActor(req)
+    const [canEmp, canFromSite, canToSite] = await Promise.all([
+      empModel.findById(request.employee).select("name"),
+      Site.findById(request.fromSite).select("siteName"),
+      Site.findById(request.toSite).select("siteName"),
+    ])
+    await recordSiteActivity({
+      type: "request_cancelled",
+      actor: cancelActor,
+      employee: request.employee,
+      employeeName: canEmp?.name || "",
+      fromSiteId: request.fromSite,
+      toSiteId: request.toSite,
+      summary: `${cancelActor.actorName} cancelled the transfer request for ${canEmp?.name || "the employee"} (${canFromSite?.siteName || "?"} → ${canToSite?.siteName || "?"})`,
+    })
+
     return res.status(200).json({ success: true, message: "Request cancelled", data: request })
   } catch (error) {
     console.error("[requests] cancelRequest error:", error)
@@ -360,9 +443,7 @@ export const cancelRequest = async (req, res) => {
 export const getSummary = async (req, res) => {
   try {
     const me = req.user
-    const incoming = isAdmin(me.role)
-      ? { status: "pending", $or: [{ approver: me.id }, { approver: null }] }
-      : { status: "pending", approver: me.id }
+    const incoming = { status: "pending", ...(await incomingFilterFor(me)) }
 
     const [pendingIncoming, unread] = await Promise.all([
       TransferRequest.countDocuments(incoming),

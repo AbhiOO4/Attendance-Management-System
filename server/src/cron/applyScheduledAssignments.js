@@ -3,7 +3,6 @@ import mongoose from 'mongoose';
 import empModel from '../models/empModel.js';
 import jobModel from '../models/jobModel.js';
 import siteModel from '../models/siteModel.js';
-import userModel from '../models/userModel.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
 
 /**
@@ -58,14 +57,9 @@ async function runApplyScheduledAssignments() {
             );
           }
 
-          // A supervisor being removed loses their auth scope too (mirrors the move branch).
-          if (employee.user) {
-            await userModel.findByIdAndUpdate(
-              employee.user,
-              { assignedSite: null },
-              { session }
-            );
-          }
+          // NOTE: a supervisor's User.assignedSite (auth scope) is decoupled and
+          // admin-owned — a scheduled WORKER-record removal deliberately does not
+          // touch it. Site deactivation/soft-delete is what clears auth scope.
 
           employee.currentSite = null;
           employee.currentJob = null;
@@ -127,17 +121,8 @@ async function runApplyScheduledAssignments() {
           );
         }
 
-        // If this employee is a supervisor, keep their User.assignedSite (auth
-        // scope) in step with the worker-site move. The scheduled mechanism was
-        // built for plain employees and did not sync the linked user; a deferred
-        // supervisor reassignment relies on this.
-        if (isMove && employee.user) {
-          await userModel.findByIdAndUpdate(
-            employee.user,
-            { assignedSite: employee.currentSite },
-            { session }
-          );
-        }
+        // NOTE: a WORKER-record move never changes a supervisor's User.assignedSite
+        // (auth scope) — the two are decoupled and assignedSite is admin-owned.
 
         employee.scheduledSiteId = null;
         employee.scheduledJobId = null;

@@ -147,13 +147,9 @@ function EditUserModal({
         payload.password = password
       }
 
-      const res = await api.patch(`/api/user/update/${user._id}`, payload)
+      await api.patch(`/api/user/update/${user._id}`, payload)
 
-      toast.success(
-        res.data?.deferred
-          ? "Saved — the site change takes effect tomorrow"
-          : "User updated successfully"
-      )
+      toast.success("User updated successfully")
 
       onSuccess()
       onClose()
@@ -251,9 +247,8 @@ function EditUserModal({
 
               {siteChanged && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  This moves the supervisor — and their own worker record — to the
-                  new site. If today's attendance at their current site is already
-                  saved, the change applies from tomorrow.
+                  This changes the supervisor's site access immediately. It does not
+                  move their worker/roster record — that stays where it is.
                 </div>
               )}
             </div>

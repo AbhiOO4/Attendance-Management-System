@@ -4,7 +4,7 @@ import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js
 import empModel from "../models/empModel.js";
 import siteModel from "../models/siteModel.js";
 import mongoose from "mongoose";
-import { applySupervisorSiteChange } from "../services/supervisorReassignment.js";
+import { isAssignableSite } from "../utils/siteAssignable.js";
 
 export const login = async (req, res) => {
     try{
@@ -77,43 +77,36 @@ export async function updateUser(req, res) {
       updateData.password = hashedPassword;
     }
 
-    // Site change is conditional on attendance state — only act when it actually
-    // changed (the modal resends assignedSite on every save, so an email/password
-    // edit must not trigger a reassignment). Supervisors only (they have an employee).
-    let deferredSiteChange = false;
-
+    // assignedSite is the supervisor's site ACCESS (auth scope) and is fully
+    // decoupled from their worker record (Employee.currentSite): setting it here
+    // never moves the worker record, and it takes effect immediately. Act only when
+    // it actually changed against the CURRENT auth scope (the modal resends
+    // assignedSite on every save). Supervisors only (they have a linked employee).
     if (
       assignedSite &&
       employee &&
-      String(assignedSite) !== String(employee.currentSite || "")
+      String(assignedSite) !== String(user.assignedSite || "")
     ) {
-      const result = await applySupervisorSiteChange({
-        employee,
-        newSiteId: assignedSite,
-        actorId: req.user.id,
-        dbSession: session,
-      });
-      if (result.assignedSite) {
-        updateData.assignedSite = result.assignedSite;
+      const targetSite = await siteModel.findById(assignedSite).session(session);
+      if (!isAssignableSite(targetSite)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          success: false,
+          message: "Target site is not a valid assignment destination",
+        });
       }
-      deferredSiteChange = result.deferred;
+      updateData.assignedSite = assignedSite;
     }
 
     const updatedUser = await userModel.findByIdAndUpdate(userId, updateData, {new: true, session});
-
-    if (employee) {
-      await employee.save({ session });
-    }
 
     await session.commitTransaction();
     session.endSession();
 
     res.status(200).json({
       success: true,
-      message: deferredSiteChange
-        ? "User updated — site change scheduled to take effect tomorrow"
-        : "The user has been updated",
-      deferred: deferredSiteChange,
+      message: "The user has been updated",
       updatedUser
     });
 

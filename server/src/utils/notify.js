@@ -43,10 +43,24 @@ export async function notifyAdmins(payload) {
   }
 }
 
-/** The supervisor User assigned to a site, or null if the site has none. */
-export async function findSiteSupervisor(siteId) {
-  if (!siteId) return null
+/** Every supervisor User assigned to a site (a site may have several). */
+export async function findSiteSupervisors(siteId) {
+  if (!siteId) return []
   return userModel
-    .findOne({ assignedSite: siteId, role: "supervisor" })
+    .find({ assignedSite: siteId, role: "supervisor" })
     .select("_id name")
+}
+
+/**
+ * Fan a notification out to every supervisor of a site, optionally skipping the
+ * acting user (who already knows). Returns the full supervisor list (before the
+ * skip) so callers can decide whether to escalate to admins when there are none.
+ */
+export async function notifySiteSupervisors(siteId, payload, { exceptUserId = null } = {}) {
+  const supervisors = await findSiteSupervisors(siteId)
+  const targets = supervisors.filter(
+    (s) => !exceptUserId || s._id.toString() !== exceptUserId.toString()
+  )
+  await Promise.all(targets.map((s) => notifyUser(s._id, payload)))
+  return supervisors
 }

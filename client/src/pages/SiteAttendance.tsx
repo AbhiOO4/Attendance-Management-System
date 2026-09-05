@@ -5,6 +5,8 @@ import { useWorkConfig } from "@/context/WorkConfigContext"
 import toast from "react-hot-toast"
 import { useNavigate, useParams } from "react-router-dom"
 import EditSiteRecord from "@/components/EditSiteRecord"
+import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
+import SiteActivityLog from "@/components/SiteActivityLog"
 import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
@@ -60,6 +62,7 @@ import {
   Check,
   ArrowLeftRight,
   ChevronDown,
+  History,
 } from "lucide-react"
 
 import {
@@ -408,6 +411,9 @@ function RowActionsMenu({
   transferDisabled = false,
   transferDisabledReason,
   transferSaving = false,
+  showHistory = true,
+  attendanceId = null,
+  employeeName = "",
 }: {
   isSick: boolean
   onToggleSick: () => void
@@ -420,8 +426,12 @@ function RowActionsMenu({
   transferDisabled?: boolean
   transferDisabledReason?: string
   transferSaving?: boolean
+  showHistory?: boolean
+  attendanceId?: string | null
+  employeeName?: string
 }) {
   const [open, setOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   // Touch-threshold gating: on touch devices a finger that lands on the kebab
   // and then scrolls should NOT open the menu. We track the touch start point
@@ -432,6 +442,16 @@ function RowActionsMenu({
   const MOVE_THRESHOLD = 10 // px
 
   return (
+    <>
+      {showHistory && attendanceId && (
+        <AttendanceRecordHistory
+          attendanceId={attendanceId}
+          trigger="none"
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          title={employeeName || "Record history"}
+        />
+      )}
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
@@ -512,8 +532,25 @@ function RowActionsMenu({
             Transfer
           </DropdownMenuItem>
         )}
+        {showHistory && (
+          <>
+            {(showSick || showTransfer) && <DropdownMenuSeparator />}
+            <DropdownMenuItem
+              disabled={!attendanceId}
+              title={!attendanceId ? "Save attendance first" : undefined}
+              onSelect={(e) => {
+                e.preventDefault()
+                if (attendanceId) setHistoryOpen(true)
+              }}
+            >
+              <History className="mr-2 h-4 w-4" />
+              Record history
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
+    </>
   )
 }
 
@@ -612,6 +649,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               transferDisabled
               transferDisabledReason="Save attendance before transferring"
               onTransfer={() => {}}
+              employeeName={record.employee.name}
             />
           </div>
         </div>
@@ -948,6 +986,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
               transferDisabled
               transferDisabledReason="Save attendance before transferring"
               onTransfer={() => {}}
+              employeeName={record.employee.name}
             />
           </div>
         </TableCell>
@@ -1051,8 +1090,6 @@ function SiteAttendance() {
   }
 
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
-
-  const [pendingPath, setPendingPath] = useState<string | null>(null)
 
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
@@ -1270,13 +1307,40 @@ function SiteAttendance() {
     )
   }
 
-   const handleSafeNavigation = (path: string) => {
+  // Where a "leave" / Back action should land: the ACTUAL previous page, not a
+  // fixed route. If the user arrived directly (deep link, refresh, cold PWA
+  // launch) there's no in-app history to pop, so fall back to the site list.
+  const LEAVE_FALLBACK_PATH = "/attendance"
+
+  // Captured on mount, BEFORE the dirty-guard pushes its duplicate entry: did a
+  // real page precede this one? React Router keeps its stack position in
+  // history.state.idx (0 = first entry, so nothing to go back to).
+  const canGoBackRef = useRef(false)
+  useEffect(() => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
+    canGoBackRef.current = idx > 0
+  }, [])
+
+  const goBackOrFallback = () => {
+    if (!canGoBackRef.current) {
+      navigate(LEAVE_FALLBACK_PATH, { replace: true })
+      return
+    }
+    // The dirty-guard pushes a tagged duplicate of this page to trap the Back
+    // button; when that duplicate is on top, step back OVER it (-2) to reach the
+    // real previous page. Otherwise a single step back is enough.
+    const guardOnTop = !!(window.history.state as { __guard?: boolean } | null)?.__guard
+    navigate(guardOnTop ? -2 : -1)
+  }
+
+  // The in-page ← button routes through here: leave immediately when clean,
+  // otherwise raise the unsaved-changes dialog (which leaves via goBackOrFallback).
+  const handleBackNavigation = () => {
     if (!isDirty) {
-      navigate(path)
+      goBackOrFallback()
       return
     }
 
-    setPendingPath(path)
     setShowLeaveDialog(true)
   }
 
@@ -1437,7 +1501,11 @@ function SiteAttendance() {
           (rec) => !awayVisitingIds.has(String(rec.employee._id))
         )
         setDraftAttendance(restored)
-        setIsDirty(true)
+        // Don't mark the page dirty just for REHYDRATING a saved draft — the
+        // unsaved-changes prompt should fire only when the user actually edits
+        // during THIS visit. The draft is already persisted, so nothing is lost
+        // by starting clean; the first edit flips isDirty and re-arms both the
+        // persistence sync and the leave guard.
         return
       }
 
@@ -2743,33 +2811,23 @@ function SiteAttendance() {
   useEffect(() => {
     if (!isDirty) return
 
-    const handlePopState = () => {
-      setPendingPath("BACK")
-      setShowLeaveDialog(true)
+    // Trap the browser / hardware Back button while there are unsaved changes:
+    // push a TAGGED duplicate of this page so a Back press fires popstate (which
+    // we catch to raise the leave dialog) instead of navigating away outright.
+    // The __guard tag lets goBackOrFallback recognise the duplicate on top and
+    // step back OVER it to reach the real previous page.
+    const GUARD_STATE = { __guard: true }
 
-      window.history.pushState(
-        null,
-        "",
-        window.location.pathname
-      )
+    const handlePopState = () => {
+      setShowLeaveDialog(true)
+      window.history.pushState(GUARD_STATE, "", window.location.pathname)
     }
 
-    window.history.pushState(
-      null,
-      "",
-      window.location.pathname
-    )
-
-    window.addEventListener(
-      "popstate",
-      handlePopState
-    )
+    window.history.pushState(GUARD_STATE, "", window.location.pathname)
+    window.addEventListener("popstate", handlePopState)
 
     return () => {
-      window.removeEventListener(
-        "popstate",
-        handlePopState
-      )
+      window.removeEventListener("popstate", handlePopState)
     }
   }, [isDirty])
 
@@ -2930,9 +2988,7 @@ function SiteAttendance() {
               <Button
                 variant="outline"
                 size="icon"
-                onClick={() =>
-                  handleSafeNavigation("/attendance")
-                }
+                onClick={handleBackNavigation}
               >
                 <ArrowLeft className="h-4 w-4" />
               </Button>
@@ -3011,6 +3067,8 @@ function SiteAttendance() {
                   )}
                 </Button>
               )}
+
+              {id && <SiteActivityLog siteId={id} date={today} />}
 
             </div>
 
@@ -3516,6 +3574,8 @@ function SiteAttendance() {
                                 showTransfer
                                 transferDisabled={false}
                                 onTransfer={() => handleTransferClick(record)}
+                                attendanceId={record.attendanceId}
+                                employeeName={record.name}
                               />
                             )}
                           </div>
@@ -4159,6 +4219,8 @@ function SiteAttendance() {
                                         showTransfer
                                         transferDisabled={false}
                                         onTransfer={() => handleTransferClick(record)}
+                                        attendanceId={record.attendanceId}
+                                        employeeName={record.name}
                                       />
                                     </div>
                                   )}
@@ -4337,24 +4399,18 @@ function SiteAttendance() {
         open={showLeaveDialog}
         onStay={() => {
           setShowLeaveDialog(false)
-          setPendingPath(null)
         }}
         onLeave={() => {
           setShowLeaveDialog(false)
+
+          // Leaving KEEPS the draft. Flush any debounced-but-unwritten edits so
+          // the last keystrokes are persisted, then return to the page the user
+          // came from. The draft stays in localStorage and rehydrates when the
+          // page reopens today; it's cleared only by submitting or the date
+          // rolling over.
+          flushPendingDraftWrite()
           setIsDirty(false)
-
-          // The user chose to discard the draft — make sure the unmount flush
-          // can't write it back after we remove it below.
-          discardPendingDraftWrite()
-          localStorage.removeItem(`attendance_draft_${id}_${today}`)
-          localStorage.removeItem(`active_inline_edit_row_${id}`)
-          localStorage.removeItem(`active_inline_edit_data_${id}`)
-
-          if (pendingPath === "BACK") {
-            window.history.go(-2)
-          } else if (pendingPath) {
-            navigate(pendingPath)
-          }
+          goBackOrFallback()
         }}
       />
 

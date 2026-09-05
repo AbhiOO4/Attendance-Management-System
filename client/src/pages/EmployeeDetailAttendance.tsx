@@ -24,6 +24,7 @@ import {
 import toast from "react-hot-toast"
 
 import EditRecord from "@/components/EditRecord"
+import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
 
 import type {
   AttendanceRecord,
@@ -544,16 +545,23 @@ function EmployeeAttendanceDetail() {
                                       sessions.length
                                     }
                                   >
-                                    {(() => {
-                                      const d = new Date(record.date)
-                                      return (
-                                        d.toLocaleDateString("en-IN", {
-                                          weekday: "short",
-                                        }).slice(0, 3) +
-                                        " " +
-                                        d.getDate()
-                                      )
-                                    })()}
+                                    <div className="flex items-center gap-1">
+                                      <span>
+                                        {(() => {
+                                          const d = new Date(record.date)
+                                          return (
+                                            d.toLocaleDateString("en-IN", {
+                                              weekday: "short",
+                                            }).slice(0, 3) +
+                                            " " +
+                                            d.getDate()
+                                          )
+                                        })()}
+                                      </span>
+                                      <AttendanceRecordHistory
+                                        attendanceId={record.attendanceId}
+                                      />
+                                    </div>
                                   </TableCell>
                                 </>
                               )}

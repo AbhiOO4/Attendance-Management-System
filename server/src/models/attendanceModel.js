@@ -204,6 +204,16 @@ const attendanceSchema = new mongoose.Schema(
       default: null,
       min: 0,
     },
+
+    // Free-text supervisor remark for this day's record ("left early — family
+    // emergency"). A single editable note (overwrite-in-place); every change is captured
+    // in the AttendanceAudit log, so the remark's own history survives. Length-capped so
+    // it stays cheap to carry on record reads.
+    remark: {
+      type: String,
+      default: "",
+      maxlength: 500,
+    },
   },
   {
     timestamps: true,

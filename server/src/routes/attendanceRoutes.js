@@ -71,6 +71,12 @@ router.patch('/update/:attendanceId', authorizeRoles("admin", "supervisor"), att
 
 router.post('/:attendanceId/sessions', authorizeRoles("admin", "supervisor"), attendanceController.addSessionToAttendance)
 
+// Per-record edit log + supervisor remark. Site-scope for supervisors is enforced inside
+// the controller (the param is an attendance id, not a site id, so requireSiteAccess can't).
+router.get('/:attendanceId/history', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceHistory)
+
+router.patch('/:attendanceId/remark', authorizeRoles("admin", "supervisor"), attendanceController.updateAttendanceRemark)
+
 // --- Wildcard route LAST ---
 router.get('/:attendanceId', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceById)
 

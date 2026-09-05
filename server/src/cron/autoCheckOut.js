@@ -14,6 +14,7 @@ import {
 import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { getEmployeeIdsByCategory } from '../utils/collar.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { recordAttendanceAudit, SYSTEM_ACTOR } from '../utils/attendanceAudit.js';
 
 /**
  * Fill checkOut for a SINGLE roster category's open sessions across a set of sites on a
@@ -132,6 +133,14 @@ async function processSites(sites, dateStr, opts, workConfig) {
 
           await record.save();
           updatedCount++;
+
+          // --- Audit: the system closed an open shift (best-effort, System actor) ---
+          await recordAttendanceAudit({
+            attendance: record,
+            actor: SYSTEM_ACTOR,
+            type: "auto_checkout",
+            summary: `Auto checked-out by system at ${checkOutTimeStr}`,
+          });
         }
       }
 
