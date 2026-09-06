@@ -15,6 +15,7 @@ import { hasSessionOverlap } from '../utils/sessionOverlap.js';
 import { getEmployeeIdsByCategory } from '../utils/collar.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { recordAttendanceAudit, SYSTEM_ACTOR } from '../utils/attendanceAudit.js';
+import { buildSiteActivityRow, recordSiteActivityBatch } from '../utils/siteActivity.js';
 
 /**
  * Fill checkOut for a SINGLE roster category's open sessions across a set of sites on a
@@ -34,17 +35,21 @@ async function processSites(sites, dateStr, opts, workConfig) {
   const recordDate = new Date(dateStr);
   recordDate.setUTCHours(0, 0, 0, 0);
 
+  // Per-employee site-feed rows for the whole run, inserted once at the end.
+  const activityRows = [];
+
   for (const site of sites) {
     try {
       const checkOutTimeStr = site[checkOutField];
       if (!checkOutTimeStr) continue;
 
       // Records for this date with a session at this site, scoped to this category.
+      // Employee name is populated for the site-activity feed's per-employee row.
       const records = await Attendance.find({
         date: recordDate,
         'sessions.siteId': site._id,
         employee: { $in: employeeIds },
-      });
+      }).populate('employee', 'name');
 
       let updatedCount = 0;
 
@@ -141,6 +146,19 @@ async function processSites(sites, dateStr, opts, workConfig) {
             type: "auto_checkout",
             summary: `Auto checked-out by system at ${checkOutTimeStr}`,
           });
+
+          // --- Site feed: one per-employee movement row (batched after the run) ---
+          activityRows.push(
+            buildSiteActivityRow({
+              type: "auto_checkout",
+              actor: SYSTEM_ACTOR,
+              employee: record.employee?._id ?? record.employee,
+              employeeName: record.employee?.name || "",
+              siteId: site._id,
+              summary: `Auto checked-out at ${checkOutTimeStr}`,
+              dateLocal: dateStr,
+            })
+          );
         }
       }
 
@@ -156,6 +174,9 @@ async function processSites(sites, dateStr, opts, workConfig) {
       );
     }
   }
+
+  // Best-effort: a failed feed write never affects the auto-checkout itself.
+  await recordSiteActivityBatch(activityRows);
 }
 
 // The eight per-category day/night check-out modes. Day modes fill TODAY's open sessions;

@@ -40,6 +40,8 @@ import { hasSessionOverlap } from './sessionOverlap.js';
 import { computeAttendanceTotals } from './attendanceMath.js';
 import { getEmployeeIdsByCategory } from './collar.js';
 import { FIELD_META } from './rosterFields.js';
+import { buildAuditRow, recordAttendanceAuditBatch } from './attendanceAudit.js';
+import { buildSiteActivityRow, recordSiteActivityBatch } from './siteActivity.js';
 
 /**
  * Determine the target business day for a given field change.
@@ -97,16 +99,24 @@ function skippedEntry(record, reason, field) {
  * @param {Object}  newDefaults   - New default values (same shape as prevDefaults)
  * @param {Object}  workConfig    - Work schedule config, used only for the pay numbers
  *                                  (fullDayHours, halfDayHours, overtimeThreshold)
+ * @param {Object}  actor         - { actorId, actorName } from resolveActor (the admin who
+ *                                  changed the default); used only to attribute the logs.
  *
  * @returns {Object} { updated: number, skipped: Array<{ employeeId, employeeName, reason, field }> }
  */
-export async function propagateDefaultChanges(site, prevDefaults, newDefaults, workConfig) {
+export async function propagateDefaultChanges(site, prevDefaults, newDefaults, workConfig, actor = null) {
   const fullDayHours = (workConfig && workConfig.fullDayHours) || 8;
   const halfDayHours = (workConfig && workConfig.halfDayHours) || 4;
   const overtimeThreshold = (workConfig && workConfig.overtimeThreshold) || 8;
 
   let totalUpdated = 0;
   const allSkipped = [];
+
+  // Activity trail (check-OUT changes only): a per-record edit-log row and a per-employee
+  // site-feed row for each record a default change actually rewrites. Best-effort, written
+  // once at the end so the propagation itself never depends on the logging succeeding.
+  const auditRows = [];
+  const activityRows = [];
 
   const fieldsToCheck = Object.keys(FIELD_META);
 
@@ -135,6 +145,15 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
       oldTimeStr && newTimeStr ? 'update' : oldTimeStr ? 'clear' : 'fill';
     const targetDateStr = getTargetDate(field);
 
+    // Human-readable line for the logs — check-OUT fields only (see scope above).
+    const changeSummary = isCheckIn
+      ? ''
+      : transition === 'update'
+        ? `Check-out updated to ${newTimeStr} by site default change (was ${oldTimeStr})`
+        : transition === 'fill'
+          ? `Check-out ${newTimeStr} filled from site default`
+          : 'Check-out cleared by site default change';
+
     const targetDate = new Date(targetDateStr);
     targetDate.setUTCHours(0, 0, 0, 0);
 
@@ -147,6 +166,10 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
       'sessions.siteId': site._id,
       ...employeeFilter,
     }).populate('employee', 'name employeeId');
+
+    // The site feed gets ONE summary row per field change (not per record); the
+    // per-record audit log stays per record. Count the records this field actually rewrote.
+    let fieldUpdatedCount = 0;
 
     for (const record of records) {
       // Never fill anything on a sick-leave day.
@@ -348,9 +371,32 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
 
         await record.save();
         totalUpdated++;
+
+        // Per-record edit log for check-out default changes (one row per affected record).
+        if (!isCheckIn) {
+          auditRows.push(buildAuditRow(record, actor, 'default_propagated', changeSummary));
+          fieldUpdatedCount++;
+        }
       }
     }
+
+    // Site feed: a single summary row for this field's change (not one per record).
+    if (!isCheckIn && fieldUpdatedCount > 0) {
+      activityRows.push(
+        buildSiteActivityRow({
+          type: 'default_propagated',
+          actor,
+          siteId: site._id,
+          summary: `${changeSummary} · ${fieldUpdatedCount} record${fieldUpdatedCount === 1 ? '' : 's'}`,
+          dateLocal: targetDateStr,
+        })
+      );
+    }
   }
+
+  // Best-effort trail writes — never affect the propagation result.
+  await recordAttendanceAuditBatch(auditRows);
+  await recordSiteActivityBatch(activityRows);
 
   return { updated: totalUpdated, skipped: allSkipped };
 }

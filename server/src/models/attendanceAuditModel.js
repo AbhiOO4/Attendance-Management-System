@@ -64,6 +64,7 @@ const attendanceAuditSchema = new mongoose.Schema(
         "bulk_checkout", // closed via the admin bulk check-out
         "night_shift_assigned", // a night session assigned
         "auto_checkout", // an open shift auto-closed by the system cron
+        "default_propagated", // a site default-time change was applied to this record
         "remark_updated", // the supervisor remark was set/changed
       ],
       required: true,

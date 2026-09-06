@@ -2386,11 +2386,14 @@ export const updateSite = async (req, res) => {
       };
 
       try {
+        // Attribute the propagation trail to the admin who changed the default.
+        const propagationActor = await resolveActor(req);
         const propagation = await propagateDefaultChanges(
           site,
           prevDefaults,
           newDefaults,
-          workConfig
+          workConfig,
+          propagationActor
         );
 
         return res.status(200).json({

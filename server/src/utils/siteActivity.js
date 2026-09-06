@@ -13,6 +13,37 @@ import { getTodayLocal } from "./timeLocal.js"
 export { resolveActor, SYSTEM_ACTOR } from "./attendanceAudit.js"
 
 /**
+ * Build a plain site-activity row (maps `actor` → actorId/actorName, defaults dateLocal to
+ * today). Use for recordSiteActivityBatch; also used internally by the single writer.
+ * Pass `dateLocal` to file the event under a business day other than today — e.g. a night
+ * auto-checkout that modifies yesterday's record must surface in yesterday's feed.
+ */
+export function buildSiteActivityRow({
+  type,
+  actor,
+  employee = null,
+  employeeName = "",
+  fromSiteId = null,
+  toSiteId = null,
+  siteId = null,
+  summary,
+  dateLocal = null,
+}) {
+  return {
+    type,
+    actor: actor?.actorId ?? null,
+    actorName: actor?.actorName ?? "System",
+    employee,
+    employeeName: employeeName || "",
+    fromSiteId,
+    toSiteId,
+    siteId,
+    summary,
+    dateLocal: dateLocal || getTodayLocal(),
+  }
+}
+
+/**
  * Record one site-activity event. `actor` is the object from resolveActor (or SYSTEM_ACTOR).
  * Provide fromSiteId/toSiteId for a transfer, or siteId for a single-site event.
  */
@@ -25,23 +56,33 @@ export async function recordSiteActivity({
   toSiteId = null,
   siteId = null,
   summary,
+  dateLocal = null,
   session = null,
 }) {
   try {
-    const row = {
+    const row = buildSiteActivityRow({
       type,
-      actor: actor?.actorId ?? null,
-      actorName: actor?.actorName ?? "System",
+      actor,
       employee,
-      employeeName: employeeName || "",
+      employeeName,
       fromSiteId,
       toSiteId,
       siteId,
       summary,
-      dateLocal: getTodayLocal(),
-    }
+      dateLocal,
+    })
     await siteActivityModel.create([row], session ? { session } : {})
   } catch (err) {
     console.error("[siteActivity] failed to record:", err.message)
+  }
+}
+
+/** Best-effort batch write for bulk paths. `rows` = buildSiteActivityRow(...) outputs. */
+export async function recordSiteActivityBatch(rows, session = null) {
+  if (!Array.isArray(rows) || rows.length === 0) return
+  try {
+    await siteActivityModel.insertMany(rows, session ? { session } : {})
+  } catch (err) {
+    console.error("[siteActivity] failed to record batch:", err.message)
   }
 }
