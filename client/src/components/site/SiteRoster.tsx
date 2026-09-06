@@ -119,6 +119,10 @@ interface Employee {
   // Populated per-visit job — the job the visitor works at THIS site today. Set/changed
   // via the roster's Assign jobs; it becomes the session's job on submit.
   pendingTransferJobId?: JobRef | string | null
+  // Set by the server when this home member already has a session at ANOTHER site today
+  // (a visit whose pendingTransfer* stash was consumed when that site saved). The durable
+  // "out today" signal that outlives the stash — shown as a read-only "At <site> today" row.
+  recordedElsewhereToday?: { siteId: string; siteName: string | null } | null
   // Client-only markers for a post-submit session-holder whose home is another site
   // (surfaced on the Today tab from the daily report, not the rosterForSite fetch).
   __crossSite?: boolean
@@ -289,6 +293,18 @@ function SiteRoster({
       !!e.pendingTransferDate &&
       String(e.pendingTransferDate).slice(0, 10) === today
     )
+  }
+
+  // A home member is "away today" whether the visit is still pending (stash present, above)
+  // or already recorded at the other site (stash consumed on that site's save — the server
+  // hands us `recordedElsewhereToday`). Both cases must be flagged and blocked from a "Send".
+  function isAwayToday(e: Employee) {
+    return isVisitingElsewhere(e) || !!e.recordedElsewhereToday
+  }
+  function awayTodaySiteName(e: Employee) {
+    return isVisitingElsewhere(e)
+      ? siteRefName(e.pendingTransferSiteId)
+      : e.recordedElsewhereToday?.siteName ?? null
   }
 
   async function fetchRoster() {
@@ -947,7 +963,7 @@ function SiteRoster({
       mode === "today" &&
       !todaySubmitted &&
       rMode === "today-home" &&
-      !isVisitingElsewhere(e)
+      !isAwayToday(e)
     const canSendTomorrow =
       mode === "tomorrow" && info.onSiteToday && !info.hasSchedule
 
@@ -1025,12 +1041,12 @@ function SiteRoster({
             Visiting
           </Badge>
         )}
-        {mode === "today" && isVisitingElsewhere(e) && (
+        {mode === "today" && isAwayToday(e) && (
           <Badge
             variant="secondary"
             className="h-4 bg-indigo-50 px-1.5 py-0 text-[10px] text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
           >
-            At {siteRefName(e.pendingTransferSiteId) || "another site"} today
+            At {awayTodaySiteName(e) || "another site"} today
           </Badge>
         )}
         {info.leaving && (

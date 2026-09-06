@@ -108,6 +108,10 @@ interface Employee {
   // Populated per-visit job for a cross-site visitor — used for this site's session
   // instead of the home currentJob.
   pendingTransferJobId?: { _id: string; name: string } | null
+  // Set by the server when this employee already has a session at ANOTHER site today
+  // (a visit whose pendingTransfer* stash was consumed when the visited site saved).
+  // The durable signal that a home member is out today — dropped from this site's draft.
+  recordedElsewhereToday?: { siteId: string; siteName: string | null } | null
 }
 
 // Source site of an inbound transfer, shown as the "Transferred from" badge.
@@ -1498,8 +1502,15 @@ function SiteAttendance() {
         !!emp.pendingTransferDate &&
         String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
 
+      // A home member is "away today" if they're on a pending visit elsewhere (stash still
+      // present) OR already have a recorded session at another site today (stash consumed
+      // when that site saved — the durable signal). Either way they must NOT get a markable
+      // row here, or they'd be recorded twice for the same day.
+      const isAwayToday = (emp: Employee) =>
+        isVisitingElsewhere(emp) || !!emp.recordedElsewhereToday
+
       const awayVisitingIds = new Set(
-        employeesList.filter(isVisitingElsewhere).map((emp) => emp._id)
+        employeesList.filter(isAwayToday).map((emp) => emp._id)
       )
 
       // The server's ?site= also returns only-for-today visitors (pendingTransferSiteId = this
@@ -1507,7 +1518,7 @@ function SiteAttendance() {
       // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
       // stale pendingTransfer* rows an abandoned draft may have left behind.
       const rosterEmployees = employeesList.filter((emp) => {
-        if (String(emp.currentSite) === String(siteData._id)) return !isVisitingElsewhere(emp)
+        if (String(emp.currentSite) === String(siteData._id)) return !isAwayToday(emp)
         return (
           !!emp.pendingTransferSiteId &&
           String(emp.pendingTransferSiteId) === String(siteData._id) &&

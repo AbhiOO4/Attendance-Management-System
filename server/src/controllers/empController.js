@@ -6,6 +6,7 @@ import mongoose from 'mongoose'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
 import AttendanceLock from '../models/lockModel.js'
 import attendanceModel from '../models/attendanceModel.js'
+import siteModel from '../models/siteModel.js'
 import workModel from '../models/workModel.js'
 import { resolveCollarType } from '../utils/collar.js'
 
@@ -157,8 +158,48 @@ export const getAllEmployees = async (req, res) => {
       query = query.skip(skip).limit(limitNumber);
     }
 
-    const employees = await query;
+    const employeesRaw = await query;
     const totalEmployees = await empModel.countDocuments(filter);
+
+    // A home member on a one-day visit to another site is dropped from their home
+    // roster/draft via the pendingTransfer* stash — but that stash is CONSUMED once the
+    // visited site saves the session, after which the home site would re-list them as an
+    // ordinary absent member (offering a second, phantom record). Consult the durable
+    // signal instead: a session at a site != the queried site on today's attendance.
+    // Annotate `recordedElsewhereToday` so both the mark-attendance draft (?site=) and the
+    // Manage-Employees roster (?rosterForSite=) can exclude/flag them.
+    const anchorSite = site && site !== "null" ? site : rosterForSite;
+    let employees = employeesRaw;
+    if (anchorSite) {
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const rosterIds = employeesRaw.map((e) => e._id);
+      const atts = await attendanceModel.find(
+        { employee: { $in: rosterIds }, date: today },
+        "employee sessions"
+      );
+      const elsewhereByEmp = new Map();
+      for (const a of atts) {
+        const sessions = a.sessions || [];
+        const hasHere = sessions.some((s) => String(s.siteId) === String(anchorSite));
+        if (hasHere) continue; // a real multi-site day (also here) still belongs here
+        const other = sessions.find((s) => s.siteId && String(s.siteId) !== String(anchorSite));
+        if (other) elsewhereByEmp.set(String(a.employee), String(other.siteId));
+      }
+      if (elsewhereByEmp.size) {
+        const otherIds = [...new Set(elsewhereByEmp.values())];
+        const siteDocs = await siteModel.find({ _id: { $in: otherIds } }, "siteName");
+        const nameById = new Map(siteDocs.map((s) => [String(s._id), s.siteName]));
+        employees = employeesRaw.map((e) => {
+          const otherId = elsewhereByEmp.get(String(e._id));
+          const obj = e.toObject();
+          obj.recordedElsewhereToday = otherId
+            ? { siteId: otherId, siteName: nameById.get(otherId) || null }
+            : null;
+          return obj;
+        });
+      }
+    }
 
     const response = {
       employees,
