@@ -1502,24 +1502,6 @@ function SiteAttendance() {
         employeesList.filter(isVisitingElsewhere).map((emp) => emp._id)
       )
 
-      const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
-      if (cached) {
-        // A draft cached BEFORE the carryover/visit appeared can still hold an auto-prefilled
-        // check-in for an employee now mid-shift from yesterday, or a row for one now visiting
-        // another site. Strip carryover check-ins and DROP the away-visitor rows so the
-        // restored draft matches a fresh build (no home record for someone working elsewhere).
-        const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
-          (rec) => !awayVisitingIds.has(String(rec.employee._id))
-        )
-        setDraftAttendance(restored)
-        // Don't mark the page dirty just for REHYDRATING a saved draft — the
-        // unsaved-changes prompt should fire only when the user actually edits
-        // during THIS visit. The draft is already persisted, so nothing is lost
-        // by starting clean; the first edit flips isDirty and re-arms both the
-        // persistence sync and the leave guard.
-        return
-      }
-
       // The server's ?site= also returns only-for-today visitors (pendingTransferSiteId = this
       // site) whose home is elsewhere. Keep on-site members — EXCEPT those visiting another
       // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
@@ -1534,8 +1516,8 @@ function SiteAttendance() {
         )
       })
 
-      const mappedDraft =
-        rosterEmployees.map((emp) => {
+      const buildRow =
+        (emp: Employee) => {
           const hasPendingTransfer =
             !!emp.pendingTransferSiteId &&
             String(emp.pendingTransferSiteId) === String(siteData._id) &&
@@ -1612,9 +1594,36 @@ function SiteAttendance() {
                 }
               : null,
           }
-        })
+        }
 
-      setDraftAttendance(mappedDraft)
+      const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
+      if (cached) {
+        // A draft cached BEFORE the carryover/visit appeared can still hold an auto-prefilled
+        // check-in for an employee now mid-shift from yesterday, or a row for one now visiting
+        // another site. Strip carryover check-ins and DROP the away-visitor rows so the
+        // restored draft matches a fresh build (no home record for someone working elsewhere).
+        const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
+          (rec) => !awayVisitingIds.has(String(rec.employee._id))
+        )
+        // An employee SENT to this site AFTER the draft was cached — an inbound visitor
+        // (pendingTransferSiteId = this site) or a permanent move (currentSite = this site) —
+        // is absent from the cached rows. Append a fresh row for each current roster member
+        // not already present, so new arrivals surface without discarding the supervisor's
+        // in-progress edits on the rows they've already touched.
+        const presentIds = new Set(restored.map((rec) => String(rec.employee._id)))
+        const additions = rosterEmployees
+          .filter((emp) => !presentIds.has(String(emp._id)))
+          .map(buildRow)
+        setDraftAttendance([...restored, ...additions])
+        // Don't mark the page dirty just for REHYDRATING a saved draft — the
+        // unsaved-changes prompt should fire only when the user actually edits
+        // during THIS visit. The draft is already persisted, so nothing is lost
+        // by starting clean; the first edit flips isDirty and re-arms both the
+        // persistence sync and the leave guard.
+        return
+      }
+
+      setDraftAttendance(rosterEmployees.map(buildRow))
     } catch (error) {
       console.log(error)
       setDraftAttendance([])
