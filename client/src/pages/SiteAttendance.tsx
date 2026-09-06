@@ -227,6 +227,11 @@ interface DraftSession {
   // True when the supervisor deliberately cleared this session (Absent button /
   // manually emptied check-in). Immune to empty→time default propagation.
   manuallyCleared?: boolean
+  // True when `checkIn` is the category default the roster auto-filled and the supervisor
+  // has not since edited it. Sent on submit so the audit log can distinguish an
+  // auto-initialized check-in from one the supervisor actually entered. Any manual edit to
+  // the check-in clears it.
+  checkInAutoInit?: boolean
 }
 //siteId, date, isHoliday are common fields
 interface DraftAttendanceRecord {
@@ -327,6 +332,7 @@ const clearCarryoverSessions = (
             workedHours: 0,
             isNightShift: false,
             manuallyCleared: false,
+            checkInAutoInit: false,
           })),
         }
       : rec
@@ -1591,6 +1597,9 @@ function SiteAttendance() {
                 checkOut: "",
                 workedHours: 0,
                 isNightShift,
+                // Auto-initialized only when the check-in is the category day default
+                // (not a carryover blank and not a transfer's own check-in).
+                checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
               },
             ],
 
@@ -2054,10 +2063,16 @@ function SiteAttendance() {
           nextManuallyCleared = false
         }
 
+        // A supervisor edit to the check-in means it's no longer the untouched auto-filled
+        // default — clear the flag so the audit log reports it as an entered check-in.
+        const nextCheckInAutoInit =
+          field === "checkIn" ? false : (sessions[sessionIndex].checkInAutoInit || false)
+
         sessions[sessionIndex] = {
           ...session,
           isNightShift: nextIsNightShift,
           manuallyCleared: nextManuallyCleared,
+          checkInAutoInit: nextCheckInAutoInit,
         }
 
         sessions[sessionIndex].workedHours =
@@ -2474,6 +2489,10 @@ function SiteAttendance() {
                 let nextIn = session.checkIn
                 let nextOut = session.checkOut
                 let nextCleared = session.manuallyCleared || false
+                // This path only touches check-ins that are empty (fill) or still equal the
+                // old default (update/clear) — i.e. untouched auto-fills — so a check-in set
+                // from a default here is still auto-initialized; a cleared one is not.
+                let nextAutoInit = session.checkInAutoInit || false
                 let modified = false
 
                 for (const c of inCands) {
@@ -2485,6 +2504,7 @@ function SiteAttendance() {
                     if (nextCleared) continue
                     if (sessionNight !== c.night) continue
                     nextIn = c.next
+                    nextAutoInit = true
                     modified = true
                   } else if (nextIn && nextIn === c.old) {
                     if (t === "clear") {
@@ -2493,9 +2513,11 @@ function SiteAttendance() {
                       nextIn = ""
                       // Emptied by a default change, not a deliberate absence.
                       nextCleared = false
+                      nextAutoInit = false
                       modified = true
                     } else {
                       nextIn = c.next
+                      nextAutoInit = true
                       modified = true
                     }
                   }
@@ -2519,6 +2541,7 @@ function SiteAttendance() {
                   checkIn: nextIn,
                   checkOut: nextOut,
                   manuallyCleared: nextCleared,
+                  checkInAutoInit: nextAutoInit,
                   workedHours,
                 }
               }),

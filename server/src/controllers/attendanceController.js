@@ -1474,11 +1474,28 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       if (!wasNew && newBreaks !== prevBreaks) {
         auditRows.push(buildAuditRow(attendanceDoc, auditActor, "breaks_changed", breaksChangeSummary(prevBreaks, newBreaks)));
       }
+      // First submit gets a richer line: the day's opening check-in, and whether that
+      // check-in was the category default the roster auto-filled (checkInAutoInit — sent by
+      // the client and still untouched by the supervisor) vs. a time they actually entered.
+      // Edits keep the generic line.
+      let submitSummary = "Attendance submitted";
+      if (wasNew) {
+        const firstIn = sessions.find((s) => s && s.checkIn);
+        if (isSickLeave) {
+          submitSummary = "Attendance submitted (sick leave)";
+        } else if (!firstIn) {
+          submitSummary = "Attendance submitted (absent)";
+        } else if (firstIn.checkInAutoInit) {
+          submitSummary = `Attendance submitted with an auto-initialized check-in of ${firstIn.checkIn}`;
+        } else {
+          submitSummary = `Attendance submitted with a check-in of ${firstIn.checkIn}`;
+        }
+      }
       auditRows.push(buildAuditRow(
         attendanceDoc,
         auditActor,
         wasNew ? "submitted" : "edited",
-        wasNew ? "Attendance submitted" : "Attendance edited"
+        wasNew ? submitSummary : "Attendance edited"
       ));
     }
 
@@ -4975,7 +4992,16 @@ export const assignNightShift = async (req, res) => {
       await attendanceDoc.save({ session: dbSession });
       processedCount++;
 
-      auditRows.push(buildAuditRow(attendanceDoc, auditActor, "night_shift_assigned", "Night shift assigned"));
+      // The night default check-in is auto-filled by the server on assignment (prefillCheckIn),
+      // so — unlike the day submit — we know for certain it was auto-initialized. rawCheckIn is
+      // populated by the pre-save hook above; it's null only when the overlap safety cleared it.
+      const assignedNight = attendanceDoc.sessions.find(
+        (s) => s.siteId.toString() === siteId.toString() && s.isNightShift
+      );
+      const nightSummary = assignedNight?.rawCheckIn
+        ? `Night shift assigned with an auto-initialized check-in of ${assignedNight.rawCheckIn}`
+        : "Night shift assigned";
+      auditRows.push(buildAuditRow(attendanceDoc, auditActor, "night_shift_assigned", nightSummary));
     }
 
     // Audit log joins the same transaction (best-effort inside the helper).

@@ -173,14 +173,26 @@ export default function AttendanceRecordHistory({
           <div className="py-2 text-xs text-muted-foreground">No changes recorded yet.</div>
         ) : (
           <ul className="flex max-h-64 flex-col gap-2 overflow-y-auto pr-1">
-            {entries.map((e) => (
-              <li key={e._id} className="text-xs">
-                <div className="text-foreground">{e.summary}</div>
-                <div className="text-muted-foreground">
-                  {e.actorName} · {relativeTime(e.createdAt)}
-                </div>
-              </li>
-            ))}
+            {entries.map((e) => {
+              // A system-made change (the auto check-out cron) reads differently from a
+              // human edit — give it a subtle amber tint so it stands out at a glance.
+              const isSystem = e.type === "auto_checkout"
+              return (
+                <li
+                  key={e._id}
+                  className={cn(
+                    "text-xs",
+                    isSystem &&
+                      "rounded-md border-l-2 border-amber-400/70 bg-amber-50 px-2 py-1 dark:bg-amber-500/10"
+                  )}
+                >
+                  <div className="text-foreground">{e.summary}</div>
+                  <div className="text-muted-foreground">
+                    {e.actorName} · {relativeTime(e.createdAt)}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>
