@@ -7,6 +7,22 @@ const app = express()
 
 import cors from "cors"
 
+// TEMPORARY origin audit — remove once the old client link is confirmed dead.
+// Logs the first time each distinct Origin/Referer host is seen so the Render
+// logs can be grepped for `[ORIGIN-AUDIT]` to spot old-link (*.onrender.com)
+// traffic. Runs BEFORE cors so it captures origins cors would otherwise reject.
+const seenOrigins = new Set();
+app.use((req, res, next) => {
+  const origin = req.headers.origin || req.headers.referer || "(none)";
+  if (!seenOrigins.has(origin)) {
+    seenOrigins.add(origin);
+    console.log(
+      `[ORIGIN-AUDIT] first seen: ${origin} | ua: ${req.headers["user-agent"] || "?"} | path: ${req.method} ${req.originalUrl}`
+    );
+  }
+  next();
+});
+
 app.use(
   cors({
     origin: [process.env.CLIENT_URL, process.env.CLIENT_URL_2],

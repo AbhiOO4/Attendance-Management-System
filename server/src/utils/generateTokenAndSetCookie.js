@@ -4,7 +4,7 @@ export const generateTokenAndSetCookie = (res, user) => {
     const token = jwt.sign({
     id: user._id,
     role: user.role,
-  }, process.env.JWT_SECRET, {expiresIn: '7d'})
+  }, process.env.JWT_SECRET, {expiresIn: '30d'})
 
     const isProduction = process.env.NODE_ENV === "production"
     res.cookie('token', token, {
