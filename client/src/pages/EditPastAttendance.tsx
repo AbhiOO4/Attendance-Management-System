@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
 import BulkCheckoutModal from "@/components/BulkCheckoutModal"
+import SiteActivityLog from "@/components/SiteActivityLog"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -41,6 +42,7 @@ import {
   Loader2,
   LogOut,
   Pencil,
+  Search,
   UserPlus,
   X,
 } from "lucide-react"
@@ -157,9 +159,8 @@ type Site = {
 }
 
 interface Filters {
-  name: string
-  employeeId: string
-  jobTitle: string
+  // One unified query matched across name, employee ID and job title (server ORs them).
+  search: string
   site: string
   page: number
   limit: number
@@ -169,13 +170,19 @@ const getDisplayStatus = (record: AttendanceRecord) => {
   if (record.isSickLeave) {
     return "sick"
   }
-  if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
-    const hasCheckInNoCheckOut = record.sessions.some(
+  // Any session checked in but never checked out still needs a check-out → surface it
+  // as "pending" so the row is selectable for bulk check-out. This must NOT be gated on
+  // an "absent" status: an employee with a completed day session PLUS an open second
+  // session (e.g. a night shift) has a fullday/halfday status yet still has an unclosed
+  // session to close. The bulk-checkout modal + server already target the latest open
+  // session and leave the completed one intact.
+  if (
+    record.sessions &&
+    record.sessions.some(
       (session) => session && session.checkIn && !session.checkOut
     )
-    if (hasCheckInNoCheckOut) {
-      return "pending"
-    }
+  ) {
+    return "pending"
   }
   return record.status
 }
@@ -218,9 +225,7 @@ function EditPastAttendance() {
 
   const [filters, setFilters] =
     useState<Filters>({
-      name: "",
-      employeeId: "",
-      jobTitle: "",
+      search: "",
       site: "all",
       page: 1,
       limit: 10,
@@ -539,6 +544,15 @@ function EditPastAttendance() {
                   </Button>
                 )}
 
+                {filters.site !== "all" && (
+                  <SiteActivityLog
+                    key={`${filters.site}-${date}`}
+                    siteId={filters.site}
+                    date={date}
+                    className="mr-1"
+                  />
+                )}
+
                 <Button
                   variant="outline"
                   size="icon"
@@ -584,48 +598,22 @@ function EditPastAttendance() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-              <Input
-                placeholder="Search name"
-                value={filters.name}
-                onChange={(e) =>
-                  setFilters({
-                    ...filters,
-                    name: e.target.value,
-                    page: 1,
-                  })
-                }
-              />
-
-              <Input
-                placeholder="Employee ID"
-                value={
-                  filters.employeeId
-                }
-                onChange={(e) =>
-                  setFilters({
-                    ...filters,
-                    employeeId:
-                      e.target.value,
-                    page: 1,
-                  })
-                }
-              />
-
-              <Input
-                placeholder="Job Title"
-                value={
-                  filters.jobTitle
-                }
-                onChange={(e) =>
-                  setFilters({
-                    ...filters,
-                    jobTitle:
-                      e.target.value,
-                    page: 1,
-                  })
-                }
-              />
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              <div className="relative md:col-span-2 lg:col-span-2">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="Search name, employee ID or job title"
+                  className="pl-8"
+                  value={filters.search}
+                  onChange={(e) =>
+                    setFilters({
+                      ...filters,
+                      search: e.target.value,
+                      page: 1,
+                    })
+                  }
+                />
+              </div>
 
               <Select value={filters.site} onValueChange={(value) => setFilters({...filters, site: value, page: 1,})}>
                 <SelectTrigger>

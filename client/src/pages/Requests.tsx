@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import toast from "react-hot-toast"
 import axios from "axios"
 
 import { api } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
+import { getCurrentTargetDateString, toLocalDateString } from "@/lib/dateUtils"
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -41,6 +42,9 @@ type TransferRequest = {
   status: RequestStatus
   requestedBy: Ref
   approver: Ref
+  // Current supervisors of the deciding site (any of them can act). Empty → an
+  // admin decides. Computed server-side on each list, fresher than `approver`.
+  deciders?: { _id: string; name: string }[]
   dateLocal: string
   note?: string
   createdAt: string
@@ -148,6 +152,62 @@ function EmptyState({ icon: Icon, text }: { icon: typeof Inbox; text: string }) 
   )
 }
 
+/** Who is expected to act on a sent request. Names the deciding site's supervisors —
+ * one is enough to reach out to, so we show the first and count the rest. */
+function awaitingText(req: TransferRequest): string {
+  const names = (req.deciders ?? []).map((d) => d.name).filter(Boolean)
+  if (names.length === 0) {
+    return req.approver?.name ? `Awaiting ${req.approver.name}` : "Awaiting an admin"
+  }
+  if (names.length === 1) return `Awaiting ${names[0]}`
+  return `Awaiting ${names[0]} +${names.length - 1} more`
+}
+
+/**
+ * A list that shows only today's items by default and reveals the older ones on
+ * demand — keeps the page focused on what's current without losing the history.
+ * `visible` is the default (today) subset; `all` is the full list shown once expanded.
+ */
+function CollapsibleList<T>({
+  all,
+  visible,
+  expanded,
+  onToggle,
+  emptyIcon,
+  emptyText,
+  renderItem,
+}: {
+  all: T[]
+  visible: T[]
+  expanded: boolean
+  onToggle: () => void
+  emptyIcon: typeof Inbox
+  emptyText: string
+  renderItem: (item: T) => React.ReactNode
+}) {
+  if (all.length === 0) return <EmptyState icon={emptyIcon} text={emptyText} />
+
+  const olderCount = all.length - visible.length
+  const items = expanded ? all : visible
+
+  return (
+    <>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground text-center py-6">Nothing today.</p>
+      ) : (
+        items.map(renderItem)
+      )}
+      {olderCount > 0 && (
+        <div className="pt-1 flex justify-center">
+          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={onToggle}>
+            {expanded ? "Show less" : `Show ${olderCount} older`}
+          </Button>
+        </div>
+      )}
+    </>
+  )
+}
+
 export default function Requests() {
   const { user } = useAuth()
 
@@ -158,6 +218,14 @@ export default function Requests() {
   const [incoming, setIncoming] = useState<TransferRequest[]>([])
   const [outgoing, setOutgoing] = useState<TransferRequest[]>([])
   const [notifications, setNotifications] = useState<Notification[]>([])
+
+  // Each tab defaults to today's items; older ones are revealed per-tab on demand.
+  const [expanded, setExpanded] = useState<Record<Tab, boolean>>({
+    incoming: false,
+    sent: false,
+    activity: false,
+  })
+  const toggleExpanded = (key: Tab) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
   const fetchAll = useCallback(async () => {
     try {
@@ -221,6 +289,23 @@ export default function Requests() {
   const pendingIncoming = incoming.filter((r) => r.status === "pending")
   const pendingOutgoing = outgoing.filter((r) => r.status === "pending")
 
+  // "Today" partitioning. A still-pending request stays visible even if older than
+  // today — it's actionable and shouldn't hide behind "Show older"; only resolved
+  // history collapses. Activity items collapse purely by their date.
+  const todayLocal = getCurrentTargetDateString()
+  const visibleIncoming = useMemo(
+    () => incoming.filter((r) => r.dateLocal === todayLocal || r.status === "pending"),
+    [incoming, todayLocal]
+  )
+  const visibleOutgoing = useMemo(
+    () => outgoing.filter((r) => r.dateLocal === todayLocal || r.status === "pending"),
+    [outgoing, todayLocal]
+  )
+  const visibleNotifications = useMemo(
+    () => notifications.filter((n) => toLocalDateString(n.createdAt) === todayLocal),
+    [notifications, todayLocal]
+  )
+
   const tabButton = (key: Tab, label: string, count?: number) => (
     <button
       onClick={() => setTab(key)}
@@ -272,11 +357,15 @@ export default function Requests() {
 
       <Card>
         <CardContent className="pt-6 space-y-4">
-          {tab === "incoming" &&
-            (incoming.length === 0 ? (
-              <EmptyState icon={Inbox} text="No incoming requests." />
-            ) : (
-              incoming.map((req) => (
+          {tab === "incoming" && (
+            <CollapsibleList
+              all={incoming}
+              visible={visibleIncoming}
+              expanded={expanded.incoming}
+              onToggle={() => toggleExpanded("incoming")}
+              emptyIcon={Inbox}
+              emptyText="No incoming requests."
+              renderItem={(req) => (
                 <RequestCard key={req._id} req={req}>
                   {req.status === "pending" ? (
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -308,18 +397,26 @@ export default function Requests() {
                     req.note && <p className="text-xs text-muted-foreground italic pt-1">{req.note}</p>
                   )}
                 </RequestCard>
-              ))
-            ))}
+              )}
+            />
+          )}
 
-          {tab === "sent" &&
-            (outgoing.length === 0 ? (
-              <EmptyState icon={Send} text="You haven't sent any requests." />
-            ) : (
-              outgoing.map((req) => (
+          {tab === "sent" && (
+            <CollapsibleList
+              all={outgoing}
+              visible={visibleOutgoing}
+              expanded={expanded.sent}
+              onToggle={() => toggleExpanded("sent")}
+              emptyIcon={Send}
+              emptyText="You haven't sent any requests."
+              renderItem={(req) => (
                 <RequestCard key={req._id} req={req}>
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                    <span className="text-xs text-muted-foreground">
-                      {req.approver?.name ? `Awaiting ${req.approver.name}` : "Awaiting an admin"}
+                    <span
+                      className="text-xs text-muted-foreground"
+                      title={(req.deciders ?? []).map((d) => d.name).join(", ") || undefined}
+                    >
+                      {awaitingText(req)}
                     </span>
                     {req.status === "pending" && (
                       <Button
@@ -338,14 +435,19 @@ export default function Requests() {
                     )}
                   </div>
                 </RequestCard>
-              ))
-            ))}
+              )}
+            />
+          )}
 
-          {tab === "activity" &&
-            (notifications.length === 0 ? (
-              <EmptyState icon={Bell} text="No activity yet." />
-            ) : (
-              notifications.map((n) => (
+          {tab === "activity" && (
+            <CollapsibleList
+              all={notifications}
+              visible={visibleNotifications}
+              expanded={expanded.activity}
+              onToggle={() => toggleExpanded("activity")}
+              emptyIcon={Bell}
+              emptyText="No activity yet."
+              renderItem={(n) => (
                 <div key={n._id} className="rounded-xl border border-border bg-card p-4 shadow-sm">
                   <div className="flex items-start gap-3">
                     <Bell className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
@@ -358,8 +460,9 @@ export default function Requests() {
                     </div>
                   </div>
                 </div>
-              ))
-            ))}
+              )}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

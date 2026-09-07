@@ -217,6 +217,33 @@ export const listRequests = async (req, res) => {
       .populate("toJob", "name")
       .populate("requestedBy", "name")
       .populate("approver", "name")
+      .lean()
+
+    // Attach the CURRENT supervisors of each request's DECIDING site (fromSite for a
+    // "pull", toSite for a "push"). A site may have several, and any of them can
+    // decide — the client shows "Awaiting X +N more". Computed fresh here so it
+    // reflects who can act right now, which is truer than the single representative
+    // `approver` stored at creation (assignments can change afterwards).
+    const decidingSiteOf = (r) => (r.direction === "push" ? r.toSite?._id : r.fromSite?._id)
+    const decidingSiteIds = [
+      ...new Set(requests.map(decidingSiteOf).filter(Boolean).map((id) => id.toString())),
+    ]
+    const supsBySite = new Map()
+    if (decidingSiteIds.length) {
+      const sups = await userModel
+        .find({ role: "supervisor", assignedSite: { $in: decidingSiteIds } })
+        .select("_id name assignedSite")
+        .lean()
+      for (const s of sups) {
+        const key = s.assignedSite.toString()
+        if (!supsBySite.has(key)) supsBySite.set(key, [])
+        supsBySite.get(key).push({ _id: s._id, name: s.name })
+      }
+    }
+    for (const r of requests) {
+      const site = decidingSiteOf(r)
+      r.deciders = site ? supsBySite.get(site.toString()) || [] : []
+    }
 
     return res.status(200).json({ success: true, data: requests })
   } catch (error) {

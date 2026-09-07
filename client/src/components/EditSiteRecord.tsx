@@ -723,7 +723,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
           <SelectTrigger className="w-full h-10 text-sm">
             <SelectValue placeholder="Select job" />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent position="popper" sideOffset={4}>
             <SelectItem value="not-assigned">Not Assigned</SelectItem>
             {site.jobs.map((job) => (
               <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>

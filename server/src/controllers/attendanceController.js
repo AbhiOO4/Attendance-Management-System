@@ -1890,6 +1890,19 @@ export const getAttendanceRecords = async (req, res) => {
     // -----------------------------
     let employeeFilter = {};
 
+    // Unified search box: a single query string matched across name, employee ID
+    // and job title (OR). The individual name/employeeId/jobTitle params are still
+    // honored for any older caller and combine with AND alongside the search.
+    const search = (req.query.search || "").toString().trim();
+    if (search) {
+      const rx = { $regex: escapeRegExp(search), $options: "i" };
+      employeeFilter.$or = [
+        { name: rx },
+        { employeeId: rx },
+        { jobTitle: rx },
+      ];
+    }
+
     if (name) {
       employeeFilter.name = {
         $regex: escapeRegExp(name),
@@ -1913,6 +1926,7 @@ export const getAttendanceRecords = async (req, res) => {
 
     // Get employee IDs if employee filters exist
     if (
+      search ||
       name ||
       employeeId ||
       jobTitle
