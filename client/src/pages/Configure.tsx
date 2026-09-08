@@ -42,6 +42,7 @@ type WorkSchedule = {
   weeklyHolidays: string[];
   breakDurationMinutes: number;
   checkoutReminderTime: string;
+  annualLeaveDefaultDays: number;
 };
 
 
@@ -94,6 +95,7 @@ export default function Configure() {
     weeklyHolidays: [],
     breakDurationMinutes: 60,
     checkoutReminderTime: "20:00",
+    annualLeaveDefaultDays: 30,
   });
 
   const [holidayForm, setHolidayForm] = useState({
@@ -170,6 +172,7 @@ export default function Configure() {
         weeklyHolidays: schedule.weeklyHolidays,
         breakDurationMinutes: schedule.breakDurationMinutes,
         checkoutReminderTime: schedule.checkoutReminderTime,
+        annualLeaveDefaultDays: schedule.annualLeaveDefaultDays,
       });
 
       if (res.data?.data) setSchedule(res.data.data);
@@ -481,6 +484,31 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     Push reminder sent after this time for open check-outs the auto-checkout won't close (e.g. a category with no default set). Clear to disable.
+                  </p>
+                </div>
+
+                {/* ANNUAL LEAVE DEFAULT */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Annual Leave (days/year)
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={365}
+                    step={1}
+                    value={schedule.annualLeaveDefaultDays ?? 0}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        annualLeaveDefaultDays: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Default paid-leave entitlement per employee per calendar year. Can be overridden per employee.
                   </p>
                 </div>
 

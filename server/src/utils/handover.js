@@ -20,11 +20,16 @@ import jobModel from "../models/jobModel.js"
 import Attendance from "../models/attendanceModel.js"
 import userModel from "../models/userModel.js"
 import { recordAttendanceAudit } from "./attendanceAudit.js"
+import { getTodayLocal, combineFromOffset } from "./timeLocal.js"
+import { categoryForEmployee } from "./collar.js"
+import { dayCheckInFieldFor } from "./rosterFields.js"
 
+// App-timezone business-day midnight — the anchor every attendance record and the
+// pendingTransferDate stash use. Raw UTC midnight would resolve to the previous day in
+// the early-morning window (e.g. 00:00–05:30 IST), stamping the visit on the wrong day
+// so the destination draft never surfaces it.
 function todayAttendanceDate() {
-  const d = new Date()
-  d.setUTCHours(0, 0, 0, 0)
-  return d
+  return new Date(getTodayLocal())
 }
 
 export async function applyHandover({ employee, toSiteId, toJobId = null, mode, session }) {
@@ -159,4 +164,87 @@ export async function placeMiddayArrival({
   }
 
   return { pending: !targetHasSavedRecord }
+}
+
+/**
+ * Place a PRE-SAVE "Send to site" arrival (today OR permanent) when the destination's
+ * attendance is ALREADY saved for today. The normal paths rely on the destination's
+ * draft build to surface the arrival: a today-visit via applyHandover's pendingTransfer*
+ * stash, a permanent move via the repointed currentSite roster row. But a saved/locked
+ * day never rebuilds that draft, so the arrival would be orphaned with no record. Here we
+ * instead create the arrival's record directly (mirroring placeMiddayArrival's
+ * saved-destination branch), so they surface in the destination's saved view immediately.
+ *
+ * The session is OPEN (destination category default check-in, no check-out) — the
+ * check-out is left for the auto-checkout cron / an admin edit, exactly like a draft row
+ * the supervisor hadn't closed yet. This helper does NOT touch currentSite/currentJob and
+ * writes NO pendingTransfer* stash; the caller owns any home repoint (applyHandover).
+ *
+ * `fromSiteId` is the source the employee is leaving, captured by the caller BEFORE a
+ * permanent repoint overwrites employee.currentSite (it powers the destination record's
+ * "Transferred from" badge). Falls back to employee.currentSite when not supplied.
+ *
+ * PUSH-OR-CREATE: the Send guard guarantees the employee is unmarked today, but a record
+ * for {employee, today} may still exist (e.g. their home site already saved them
+ * absent/sick). A brand-new doc would violate the unique {employee, date} index, so we
+ * push onto the existing doc when present and only create a fresh one otherwise. The
+ * employee is homed at the source, so any existing sessions are at the source site —
+ * pushing a destination session yields a legitimate multi-site day, never a duplicate.
+ *
+ * Runs inside the caller's mongoose transaction. Returns the Attendance doc.
+ */
+export async function createPreSaveVisitRecord({
+  employee,
+  toSite,
+  toJobId = null,
+  fromSiteId = null,
+  markedById,
+  actor,
+  session,
+}) {
+  const todayStr = getTodayLocal()
+  const attendanceDate = new Date(todayStr)
+
+  // Destination day check-in default for this employee's roster category (may be
+  // unset on the site — then the session is created blank for manual entry).
+  const checkInField = dayCheckInFieldFor(categoryForEmployee(employee))
+  const checkInStr = checkInField ? toSite[checkInField] : null
+  const checkInDate = checkInStr ? combineFromOffset(todayStr, checkInStr, false) : null
+
+  const newSession = {
+    siteId: toSite._id,
+    jobId: toJobId || null,
+    checkIn: checkInDate,
+    checkOut: null,
+    workedHours: 0,
+    markedBy: markedById,
+    transferredFromSiteId: fromSiteId ?? employee.currentSite,
+  }
+
+  let doc = await Attendance.findOne({ employee: employee._id, date: attendanceDate }).session(session)
+  if (doc) {
+    doc.sessions.push(newSession)
+  } else {
+    doc = new Attendance({
+      employee: employee._id,
+      date: attendanceDate,
+      siteId: toSite._id,
+      jobId: toJobId || null,
+      markedBy: markedById,
+      status: "absent",
+      sessions: [newSession],
+    })
+  }
+
+  await doc.save({ session })
+
+  await recordAttendanceAudit({
+    attendance: doc,
+    actor,
+    type: "transferred_in",
+    summary: "Session added via send-to-site",
+    session,
+  })
+
+  return doc
 }

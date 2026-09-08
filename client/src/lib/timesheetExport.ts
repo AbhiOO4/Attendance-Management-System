@@ -46,6 +46,12 @@ interface WorkConfigLike {
 export const round2 = (value: number) => Math.round(value * 100) / 100
 
 export const getDisplayStatus = (record: AttendanceRecord): string => {
+  // Approved annual paid leave takes precedence over every other status. Paid
+  // leave and sick leave are mutually exclusive (server invariant), and the two
+  // together are the single "Leave" field that replaced the old sick-leave column.
+  if (record.isPaidLeave) {
+    return "leave"
+  }
   if (record.isSickLeave) {
     return "sick"
   }
@@ -116,9 +122,13 @@ export function computeTimesheetTotals(records: AttendanceRecord[]): TimesheetTo
 
       // Holidays (a weekly holiday like Friday, or a public holiday) are not
       // working days, so they count toward NEITHER present nor absent — only their
-      // holiday hours are tracked.
+      // holiday hours are tracked. Approved PAID leave is likewise excluded from
+      // absent (it is a credited day, not an absence). Sick leave still counts as
+      // absent, mirroring the monthly report.
       if (record.isHoliday) {
         acc.holidayHours += record.holidayHours || 0
+      } else if (record.isPaidLeave) {
+        // credited leave — neither present nor absent
       } else if (record.status === "fullday" || record.status === "halfday") {
         acc.daysPresent += 1
       } else {
@@ -232,7 +242,7 @@ export function addTimesheetSheet(
   // COMPANY NAME
   // --------------------------
 
-  worksheet.mergeCells("A1:L1")
+  worksheet.mergeCells("A1:K1")
   worksheet.getRow(1).height = 30
 
   const companyCell = worksheet.getCell("A1")
@@ -247,7 +257,7 @@ export function addTimesheetSheet(
   // SUBTITLE
   // --------------------------
 
-  worksheet.mergeCells("A2:L2")
+  worksheet.mergeCells("A2:K2")
   worksheet.getRow(2).height = 22
 
   const subtitleCell = worksheet.getCell("A2")
@@ -288,7 +298,7 @@ export function addTimesheetSheet(
     worksheet.mergeCells(r, 1, r, 2) // label
     worksheet.mergeCells(r, 3, r, 6) // value
     worksheet.mergeCells(r, 7, r, 8) // label
-    worksheet.mergeCells(r, 9, r, 12) // value
+    worksheet.mergeCells(r, 9, r, 11) // value
 
     ;[1, 7].forEach((col) => {
       row.getCell(col).font = { bold: true, size: 10 }
@@ -338,7 +348,6 @@ export function addTimesheetSheet(
     "OT\nHours",
     "Holiday\nHours",
     "Status",
-    "Sick\nLeave",
   ])
 
   headerRow.eachCell((cell) => {
@@ -399,10 +408,9 @@ export function addTimesheetSheet(
         "",
         "",
         "",
-        "",
       ])
 
-      for (let col = 1; col <= 12; col++) {
+      for (let col = 1; col <= 11; col++) {
         const cell = emptyRow.getCell(col)
 
         cell.font = { size: 8 }
@@ -488,10 +496,10 @@ export function addTimesheetSheet(
         sessionIndex === 0
           ? getDisplayStatus(record) === "sick"
             ? "Sick Leave"
-            : getDisplayStatus(record)
+            : getDisplayStatus(record) === "leave"
+              ? "Annual Leave"
+              : getDisplayStatus(record)
           : "",
-
-        sessionIndex === 0 ? (record.isSickLeave ? "Yes" : "-") : "",
       ])
 
       row.eachCell((cell) => {
@@ -548,7 +556,6 @@ export function addTimesheetSheet(
         9, // OT Hours
         10, // Holiday Hours
         11, // Status
-        12, // Sick Leave
       ].forEach((col) => {
         worksheet.mergeCells(startRow, col, endRow, col)
       })
@@ -570,7 +577,6 @@ export function addTimesheetSheet(
     round2(totals.totalHours),
     round2(totals.otHours),
     round2(totals.holidayHours),
-    "",
     "",
   ])
 
@@ -631,13 +637,12 @@ export function addTimesheetSheet(
       "",
       `${value} hrs`,
       "",
-      "",
     ])
 
     row.height = 18
 
     worksheet.mergeCells(row.number, 1, row.number, 9) // label
-    worksheet.mergeCells(row.number, 10, row.number, 12) // value
+    worksheet.mergeCells(row.number, 10, row.number, 11) // value
 
     const labelCell = row.getCell(1)
     labelCell.font = { bold: true, size: 9 }
@@ -711,8 +716,8 @@ export function addTimesheetSheet(
   // COLUMN WIDTHS
   // --------------------------
 
-  //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status Sick
-  const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 9, 7]
+  //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status
+  const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 11]
   worksheet.columns = worksheet.columns.map((column, index) => ({
     ...column,
     width: colWidths[index] || 10,

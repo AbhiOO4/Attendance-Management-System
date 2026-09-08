@@ -41,6 +41,8 @@ type UpdateInfo = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
+  // null → clear the per-employee override (fall back to the global default).
+  annualLeaveEntitlement?: number | null
 }
 
 type JobTitle = {
@@ -52,11 +54,23 @@ interface Props {
   employee: Employee
 
   onSave: ( id: string, updateInfo: UpdateInfo ) => Promise<void>
+
+  // Optional controlled mode: pass open/onOpenChange to drive the dialog from a
+  // parent (e.g. a kebab menu item) and hideTrigger to drop the built-in button.
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  hideTrigger?: boolean
 }
 
-function EditEmployee({employee, onSave }: Props) {
+function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hideTrigger }: Props) {
 
-  const [open, setOpen] = useState(false)
+  const [internalOpen, setInternalOpen] = useState(false)
+  const isControlled = controlledOpen !== undefined
+  const open = isControlled ? controlledOpen : internalOpen
+  const setOpen = (v: boolean) => {
+    if (!isControlled) setInternalOpen(v)
+    onOpenChange?.(v)
+  }
 
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
 
@@ -68,6 +82,10 @@ function EditEmployee({employee, onSave }: Props) {
       employmentType: employee.employmentType || "permanent",
       nationality: employee.nationality || "foreign",
     })
+
+  // Per-employee annual-leave override, held as a string so an empty field means
+  // "use the global default". Loaded from the full employee doc when the dialog opens.
+  const [entitlement, setEntitlement] = useState<string>("")
 
   const fetchTitles = async () => {
     try {
@@ -96,7 +114,10 @@ function EditEmployee({employee, onSave }: Props) {
       return
     }
 
-    await onSave(employee._id, { ...formData })
+    const trimmed = entitlement.trim()
+    const annualLeaveEntitlement = trimmed === "" ? null : Number(trimmed)
+
+    await onSave(employee._id, { ...formData, annualLeaveEntitlement })
     setOpen(false)
   }
 
@@ -111,16 +132,26 @@ function EditEmployee({employee, onSave }: Props) {
         employmentType: employee.employmentType || "permanent",
         nationality: employee.nationality || "foreign",
       })
+      // The list row doesn't carry the entitlement — fetch the full doc for it.
+      api
+        .get(`/api/employees/${employee._id}`)
+        .then((res) => {
+          const v = res.data?.annualLeaveEntitlement
+          setEntitlement(v === null || v === undefined ? "" : String(v))
+        })
+        .catch(() => setEntitlement(""))
     }
   }, [open])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline">
-          Edit
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger && (
+        <DialogTrigger asChild>
+          <Button variant="outline">
+            Edit
+          </Button>
+        </DialogTrigger>
+      )}
 
       <DialogContent>
         <DialogHeader>
@@ -195,6 +226,23 @@ function EditEmployee({employee, onSave }: Props) {
               <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">
+              Annual leave override (days/year)
+            </label>
+            <Input
+              type="number"
+              min={0}
+              max={365}
+              placeholder="Leave blank for the global default"
+              value={entitlement}
+              onChange={(e) => setEntitlement(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Overrides the company default for this employee. Blank = use default.
+            </p>
+          </div>
 
           <Button
             className="w-full"

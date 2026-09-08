@@ -26,11 +26,15 @@ import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
-/** UTC-midnight anchor for today's attendance records (matches the rest of the app). */
+/**
+ * App-timezone business-day midnight — the anchor every attendance record and the
+ * pendingTransferDate stash use (matches siteFirstSubmitAttendance and the client draft).
+ * Raw UTC midnight would resolve to the previous day in the early-morning window
+ * (e.g. 00:00–05:30 IST), so the marked-today guard and the midday-arrival record would
+ * land on the wrong day.
+ */
 function todayAttendanceDate() {
-  const today = new Date()
-  today.setUTCHours(0, 0, 0, 0)
-  return today
+  return new Date(getTodayLocal())
 }
 
 /** True when the employee has checked in ANYWHERE today (a day already in progress). */

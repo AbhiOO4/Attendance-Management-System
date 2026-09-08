@@ -191,13 +191,27 @@ function SiteRoster({
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(false)
 
-  // Returning from "Add employees" (or any nav that stamps rosterTab) reopens the tab
-  // it was launched from — a deferred add launched from Tomorrow should land on Tomorrow.
-  const initialDayTab: DayMode =
-    (location.state as { rosterTab?: DayMode } | null)?.rosterTab === "tomorrow"
-      ? "tomorrow"
-      : "today"
+  // Returning from "Add employees" reopens the tab it was launched from — a deferred add
+  // launched from Tomorrow should land on Tomorrow. The launcher hands the tab back either
+  // via router state (a fresh navigation) or, when Add's back button pops history to avoid
+  // the insta-add ⇄ site-detail loop, a one-shot sessionStorage hint (a pop can't carry
+  // router state). Reading the hint here (not clearing) keeps the initial render flash-free;
+  // the effect below consumes it.
+  const initialDayTab: DayMode = (() => {
+    if ((location.state as { rosterTab?: DayMode } | null)?.rosterTab === "tomorrow") return "tomorrow"
+    try {
+      if (sessionStorage.getItem(`roster_return_tab_${siteId}`) === "tomorrow") return "tomorrow"
+    } catch { /* sessionStorage unavailable */ }
+    return "today"
+  })()
   const [dayTab, setDayTab] = useState<DayMode>(initialDayTab)
+
+  // Consume the one-shot return-tab hint so it can't stick to a later, unrelated visit.
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(`roster_return_tab_${siteId}`)
+    } catch { /* sessionStorage unavailable */ }
+  }, [siteId])
   const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
   // Single search box matches either name or employee ID.
   const [query, setQuery] = useState("")

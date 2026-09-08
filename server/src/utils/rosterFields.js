@@ -47,6 +47,16 @@ const CHECKOUT_FIELD_BY_CATEGORY = Object.entries(FIELD_META).reduce(
   {}
 );
 
+// Reverse lookup: category -> the Site DAY check-in field for that category.
+// Built once from FIELD_META (the day check-in entries) so it can never drift.
+const DAY_CHECKIN_FIELD_BY_CATEGORY = Object.entries(FIELD_META).reduce(
+  (acc, [field, meta]) => {
+    if (meta.checkIn && !meta.night) acc[meta.category] = field;
+    return acc;
+  },
+  {}
+);
+
 /**
  * The Site check-out default field that governs a given category + shift type.
  * @param {string} category - one of the four roster categories.
@@ -55,4 +65,14 @@ const CHECKOUT_FIELD_BY_CATEGORY = Object.entries(FIELD_META).reduce(
  */
 export function checkoutFieldFor(category, isNight) {
   return CHECKOUT_FIELD_BY_CATEGORY[`${category}|${!!isNight}`];
+}
+
+/**
+ * The Site DAY check-in default field for a given category — the time a fresh
+ * (non-night) session at that site prefills for that category's employees.
+ * @param {string} category - one of the four roster categories.
+ * @returns {string|undefined} the Site field name (e.g. "omaniStaffDefaultCheckIn").
+ */
+export function dayCheckInFieldFor(category) {
+  return DAY_CHECKIN_FIELD_BY_CATEGORY[category];
 }

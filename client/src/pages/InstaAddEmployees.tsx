@@ -177,6 +177,28 @@ function InstaAddEmployees() {
     // own path so Add returns there; other entry points fall back to the site page.
     const returnTo = location.state?.returnTo as string | undefined
 
+    // Back returns to the page that launched Add via a real history POP, not a fresh
+    // navigation. A push would stack a NEW SiteDetail entry, and SiteDetail's own back
+    // button (navigate(-1)) would then pop straight back here — an insta-add ⇄ site-detail
+    // loop. A pop can't carry router state, so the deferred (Tomorrow) tab is handed back
+    // through a one-shot sessionStorage hint that SiteRoster reads and clears on mount.
+    const handleBack = () => {
+        if (deferred && siteId) {
+            try {
+                sessionStorage.setItem(`roster_return_tab_${siteId}`, "tomorrow")
+            } catch { /* sessionStorage unavailable — fall back to the default tab */ }
+        }
+        const canGoBack = ((window.history.state as { idx?: number } | null)?.idx ?? 0) > 0
+        if (canGoBack) {
+            navigate(-1)
+        } else {
+            // Opened directly (no history to pop): go to the launcher, carrying the tab.
+            navigate(returnTo || `/site/${siteId}`, {
+                state: { rosterTab: deferred ? "tomorrow" : "today" },
+            })
+        }
+    }
+
     const [loading, setLoading] =
         useState(true)
 
@@ -605,15 +627,7 @@ function InstaAddEmployees() {
                         <Button
                             variant="outline"
                             size="icon"
-                            onClick={() =>
-                                navigate(
-                                    returnTo || `/site/${siteId}`,
-                                    // Carry the originating roster tab back so SiteDetail
-                                    // reopens Tomorrow when the add was launched from it
-                                    // (deferred), instead of always landing on Today.
-                                    { state: { from, rosterTab: deferred ? "tomorrow" : "today" } }
-                                )
-                            }
+                            onClick={handleBack}
                         >
                             <ArrowLeft className="h-4 w-4" />
                         </Button>

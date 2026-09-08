@@ -36,8 +36,8 @@ async function processSites(sites, todayStr, checkInField, employeeIds) {
       let updatedCount = 0;
 
       for (const record of records) {
-        // Never auto check-in an employee marked as sick leave.
-        if (record.isSickLeave) continue;
+        // Never auto check-in an employee marked as sick leave or on approved paid leave.
+        if (record.isSickLeave || record.isPaidLeave) continue;
 
         let recordModified = false;
 

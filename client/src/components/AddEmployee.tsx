@@ -31,6 +31,8 @@ type NewEmployee = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
+  // Optional per-employee annual-leave override; omitted → global default.
+  annualLeaveEntitlement?: number | null
 }
 
 type JobTitle = {
@@ -48,6 +50,9 @@ function AddEmployee({ onAdd }: Props) {
   const [jobTitles, setJobTitles] = useState<JobTitle[]>([])
 
   const [formData, setFormData] = useState<NewEmployee>({ name: "", employeeId: "", jobTitle: "", employmentType: "permanent", nationality: "foreign"})
+
+  // Optional annual-leave override, blank = use global default.
+  const [entitlement, setEntitlement] = useState<string>("")
 
   const fetchTitles = async () => {
     try {
@@ -76,7 +81,10 @@ function AddEmployee({ onAdd }: Props) {
       return
     }
 
-    await onAdd({ ...formData })
+    const trimmed = entitlement.trim()
+    const annualLeaveEntitlement = trimmed === "" ? null : Number(trimmed)
+
+    await onAdd({ ...formData, annualLeaveEntitlement })
 
     setFormData({
       name: "",
@@ -85,6 +93,7 @@ function AddEmployee({ onAdd }: Props) {
       employmentType: "permanent",
       nationality: "foreign",
     })
+    setEntitlement("")
 
     setOpen(false)
   }
@@ -176,6 +185,15 @@ function AddEmployee({ onAdd }: Props) {
               <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
+
+          <Input
+            type="number"
+            min={0}
+            max={365}
+            placeholder="Annual leave override (blank = default)"
+            value={entitlement}
+            onChange={(e) => setEntitlement(e.target.value)}
+          />
 
           <Button
             className="w-full"

@@ -9,6 +9,7 @@ import attendanceModel from '../models/attendanceModel.js'
 import siteModel from '../models/siteModel.js'
 import workModel from '../models/workModel.js'
 import { resolveCollarType } from '../utils/collar.js'
+import { getTodayLocal } from '../utils/timeLocal.js'
 
 //Admin
 
@@ -171,9 +172,12 @@ export const getAllEmployees = async (req, res) => {
     const anchorSite = site && site !== "null" ? site : rosterForSite;
     let employees = employeesRaw;
     if (anchorSite) {
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
-      const todayStr = today.toISOString().slice(0, 10);
+      // Business day in the app timezone — the anchor for today's records and the
+      // pendingTransferDate stamp set by the add/transfer flows. Raw UTC midnight would
+      // resolve to the PREVIOUS day in the early-morning window (e.g. 00:00–05:30 IST),
+      // mis-flagging who is "recorded elsewhere"/inbound today.
+      const todayStr = getTodayLocal();
+      const today = new Date(todayStr);
       const rosterIds = employeesRaw.map((e) => e._id);
       const atts = await attendanceModel.find(
         { employee: { $in: rosterIds }, date: today },
@@ -251,6 +255,13 @@ export const addEmployee = async (req, res) => {
     // Nationality is set on the employee (not derived). Normalize to the allowed pair.
     req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
 
+    // Optional per-employee annual-leave override: empty/invalid → null (use global default).
+    if (req.body.annualLeaveEntitlement !== undefined) {
+      const raw = req.body.annualLeaveEntitlement;
+      const n = raw === null || raw === '' ? null : Number(raw);
+      req.body.annualLeaveEntitlement = Number.isFinite(n) && n >= 0 ? n : null;
+    }
+
     const newEmployee = new empModel(req.body);
     const savedEmp = await newEmployee.save({ session });
 
@@ -264,8 +275,12 @@ export const addEmployee = async (req, res) => {
 
     if (savedEmp.employmentType === 'temporary' && savedEmp.currentSite) {
       const siteId = savedEmp.currentSite;
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
+      // Business day in the app timezone (APP_TIMEZONE_OFFSET), matching how the lock and
+      // record date are stored on submit. Raw `new Date()` at UTC midnight resolves to the
+      // PREVIOUS day during the early-morning window (e.g. 00:00–05:30 IST), which would miss
+      // the lock and skip creating the record. `new Date("YYYY-MM-DD")` parses as UTC midnight
+      // — the exact value siteFirstSubmitAttendance stores.
+      const today = new Date(getTodayLocal());
 
       const attendanceLock = await AttendanceLock.findOne({
         siteId,
@@ -407,6 +422,19 @@ export const editEmployee = async (req, res) => {
     // skips validators, so guard against a stray value slipping through).
     if (req.body.nationality !== undefined) {
       req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
+    }
+
+    // Per-employee annual-leave override. Empty string / null / invalid → null
+    // (fall back to the global default); a valid non-negative number is stored.
+    // Guarded because findByIdAndUpdate below skips schema validators.
+    if (req.body.annualLeaveEntitlement !== undefined) {
+      const raw = req.body.annualLeaveEntitlement;
+      if (raw === null || raw === '') {
+        req.body.annualLeaveEntitlement = null;
+      } else {
+        const n = Number(raw);
+        req.body.annualLeaveEntitlement = Number.isFinite(n) && n >= 0 ? n : null;
+      }
     }
 
     // Site/job assignment is managed through the site-detail / hired-workers flows,
@@ -1011,9 +1039,10 @@ export const assignTempWorker = async (req, res) => {
     employee.currentSite = siteId;
     await employee.save({ session });
 
-    // Handle locked/submitted daily attendance check
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    // Handle locked/submitted daily attendance check. Use the app-timezone business day
+    // (see addEmployee): raw UTC midnight would resolve to the previous day in the
+    // early-morning window and miss the lock, so no absent record gets created.
+    const today = new Date(getTodayLocal());
 
     const attendanceLock = await AttendanceLock.findOne({
       siteId,
@@ -1105,9 +1134,10 @@ export const releaseTempWorker = async (req, res) => {
     employee.currentJob = null;
     await employee.save({ session });
 
-    // Handle today's attendance record & session cleanup
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    // Handle today's attendance record & session cleanup. App-timezone business day
+    // (see addEmployee) — raw UTC midnight would look up the wrong day in the early-morning
+    // window and leave the released worker's session behind on the real record.
+    const today = new Date(getTodayLocal());
 
     const attendanceRecord = await attendanceModel.findOne({
       employee: employee._id,

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { useParams, useNavigate, useLocation } from "react-router-dom"
+import { useEffect, useState, useRef } from "react"
+import { useParams, useNavigate } from "react-router-dom"
 import {
   MapPin,
   ArrowLeft,
@@ -63,7 +63,17 @@ function SiteDetail() {
   const { id } = useParams()
 
   const navigate = useNavigate()
-  const location = useLocation()
+
+  // Whether a real in-app page preceded this one, captured on mount. React Router
+  // tracks its stack position in history.state.idx (0 = first entry — nothing to go
+  // back to, e.g. a deep link or a fresh tab). When there is history, Back returns to
+  // wherever the user actually came from (site list, dashboard, a site's attendance
+  // page, …) rather than a hardcoded destination; otherwise it falls back to the list.
+  const canGoBackRef = useRef(false)
+  useEffect(() => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
+    canGoBackRef.current = idx > 0
+  }, [])
 
   const { user } = useAuth()
   // Supervisors reach this page as their "Manage Employees" screen: they only
@@ -268,7 +278,7 @@ function SiteDetail() {
         <button
           type="button"
           onClick={() => {
-            if (location.state?.from === "dashboard") {
+            if (canGoBackRef.current) {
               navigate(-1)
             } else {
               navigate("/site")

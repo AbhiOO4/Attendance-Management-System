@@ -129,6 +129,8 @@ export interface AttendanceRecord {
   totalRawHours?: number
 
   isSickLeave?: boolean
+
+  isPaidLeave?: boolean
 }
 
 export interface AttendancePagination {
@@ -167,6 +169,9 @@ interface Filters {
 }
 
 const getDisplayStatus = (record: AttendanceRecord) => {
+  if (record.isPaidLeave) {
+    return "leave"
+  }
   if (record.isSickLeave) {
     return "sick"
   }

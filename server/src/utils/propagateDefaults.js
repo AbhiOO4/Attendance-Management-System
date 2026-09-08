@@ -172,8 +172,8 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     let fieldUpdatedCount = 0;
 
     for (const record of records) {
-      // Never fill anything on a sick-leave day.
-      if (transition === 'fill' && record.isSickLeave) continue;
+      // Never fill anything on a sick-leave or approved paid-leave day.
+      if (transition === 'fill' && (record.isSickLeave || record.isPaidLeave)) continue;
 
       let recordModified = false;
 

@@ -26,7 +26,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 
 import {
@@ -37,14 +36,23 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+
 import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
+import GrantLeaveDialog from "@/components/GrantLeaveDialog"
 import axios from "axios"
 import { Link, useNavigate } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
-import { Download, Loader2, Search, X } from "lucide-react"
+import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, Search, Trash2, X } from "lucide-react"
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
 interface Employee {
@@ -89,6 +97,7 @@ type NewEmployee = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
+  annualLeaveEntitlement?: number | null
 }
 
 type UpdateInfo = {
@@ -97,8 +106,128 @@ type UpdateInfo = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
+  annualLeaveEntitlement?: number | null
 }
 
+
+// Per-row action menu. Kept as its own component so each row owns the open state
+// of its Edit / Grant-leave / Delete dialogs. Deactivated rows only offer Restore.
+// The dialogs are rendered as siblings of the menu (not nested inside the dropdown
+// content) and driven in controlled mode, so opening one from a menu item is clean.
+function EmployeeRowActions({
+  employee,
+  onEdit,
+  onRemove,
+  onPermanentlyDelete,
+  onRestore,
+}: {
+  employee: Employee
+  onEdit: (id: string, updateInfo: UpdateInfo) => Promise<void>
+  onRemove: (id: string) => void
+  onPermanentlyDelete: (id: string) => void
+  onRestore: (id: string) => void
+}) {
+  const [editOpen, setEditOpen] = useState(false)
+  const [leaveOpen, setLeaveOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+
+  if (employee.isActive === false) {
+    return (
+      <Button variant="outline" size="sm" onClick={() => onRestore(employee._id)}>
+        Restore
+      </Button>
+    )
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Employee actions">
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem onSelect={() => setLeaveOpen(true)}>
+            <CalendarPlus className="h-4 w-4" />
+            Grant Leave
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onSelect={() => setEditOpen(true)}>
+            <Pencil className="h-4 w-4" />
+            Edit
+          </DropdownMenuItem>
+
+          <DropdownMenuSeparator />
+
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => setDeleteOpen(true)}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* GRANT LEAVE — controlled, triggerless */}
+      <GrantLeaveDialog
+        employeeId={employee._id}
+        employeeName={employee.name}
+        onGranted={() => {}}
+        open={leaveOpen}
+        onOpenChange={setLeaveOpen}
+        hideTrigger
+      />
+
+      {/* EDIT — controlled, triggerless */}
+      <EditEmployee
+        employee={employee}
+        onSave={onEdit}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        hideTrigger
+      />
+
+      {/* DELETE — deactivate (soft) or permanently delete (hard) */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {employee.name}?
+            </AlertDialogTitle>
+
+            <AlertDialogDescription>
+              <strong>Deactivate</strong> hides the employee but keeps their
+              record and attendance history — you can restore them later.{" "}
+              <strong>Permanently delete</strong> removes them for good and frees
+              their Employee ID (only possible when they have no attendance
+              history).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter className="sm:justify-between">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <AlertDialogAction onClick={() => onRemove(employee._id)}>
+                Deactivate
+              </AlertDialogAction>
+
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => onPermanentlyDelete(employee._id)}
+              >
+                Permanently delete
+              </AlertDialogAction>
+            </div>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
 
 function Employees() {
   const navigate = useNavigate()
@@ -748,77 +877,14 @@ function Employees() {
                   </TableCell>
 
                   {canWrite && (
-                    <TableCell className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end" onClick={(e) => e.stopPropagation()}>
-                      {employee.isActive === false ? (
-                        /* DEACTIVATED: only offer Restore */
-                        <Button
-                          variant="outline"
-                          onClick={() => restoreEmployee(employee._id)}
-                        >
-                          Restore
-                        </Button>
-                      ) : (
-                        <>
-                          {/* EDIT */}
-
-                          <EditEmployee
-                            employee={employee}
-                            onSave={editEmployee}
-                          />
-
-                          {/* DELETE — deactivate (soft) or permanently delete (hard) */}
-
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="destructive">
-                                Delete
-                              </Button>
-                            </AlertDialogTrigger>
-
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>
-                                  Delete {employee.name}?
-                                </AlertDialogTitle>
-
-                                <AlertDialogDescription>
-                                  <strong>Deactivate</strong> hides the employee but
-                                  keeps their record and attendance history — you can
-                                  restore them later.{" "}
-                                  <strong>Permanently delete</strong> removes them for
-                                  good and frees their Employee ID (only possible when
-                                  they have no attendance history).
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-
-                              <AlertDialogFooter className="sm:justify-between">
-                                <AlertDialogCancel>
-                                  Cancel
-                                </AlertDialogCancel>
-
-                                <div className="flex flex-col gap-2 sm:flex-row">
-                                  <AlertDialogAction
-                                    onClick={() =>
-                                      removeEmployee(employee._id)
-                                    }
-                                  >
-                                    Deactivate
-                                  </AlertDialogAction>
-
-                                  <AlertDialogAction
-                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                    onClick={() =>
-                                      permanentlyDeleteEmployee(employee._id)
-                                    }
-                                  >
-                                    Permanently delete
-                                  </AlertDialogAction>
-                                </div>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </>
-                      )}
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <EmployeeRowActions
+                        employee={employee}
+                        onEdit={editEmployee}
+                        onRemove={removeEmployee}
+                        onPermanentlyDelete={permanentlyDeleteEmployee}
+                        onRestore={restoreEmployee}
+                      />
                     </TableCell>
                   )}
                 </TableRow>

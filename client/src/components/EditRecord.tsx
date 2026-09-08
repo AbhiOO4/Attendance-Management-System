@@ -51,7 +51,7 @@ import {
 import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
-import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, formatOffsetDayLabel, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
@@ -445,10 +445,15 @@ const [sessionToDelete, setSessionToDelete] =
     const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
     const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
 
-    // Cutoff-free (cutoff redesign): derive day offsets from the raw times — a check-out
-    // that reads earlier than the check-in rolls to the next day. No cutoff, so an 08:00
-    // night check-out is placed correctly instead of clamping worked hours to 0.
-    const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInVal, checkOutVal)
+    // Cutoff-free (cutoff redesign): derive the per-endpoint day offsets from the raw
+    // times — a check-out that reads earlier than the check-in rolls to the next day.
+    // No cutoff, so an 08:00 night check-out is placed correctly (not clamped to 0h).
+    //
+    // The check-in's OWN offset is preserved, never re-derived: an early-morning session
+    // (01:00→08:00 belonging to the next day) reads exactly like an ordinary morning
+    // shift, so re-deriving would silently drag it back 24 hours on any edit.
+    const keptCheckInNextDay = isNextDayInstant(updated[index].checkIn, record?.date)
+    const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInVal, checkOutVal, keptCheckInNextDay)
 
     updated[index].isNightShift = checkInNextDay || checkOutNextDay
 
@@ -480,6 +485,67 @@ const [sessionToDelete, setSessionToDelete] =
   setOverlapIndexes([])
   setSessions(updated)
  }
+
+  // Flip the check-out's day offset (the "+1 next day" toggle). Needed for the cases the
+  // wall clock can't infer — a genuine 24h shift (08:00→08:00) or any check-out that should
+  // land on the next day even though it reads later than the check-in. Recombines the ISO
+  // from the flipped offset and recomputes worked hours.
+  const toggleCheckOutNextDay = (index: number) => {
+    const updated = [...sessions]
+    const s = updated[index]
+    const outTime = toTimeValue(s.checkOut)
+    if (!outTime) return
+    const nextVal = !isNextDayInstant(s.checkOut, record?.date)
+    const newCheckOut = combineFromOffset(record?.date || "", outTime, nextVal)
+    updated[index] = {
+      ...s,
+      checkOut: newCheckOut,
+      workedHours: calculateWorkedHours(s.checkIn, newCheckOut),
+      isNightShift: isNextDayInstant(s.checkIn, record?.date) || nextVal,
+    }
+    setSessionErrors((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+    setOverlapInfo(null)
+    setOverlapIndexes([])
+    setSessions(updated)
+  }
+
+  // Flip the CHECK-IN's day offset. This is the one case nothing can infer: a session that
+  // lies entirely in the small hours (01:00→08:00) belonging to the day AFTER this record —
+  // e.g. the second half of a site switch made at 1am. The server infers it automatically
+  // when an earlier session on the record already crossed midnight; this toggle is for a
+  // standalone tail, where there is no earlier session to inherit from.
+  const toggleCheckInNextDay = (index: number) => {
+    const updated = [...sessions]
+    const s = updated[index]
+    const inTime = toTimeValue(s.checkIn)
+    if (!inTime) return
+    const nextVal = !isNextDayInstant(s.checkIn, record?.date)
+    const outTime = toTimeValue(s.checkOut)
+    const { checkInNextDay, checkOutNextDay } = deriveOffsets(inTime, outTime, nextVal)
+    const newCheckIn = combineFromOffset(record?.date || "", inTime, checkInNextDay)
+    const newCheckOut = outTime
+      ? combineFromOffset(record?.date || "", outTime, checkOutNextDay)
+      : null
+    updated[index] = {
+      ...s,
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      workedHours: calculateWorkedHours(newCheckIn, newCheckOut),
+      isNightShift: checkInNextDay || checkOutNextDay,
+    }
+    setSessionErrors((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+    setOverlapInfo(null)
+    setOverlapIndexes([])
+    setSessions(updated)
+  }
 
   const addSession = () => {
     // Prevent adding if there is any incomplete session in the list
@@ -590,7 +656,10 @@ const [sessionToDelete, setSessionToDelete] =
     sessions.forEach((session, index) => {
       const inTime = toTimeValue(session.checkIn)
       const outTime = toTimeValue(session.checkOut)
-      const { checkInNextDay, checkOutNextDay } = deriveOffsets(inTime, outTime)
+      // Offsets read from the combined ISO (which reflects the "+1 next day" toggle),
+      // not re-derived from times — so a toggled 24h shift validates as 24h, not 0.
+      const checkInNextDay = isNextDayInstant(session.checkIn, record?.date)
+      const checkOutNextDay = isNextDayInstant(session.checkOut, record?.date)
       const err = validateSessionTimesV2(inTime, outTime, checkInNextDay, checkOutNextDay)
       if (err) {
         errors[index] = err
@@ -625,6 +694,10 @@ const [sessionToDelete, setSessionToDelete] =
           checkIn: session.checkIn || null,
           checkOut: session.checkOut || null,
           isNightShift: session.isNightShift || false,
+          // Explicit day offsets from the combined ISO (honours the +1 toggle). The server
+          // uses these instead of re-deriving from times, so 24h shifts survive the round-trip.
+          checkInNextDay: isNextDayInstant(session.checkIn, record?.date),
+          checkOutNextDay: isNextDayInstant(session.checkOut, record?.date),
         })
       ),
       breaksTaken,
@@ -813,6 +886,22 @@ const [sessionToDelete, setSessionToDelete] =
                         value={toTimeValue(session.checkIn)}
                         onChange={(e) => updateSessionField(index, "checkIn", e.target.value)}
                       />
+                      {toTimeValue(session.checkIn) && (
+                        <button
+                          type="button"
+                          onClick={() => toggleCheckInNextDay(index)}
+                          className={`mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            isNextDayInstant(session.checkIn, record?.date)
+                              ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          }`}
+                          title="Toggle whether this shift STARTS on the next day (an after-midnight session recorded on this day)"
+                        >
+                          {isNextDayInstant(session.checkIn, record?.date)
+                            ? `🌙 Starts next day · ${formatOffsetDayLabel(record?.date, 1)}`
+                            : `Starts same day · ${formatOffsetDayLabel(record?.date, 0)}`}
+                        </button>
+                      )}
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-xs font-medium text-muted-foreground">Check Out</label>
@@ -822,6 +911,22 @@ const [sessionToDelete, setSessionToDelete] =
                         value={toTimeValue(session.checkOut)}
                         onChange={(e) => updateSessionField(index, "checkOut", e.target.value)}
                       />
+                      {toTimeValue(session.checkIn) && toTimeValue(session.checkOut) && (
+                        <button
+                          type="button"
+                          onClick={() => toggleCheckOutNextDay(index)}
+                          className={`mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                            isNextDayInstant(session.checkOut, record?.date)
+                              ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          }`}
+                          title="Toggle whether the check-out is on the next day (for 24h or after-midnight shifts)"
+                        >
+                          {isNextDayInstant(session.checkOut, record?.date)
+                            ? `🌙 Check-out next day · ${formatOffsetDayLabel(record?.date, 1)}`
+                            : `Check-out same day · ${formatOffsetDayLabel(record?.date, 0)}`}
+                        </button>
+                      )}
                     </div>
                   </div>
 

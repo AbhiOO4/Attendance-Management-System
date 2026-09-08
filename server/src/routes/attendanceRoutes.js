@@ -28,6 +28,22 @@ router.get('/reports/carryovers', authorizeRoles("admin", "supervisor"), require
 
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
+// --- Annual paid leave (admin implicitly allows superadmin) ---
+// Specific /leave/* paths declared before the /:attendanceId wildcard.
+router.get('/leave/balance/:employeeId', authorizeRoles("admin"), attendanceController.getLeaveBalance)
+
+router.get('/leave/preview', authorizeRoles("admin"), attendanceController.previewLeave)
+
+// Read-only leave lookup for a date — supervisors need it to lock leave rows on the
+// Site Attendance page (declared before the /:attendanceId wildcard).
+router.get('/leave/on-date', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeesOnLeaveForDate)
+
+router.get('/leave/employee/:employeeId', authorizeRoles("admin"), attendanceController.listEmployeeLeaves)
+
+router.post('/leave', authorizeRoles("admin"), attendanceController.grantLeave)
+
+router.patch('/leave/:leaveId/cancel', authorizeRoles("admin"), attendanceController.cancelLeave)
+
 router.get('/reports/job-report', authorizeRoles("superadmin"), attendanceController.jobReport)
 
 router.get('/employee/:employeeId', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeeAttendanceByMonth)

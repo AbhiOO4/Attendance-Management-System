@@ -10,12 +10,12 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
-import { combineFromOffset, getDateLocal } from '../utils/timeLocal.js'
+import { combineFromOffset, getDateLocal, getTodayLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import { isAssignableSite } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
 import siteActivityModel from '../models/siteActivityModel.js'
-import { applyHandover } from '../utils/handover.js'
+import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
 import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
 
@@ -281,8 +281,10 @@ export const removeEmployee = async (req, res) => {
     const onHomeSite =
       employee.currentSite && employee.currentSite.toString() === siteId;
 
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
+    // App-timezone business day: the anchor for today's record and for matching the
+    // pendingTransferDate stash (both stored on the business day). Raw UTC midnight would
+    // be the previous day in the early-morning window and miss both.
+    const today = new Date(getTodayLocal());
 
     // Strip this site's session from today's record, deleting the doc if it empties and
     // recomputing derived totals from the remaining sessions otherwise (mirrors
@@ -842,8 +844,7 @@ export const bulkSetEmployeeJob = async (req, res) => {
 
     // Today's business-day midnight — matches how insta-add/transfer stamp
     // pendingTransferDate, so a today-dated visitor to this site is identified reliably.
-    const todayMidnight = new Date();
-    todayMidnight.setUTCHours(0, 0, 0, 0);
+    const todayMidnight = new Date(getTodayLocal());
 
     for (const empId of empIds) {
       const employee = await empModel.findById(empId).session(session);
@@ -1572,8 +1573,12 @@ export const instaAddEmployee = async (req, res) => {
       })
     }
 
-    const today = new Date()
-    today.setUTCHours(0, 0, 0, 0)
+    // App-timezone business day: drives the check-in Date (via todayStr below), today's
+    // record lookup/creation, the lock lookup, AND the pendingTransferDate stamp — all of
+    // which must match the business day the submit path and client draft use. Raw UTC
+    // midnight would be the previous day in the early-morning window, stamping the session
+    // and stash on the wrong day so the destination draft never picks up the visitor.
+    const today = new Date(getTodayLocal())
 
     // ----------------------------------
     // VALIDATE & CONVERT CHECK-IN TIME
@@ -1950,8 +1955,7 @@ export const getAvailableEmployeesForSite = async (
 
     // Exclude anyone who already has a session at THIS site today — they're already
     // on today's roster here, so there's nothing to add/request for them.
-    const today = new Date()
-    today.setUTCHours(0, 0, 0, 0)
+    const today = new Date(getTodayLocal())
     const sessionHereIds = await attendanceModel
       .find({ date: today, "sessions.siteId": siteId })
       .distinct("employee")
@@ -2471,8 +2475,7 @@ export const updateEmployeeJob = async (req, res) => {
 
     // Today-dated "only for today" visitor to this site (home is elsewhere). Matches how
     // insta-add/transfer stamp pendingTransferDate (today's UTC-midnight).
-    const todayMidnight = new Date();
-    todayMidnight.setUTCHours(0, 0, 0, 0);
+    const todayMidnight = new Date(getTodayLocal());
     const isTodayVisitorHere =
       !onSiteHere &&
       employee.pendingTransferSiteId &&
@@ -2773,7 +2776,7 @@ export const sendEmployeeToSite = async (req, res) => {
     } else {
       // today / permanent — a same-day handover, so it must be a clean pre-save move.
       // A marked employee is a midday case (use Transfer instead).
-      const today = new Date(); today.setUTCHours(0, 0, 0, 0)
+      const today = new Date(getTodayLocal())
       const att = await attendanceModel.findOne({ employee: empId, date: today }).session(session)
       if (att && att.sessions.some((s) => s.checkIn)) {
         await session.abortTransaction(); session.endSession()
@@ -2783,7 +2786,42 @@ export const sendEmployeeToSite = async (req, res) => {
         })
       }
 
-      await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
+      // An arrival (today OR permanent) into a destination whose attendance is ALREADY
+      // saved can't rely on the draft: the destination's draft build never runs for a
+      // saved/locked day, so a today stash or a permanent roster row would be orphaned
+      // with no record. Detect it with the same proxy placeMiddayArrival uses (any
+      // session carrying the destination's siteId today).
+      const targetSaved = await attendanceModel
+        .exists({ date: today, "sessions.siteId": toSiteId })
+        .session(session)
+
+      // The source the employee is leaving — captured BEFORE a permanent applyHandover
+      // repoints currentSite, so the destination record's "Transferred from" badge (below)
+      // points at the real origin.
+      const fromSiteId = employee.currentSite
+
+      // Home change: a permanent move always repoints currentSite/currentJob; a today
+      // visit into an UNSAVED destination writes the pendingTransfer* stash for the draft
+      // to consume. A today visit into a saved destination needs neither — the record is
+      // created directly below.
+      if (mode === "permanent" || !targetSaved) {
+        await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
+      }
+
+      // Saved destination (either mode): create today's record directly so the arrival is
+      // visible immediately instead of orphaned until a draft rebuild that never comes.
+      if (targetSaved) {
+        const sendActor = await resolveActor(req)
+        await createPreSaveVisitRecord({
+          employee,
+          toSite,
+          toJobId: toJobId || null,
+          fromSiteId,
+          markedById: req.user.id,
+          actor: sendActor,
+          session,
+        })
+      }
     }
 
     await session.commitTransaction()

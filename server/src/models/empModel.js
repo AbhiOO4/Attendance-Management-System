@@ -143,6 +143,15 @@ const employeeSchema = new mongoose.Schema({
     type: String,
     enum: ['foreign', 'omani'],
     default: 'foreign'
+  },
+
+  // Per-employee override of the annual PAID-LEAVE entitlement (working days per
+  // calendar year). null → fall back to WorkSchedule.annualLeaveDefaultDays.
+  // Days USED are derived from paid-leave attendance records, never stored here.
+  annualLeaveEntitlement: {
+    type: Number,
+    min: 0,
+    default: null
   }
 
 }, {

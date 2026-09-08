@@ -64,6 +64,7 @@ import {
   ArrowLeftRight,
   ChevronDown,
   History,
+  Building2,
 } from "lucide-react"
 
 import {
@@ -1057,6 +1058,8 @@ function SiteAttendance() {
   // Supervisors' transfers are held as requests the destination must accept; admins
   // and superadmins transfer immediately.
   const transferNeedsApproval = user?.role === "supervisor"
+  // Admins/superadmins get a shortcut to the full site detail page; supervisors don't.
+  const isAdmin = user?.role === "admin" || user?.role === "superadmin"
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
   const fullDayHours = workConfig?.fullDayHours ?? 8
 
@@ -1109,6 +1112,14 @@ function SiteAttendance() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
 
   const [draftAttendance, setDraftAttendance] = useState<DraftAttendanceRecord[]>([])
+
+  // Employees rostered here who are on APPROVED annual leave today. They are kept
+  // OUT of the editable draft (no default check-in is prefilled, nothing is
+  // submitted for them) and shown read-only in the "On leave today" panel — their
+  // leave record is locked until an admin cancels the grant. Shape: {_id,name,employeeId,jobTitle}.
+  const [onLeaveEmployees, setOnLeaveEmployees] = useState<
+    { _id: string; name: string; employeeId: string; jobTitle: string }[]
+  >([])
 
   // Draft persistence is debounced (see the sync effect further down) —
   // serializing the whole roster to localStorage on every keystroke caused
@@ -1495,6 +1506,31 @@ function SiteAttendance() {
         console.log(fetchErr)
       }
 
+      // Employees on APPROVED annual leave today. They must never get a prefilled,
+      // markable draft row (that would silently record hours on a leave day); they're
+      // shown read-only in the "On leave today" panel instead. Best-effort — an offline
+      // failure just leaves the set empty (the server still refuses to overwrite leave).
+      let leaveIds = new Set<string>()
+      try {
+        const leaveRes = await api.get<{ data: { employeeIds: string[] } }>(
+          "/api/attendance/leave/on-date",
+          { params: { date: activeToday } }
+        )
+        leaveIds = new Set((leaveRes.data?.data?.employeeIds || []).map(String))
+      } catch (leaveErr) {
+        console.log(leaveErr)
+      }
+      setOnLeaveEmployees(
+        employeesList
+          .filter((emp) => leaveIds.has(String(emp._id)))
+          .map((emp) => ({
+            _id: emp._id,
+            name: emp.name,
+            employeeId: emp.employeeId,
+            jobTitle: emp.jobTitle,
+          }))
+      )
+
       const isVisitingElsewhere = (emp: Employee) =>
         String(emp.currentSite) === String(siteData._id) &&
         !!emp.pendingTransferSiteId &&
@@ -1518,6 +1554,8 @@ function SiteAttendance() {
       // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
       // stale pendingTransfer* rows an abandoned draft may have left behind.
       const rosterEmployees = employeesList.filter((emp) => {
+        // On approved leave today → excluded from the editable draft entirely.
+        if (leaveIds.has(String(emp._id))) return false
         if (String(emp.currentSite) === String(siteData._id)) return !isAwayToday(emp)
         return (
           !!emp.pendingTransferSiteId &&
@@ -1614,7 +1652,11 @@ function SiteAttendance() {
         // another site. Strip carryover check-ins and DROP the away-visitor rows so the
         // restored draft matches a fresh build (no home record for someone working elsewhere).
         const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
-          (rec) => !awayVisitingIds.has(String(rec.employee._id))
+          (rec) =>
+            !awayVisitingIds.has(String(rec.employee._id)) &&
+            // Drop rows for anyone now on approved leave (a draft cached before the
+            // grant may still hold a prefilled check-in for them).
+            !leaveIds.has(String(rec.employee._id))
         )
         // An employee SENT to this site AFTER the draft was cached — an inbound visitor
         // (pendingTransferSiteId = this site) or a permanent move (currentSite = this site) —
@@ -3099,6 +3141,16 @@ function SiteAttendance() {
 
             <div className="grid grid-cols-1 gap-2">
 
+              {isAdmin && id && (
+                <Button
+                  variant="outline"
+                  onClick={() => navigate(`/site/${id}`)}
+                >
+                  <Building2 className="h-4 w-4" />
+                  Site Details
+                </Button>
+              )}
+
               {attendanceExists ? (
                 <Button disabled>
                   Attendance Submitted
@@ -3544,6 +3596,49 @@ function SiteAttendance() {
               })}
             </div>
           )}
+        </Card>
+      )}
+
+      {/* ON LEAVE TODAY — read-only. These roster members are on approved annual
+          leave, so they are kept out of the markable grid and their record is locked
+          (no check-in/out) until an admin cancels the leave grant. */}
+      {onLeaveEmployees.length > 0 && (
+        <Card className="mb-4 gap-0 py-0 border-violet-300 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/10">
+          <div className="px-4 py-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-violet-800 dark:text-violet-300">
+              <span>On annual leave today</span>
+              <Badge
+                variant="secondary"
+                className="bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-200 border border-violet-300/60 dark:border-violet-700/40 text-[10px] px-1.5 py-0 h-4"
+              >
+                {onLeaveEmployees.length}
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              These employees are on approved paid leave — no check-in/out is recorded and their day is locked. An admin can cancel the leave grant from the employee's page to re-enable marking.
+            </p>
+            <div className="flex flex-col gap-2">
+              {onLeaveEmployees.map((emp) => (
+                <div
+                  key={emp._id}
+                  className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{emp.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {emp.employeeId} • {emp.jobTitle}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="secondary"
+                    className="shrink-0 bg-violet-500/15 text-violet-700 dark:text-violet-400 border-transparent"
+                  >
+                    Annual Leave
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
         </Card>
       )}
 

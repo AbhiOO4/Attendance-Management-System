@@ -48,12 +48,21 @@ export async function getEmployeeIdsByCategory() {
   const emps = await empModel.find({}, '_id collarType nationality').lean();
   const cats = { foreignSkilled: [], foreignStaff: [], omaniSkilled: [], omaniStaff: [] };
   for (const e of emps) {
-    const isStaff = e.collarType === 'staff';
-    const isOmani = e.nationality === 'omani';
-    const key = isOmani
-      ? (isStaff ? 'omaniStaff' : 'omaniSkilled')
-      : (isStaff ? 'foreignStaff' : 'foreignSkilled');
-    cats[key].push(e._id);
+    cats[categoryForEmployee(e)].push(e._id);
   }
   return cats;
+}
+
+/**
+ * The roster category for a single employee — the same (skilled|staff) ×
+ * (foreign|omani) bucketing getEmployeeIdsByCategory() uses, in one place so the
+ * two can never diverge. Reads only `collarType` / `nationality`.
+ * @returns {'foreignSkilled'|'foreignStaff'|'omaniSkilled'|'omaniStaff'}
+ */
+export function categoryForEmployee(emp) {
+  const isStaff = emp?.collarType === 'staff';
+  const isOmani = emp?.nationality === 'omani';
+  return isOmani
+    ? (isStaff ? 'omaniStaff' : 'omaniSkilled')
+    : (isStaff ? 'foreignStaff' : 'foreignSkilled');
 }

@@ -166,6 +166,19 @@ const attendanceSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Marks the day as approved annual PAID leave (granted over a from–to range;
+    // see the leave endpoints in attendanceController.js). Like isSickLeave it is a
+    // whole-day annotation on an otherwise-absent day, but unlike sick leave the
+    // monthly report credits it as a PAYABLE day (it does not lower attendance %).
+    // Same invariant (pre-save hook): only valid when every session is empty, and
+    // mutually exclusive with isSickLeave (paid leave wins). Each paid-leave record
+    // is one day of the employee's annual balance; "used" is derived by counting
+    // these records per calendar year rather than stored anywhere.
+    isPaidLeave: {
+      type: Boolean,
+      default: false,
+    },
+
     // Total worked hours across all sessions
     totalWorkHours: {
       type: Number,
@@ -226,11 +239,21 @@ const attendanceSchema = new mongoose.Schema(
 // and covers every write path (submit, edit, inline, backfill, recalc, crons)
 // since they all go through .save().
 attendanceSchema.pre("save", async function () {
-  if (
-    this.isSickLeave &&
+  const hasFilledSession =
     Array.isArray(this.sessions) &&
-    this.sessions.some((s) => s && (s.checkIn || s.checkOut))
-  ) {
+    this.sessions.some((s) => s && (s.checkIn || s.checkOut));
+
+  if (this.isSickLeave && hasFilledSession) {
+    this.isSickLeave = false;
+  }
+
+  // Paid leave obeys the same "no worked session" invariant as sick leave, and
+  // the two are mutually exclusive — a day marked as paid leave is never also
+  // sick leave (paid leave wins).
+  if (this.isPaidLeave && hasFilledSession) {
+    this.isPaidLeave = false;
+  }
+  if (this.isPaidLeave && this.isSickLeave) {
     this.isSickLeave = false;
   }
 

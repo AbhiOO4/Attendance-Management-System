@@ -44,6 +44,7 @@ interface ReportEmployee {
   fullDays: number
   halfDays: number
   absentDays: number
+  leaveDays: number
   attendancePercentage: number
   overtimeHours: number
   holidayHours: number
@@ -180,6 +181,7 @@ function MonthlyAttendanceTab() {
         acc.fullDays += e.fullDays
         acc.halfDays += e.halfDays
         acc.absentDays += e.absentDays
+        acc.leaveDays += e.leaveDays || 0
         acc.overtimeHours += e.overtimeHours
         acc.holidayHours += e.holidayHours
         acc.totalOvertimeHours += e.totalOvertimeHours
@@ -189,6 +191,7 @@ function MonthlyAttendanceTab() {
         fullDays: 0,
         halfDays: 0,
         absentDays: 0,
+        leaveDays: 0,
         overtimeHours: 0,
         holidayHours: 0,
         totalOvertimeHours: 0,
@@ -209,6 +212,7 @@ function MonthlyAttendanceTab() {
       "Full Days": employee.fullDays,
       "Half Days": employee.halfDays,
       "Absent Days": employee.absentDays,
+      "Leave Days": employee.leaveDays,
       "Attendance %": employee.attendancePercentage,
       "OT Hours": employee.overtimeHours,
       "Holiday Hours": employee.holidayHours,
@@ -346,6 +350,7 @@ function MonthlyAttendanceTab() {
               <TableHead className="text-right">Full</TableHead>
               <TableHead className="text-right">Half</TableHead>
               <TableHead className="text-right">Absent</TableHead>
+              <TableHead className="text-right">Leave</TableHead>
               <TableHead className="text-right">%</TableHead>
               <TableHead className="text-right">OT</TableHead>
               <TableHead className="text-right">Holiday</TableHead>
@@ -355,13 +360,13 @@ function MonthlyAttendanceTab() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={12} className="text-center h-24 text-muted-foreground">
                   Loading...
                 </TableCell>
               </TableRow>
             ) : filteredReports.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={12} className="text-center h-24 text-muted-foreground">
                   No data found
                 </TableCell>
               </TableRow>
@@ -393,6 +398,7 @@ function MonthlyAttendanceTab() {
                   <TableCell className="text-right">{employee.fullDays}</TableCell>
                   <TableCell className="text-right">{employee.halfDays}</TableCell>
                   <TableCell className="text-right">{employee.absentDays}</TableCell>
+                  <TableCell className="text-right">{employee.leaveDays}</TableCell>
                   <TableCell className="text-right">{employee.attendancePercentage}%</TableCell>
                   <TableCell className="text-right">{employee.overtimeHours}</TableCell>
                   <TableCell className="text-right">{employee.holidayHours}</TableCell>

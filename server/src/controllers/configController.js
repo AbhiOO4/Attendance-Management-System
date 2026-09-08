@@ -38,6 +38,7 @@ export const updateWorkSchedule = async (req, res) => {
       breakDurationMinutes,
       checkoutReminderTime,
       checkoutReminderGraceMinutes,
+      annualLeaveDefaultDays,
     } = req.body;
 
 
@@ -106,6 +107,16 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.checkoutReminderGraceMinutes = checkoutReminderGraceMinutes;
+    }
+
+    if (annualLeaveDefaultDays !== undefined) {
+      if (annualLeaveDefaultDays < 0 || annualLeaveDefaultDays > 365) {
+        return res.status(400).json({
+          success: false,
+          message: "Annual leave default days must be between 0 and 365",
+        });
+      }
+      schedule.annualLeaveDefaultDays = annualLeaveDefaultDays;
     }
 
     // Optional validation

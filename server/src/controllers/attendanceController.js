@@ -20,6 +20,7 @@ import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
 import { placeMiddayArrival } from '../utils/handover.js';
 import TransferRequest from '../models/transferRequestModel.js';
+import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
 
@@ -212,6 +213,169 @@ function holidayInfoForEmployee(baseHolidayInfo, employmentType) {
   if (employmentType === "temporary") return { isHoliday: false, reason: null };
   return baseHolidayInfo;
 }
+
+// ---------------------------------------------------------------------------
+// ANNUAL PAID LEAVE helpers
+// ---------------------------------------------------------------------------
+
+// Normalize any date-ish value to UTC midnight (how Attendance.date is stored).
+function normalizeUtcDay(value) {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+// "YYYY-MM-DD" key from a date's UTC parts (stable calendar-day identity).
+function utcDayKey(date) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+// Inclusive list of UTC-midnight days from `from` to `to`.
+function eachUtcDay(from, to) {
+  const days = [];
+  const cur = normalizeUtcDay(from);
+  const end = normalizeUtcDay(to);
+  if (!cur || !end) return days;
+  while (cur.getTime() <= end.getTime()) {
+    days.push(new Date(cur));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return days;
+}
+
+// The employee's effective annual paid-leave allowance (per calendar year):
+// their own override if set, else the global WorkSchedule default.
+function effectiveLeaveEntitlement(employee, workConfig) {
+  if (
+    employee &&
+    employee.annualLeaveEntitlement !== null &&
+    employee.annualLeaveEntitlement !== undefined
+  ) {
+    return employee.annualLeaveEntitlement;
+  }
+  return workConfig?.annualLeaveDefaultDays ?? 0;
+}
+
+// Paid-leave days already USED by an employee in a calendar year — derived by
+// counting paid-leave attendance records, never stored. Pass a mongoose session
+// to read consistently inside a grant/cancel transaction.
+async function usedLeaveForYear(employeeId, year, session = null) {
+  const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
+  const q = Attendance.countDocuments({
+    employee: employeeId,
+    isPaidLeave: true,
+    date: { $gte: start, $lte: end },
+  });
+  if (session) q.session(session);
+  return q;
+}
+
+// Whether a UTC-midnight date is a weekly holiday under this config.
+function isWeeklyHolidayUtc(date, weeklyHolidays) {
+  if (!Array.isArray(weeklyHolidays) || weeklyHolidays.length === 0) return false;
+  const dayName = new Date(date)
+    .toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })
+    .toLowerCase();
+  return weeklyHolidays.includes(dayName);
+}
+
+// Classify every day in [from, to] for a leave grant, using ONE attendance query
+// and ONE custom-holiday query (rather than per-day lookups). Returns the days to
+// mark plus the buckets that are skipped and why. `existingRecords` maps a UTC day
+// key → the (lean or full) Attendance doc so callers can update in place.
+//   - toMark:        [{ date, key, created }]  working days that will become leave
+//   - holidayDays:   [dates]  weekly or public holidays (never consume a day)
+//   - conflictDays:  [dates]  the employee already worked (has a check-in) — protected
+//   - alreadyLeave:  [dates]  already marked paid leave (no re-count)
+async function classifyLeaveRange({ employeeId, from, to, workConfig, session = null }) {
+  const days = eachUtcDay(from, to);
+  const start = days[0];
+  const end = days[days.length - 1];
+
+  const holidayQuery = customHolidayModel.find({
+    date: { $gte: start, $lte: new Date(new Date(end).setUTCHours(23, 59, 59, 999)) },
+  });
+  const attendanceQuery = Attendance.find({
+    employee: employeeId,
+    date: { $gte: start, $lte: end },
+  });
+  if (session) {
+    holidayQuery.session(session);
+    attendanceQuery.session(session);
+  }
+
+  // Attendance docs are fetched as full documents (not lean) so a grant can
+  // update an existing record in place and .save() it through the invariant hook.
+  const [customHolidays, attendanceDocs] = await Promise.all([
+    holidayQuery.lean(),
+    attendanceQuery,
+  ]);
+
+  const holidayKeys = new Set(customHolidays.map((h) => utcDayKey(h.date)));
+  const recordByKey = new Map();
+  for (const doc of attendanceDocs) recordByKey.set(utcDayKey(doc.date), doc);
+
+  const weeklyHolidays = workConfig?.weeklyHolidays || [];
+
+  const toMark = [];
+  const holidayDays = [];
+  const conflictDays = [];
+  const alreadyLeave = [];
+
+  for (const date of days) {
+    const key = utcDayKey(date);
+
+    if (isWeeklyHolidayUtc(date, weeklyHolidays) || holidayKeys.has(key)) {
+      holidayDays.push(date);
+      continue;
+    }
+
+    const record = recordByKey.get(key);
+    if (record) {
+      const hasFilledSession = Array.isArray(record.sessions)
+        ? record.sessions.some((s) => s && (s.checkIn || s.checkOut))
+        : false;
+      if (hasFilledSession) {
+        conflictDays.push(date);
+        continue;
+      }
+      if (record.isPaidLeave) {
+        alreadyLeave.push(date);
+        continue;
+      }
+    }
+
+    toMark.push({ date, key, created: !record });
+  }
+
+  return { toMark, holidayDays, conflictDays, alreadyLeave, recordByKey };
+}
+
+// Group the to-mark days by calendar year and validate each year's new days
+// against that year's remaining balance. Returns { ok, violations: [{year, requested, remaining}] }.
+async function validateLeaveBalance({ employee, workConfig, toMark, session = null }) {
+  const entitlement = effectiveLeaveEntitlement(employee, workConfig);
+  const byYear = new Map();
+  for (const d of toMark) {
+    const y = new Date(d.date).getUTCFullYear();
+    byYear.set(y, (byYear.get(y) || 0) + 1);
+  }
+
+  const violations = [];
+  for (const [year, requested] of byYear) {
+    const used = await usedLeaveForYear(employee._id, year, session);
+    const remaining = entitlement - used;
+    if (requested > remaining) {
+      violations.push({ year, requested, remaining, entitlement });
+    }
+  }
+  return { ok: violations.length === 0, violations, entitlement };
+}
+
+// Maximum span a single grant may cover, as a guard against a runaway range.
+const MAX_LEAVE_RANGE_DAYS = 400;
 
 /**
  * Automatically sets the check-out time of a previous session at a different site
@@ -448,8 +612,18 @@ export const monthlyReport = async (req, res) => {
         let holidayHours = 0;
         let payableDays = 0;
         let absentDays = 0;
+        let leaveDays = 0;
 
         for (const record of records) {
+          // Approved PAID leave: counts as a payable/present day (so attendance %
+          // is not hurt) and is surfaced separately as leaveDays. Leave records are
+          // non-holiday working days by construction, so this is checked first.
+          if (record.isPaidLeave) {
+            leaveDays += 1;
+            payableDays += 1;
+            continue;
+          }
+
           // Holiday work:
           // - Ignore status
           // - No payable day
@@ -503,6 +677,7 @@ export const monthlyReport = async (req, res) => {
           fullDays,
           halfDays,
           absentDays,
+          leaveDays,
 
           attendancePercentage: round(
             attendancePercentage
@@ -1165,6 +1340,15 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         date: attendanceDate,
       }).session(session)
 
+      // APPROVED PAID LEAVE is a locked day: never overwrite the leave record with a
+      // submitted session (that would silently drop the leave AND hand back the balance
+      // day, since usage is derived from these flags). Skip the employee entirely —
+      // their existing leave record stays intact. An admin must cancel the leave to
+      // record work. The client hides/locks these rows, so this is a safety net.
+      if (attendanceDoc && attendanceDoc.isPaidLeave) {
+        continue;
+      }
+
       if (!attendanceDoc) {
         attendanceDoc = new Attendance({
           employee: empId,
@@ -1658,6 +1842,8 @@ export const getSiteAttendance = async (req, res) => {
 
           isSickLeave: "$isSickLeave",
 
+          isPaidLeave: "$isPaidLeave",
+
           employee: "$employee._id",
 
           name: "$employee.name",
@@ -2034,6 +2220,8 @@ export const getAttendanceRecords = async (req, res) => {
 
         isSickLeave: record.isSickLeave || false,
 
+        isPaidLeave: record.isPaidLeave || false,
+
         totalWorkHours:
           record.totalWorkHours,
 
@@ -2218,6 +2406,11 @@ export const bulkEditAttendance = async (
 
       // MUST EXIST DURING EDIT
       if (!attendanceDoc) {
+        continue;
+      }
+
+      // Locked paid-leave day — never overwrite with a session (see siteFirstSubmitAttendance).
+      if (attendanceDoc.isPaidLeave) {
         continue;
       }
 
@@ -2410,6 +2603,16 @@ export const updateAttendance = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Attendance record not found",
+      });
+    }
+
+    // A paid-leave day is locked. It cannot be edited (which would record hours on
+    // an approved-leave day and silently drop the leave) until an admin cancels the
+    // leave grant, which reverts the record. Applies to every caller.
+    if (attendance.isPaidLeave) {
+      return res.status(409).json({
+        success: false,
+        message: "This day is approved annual leave. Cancel the leave grant to edit it.",
       });
     }
 
@@ -2926,6 +3129,9 @@ export const updateAttendance = async (req, res) => {
       isSickLeave:
         updatedAttendance.isSickLeave || false,
 
+      isPaidLeave:
+        updatedAttendance.isPaidLeave || false,
+
       totalWorkHours:
         updatedAttendance.totalWorkHours,
 
@@ -3135,6 +3341,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         isSickLeave:
           record.isSickLeave || false,
+
+        isPaidLeave:
+          record.isPaidLeave || false,
 
         totalWorkHours:
           record.totalWorkHours,
@@ -3510,6 +3719,15 @@ export const addSessionToAttendance = async (
         success: false,
         message:
           "Attendance record not found",
+      })
+    }
+
+    // A paid-leave day is locked — no sessions may be added until an admin cancels
+    // the leave grant (see updateAttendance for the same rule).
+    if (attendance.isPaidLeave) {
+      return res.status(409).json({
+        success: false,
+        message: "This day is approved annual leave. Cancel the leave grant to edit it.",
       })
     }
 
@@ -4191,6 +4409,7 @@ export const backfillAttendance = async (req, res) => {
       holidayReason: record.holidayReason || null,
       holidayHours: record.holidayHours || 0,
       isSickLeave: record.isSickLeave || false,
+      isPaidLeave: record.isPaidLeave || false,
       totalWorkHours: record.totalWorkHours,
       overtimeHours: record.overtimeHours,
       breaksTaken: record.breaksTaken,
@@ -5207,6 +5426,435 @@ export const updateAttendanceRemark = async (req, res) => {
 
 // --- DEFAULT EXPORT ---
 
+// ===========================================================================
+// ANNUAL PAID LEAVE endpoints
+// ===========================================================================
+
+// GET /api/attendance/leave/balance/:employeeId?year=
+export const getLeaveBalance = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ success: false, message: "Invalid employee id" });
+    }
+
+    const [employee, workConfig] = await Promise.all([
+      empModel.findById(employeeId).lean(),
+      // Non-lean so Mongoose applies the annualLeaveDefaultDays schema default on
+      // installs whose WorkSchedule doc predates the field (a lean read would see
+      // undefined). Matches grantLeave's non-lean read.
+      workModel.findOne({ type: "default" }),
+    ]);
+
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+
+    const defaultDays = workConfig?.annualLeaveDefaultDays ?? 0;
+    const override =
+      employee.annualLeaveEntitlement !== null && employee.annualLeaveEntitlement !== undefined
+        ? employee.annualLeaveEntitlement
+        : null;
+    const entitlement = effectiveLeaveEntitlement(employee, workConfig);
+    const used = await usedLeaveForYear(employeeId, year);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        year,
+        defaultDays,
+        override,
+        entitlement,
+        used,
+        remaining: entitlement - used,
+      },
+    });
+  } catch (error) {
+    console.error("getLeaveBalance error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch leave balance" });
+  }
+};
+
+// GET /api/attendance/leave/preview?employeeId=&from=&to=
+// Read-only: how many working days a range would consume, what would be skipped,
+// and whether it would exceed the balance. Drives the grant dialog's live feedback.
+export const previewLeave = async (req, res) => {
+  try {
+    const { employeeId, from, to } = req.query;
+
+    if (!employeeId || !from || !to) {
+      return res.status(400).json({ success: false, message: "employeeId, from and to are required" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ success: false, message: "Invalid employee id" });
+    }
+
+    const fromDay = normalizeUtcDay(from);
+    const toDay = normalizeUtcDay(to);
+    if (!fromDay || !toDay) {
+      return res.status(400).json({ success: false, message: "Invalid from/to date" });
+    }
+    if (fromDay.getTime() > toDay.getTime()) {
+      return res.status(400).json({ success: false, message: "'from' must be on or before 'to'" });
+    }
+    if (eachUtcDay(fromDay, toDay).length > MAX_LEAVE_RANGE_DAYS) {
+      return res.status(400).json({ success: false, message: `Range too large (max ${MAX_LEAVE_RANGE_DAYS} days)` });
+    }
+
+    const [employee, workConfig] = await Promise.all([
+      empModel.findById(employeeId).lean(),
+      // Non-lean: apply the schema default for annualLeaveDefaultDays (see getLeaveBalance).
+      workModel.findOne({ type: "default" }),
+    ]);
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+
+    const { toMark, holidayDays, conflictDays, alreadyLeave } = await classifyLeaveRange({
+      employeeId,
+      from: fromDay,
+      to: toDay,
+      workConfig,
+    });
+
+    const { ok, violations, entitlement } = await validateLeaveBalance({
+      employee,
+      workConfig,
+      toMark,
+    });
+
+    // Remaining per touched year (for display), based on current usage.
+    const years = [...new Set(eachUtcDay(fromDay, toDay).map((d) => d.getUTCFullYear()))];
+    const remainingByYear = {};
+    for (const y of years) {
+      remainingByYear[y] = entitlement - (await usedLeaveForYear(employeeId, y));
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        workingDays: toMark.length,
+        holidayDays: holidayDays.length,
+        conflictDays: conflictDays.map(utcDayKey),
+        alreadyLeaveDays: alreadyLeave.map(utcDayKey),
+        entitlement,
+        remainingByYear,
+        wouldExceed: !ok,
+        violations,
+      },
+    });
+  } catch (error) {
+    console.error("previewLeave error:", error);
+    return res.status(500).json({ success: false, message: "Failed to preview leave" });
+  }
+};
+
+// POST /api/attendance/leave  { employeeId, from, to, note }
+export const grantLeave = async (req, res) => {
+  // Ensure the Leave collection exists BEFORE opening the transaction. Inserting the
+  // first-ever document into a not-yet-created collection *inside* a multi-document
+  // transaction throws "Cannot create namespace ... in multi-document transaction",
+  // so on a fresh database the very first grant would fail and only its retry (by which
+  // point the collection exists) would succeed. createCollection is idempotent — a
+  // no-op once the collection exists.
+  try {
+    await Leave.createCollection();
+  } catch {
+    /* collection already exists */
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { employeeId, from, to, note = "" } = req.body;
+
+    if (!employeeId || !from || !to) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "employeeId, from and to are required" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Invalid employee id" });
+    }
+
+    const fromDay = normalizeUtcDay(from);
+    const toDay = normalizeUtcDay(to);
+    if (!fromDay || !toDay || fromDay.getTime() > toDay.getTime()) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Invalid date range" });
+    }
+    if (eachUtcDay(fromDay, toDay).length > MAX_LEAVE_RANGE_DAYS) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: `Range too large (max ${MAX_LEAVE_RANGE_DAYS} days)` });
+    }
+
+    const [employee, workConfig] = await Promise.all([
+      empModel.findById(employeeId).session(session),
+      workModel.findOne({ type: "default" }).session(session),
+    ]);
+    if (!employee) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
+
+    // Attendance requires a siteId. Use the employee's current site, falling back
+    // to the auto-created permanent site so leave works for anyone not on a site.
+    let siteId = employee.currentSite;
+    if (!siteId) {
+      const permanentSite = await siteModel.findOne({ isPermanent: true }).select("_id").session(session);
+      siteId = permanentSite?._id || null;
+    }
+    if (!siteId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "No site available to attach leave to" });
+    }
+
+    const { toMark, holidayDays, conflictDays, alreadyLeave, recordByKey } = await classifyLeaveRange({
+      employeeId,
+      from: fromDay,
+      to: toDay,
+      workConfig,
+      session,
+    });
+
+    if (toMark.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "No working days to grant in this range",
+        data: {
+          holidayDays: holidayDays.length,
+          conflictDays: conflictDays.map(utcDayKey),
+          alreadyLeaveDays: alreadyLeave.map(utcDayKey),
+        },
+      });
+    }
+
+    const { ok, violations, entitlement } = await validateLeaveBalance({
+      employee,
+      workConfig,
+      toMark,
+      session,
+    });
+    if (!ok) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "Requested leave exceeds the available balance",
+        data: { violations, entitlement },
+      });
+    }
+
+    const markedBy = req.user?.id || null;
+
+    for (const day of toMark) {
+      const existing = recordByKey.get(day.key);
+      if (existing) {
+        existing.isPaidLeave = true;
+        existing.isSickLeave = false;
+        existing.status = "absent";
+        await existing.save({ session });
+      } else {
+        await Attendance.create(
+          [
+            {
+              employee: employeeId,
+              siteId,
+              jobId: employee.currentJob || null,
+              markedBy,
+              date: day.date,
+              status: "absent",
+              isPaidLeave: true,
+              isSickLeave: false,
+              totalWorkHours: 0,
+              overtimeHours: 0,
+              sessions: [],
+            },
+          ],
+          { session }
+        );
+      }
+    }
+
+    const [leave] = await Leave.create(
+      [
+        {
+          employee: employeeId,
+          grantedBy: markedBy,
+          fromDate: fromDay,
+          toDate: toDay,
+          note: (note || "").slice(0, 500),
+          workingDays: toMark.length,
+          days: toMark.map((d) => ({ date: d.date, created: d.created })),
+          status: "active",
+        },
+      ],
+      { session }
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Recompute remaining for the current year (post-write) for the response.
+    const remaining = entitlement - (await usedLeaveForYear(employeeId, new Date().getUTCFullYear()));
+
+    return res.status(201).json({
+      success: true,
+      message: `Granted ${toMark.length} day(s) of leave`,
+      data: {
+        leave,
+        granted: toMark.length,
+        remaining,
+        skipped: {
+          holidays: holidayDays.length,
+          conflicts: conflictDays.map(utcDayKey),
+          alreadyLeave: alreadyLeave.map(utcDayKey),
+        },
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("grantLeave error:", error);
+    return res.status(500).json({ success: false, message: "Failed to grant leave" });
+  }
+};
+
+// PATCH /api/attendance/leave/:leaveId/cancel
+export const cancelLeave = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { leaveId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(leaveId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Invalid leave id" });
+    }
+
+    const leave = await Leave.findById(leaveId).session(session);
+    if (!leave) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "Leave not found" });
+    }
+    if (leave.status === "cancelled") {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Leave is already cancelled" });
+    }
+
+    for (const day of leave.days) {
+      const record = await Attendance.findOne({
+        employee: leave.employee,
+        date: normalizeUtcDay(day.date),
+      }).session(session);
+      if (!record) continue;
+
+      const hasFilledSession = Array.isArray(record.sessions)
+        ? record.sessions.some((s) => s && (s.checkIn || s.checkOut))
+        : false;
+
+      if (day.created && record.isPaidLeave && !hasFilledSession) {
+        // The grant created this bare record — remove it so the day reverts to
+        // "no record" (its state before the grant).
+        await record.deleteOne({ session });
+      } else if (record.isPaidLeave) {
+        // Converted from an existing absent record — just clear the flag.
+        record.isPaidLeave = false;
+        await record.save({ session });
+      }
+    }
+
+    leave.status = "cancelled";
+    leave.cancelledBy = req.user?.id || null;
+    leave.cancelledAt = new Date();
+    await leave.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const [employee, workConfig] = await Promise.all([
+      empModel.findById(leave.employee).lean(),
+      // Non-lean: apply the schema default for annualLeaveDefaultDays (see getLeaveBalance).
+      workModel.findOne({ type: "default" }),
+    ]);
+    const entitlement = effectiveLeaveEntitlement(employee, workConfig);
+    const year = new Date().getUTCFullYear();
+    const remaining = entitlement - (await usedLeaveForYear(leave.employee, year));
+
+    return res.status(200).json({
+      success: true,
+      message: "Leave cancelled",
+      data: { leave, remaining, entitlement, year },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("cancelLeave error:", error);
+    return res.status(500).json({ success: false, message: "Failed to cancel leave" });
+  }
+};
+
+// GET /api/attendance/leave/employee/:employeeId
+export const listEmployeeLeaves = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ success: false, message: "Invalid employee id" });
+    }
+
+    const leaves = await Leave.find({ employee: employeeId })
+      .sort({ createdAt: -1 })
+      .populate("grantedBy", "name")
+      .populate("cancelledBy", "name")
+      .lean();
+
+    return res.status(200).json({ success: true, data: leaves });
+  } catch (error) {
+    console.error("listEmployeeLeaves error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch leaves" });
+  }
+};
+
+// GET /api/attendance/leave/on-date?date=YYYY-MM-DD
+// Lightweight: the employee ids that have an approved paid-leave record on a date.
+// Supervisor-accessible (read-only) so the Site Attendance page can lock those rows.
+export const getEmployeesOnLeaveForDate = async (req, res) => {
+  try {
+    const { date } = req.query;
+    const day = normalizeUtcDay(date);
+    if (!day) {
+      return res.status(400).json({ success: false, message: "A valid date is required" });
+    }
+    const start = new Date(day);
+    const end = new Date(new Date(day).setUTCHours(23, 59, 59, 999));
+
+    const ids = await Attendance.find({
+      isPaidLeave: true,
+      date: { $gte: start, $lte: end },
+    }).distinct("employee");
+
+    return res.status(200).json({
+      success: true,
+      data: { employeeIds: ids.map((x) => x.toString()) },
+    });
+  } catch (error) {
+    console.error("getEmployeesOnLeaveForDate error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch leave days" });
+  }
+};
+
 const attendanceController = {
   monthlyReport,
   jobReport,
@@ -5237,6 +5885,13 @@ const attendanceController = {
 
   getAttendanceHistory,
   updateAttendanceRemark,
+
+  getLeaveBalance,
+  previewLeave,
+  grantLeave,
+  cancelLeave,
+  listEmployeeLeaves,
+  getEmployeesOnLeaveForDate,
 
 };
 
