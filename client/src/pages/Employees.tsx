@@ -75,6 +75,8 @@ interface Filters {
   site: string
   // Which lifecycle bucket to list: active (default), soft-deleted, or both.
   status: "active" | "deactivated" | "all"
+  // "" = all employment types; otherwise restrict to permanent or temporary.
+  employmentType: "" | "permanent" | "temporary"
   page: number
   limit: number
 }
@@ -235,6 +237,7 @@ function Employees() {
     search: "",
     site: "",
     status: "active",
+    employmentType: "",
     page: 1,
     limit: 10,
   })
@@ -429,6 +432,7 @@ function Employees() {
       const params: Record<string, string> = {}
       if (filters.search) params.search = filters.search
       if (filters.site) params.site = filters.site
+      if (filters.employmentType) params.employmentType = filters.employmentType
 
       const res = await api.get<{ employees: Employee[] }>("/api/employees", {
         params,
@@ -588,7 +592,7 @@ function Employees() {
 
       {/* FILTER SECTION */}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {/* SEARCH: one box matching name, employee ID and job title at once. */}
         <div className="relative sm:col-span-2">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -660,6 +664,29 @@ function Employees() {
             <SelectItem value="active">Active</SelectItem>
             <SelectItem value="deactivated">Deactivated</SelectItem>
             <SelectItem value="all">All</SelectItem>
+          </SelectContent>
+        </Select>
+
+        {/* EMPLOYMENT-TYPE FILTER: all / permanent / temporary. */}
+        <Select
+          value={filters.employmentType || "all"}
+          onValueChange={(value) =>
+            setFilters({
+              ...filters,
+              employmentType:
+                value === "all" ? "" : (value as "permanent" | "temporary"),
+              page: 1,
+            })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Employment Type" />
+          </SelectTrigger>
+
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            <SelectItem value="permanent">Permanent</SelectItem>
+            <SelectItem value="temporary">Temporary</SelectItem>
           </SelectContent>
         </Select>
       </div>

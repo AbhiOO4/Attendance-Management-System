@@ -32,6 +32,8 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 
+import { Textarea } from "@/components/ui/textarea"
+
 import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
 
 import {
@@ -53,6 +55,7 @@ import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, formatOffsetDayLabel, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import { categoryOf, defaultCheckOutFor, CHECKOUT_REMARK_GRACE_MINUTES, type CollarType, type Nationality } from "@/lib/rosterUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -70,6 +73,16 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
+  // Per-category day/night default check-out times (used to gate the over-default
+  // remark). Delivered on the full site doc (GET /api/site/:id).
+  defaultCheckOut?: string
+  nightDefaultCheckOut?: string
+  staffDefaultCheckOut?: string
+  staffNightDefaultCheckOut?: string
+  omaniDefaultCheckOut?: string
+  omaniNightDefaultCheckOut?: string
+  omaniStaffDefaultCheckOut?: string
+  omaniStaffNightDefaultCheckOut?: string
 }
 
 interface AttendanceSession {
@@ -126,6 +139,12 @@ export interface AttendanceRecord {
   overtimeHours: number
 
   sessions: AttendanceSession[]
+
+  // Roster category (for the over-default check-out remark gate) + the current
+  // supervisor remark, both delivered by getAttendanceById.
+  collarType?: CollarType
+  nationality?: Nationality
+  remark?: string
 }
 
 interface EditSiteRecordProps {
@@ -155,6 +174,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      checkoutRemarkGraceMinutes: workConfig?.checkoutRemarkGraceMinutes ?? CHECKOUT_REMARK_GRACE_MINUTES,
     }),
     [workConfig]
   )
@@ -176,6 +196,12 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
   const [initialSessions, setInitialSessions] = useState<AttendanceSession[]>([])
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
+  // Supervisor remark — only editable inline here when a check-out runs past the
+  // category default (see requiresRemark). Prefilled from the record so an existing
+  // note isn't clobbered; persisted via PATCH /:id/remark on save.
+  const [remark, setRemark] = useState("")
+  const [savedRemark, setSavedRemark] = useState("")
+
   const isSameDateStr = (d1?: string | null, d2?: string | null) => {
     if (!d1 && !d2) return true
     if (!d1 || !d2) return false
@@ -195,7 +221,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     return true
   }
 
-  const isDirty = !areSessionsEqual(sessions, initialSessions) || breaksTaken !== initialBreaksTaken
+  const isDirty = !areSessionsEqual(sessions, initialSessions) || breaksTaken !== initialBreaksTaken || remark.trim() !== savedRemark.trim()
 
   const handleManualClose = () => {
     if (isDirty) {
@@ -235,6 +261,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       const bt = attendance.breaksTaken ?? null
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
+      const rk = attendance.remark ?? ""
+      setRemark(rk)
+      setSavedRemark(rk)
     } catch (error) {
       console.log(error)
       toast.error("Failed to load attendance record")
@@ -251,6 +280,8 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     } else {
       setSessions([])
       setInitialSessions([])
+      setRemark("")
+      setSavedRemark("")
     }
   }, [open, attendanceId])
 
@@ -316,6 +347,28 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
     sessions.filter((s) => String(s.siteId) !== String(site._id)),
     [sessions, site._id]
   )
+
+  // A supervisor remark becomes mandatory when a check-out at THIS site runs more than
+  // the configured grace (config.checkoutRemarkGraceMinutes) past the employee's category
+  // default check-out. The day vs night default is chosen by whether the check-out lands
+  // on the next day, and the default is combined onto the same offset so night defaults
+  // (next morning) compare correctly. Categories with no configured default never trip it.
+  const requiresRemark = useMemo(() => {
+    if (!record) return false
+    const category = categoryOf(record.collarType, record.nationality)
+    const graceMs = config.checkoutRemarkGraceMinutes * 60 * 1000
+    return currentSiteSessions.some(({ session }) => {
+      if (!session.checkIn || !session.checkOut) return false
+      const isNight = isNextDayInstant(session.checkOut, record.date)
+      const defaultStr = defaultCheckOutFor(site, category, isNight)
+      if (!defaultStr) return false
+      const defaultIso = combineFromOffset(record.date, defaultStr, isNight)
+      if (!defaultIso) return false
+      return new Date(session.checkOut).getTime() > new Date(defaultIso).getTime() + graceMs
+    })
+  }, [record, currentSiteSessions, site, config.checkoutRemarkGraceMinutes])
+
+  const remarkMissing = requiresRemark && !remark.trim()
 
   // --------------------------------------------------
   // HANDLERS
@@ -530,6 +583,12 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       }
       setSessionErrors({})
 
+      // A check-out past the category default needs a justification remark.
+      if (remarkMissing) {
+        toast.error("Add a remark — the check-out is past the category's default.")
+        return
+      }
+
       const sortedSessions = [...sessions].sort((a, b) => {
         if (!a.checkIn && !b.checkIn) return 0
         if (!a.checkIn) return 1
@@ -566,6 +625,20 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
         sessions: res.data.attendance.sessions.filter(
           (session: AttendanceSession) => String(session.siteId) === String(site._id)
         ),
+      }
+
+      // Persist the remark (its own endpoint) when it changed — e.g. the mandatory
+      // over-default note just typed. Non-atomic with the sessions write, but the save
+      // is already blocked above if the required remark is empty.
+      const trimmedRemark = remark.trim()
+      if (trimmedRemark !== savedRemark.trim()) {
+        try {
+          await api.patch(`/api/attendance/${record.attendanceId}/remark`, { remark: trimmedRemark })
+          setSavedRemark(trimmedRemark)
+        } catch (remarkError) {
+          console.log(remarkError)
+          toast.error("Attendance saved, but the remark failed to save.")
+        }
       }
 
       onUpdated(updatedRecord)
@@ -925,6 +998,31 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
               </div>
             )}
           </div>
+
+          {/* MANDATORY REMARK — shown only when a check-out runs past the category default */}
+          {requiresRemark && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-2 dark:border-amber-500/30 dark:bg-amber-500/10">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-amber-900 dark:text-amber-200">Remark required</span>
+                <span className="text-[11px] text-amber-700 dark:text-amber-300/80">{remark.length}/500</span>
+              </div>
+              <p className="text-xs text-amber-800 dark:text-amber-300/90">
+                A check-out here runs more than {config.checkoutRemarkGraceMinutes} min past this
+                employee&apos;s default check-out. Add a note explaining why before saving.
+              </p>
+              <Textarea
+                value={remark}
+                onChange={(e) => setRemark(e.target.value)}
+                maxLength={500}
+                placeholder="Reason for the extended check-out…"
+                className="min-h-16 text-sm bg-white dark:bg-input/40 text-foreground"
+                aria-invalid={remarkMissing}
+              />
+              {remarkMissing && (
+                <p className="text-xs text-red-600 font-medium dark:text-red-400">This remark is required to save.</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* FOOTER */}
@@ -932,7 +1030,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
           <Button variant="outline" size="sm" onClick={handleManualClose}>
             Cancel
           </Button>
-          <Button size="sm" onClick={updateARecord} disabled={saving}>
+          <Button size="sm" onClick={updateARecord} disabled={saving || remarkMissing}>
             {saving ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (

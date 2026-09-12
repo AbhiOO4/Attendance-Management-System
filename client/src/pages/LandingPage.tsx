@@ -119,7 +119,7 @@ export default function LandingPage() {
 
   const features = [
     "Real-time attendance across job sites",
-    "Automated payroll & overtime calculation",
+    "Automated work-hour & overtime tracking",
     "Per-site supervisor roles and oversight",
   ]
 
@@ -148,11 +148,11 @@ export default function LandingPage() {
       <main className="flex flex-1 flex-col items-center justify-center px-5 py-16">
         <div className="w-full max-w-sm space-y-6 text-center">
           <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-            Attendance &amp; Payroll, simplified
+            Attendance, simplified
           </h1>
           <p className="text-muted-foreground">
-            Track attendance across sites, manage supervisors, and automate
-            payroll — all in one place.
+            Track attendance across sites, manage supervisors, and monitor
+            work hours — all in one place.
           </p>
 
           <div className="flex flex-col gap-3 pt-2">

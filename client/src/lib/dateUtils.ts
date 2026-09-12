@@ -22,6 +22,9 @@ export type WorkConfig = {
   overtimeThreshold: number;
   weeklyHolidays: string[];
   breakDurationMinutes: number;
+  // Minutes a check-out may run past the category default before a supervisor remark
+  // is required on edit. Optional for older configs — callers fall back to a default.
+  checkoutRemarkGraceMinutes?: number;
 };
 
 /**

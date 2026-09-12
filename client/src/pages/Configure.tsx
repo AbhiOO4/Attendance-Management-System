@@ -42,6 +42,7 @@ type WorkSchedule = {
   weeklyHolidays: string[];
   breakDurationMinutes: number;
   checkoutReminderTime: string;
+  checkoutRemarkGraceMinutes: number;
   annualLeaveDefaultDays: number;
 };
 
@@ -95,6 +96,7 @@ export default function Configure() {
     weeklyHolidays: [],
     breakDurationMinutes: 60,
     checkoutReminderTime: "20:00",
+    checkoutRemarkGraceMinutes: 15,
     annualLeaveDefaultDays: 30,
   });
 
@@ -172,6 +174,7 @@ export default function Configure() {
         weeklyHolidays: schedule.weeklyHolidays,
         breakDurationMinutes: schedule.breakDurationMinutes,
         checkoutReminderTime: schedule.checkoutReminderTime,
+        checkoutRemarkGraceMinutes: schedule.checkoutRemarkGraceMinutes,
         annualLeaveDefaultDays: schedule.annualLeaveDefaultDays,
       });
 
@@ -484,6 +487,31 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     Push reminder sent after this time for open check-outs the auto-checkout won't close (e.g. a category with no default set). Clear to disable.
+                  </p>
+                </div>
+
+                {/* CHECK-OUT REMARK GRACE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Check-out Remark Grace (min)
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={240}
+                    step={5}
+                    value={schedule.checkoutRemarkGraceMinutes ?? 15}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        checkoutRemarkGraceMinutes: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    When editing attendance, a supervisor remark is required if a check-out runs more than this many minutes past the employee's category default check-out. Set 0 to require a remark for any overrun.
                   </p>
                 </div>
 

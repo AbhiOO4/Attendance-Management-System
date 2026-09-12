@@ -95,6 +95,16 @@ const workScheduleSchema = new mongoose.Schema(
       min: 0,
       default: 30,
     },
+
+    // Minutes a manually-edited check-out may run past the employee's category
+    // default check-out before a supervisor remark becomes mandatory to save the
+    // record. Enforced client-side in EditSiteRecord (see the requiresRemark gate).
+    checkoutRemarkGraceMinutes: {
+      type: Number,
+      min: 0,
+      max: 240,
+      default: 15,
+    },
   },
   { timestamps: true }
 );

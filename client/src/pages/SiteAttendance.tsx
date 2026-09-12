@@ -46,6 +46,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 
+import { Textarea } from "@/components/ui/textarea"
+
 import {
   Loader2,
   Pencil,
@@ -83,6 +85,7 @@ import { Plane } from "lucide-react"
 // ✈️ foreign marker live in a shared module so SiteDetail stays in sync.
 import {
   categoryOf,
+  defaultCheckOutFor,
   CATEGORY_LABELS,
   CATEGORY_IS_FOREIGN,
   type CollarType,
@@ -203,6 +206,10 @@ export interface AttendanceRecord {
   collarType?: CollarType
 
   nationality?: Nationality
+
+  // Current supervisor remark (delivered by the list projection) — used to prefill the
+  // inline-edit over-default remark prompt.
+  remark?: string
 
   breaksTaken?: number | null
 
@@ -1062,6 +1069,9 @@ function SiteAttendance() {
   const isAdmin = user?.role === "admin" || user?.role === "superadmin"
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
   const fullDayHours = workConfig?.fullDayHours ?? 8
+  // Minutes a check-out may run past the category default before an inline edit requires
+  // a supervisor remark (see the remark prompt on inline save).
+  const checkoutRemarkGraceMinutes = workConfig?.checkoutRemarkGraceMinutes ?? 15
 
   const [site, setSite] = useState<Site | null>(null)
 
@@ -1186,6 +1196,12 @@ function SiteAttendance() {
       breaksTaken: null,
     })
   const [inlineEditError, setInlineEditError] = useState<string | null>(null)
+
+  // Over-default remark prompt for the inline editor. When set, a dialog collects a
+  // mandatory remark before the inline save proceeds. Kept OUT of `inlineEdit` so the
+  // half-typed note isn't written to the localStorage draft cache.
+  const [remarkPromptRecord, setRemarkPromptRecord] = useState<AttendanceRecord | null>(null)
+  const [promptRemark, setPromptRemark] = useState("")
 
   const [rowSaving, setRowSaving] = useState(false)
 
@@ -1995,7 +2011,22 @@ function SiteAttendance() {
 
 
 
-  const saveInlineEdit = async (
+  // True when the inline edit's check-out runs more than the configured grace past the
+  // employee's category default check-out (day vs night default chosen by the check-out's
+  // own offset). Mirrors the EditSiteRecord modal's requiresRemark gate.
+  const inlineNeedsRemark = (record: AttendanceRecord) => {
+    const { checkIn, checkOut } = inlineEdit
+    if (!checkIn || !checkOut) return false
+    const { checkOutNextDay } = deriveOffsets(checkIn, checkOut)
+    const defaultStr = defaultCheckOutFor(site, categoryOf(record.collarType, record.nationality), checkOutNextDay)
+    if (!defaultStr) return false
+    const outIso = combineFromOffset(record.date, checkOut, checkOutNextDay)
+    const defIso = combineFromOffset(record.date, defaultStr, checkOutNextDay)
+    if (!outIso || !defIso) return false
+    return new Date(outIso).getTime() > new Date(defIso).getTime() + checkoutRemarkGraceMinutes * 60_000
+  }
+
+  const saveInlineEdit = (
     record: AttendanceRecord
   ) => {
     const { checkIn, checkOut } = inlineEdit
@@ -2010,6 +2041,26 @@ function SiteAttendance() {
     }
     setInlineEditError(null);
 
+    // A check-out past the category default needs a justification remark — collect it
+    // via the popup before saving (prefilled with any existing note so it isn't clobbered).
+    if (inlineNeedsRemark(record)) {
+      setPromptRemark(record.remark ?? "")
+      setRemarkPromptRecord(record)
+      return
+    }
+
+    performInlineSave(record)
+  }
+
+  // The actual inline save. `remark` is passed only when the over-default prompt collected
+  // one; when provided and changed, it is persisted via the remark endpoint after the
+  // sessions update (non-atomic, matching the modal — enforcement is client-side).
+  const performInlineSave = async (
+    record: AttendanceRecord,
+    remark?: string
+  ) => {
+    const { checkIn, checkOut } = inlineEdit
+    const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkIn, checkOut);
 
     try {
       setRowSaving(true)
@@ -2048,11 +2099,22 @@ function SiteAttendance() {
         ),
       }
 
+      // Persist the over-default remark when the prompt supplied a changed note.
+      if (remark !== undefined && remark.trim() !== (record.remark ?? "").trim()) {
+        try {
+          await api.patch(`/api/attendance/${record.attendanceId}/remark`, { remark: remark.trim() })
+        } catch (remarkError) {
+          console.log(remarkError)
+          toast.error("Attendance saved, but the remark failed to save.")
+        }
+      }
+
       handleRecordUpdated(updatedRecord as AttendanceRecord)
 
       toast.success("Attendance updated successfully")
 
       cancelInlineEdit()
+      setRemarkPromptRecord(null)
 
       // If this edit was forced by a Transfer click (checkout wasn't filled
       // yet), proceed straight to the site-picker modal now that it is.
@@ -4509,6 +4571,64 @@ function SiteAttendance() {
           }
         }}
       />
+
+      {/* Over-default check-out remark prompt for the inline row editor. Pops up on Save
+          when the edited check-out runs past the category default + grace; the note is
+          required before the save proceeds. */}
+      <Dialog
+        open={!!remarkPromptRecord}
+        onOpenChange={(open) => {
+          if (!open && !rowSaving) setRemarkPromptRecord(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle>Remark required</DialogTitle>
+            <DialogDescription>
+              This check-out runs more than {checkoutRemarkGraceMinutes} min past{" "}
+              {remarkPromptRecord?.name ?? "the employee"}&apos;s default check-out. Add a
+              note explaining why before saving.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-1">
+            <Textarea
+              value={promptRemark}
+              onChange={(e) => setPromptRemark(e.target.value)}
+              maxLength={500}
+              placeholder="Reason for the extended check-out…"
+              className="min-h-24 text-sm"
+              autoFocus
+            />
+            <div className="text-[11px] text-muted-foreground text-right">{promptRemark.length}/500</div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRemarkPromptRecord(null)}
+              disabled={rowSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (remarkPromptRecord) performInlineSave(remarkPromptRecord, promptRemark)
+              }}
+              disabled={rowSaving || !promptRemark.trim()}
+            >
+              {rowSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <Save className="h-4 w-4 mr-2" />
+                  Save with remark
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <BulkAssignNightShift
         open={bulkAssignOpen}

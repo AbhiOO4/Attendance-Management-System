@@ -1860,6 +1860,10 @@ export const getSiteAttendance = async (req, res) => {
 
           nationality: "$employee.nationality",
 
+          // Current supervisor remark, so the inline-edit over-default remark prompt can
+          // prefill it instead of clobbering an existing note.
+          remark: "$remark",
+
           status: "$status",
 
           totalWorkHours: "$totalWorkHours",
@@ -3540,6 +3544,14 @@ export const getAttendanceById = async (req, res) => {
 
           jobTitle:
             "$employee.jobTitle",
+
+          // Roster category source (for the edit modal's over-default check-out remark
+          // gate) + the current supervisor remark, so the modal can prefill it.
+          collarType: "$employee.collarType",
+
+          nationality: "$employee.nationality",
+
+          remark: "$remark",
 
           siteId: "$siteId",
 

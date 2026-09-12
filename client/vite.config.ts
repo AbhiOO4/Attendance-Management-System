@@ -56,9 +56,9 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'NGDP Attendance & Payroll Automation',
+        name: 'NGDP Attendance Management System',
         short_name: 'NGDP AMS',
-        description: 'Attendance Management & Payroll Automation System',
+        description: 'Attendance Management System',
         theme_color: '#000000',
         background_color: '#ffffff',
         display: 'standalone',

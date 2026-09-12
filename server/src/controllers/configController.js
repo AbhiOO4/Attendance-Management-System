@@ -38,6 +38,7 @@ export const updateWorkSchedule = async (req, res) => {
       breakDurationMinutes,
       checkoutReminderTime,
       checkoutReminderGraceMinutes,
+      checkoutRemarkGraceMinutes,
       annualLeaveDefaultDays,
     } = req.body;
 
@@ -107,6 +108,16 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.checkoutReminderGraceMinutes = checkoutReminderGraceMinutes;
+    }
+
+    if (checkoutRemarkGraceMinutes !== undefined) {
+      if (checkoutRemarkGraceMinutes < 0 || checkoutRemarkGraceMinutes > 240) {
+        return res.status(400).json({
+          success: false,
+          message: "Check-out remark grace must be between 0 and 240 minutes",
+        });
+      }
+      schedule.checkoutRemarkGraceMinutes = checkoutRemarkGraceMinutes;
     }
 
     if (annualLeaveDefaultDays !== undefined) {

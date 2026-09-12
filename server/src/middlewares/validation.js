@@ -31,6 +31,11 @@ const employeeSchema = Joi.object({
   // must be declared for the nationality to survive to the controller.
   nationality: Joi.string().valid('foreign', 'omani').default('foreign'),
 
+  // Per-employee annual PAID-LEAVE override (working days/year). null → fall back
+  // to WorkSchedule.annualLeaveDefaultDays. Must be declared here or Joi rejects
+  // the key and `req.body = value` strips it before it reaches the controller.
+  annualLeaveEntitlement: Joi.number().min(0).allow(null).optional(),
+
 });
 
 

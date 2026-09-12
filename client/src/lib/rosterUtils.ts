@@ -36,3 +36,45 @@ export const CATEGORY_IS_FOREIGN: Record<RosterCategory, boolean> = {
   omaniSkilled: false,
   omaniStaff: false,
 }
+
+// Fallback grace (minutes) a check-out may run past its category's default before a
+// supervisor remark becomes mandatory on edit. The live value is configurable via the
+// work schedule (WorkConfig.checkoutRemarkGraceMinutes); this is only used when that is
+// absent (e.g. an older config). Enforced client-side in EditSiteRecord.
+export const CHECKOUT_REMARK_GRACE_MINUTES = 15
+
+// The four categories' day/night default check-out strings, as they live on a Site.
+// Any object carrying these optional fields (e.g. the Site type) can be passed in.
+export type CheckOutDefaults = {
+  defaultCheckOut?: string
+  nightDefaultCheckOut?: string
+  staffDefaultCheckOut?: string
+  staffNightDefaultCheckOut?: string
+  omaniDefaultCheckOut?: string
+  omaniNightDefaultCheckOut?: string
+  omaniStaffDefaultCheckOut?: string
+  omaniStaffNightDefaultCheckOut?: string
+}
+
+// category → [day field, night field]. Mirrors the server's checkoutFieldFor() in
+// server/src/utils/rosterFields.js — keep in sync.
+const CHECKOUT_DEFAULT_FIELDS: Record<
+  RosterCategory,
+  [keyof CheckOutDefaults, keyof CheckOutDefaults]
+> = {
+  foreignSkilled: ['defaultCheckOut', 'nightDefaultCheckOut'],
+  foreignStaff: ['staffDefaultCheckOut', 'staffNightDefaultCheckOut'],
+  omaniSkilled: ['omaniDefaultCheckOut', 'omaniNightDefaultCheckOut'],
+  omaniStaff: ['omaniStaffDefaultCheckOut', 'omaniStaffNightDefaultCheckOut'],
+}
+
+// The default check-out "HH:mm" for a category + shift type, read off the site object.
+// Returns "" when that category/shift has no configured default.
+export const defaultCheckOutFor = (
+  site: CheckOutDefaults | null | undefined,
+  category: RosterCategory,
+  isNight: boolean
+): string => {
+  const field = CHECKOUT_DEFAULT_FIELDS[category][isNight ? 1 : 0]
+  return (site?.[field] || '').trim()
+}
