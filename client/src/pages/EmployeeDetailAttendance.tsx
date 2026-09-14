@@ -128,8 +128,8 @@ function EmployeeAttendanceDetail() {
   const { user } = useAuth()
   const canWrite = user?.role === "admin" || user?.role === "superadmin"
   // Columns: S.No, Date, Site, Job No, Check In, Check Out, Worked, Status,
-  // Total Hours, OT Hours, Holiday Hours, Breaks (+ Actions when canWrite).
-  const colCount = canWrite ? 13 : 12
+  // Total Hours, OT Hours, Holiday Hours, Breaks, Remark (+ Actions when canWrite).
+  const colCount = canWrite ? 14 : 13
 
 
 
@@ -591,6 +591,8 @@ function EmployeeAttendanceDetail() {
 
                     <TableHead>Breaks</TableHead>
 
+                    <TableHead>Remark</TableHead>
+
                     {canWrite && (
                       <TableHead className="text-right">
                         Actions
@@ -724,14 +726,18 @@ function EmployeeAttendanceDetail() {
                                               ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
                                               : getDisplayStatus(record) === "leave"
                                                 ? "bg-violet-500/15 text-violet-700 dark:text-violet-400 hover:bg-violet-500/25 border-transparent"
-                                                : ""
+                                                : getDisplayStatus(record) === "lop"
+                                                  ? "bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/25 border-transparent"
+                                                  : ""
                                       }
                                     >
                                       {getDisplayStatus(record) === "sick"
                                         ? "Sick Leave"
                                         : getDisplayStatus(record) === "leave"
                                           ? "Annual Leave"
-                                          : getDisplayStatus(record)}
+                                          : getDisplayStatus(record) === "lop"
+                                            ? "LOP"
+                                            : getDisplayStatus(record)}
                                     </Badge>
                                   </TableCell>
 
@@ -782,6 +788,15 @@ function EmployeeAttendanceDetail() {
                                       return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
                                     })()}
 
+                                  </TableCell>
+
+                                  {/* Day-level remark — the LOP "Deduct … OMR" auto-remark
+                                      or any manual supervisor note (edit via the history icon). */}
+                                  <TableCell
+                                    rowSpan={sessions.length}
+                                    className="max-w-[16rem] whitespace-normal break-words text-muted-foreground"
+                                  >
+                                    {record.remark || "-"}
                                   </TableCell>
 
 
@@ -845,7 +860,8 @@ function EmployeeAttendanceDetail() {
                         {round2(totals.holidayHours)} hrs
                       </TableCell>
 
-                      <TableCell colSpan={canWrite ? 2 : 1} />
+                      {/* Breaks + Remark (+ Actions when canWrite) */}
+                      <TableCell colSpan={canWrite ? 3 : 2} />
                     </TableRow>
                   </TableFooter>
                 )}

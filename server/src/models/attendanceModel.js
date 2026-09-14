@@ -179,6 +179,20 @@ const attendanceSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Marks the day as LOP (Loss of Pay) — an UNEXCUSED absence that carries a
+    // monetary penalty (the sister of isSickLeave, which is an EXCUSED absence).
+    // Like sick/paid leave it is a whole-day annotation on an otherwise-absent day
+    // and obeys the same invariant (pre-save hook): only valid when every session
+    // is empty; any filled session forces it back to false. Mutually exclusive with
+    // both isSickLeave and isPaidLeave (precedence: paid > sick > lop). It has no
+    // effect on the monthly report (a LOP day is an unpaid absent day, same as sick);
+    // the "Deduct <amount> OMR" penalty lives in the record's `remark`, auto-filled
+    // by the controller when this is toggled on.
+    isLop: {
+      type: Boolean,
+      default: false,
+    },
+
     // Total worked hours across all sessions
     totalWorkHours: {
       type: Number,
@@ -255,6 +269,20 @@ attendanceSchema.pre("save", async function () {
   }
   if (this.isPaidLeave && this.isSickLeave) {
     this.isSickLeave = false;
+  }
+
+  // LOP (Loss of Pay) obeys the same "no worked session" invariant and is mutually
+  // exclusive with both other leave annotations. Precedence is paid > sick > lop, so
+  // a conflict clears LOP. The controller sets the counterpart to false explicitly on
+  // every toggle, so this tie-break only guards against inconsistent data reaching save.
+  if (this.isLop && hasFilledSession) {
+    this.isLop = false;
+  }
+  if (this.isPaidLeave && this.isLop) {
+    this.isLop = false;
+  }
+  if (this.isSickLeave && this.isLop) {
+    this.isLop = false;
   }
 
   // Cutoff redesign — stamp each session's source-of-truth raw times + day offsets

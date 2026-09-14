@@ -217,6 +217,8 @@ export interface AttendanceRecord {
 
   isSickLeave?: boolean
 
+  isLop?: boolean
+
   // Set (day-scoped) when this employee was transferred into this site.
   transferredFrom?: TransferredFrom
 }
@@ -261,14 +263,6 @@ interface DraftAttendanceRecord {
   sessions: DraftSession[]
   breaksTaken?: number | null
   isSickLeave?: boolean
-  // Snapshot of the first session's times before sick leave cleared them,
-  // so toggling sick leave back off restores what was there.
-  sickClearedSession?: {
-    checkIn: string
-    checkOut: string
-    isNightShift: boolean
-    workedHours: number
-  } | null
   // Set when this employee was transferred into this site (pending transfer).
   transferredFrom?: TransferredFrom
 }
@@ -376,6 +370,18 @@ const SickLeaveBadge = () => (
   </Badge>
 )
 
+// LOP (Loss of Pay) — an unexcused absence carrying a deduction. Rose to set it
+// apart from the (excused) sky-blue Sick Leave badge.
+const LopBadge = () => (
+  <Badge
+    variant="secondary"
+    className="bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200/50 dark:border-rose-800/30 text-[10px] px-1.5 py-0 h-4"
+    title="Loss of Pay"
+  >
+    LOP
+  </Badge>
+)
+
 // Shown (day-scoped) on employees transferred into the current site so the
 // supervisor knows where they came from. These rows are also floated to the top.
 const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
@@ -414,9 +420,11 @@ const CarryoverBadge = ({ onClick, siteName }: { onClick?: () => void; siteName?
 )
 
 /**
- * Per-row 3-dot actions menu. Currently only exposes the Sick Leave toggle,
- * but is the home for future row-level actions. The green tick on the left of
- * the item reflects the current sick-leave state.
+ * Per-row 3-dot actions menu. Exposes the mutually-exclusive Sick Leave and LOP
+ * (Loss of Pay) toggles, a Transfer action and Record history. A green tick on the
+ * left of each leave item reflects its current state. Only rendered on SAVED rows —
+ * the draft roster shows no kebab (leave/transfer decisions are made after saving,
+ * against the record's full cross-site session list).
  */
 function RowActionsMenu({
   isSick,
@@ -425,6 +433,12 @@ function RowActionsMenu({
   showSick = true,
   sickDisabled = false,
   sickDisabledReason,
+  isLop = false,
+  onToggleLop,
+  lopSaving = false,
+  showLop = true,
+  lopDisabled = false,
+  lopDisabledReason,
   showTransfer = false,
   onTransfer,
   transferDisabled = false,
@@ -440,6 +454,12 @@ function RowActionsMenu({
   showSick?: boolean
   sickDisabled?: boolean
   sickDisabledReason?: string
+  isLop?: boolean
+  onToggleLop?: () => void
+  lopSaving?: boolean
+  showLop?: boolean
+  lopDisabled?: boolean
+  lopDisabledReason?: string
   showTransfer?: boolean
   onTransfer?: () => void
   transferDisabled?: boolean
@@ -534,6 +554,28 @@ function RowActionsMenu({
             Sick Leave
           </DropdownMenuItem>
         )}
+        {showLop && (
+          <DropdownMenuItem
+            disabled={lopSaving || lopDisabled}
+            title={lopDisabled ? lopDisabledReason : undefined}
+            onSelect={(e) => {
+              e.preventDefault()
+              if (!lopSaving && !lopDisabled) onToggleLop?.()
+            }}
+          >
+            {lopSaving ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Check
+                className={cn(
+                  "mr-2 h-4 w-4 text-emerald-600",
+                  isLop ? "opacity-100" : "opacity-0"
+                )}
+              />
+            )}
+            LOP (Loss of Pay)
+          </DropdownMenuItem>
+        )}
         {showTransfer && (
           <DropdownMenuItem
             disabled={transferSaving || transferDisabled}
@@ -553,7 +595,7 @@ function RowActionsMenu({
         )}
         {showHistory && (
           <>
-            {(showSick || showTransfer) && <DropdownMenuSeparator />}
+            {(showSick || showLop || showTransfer) && <DropdownMenuSeparator />}
             <DropdownMenuItem
               disabled={!attendanceId}
               title={!attendanceId ? "Save attendance first" : undefined}
@@ -589,7 +631,6 @@ interface DraftRowProps {
   /** Opens yesterday's carryover record for this employee so its check-out can be filled. */
   onOpenCarryover?: (employeeId: string) => void
   onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
-  onToggleSick: (employeeId: string) => void
   onUpdateBreaks: (employeeId: string, value: number | null) => void
   onClearSession: (employeeId: string, sessionIndex: number) => void
   onUndoClear: () => void
@@ -612,7 +653,6 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   carryoverSiteName,
   onOpenCarryover,
   onUpdateSession,
-  onToggleSick,
   onUpdateBreaks,
   onClearSession,
   onUndoClear,
@@ -656,20 +696,11 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {record.isSickLeave ? (
-              <SickLeaveBadge />
-            ) : isEmployeeAbsent(record.sessions, siteId) ? (
+            {isEmployeeAbsent(record.sessions, siteId) ? (
               <AbsentIndicator />
             ) : null}
-            <RowActionsMenu
-              isSick={!!record.isSickLeave}
-              onToggleSick={() => onToggleSick(record.employee._id)}
-              showTransfer
-              transferDisabled
-              transferDisabledReason="Save attendance before transferring"
-              onTransfer={() => {}}
-              employeeName={record.employee.name}
-            />
+            {/* No kebab in draft — Sick Leave / LOP / Transfer are only available on a
+                SAVED row, where the record carries the full cross-site session list. */}
           </div>
         </div>
 
@@ -822,7 +853,6 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   carryoverSiteName,
   onOpenCarryover,
   onUpdateSession,
-  onToggleSick,
   onUpdateBreaks,
   onClearSession,
   onUndoClear,
@@ -998,15 +1028,8 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 Absent
               </Button>
             ) : null}
-            <RowActionsMenu
-              isSick={!!record.isSickLeave}
-              onToggleSick={() => onToggleSick(record.employee._id)}
-              showTransfer
-              transferDisabled
-              transferDisabledReason="Save attendance before transferring"
-              onTransfer={() => {}}
-              employeeName={record.employee.name}
-            />
+            {/* No kebab in draft — Sick Leave / LOP / Transfer are only available on a
+                SAVED row, where the record carries the full cross-site session list. */}
           </div>
         </TableCell>
       </TableRow>
@@ -1207,6 +1230,7 @@ function SiteAttendance() {
 
   // Tracks which saved record is currently having its sick-leave flag toggled.
   const [sickSavingId, setSickSavingId] = useState<string | null>(null)
+  const [lopSavingId, setLopSavingId] = useState<string | null>(null)
 
   // Transfer flow: site-picker modal state, plus a marker used to
   // auto-open the modal once a forced checkout edit (see handleTransferClick)
@@ -2218,64 +2242,6 @@ function SiteAttendance() {
     setIsDirty(true)
   }, [calculateHours])
 
-  // Draft: toggle sick leave locally. Turning it on clears the session times
-  // (sick = empty session); the backend remains the arbiter on submit.
-  const toggleDraftSickLeave = useCallback((employeeId: string) => {
-    setDraftAttendance((prev) =>
-      prev.map((record) => {
-        if (record.employee._id !== employeeId) return record
-
-        const turningOn = !record.isSickLeave
-
-        if (turningOn) {
-          // Snapshot the current first-session times, then clear them.
-          const s0 = record.sessions[0]
-          const snapshot = s0
-            ? {
-                checkIn: s0.checkIn,
-                checkOut: s0.checkOut,
-                isNightShift: s0.isNightShift,
-                workedHours: s0.workedHours,
-              }
-            : null
-
-          const sessions = record.sessions.map((s, i) =>
-            i === 0 ? { ...s, checkIn: "", checkOut: "", workedHours: 0 } : s
-          )
-
-          return {
-            ...record,
-            isSickLeave: true,
-            sessions,
-            sickClearedSession: snapshot,
-          }
-        }
-
-        // Turning off: restore the snapshot the toggle had cleared.
-        const snap = record.sickClearedSession
-        const sessions = record.sessions.map((s, i) =>
-          i === 0 && snap
-            ? {
-                ...s,
-                checkIn: snap.checkIn,
-                checkOut: snap.checkOut,
-                isNightShift: snap.isNightShift,
-                workedHours: snap.workedHours,
-              }
-            : s
-        )
-
-        return {
-          ...record,
-          isSickLeave: false,
-          sessions,
-          sickClearedSession: null,
-        }
-      })
-    )
-    setIsDirty(true)
-  }, [])
-
   // Saved record: toggle sick leave via the backend, which validates against
   // the full cross-site record. A filled session anywhere → 400 + toast.
   const toggleSavedSickLeave = async (record: AttendanceRecord) => {
@@ -2283,9 +2249,10 @@ function SiteAttendance() {
       setSickSavingId(record.attendanceId)
       const nextValue = !record.isSickLeave
 
+      // Sick and LOP are mutually exclusive — turning sick on clears LOP.
       const res = await api.patch(
         `/api/attendance/update/${record.attendanceId}?siteId=${site?._id}`,
-        { isSickLeave: nextValue }
+        { isSickLeave: nextValue, isLop: false }
       )
 
       const updatedRecord = {
@@ -2308,6 +2275,42 @@ function SiteAttendance() {
       )
     } finally {
       setSickSavingId(null)
+    }
+  }
+
+  // Saved record: toggle LOP (Loss of Pay) via the backend, which validates against
+  // the full cross-site record (filled session anywhere → 400 + toast), auto-fills the
+  // "Deduct <amount> OMR" remark, and clears sick leave (mutually exclusive).
+  const toggleSavedLop = async (record: AttendanceRecord) => {
+    try {
+      setLopSavingId(record.attendanceId)
+      const nextValue = !record.isLop
+
+      const res = await api.patch(
+        `/api/attendance/update/${record.attendanceId}?siteId=${site?._id}`,
+        { isLop: nextValue, isSickLeave: false }
+      )
+
+      const updatedRecord = {
+        ...res.data.attendance,
+        sessions: res.data.attendance.sessions.filter(
+          (session: AttendanceSession) =>
+            String(session.siteId) === String(site?._id)
+        ),
+      }
+
+      handleRecordUpdated(updatedRecord as AttendanceRecord)
+
+      toast.success(
+        nextValue ? "Marked as LOP" : "LOP removed"
+      )
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.message ||
+          "Failed to update LOP"
+      )
+    } finally {
+      setLopSavingId(null)
     }
   }
 
@@ -3764,7 +3767,9 @@ function SiteAttendance() {
                             </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {record.isSickLeave ? (
+                            {record.isLop ? (
+                              <LopBadge />
+                            ) : record.isSickLeave ? (
                               <SickLeaveBadge />
                             ) : isEmployeeAbsent(record.sessions, id) ? (
                               <AbsentIndicator />
@@ -3773,11 +3778,17 @@ function SiteAttendance() {
                               <RowActionsMenu
                                 isSick={!!record.isSickLeave}
                                 saving={sickSavingId === record.attendanceId}
-                                sickDisabled={!isEmployeeAbsent(record.sessions, id)}
-                                sickDisabledReason="Clear the check-in to mark sick leave"
+                                sickDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
+                                sickDisabledReason="Only available when the employee has no check-in today"
                                 onToggleSick={() => toggleSavedSickLeave(record)}
+                                isLop={!!record.isLop}
+                                lopSaving={lopSavingId === record.attendanceId}
+                                lopDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
+                                lopDisabledReason="Only available when the employee has no check-in today"
+                                onToggleLop={() => toggleSavedLop(record)}
                                 showTransfer
-                                transferDisabled={false}
+                                transferDisabled={!!record.isSickLeave || !!record.isLop}
+                                transferDisabledReason="Cannot transfer — employee is on sick leave / LOP"
                                 onTransfer={() => handleTransferClick(record)}
                                 attendanceId={record.attendanceId}
                                 employeeName={record.name}
@@ -4155,7 +4166,9 @@ function SiteAttendance() {
                                         {record.employeeId} • {record.jobTitle}
                                       </p>
                                     </div>
-                                    {record.isSickLeave ? (
+                                    {record.isLop ? (
+                                      <LopBadge />
+                                    ) : record.isSickLeave ? (
                                       <SickLeaveBadge />
                                     ) : isEmployeeAbsent(record.sessions, id) ? (
                                       <AbsentIndicator />
@@ -4418,11 +4431,17 @@ function SiteAttendance() {
                                       <RowActionsMenu
                                         isSick={!!record.isSickLeave}
                                         saving={sickSavingId === record.attendanceId}
-                                        sickDisabled={!isEmployeeAbsent(record.sessions, id)}
-                                        sickDisabledReason="Clear the check-in to mark sick leave"
+                                        sickDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
+                                        sickDisabledReason="Only available when the employee has no check-in today"
                                         onToggleSick={() => toggleSavedSickLeave(record)}
+                                        isLop={!!record.isLop}
+                                        lopSaving={lopSavingId === record.attendanceId}
+                                        lopDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
+                                        lopDisabledReason="Only available when the employee has no check-in today"
+                                        onToggleLop={() => toggleSavedLop(record)}
                                         showTransfer
-                                        transferDisabled={false}
+                                        transferDisabled={!!record.isSickLeave || !!record.isLop}
+                                        transferDisabledReason="Cannot transfer — employee is on sick leave / LOP"
                                         onTransfer={() => handleTransferClick(record)}
                                         attendanceId={record.attendanceId}
                                         employeeName={record.name}
@@ -4486,7 +4505,6 @@ function SiteAttendance() {
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                       onUpdateSession={updateDraftSession}
-                      onToggleSick={toggleDraftSickLeave}
                       onUpdateBreaks={updateDraftBreaksTaken}
                       onClearSession={clearDraftSession}
                       onUndoClear={undoClearDraftSession}
@@ -4527,7 +4545,6 @@ function SiteAttendance() {
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                         onUpdateSession={updateDraftSession}
-                        onToggleSick={toggleDraftSickLeave}
                         onUpdateBreaks={updateDraftBreaksTaken}
                         onClearSession={clearDraftSession}
                         onUndoClear={undoClearDraftSession}

@@ -133,6 +133,17 @@ const workScheduleSchema = new mongoose.Schema(
       max: 240,
       default: 15,
     },
+
+    // Monetary penalty (in OMR) attached to a Loss-of-Pay (LOP) day. When a
+    // supervisor toggles an absent record to LOP (Attendance.isLop), the record's
+    // remark is auto-filled with "Deduct <lopDeductionAmount> OMR". Purely an
+    // annotation surfaced in the timesheet — there is no pay/money logic that
+    // consumes it. Change the amount here without a code change.
+    lopDeductionAmount: {
+      type: Number,
+      min: 0,
+      default: 3.5,
+    },
   },
   { timestamps: true }
 );

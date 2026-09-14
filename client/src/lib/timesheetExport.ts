@@ -55,6 +55,10 @@ export const getDisplayStatus = (record: AttendanceRecord): string => {
   if (record.isSickLeave) {
     return "sick"
   }
+  // LOP (Loss of Pay) — an unexcused absence. Mutually exclusive with sick/paid leave.
+  if (record.isLop) {
+    return "lop"
+  }
   if (record.status === "absent" && record.sessions && record.sessions.length > 0) {
     const hasCheckInNoCheckOut = record.sessions.some(
       (session) => session && session.checkIn && !session.checkOut
@@ -348,6 +352,7 @@ export function addTimesheetSheet(
     "OT\nHours",
     "Holiday\nHours",
     "Status",
+    "Remark",
   ])
 
   headerRow.eachCell((cell) => {
@@ -408,9 +413,10 @@ export function addTimesheetSheet(
         "",
         "",
         "",
+        "",
       ])
 
-      for (let col = 1; col <= 11; col++) {
+      for (let col = 1; col <= 12; col++) {
         const cell = emptyRow.getCell(col)
 
         cell.font = { size: 8 }
@@ -498,8 +504,14 @@ export function addTimesheetSheet(
             ? "Sick Leave"
             : getDisplayStatus(record) === "leave"
               ? "Annual Leave"
-              : getDisplayStatus(record)
+              : getDisplayStatus(record) === "lop"
+                ? "LOP"
+                : getDisplayStatus(record)
           : "",
+
+        // Remark (day-level): the LOP "Deduct … OMR" auto-remark or any manual
+        // supervisor note. Merged across the day's session rows like Status.
+        sessionIndex === 0 ? (record.remark || "") : "",
       ])
 
       row.eachCell((cell) => {
@@ -556,6 +568,7 @@ export function addTimesheetSheet(
         9, // OT Hours
         10, // Holiday Hours
         11, // Status
+        12, // Remark
       ].forEach((col) => {
         worksheet.mergeCells(startRow, col, endRow, col)
       })
@@ -577,6 +590,7 @@ export function addTimesheetSheet(
     round2(totals.totalHours),
     round2(totals.otHours),
     round2(totals.holidayHours),
+    "",
     "",
   ])
 
@@ -716,8 +730,8 @@ export function addTimesheetSheet(
   // COLUMN WIDTHS
   // --------------------------
 
-  //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status
-  const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 11]
+  //          Date Site Job ChkIn ChkOut Worked Break Total OT Holiday Status Remark
+  const colWidths = [8, 12, 7, 9, 9, 8, 6, 7, 6, 8, 11, 24]
   worksheet.columns = worksheet.columns.map((column, index) => ({
     ...column,
     width: colWidths[index] || 10,

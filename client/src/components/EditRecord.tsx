@@ -136,6 +136,8 @@ export interface AttendanceRecord {
   breaksTaken?: number | null
 
   isSickLeave?: boolean
+
+  isLop?: boolean
 }
 
 
@@ -198,6 +200,8 @@ const [sessionToDelete, setSessionToDelete] =
   const [initialBreaksTaken, setInitialBreaksTaken] = useState<number | null>(null)
   const [isSickLeave, setIsSickLeave] = useState(false)
   const [initialIsSickLeave, setInitialIsSickLeave] = useState(false)
+  const [isLop, setIsLop] = useState(false)
+  const [initialIsLop, setInitialIsLop] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
 
@@ -222,16 +226,19 @@ const [sessionToDelete, setSessionToDelete] =
     return true
   }
 
-  // Sick leave only applies to a fully empty day (no worked sessions).
+  // Sick leave / LOP only apply to a fully empty day (no worked sessions).
   const allSessionsEmpty = sessions.length === 0 || sessions.every(
     (s) => !s.checkIn && !s.checkOut
   )
   const effectiveSickLeave = isSickLeave && allSessionsEmpty
+  // LOP (Loss of Pay) is mutually exclusive with sick leave — sick wins if both are set.
+  const effectiveLop = isLop && allSessionsEmpty && !effectiveSickLeave
 
   const isDirty =
     !areSessionsEqual(sessions, initialSessions) ||
     breaksTaken !== initialBreaksTaken ||
-    effectiveSickLeave !== initialIsSickLeave
+    effectiveSickLeave !== initialIsSickLeave ||
+    effectiveLop !== initialIsLop
 
 
   const handleCloseAttempt = () => {
@@ -268,6 +275,9 @@ const [sessionToDelete, setSessionToDelete] =
       const sick = record.isSickLeave ?? false
       setIsSickLeave(sick)
       setInitialIsSickLeave(sick)
+      const lop = record.isLop ?? false
+      setIsLop(lop)
+      setInitialIsLop(lop)
     } else {
       setSessions([])
       setInitialSessions([])
@@ -275,6 +285,8 @@ const [sessionToDelete, setSessionToDelete] =
       setInitialBreaksTaken(null)
       setIsSickLeave(false)
       setInitialIsSickLeave(false)
+      setIsLop(false)
+      setInitialIsLop(false)
     }
   }, [open, record])
 
@@ -396,6 +408,10 @@ const [sessionToDelete, setSessionToDelete] =
       return "sick"
     }
 
+    if (effectiveLop) {
+      return "lop"
+    }
+
     if (
       rawHours >=
       config.fullDayHours
@@ -420,6 +436,7 @@ const [sessionToDelete, setSessionToDelete] =
     return "absent"
   }, [
     effectiveSickLeave,
+    effectiveLop,
     rawHours,
     config.fullDayHours,
     config.halfDayHours,
@@ -702,6 +719,7 @@ const [sessionToDelete, setSessionToDelete] =
       ),
       breaksTaken,
       isSickLeave: effectiveSickLeave,
+      isLop: effectiveLop,
     }
 
 
@@ -1059,14 +1077,17 @@ const [sessionToDelete, setSessionToDelete] =
                       ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
                       : status === "sick"
                         ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
-                        : ""
+                        : status === "lop"
+                          ? "bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/25 border-transparent"
+                          : ""
                 }`}
               >
-                {status === "sick" ? "Sick Leave" : status}
+                {status === "sick" ? "Sick Leave" : status === "lop" ? "LOP" : status}
               </Badge>
             </div>
 
-            {/* Sick leave toggle — only valid for a fully empty day */}
+            {/* Sick leave toggle — only valid for a fully empty day. Mutually
+                exclusive with LOP (turning one on clears the other). */}
             <div className="flex items-start justify-between gap-4 border-t pt-3">
               <div className="space-y-0.5">
                 <Label htmlFor="sick-leave" className="text-sm font-medium">Sick Leave</Label>
@@ -1080,7 +1101,32 @@ const [sessionToDelete, setSessionToDelete] =
                 id="sick-leave"
                 checked={effectiveSickLeave}
                 disabled={!allSessionsEmpty}
-                onCheckedChange={setIsSickLeave}
+                onCheckedChange={(v) => {
+                  setIsSickLeave(v)
+                  if (v) setIsLop(false)
+                }}
+              />
+            </div>
+
+            {/* LOP (Loss of Pay) toggle — unexcused absence, only valid for a fully
+                empty day. Mutually exclusive with sick leave. */}
+            <div className="flex items-start justify-between gap-4 border-t pt-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="lop" className="text-sm font-medium">LOP (Loss of Pay)</Label>
+                <p className="text-xs text-muted-foreground max-w-[280px]">
+                  {allSessionsEmpty
+                    ? "Mark this absent day as loss of pay. Auto-adds a deduction remark."
+                    : "Clear all check-in/out times to mark this day as loss of pay."}
+                </p>
+              </div>
+              <Switch
+                id="lop"
+                checked={effectiveLop}
+                disabled={!allSessionsEmpty}
+                onCheckedChange={(v) => {
+                  setIsLop(v)
+                  if (v) setIsSickLeave(false)
+                }}
               />
             </div>
           </div>

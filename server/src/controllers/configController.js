@@ -39,6 +39,7 @@ export const updateWorkSchedule = async (req, res) => {
       checkoutReminderTime,
       checkoutReminderGraceMinutes,
       checkoutRemarkGraceMinutes,
+      lopDeductionAmount,
       annualLeaveDefaultDays,
       weeklyHolidayAwardEnabled,
       weeklyHolidayAwardHours,
@@ -121,6 +122,16 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.checkoutRemarkGraceMinutes = checkoutRemarkGraceMinutes;
+    }
+
+    if (lopDeductionAmount !== undefined) {
+      if (lopDeductionAmount < 0 || lopDeductionAmount > 10000) {
+        return res.status(400).json({
+          success: false,
+          message: "LOP deduction amount must be between 0 and 10000 OMR",
+        });
+      }
+      schedule.lopDeductionAmount = lopDeductionAmount;
     }
 
     if (annualLeaveDefaultDays !== undefined) {

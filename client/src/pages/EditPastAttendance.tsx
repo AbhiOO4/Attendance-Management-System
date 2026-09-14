@@ -130,7 +130,11 @@ export interface AttendanceRecord {
 
   isSickLeave?: boolean
 
+  isLop?: boolean
+
   isPaidLeave?: boolean
+
+  remark?: string
 }
 
 export interface AttendancePagination {

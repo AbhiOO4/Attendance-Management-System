@@ -99,6 +99,8 @@ export function summarizeAttendanceEdit({
   newStatus,
   prevSick,
   newSick,
+  prevLop,
+  newLop,
   jobNames = {},
   siteNames = {},
 }) {
@@ -111,6 +113,9 @@ export function summarizeAttendanceEdit({
   }
   if (prevSick !== undefined && newSick !== undefined && !!prevSick !== !!newSick) {
     parts.push(newSick ? "Marked sick leave" : "Cleared sick leave")
+  }
+  if (prevLop !== undefined && newLop !== undefined && !!prevLop !== !!newLop) {
+    parts.push(newLop ? "Marked loss of pay" : "Cleared loss of pay")
   }
 
   const prevById = new Map(prevSessions.filter((s) => s && s._id).map((s) => [String(s._id), s]))

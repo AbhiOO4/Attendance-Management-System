@@ -43,6 +43,7 @@ type WorkSchedule = {
   breakDurationMinutes: number;
   checkoutReminderTime: string;
   checkoutRemarkGraceMinutes: number;
+  lopDeductionAmount: number;
   annualLeaveDefaultDays: number;
   weeklyHolidayAwardEnabled: boolean;
   weeklyHolidayAwardHours: number;
@@ -100,6 +101,7 @@ export default function Configure() {
     breakDurationMinutes: 60,
     checkoutReminderTime: "20:00",
     checkoutRemarkGraceMinutes: 15,
+    lopDeductionAmount: 3.5,
     annualLeaveDefaultDays: 30,
     weeklyHolidayAwardEnabled: true,
     weeklyHolidayAwardHours: 4,
@@ -181,6 +183,7 @@ export default function Configure() {
         breakDurationMinutes: schedule.breakDurationMinutes,
         checkoutReminderTime: schedule.checkoutReminderTime,
         checkoutRemarkGraceMinutes: schedule.checkoutRemarkGraceMinutes,
+        lopDeductionAmount: schedule.lopDeductionAmount,
         annualLeaveDefaultDays: schedule.annualLeaveDefaultDays,
         weeklyHolidayAwardEnabled: schedule.weeklyHolidayAwardEnabled,
         weeklyHolidayAwardHours: schedule.weeklyHolidayAwardHours,
@@ -521,6 +524,30 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     When editing attendance, a supervisor remark is required if a check-out runs more than this many minutes past the employee's category default check-out. Set 0 to require a remark for any overrun.
+                  </p>
+                </div>
+
+                {/* LOP DEDUCTION AMOUNT */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    LOP Deduction Amount (OMR)
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={schedule.lopDeductionAmount ?? 3.5}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        lopDeductionAmount: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    When an absent day is marked LOP (Loss of Pay), its remark is auto-filled with "Deduct &lt;this amount&gt; OMR" and shown in the timesheet. Purely an annotation — no pay is calculated.
                   </p>
                 </div>
 

@@ -24,6 +24,24 @@ import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
 
+// Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
+// "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
+// remark on toggle-off regardless of the configured amount, while leaving a genuine
+// manual supervisor remark untouched.
+const LOP_REMARK_RE = /^Deduct\b.*\bOMR$/;
+
+// Apply (or clear) the LOP auto-remark on a record. Toggling LOP on writes
+// "Deduct <amount> OMR"; toggling it off clears the remark only when it still matches
+// the auto shape, so a manually edited note is preserved. Mirrors the inline logic in
+// updateAttendance for the other (submit/bulk/backfill) write paths.
+const applyLopRemark = (doc, lopOn, amount) => {
+  if (lopOn) {
+    doc.remark = `Deduct ${amount ?? 3.5} OMR`;
+  } else if (LOP_REMARK_RE.test(doc.remark || "")) {
+    doc.remark = "";
+  }
+};
+
 
 // --- CURRENT-JOB SYNC ---
 // Keep Employee.currentJob (the roster/"assigned job", scoped to currentSite) in step
@@ -1323,6 +1341,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         sessions,
         breaksTaken = null,
         isSickLeave = false,
+        isLop = false,
       } = entry
 
       const empId = employee?._id
@@ -1609,6 +1628,11 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // Soft: pass through the requested value; the pre-save hook force-clears it
       // if any session (this site or another) turns out to be filled.
       attendanceDoc.isSickLeave = !!isSickLeave
+      // LOP mirrors sick leave (soft passthrough). In practice the draft submit path
+      // never sends isLop=true (the kebab is hidden until a day is saved), but keep the
+      // passthrough + auto-remark consistent with the other write paths.
+      attendanceDoc.isLop = !!isLop
+      if (isLop) applyLopRemark(attendanceDoc, true, workConfig.lopDeductionAmount)
 
       // Night shift detection
       const hasCrossedMidnight = detectCrossedMidnight(mergedSessions, timezoneOffset)
@@ -1841,6 +1865,8 @@ export const getSiteAttendance = async (req, res) => {
           holidayHours: "$holidayHours",
 
           isSickLeave: "$isSickLeave",
+
+          isLop: "$isLop",
 
           isPaidLeave: "$isPaidLeave",
 
@@ -2224,6 +2250,8 @@ export const getAttendanceRecords = async (req, res) => {
 
         isSickLeave: record.isSickLeave || false,
 
+        isLop: record.isLop || false,
+
         isPaidLeave: record.isPaidLeave || false,
 
         totalWorkHours:
@@ -2399,6 +2427,7 @@ export const bulkEditAttendance = async (
         checkOut,
         breaksTaken = null,
         isSickLeave,
+        isLop,
       } = entry;
 
 
@@ -2513,6 +2542,12 @@ export const bulkEditAttendance = async (
         // Soft: the pre-save hook clears it if the resulting session is filled.
         attendanceDoc.isSickLeave = !!isSickLeave;
       }
+      if (isLop !== undefined) {
+        // LOP mirrors sick leave (soft; pre-save hook enforces the invariant + the
+        // paid > sick > lop precedence). Keep the auto-remark in step with the toggle.
+        attendanceDoc.isLop = !!isLop;
+        applyLopRemark(attendanceDoc, !!isLop, workConfig.lopDeductionAmount);
+      }
 
 
 
@@ -2577,7 +2612,7 @@ export const bulkEditAttendance = async (
 export const updateAttendance = async (req, res) => {
   try {
     const { attendanceId } = req.params;
-    const { sessions, siteId: bodySiteId, breaksTaken, isSickLeave } = req.body;
+    const { sessions, siteId: bodySiteId, breaksTaken, isSickLeave, isLop } = req.body;
 
     const { siteId: querySiteId } = req.query;
     const siteId = querySiteId || bodySiteId;
@@ -2625,6 +2660,7 @@ export const updateAttendance = async (req, res) => {
     const prevBreaks = attendance.breaksTaken ?? null;
     const prevStatus = attendance.status;
     const prevSick = attendance.isSickLeave;
+    const prevLop = attendance.isLop;
     const prevSessionsSnap = attendance.sessions.map((s) => ({
       _id: s._id,
       siteId: s.siteId,
@@ -2979,6 +3015,44 @@ export const updateAttendance = async (req, res) => {
       }
 
       attendance.isSickLeave = !!isSickLeave;
+      // Sick leave and LOP are mutually exclusive — turning sick on clears LOP
+      // (and, since LOP owns the auto-remark, clears that remark too).
+      if (isSickLeave) {
+        attendance.isLop = false;
+        if (LOP_REMARK_RE.test(attendance.remark || "")) {
+          attendance.remark = "";
+        }
+      }
+    }
+
+    // -----------------------------
+    // LOP / LOSS OF PAY (hard validation) — mirrors sick leave, plus an auto-remark
+    // -----------------------------
+    // Same rule as sick leave: an unexcused-absence flag is only valid when the whole
+    // record has no filled session (this site or another). Toggling it on auto-fills a
+    // "Deduct <amount> OMR" remark from the configurable WorkSchedule knob; toggling it
+    // off clears that remark only when it still matches the auto shape (so a manually
+    // edited note is preserved).
+    if (isLop !== undefined) {
+      const hasFilledSession = attendance.sessions.some(
+        (s) => s && (s.checkIn || s.checkOut)
+      );
+
+      if (isLop && hasFilledSession) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cannot mark loss of pay: this employee has attendance recorded at another site/session today.",
+        });
+      }
+
+      attendance.isLop = !!isLop;
+      if (isLop) {
+        attendance.isSickLeave = false;
+        attendance.remark = `Deduct ${workConfig.lopDeductionAmount ?? 3.5} OMR`;
+      } else if (LOP_REMARK_RE.test(attendance.remark || "")) {
+        attendance.remark = "";
+      }
     }
 
     await attendance.save();
@@ -3013,6 +3087,8 @@ export const updateAttendance = async (req, res) => {
         newStatus: attendance.status,
         prevSick,
         newSick: attendance.isSickLeave,
+        prevLop,
+        newLop: attendance.isLop,
         jobNames,
         siteNames,
       });
@@ -3025,12 +3101,23 @@ export const updateAttendance = async (req, res) => {
       } else if (!breaksChanged) {
         await recordAttendanceAudit({ attendance, actor: auditActor, type: "edited", summary: "Attendance edited" });
       }
-    } else if (isSickLeave !== undefined) {
+    } else if (isSickLeave !== undefined || isLop !== undefined) {
+      // A leave-flag-only toggle (no session edit). Diff the sick/lop flags — this
+      // also captures the mutual-exclusion side effect (e.g. turning LOP on while
+      // sick was on logs both "Cleared sick leave" and "Marked loss of pay").
+      const leaveParts = summarizeAttendanceEdit({
+        prevStatus,
+        newStatus: attendance.status,
+        prevSick,
+        newSick: attendance.isSickLeave,
+        prevLop,
+        newLop: attendance.isLop,
+      });
       await recordAttendanceAudit({
         attendance,
         actor: auditActor,
         type: "edited",
-        summary: isSickLeave ? "Marked sick leave" : "Cleared sick leave",
+        summary: leaveParts.length ? joinChangeParts(leaveParts) : "Attendance edited",
       });
     }
 
@@ -3132,6 +3219,12 @@ export const updateAttendance = async (req, res) => {
 
       isSickLeave:
         updatedAttendance.isSickLeave || false,
+
+      isLop:
+        updatedAttendance.isLop || false,
+
+      remark:
+        updatedAttendance.remark || "",
 
       isPaidLeave:
         updatedAttendance.isPaidLeave || false,
@@ -3345,6 +3438,13 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
 
         isSickLeave:
           record.isSickLeave || false,
+
+        isLop:
+          record.isLop || false,
+
+        // Surfaced in the on-screen detail grid and the timesheet Excel export.
+        remark:
+          record.remark || "",
 
         isPaidLeave:
           record.isPaidLeave || false,
@@ -4188,7 +4288,7 @@ export const getMissingEmployees = async (req, res) => {
 // Body: { employeeMongoId, date, sessions: [{siteId, jobId, checkIn, checkOut, isNightShift}] }
 export const backfillAttendance = async (req, res) => {
   try {
-    const { employeeMongoId, date, sessions = [], breaksTaken = null, isSickLeave = false } = req.body;
+    const { employeeMongoId, date, sessions = [], breaksTaken = null, isSickLeave = false, isLop = false } = req.body;
 
     const markedBy = req.user?.id;
     const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
@@ -4365,6 +4465,7 @@ export const backfillAttendance = async (req, res) => {
       holidayReason: effHolidayInfo.reason,
       holidayHours,
       isSickLeave: !!isSickLeave,
+      isLop: !!isLop,
       status,
       totalWorkHours: netWorkHours,
       overtimeHours,
@@ -4374,6 +4475,8 @@ export const backfillAttendance = async (req, res) => {
       sessions: builtSessions,
     });
 
+    // Auto-fill the "Deduct <amount> OMR" penalty remark when backfilling a LOP day.
+    if (isLop) applyLopRemark(newAttendance, true, workConfig.lopDeductionAmount);
 
     await newAttendance.save();
 
@@ -4421,6 +4524,7 @@ export const backfillAttendance = async (req, res) => {
       holidayReason: record.holidayReason || null,
       holidayHours: record.holidayHours || 0,
       isSickLeave: record.isSickLeave || false,
+      isLop: record.isLop || false,
       isPaidLeave: record.isPaidLeave || false,
       totalWorkHours: record.totalWorkHours,
       overtimeHours: record.overtimeHours,
@@ -5674,6 +5778,10 @@ export const grantLeave = async (req, res) => {
       if (existing) {
         existing.isPaidLeave = true;
         existing.isSickLeave = false;
+        // Paid leave supersedes a prior LOP day — clear the flag and its auto-remark
+        // (the pre-save hook clears the flag, but not the "Deduct … OMR" note).
+        existing.isLop = false;
+        applyLopRemark(existing, false, workConfig.lopDeductionAmount);
         existing.status = "absent";
         await existing.save({ session });
       } else {
