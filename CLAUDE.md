@@ -71,7 +71,9 @@ and never sees the token. Key pieces:
   invariant that `isSickLeave` is only valid when no session has any check-in/out.
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
   `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `weeklyHolidays`,
-  `breakDurationMinutes`. (The pay knobs `overtimeMultiplier` /
+  `breakDurationMinutes`, and the weekly-holiday award knobs
+  `weeklyHolidayAwardEnabled` / `weeklyHolidayAwardHours` / `weeklyHolidayMinHours`
+  (see Hours calculation §5). (The pay knobs `overtimeMultiplier` /
   `monthlyHoursDivisor` were removed with the payroll teardown.)
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
   attendance locks that site/day; only an admin can unlock it for editing.
@@ -97,9 +99,11 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 3. **Net hours** = raw − total break deduction (floored at 0).
 4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
 5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): public
-   holiday → net hours; weekly holiday → flat `WEEKLY_HOLIDAY_HOURS` credit
-   (15 fullday / 10 halfday), with no payable day. The client mirrors this in
-   `client/src/lib/attendanceUtils.ts` — keep the constants in sync.
+   holiday → net hours; weekly holiday → a flat `weeklyHolidayAwardHours` credit
+   (default 4) when RAW worked hours reach `weeklyHolidayMinHours` (default 6) and
+   `weeklyHolidayAwardEnabled` is on, else 0 — status-agnostic, with no payable
+   day. All three knobs are on the Configure page. The client mirrors this in
+   `client/src/lib/attendanceUtils.ts` (`computeHolidayHours`) — keep it in sync.
 Any change to this formula requires re-running the recalculation script in
 `seed/seed.js` against existing records.
 

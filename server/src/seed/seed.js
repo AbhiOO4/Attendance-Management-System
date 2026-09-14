@@ -45,6 +45,10 @@ const seeWorkSchedule = async () => {
       overtimeThreshold: 8,
 
       weeklyHolidays: ["friday"],
+
+      weeklyHolidayAwardEnabled: true,
+      weeklyHolidayAwardHours: 4,
+      weeklyHolidayMinHours: 6,
     })
 
     console.log("Doc created", schedule)

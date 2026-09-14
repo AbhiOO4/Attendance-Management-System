@@ -1,13 +1,16 @@
 // Client mirror of the server's holiday pay math
 // (server/src/utils/attendanceMath.js). Used by the edit/backfill modals to
 // preview holiday hours in real time; the server recomputes on save and stays
-// the source of truth. Constants must match the server's WEEKLY_HOLIDAY_HOURS.
+// the source of truth. Keep in sync with the server's computeAttendanceTotals.
 
 export type HolidayReason = "weekly" | "public" | null
 
-export const WEEKLY_HOLIDAY_HOURS: Record<string, number> = {
-  fullday: 15,
-  halfday: 10,
+// Fallback weekly-holiday award knobs, matching the server's
+// WEEKLY_HOLIDAY_AWARD_DEFAULTS. Used when the config predates these fields.
+export const WEEKLY_HOLIDAY_AWARD_DEFAULTS = {
+  enabled: true,
+  awardHours: 4,
+  minHours: 6,
 }
 
 /**
@@ -24,20 +27,29 @@ export function computeAutoBreaks(rawHours: number, fullDayHours: number): numbe
 }
 
 /**
- * Hours credited for working on a holiday.
+ * Hours credited for working on a holiday. Mirrors the server's
+ * computeAttendanceTotals holiday branch — keep in sync.
  *  - public holiday → the day's net worked hours
- *  - weekly holiday → flat 15 (fullday) / 10 (halfday) / 0 (absent)
+ *  - weekly holiday → flat `weekly.awardHours` when enabled and RAW hours reach
+ *                     `weekly.minHours`, else 0
  *  - not a holiday  → 0
  *
- * `status` must be the raw-hours status (fullday/halfday/absent), matching the
- * server's computeAttendanceTotals — not display statuses like "sick"/"pending".
+ * The weekly gate compares RAW worked hours (break-agnostic), so pass the raw
+ * total, not the net. Any undefined `weekly` value falls back to the shared
+ * WEEKLY_HOLIDAY_AWARD_DEFAULTS.
  */
 export function computeHolidayHours(
+  rawWorkHours: number,
   netWorkHours: number,
-  status: "fullday" | "halfday" | "absent",
-  reason: HolidayReason
+  reason: HolidayReason,
+  weekly?: { enabled?: boolean; minHours?: number; awardHours?: number }
 ): number {
   if (reason === "public") return netWorkHours
-  if (reason === "weekly") return WEEKLY_HOLIDAY_HOURS[status] ?? 0
+  if (reason === "weekly") {
+    const enabled = weekly?.enabled ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.enabled
+    const minHours = weekly?.minHours ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.minHours
+    const awardHours = weekly?.awardHours ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.awardHours
+    return enabled && rawWorkHours >= minHours ? awardHours : 0
+  }
   return 0
 }

@@ -44,6 +44,9 @@ type WorkSchedule = {
   checkoutReminderTime: string;
   checkoutRemarkGraceMinutes: number;
   annualLeaveDefaultDays: number;
+  weeklyHolidayAwardEnabled: boolean;
+  weeklyHolidayAwardHours: number;
+  weeklyHolidayMinHours: number;
 };
 
 
@@ -98,6 +101,9 @@ export default function Configure() {
     checkoutReminderTime: "20:00",
     checkoutRemarkGraceMinutes: 15,
     annualLeaveDefaultDays: 30,
+    weeklyHolidayAwardEnabled: true,
+    weeklyHolidayAwardHours: 4,
+    weeklyHolidayMinHours: 6,
   });
 
   const [holidayForm, setHolidayForm] = useState({
@@ -176,6 +182,9 @@ export default function Configure() {
         checkoutReminderTime: schedule.checkoutReminderTime,
         checkoutRemarkGraceMinutes: schedule.checkoutRemarkGraceMinutes,
         annualLeaveDefaultDays: schedule.annualLeaveDefaultDays,
+        weeklyHolidayAwardEnabled: schedule.weeklyHolidayAwardEnabled,
+        weeklyHolidayAwardHours: schedule.weeklyHolidayAwardHours,
+        weeklyHolidayMinHours: schedule.weeklyHolidayMinHours,
       });
 
       if (res.data?.data) setSchedule(res.data.data);
@@ -592,6 +601,98 @@ export default function Configure() {
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            {/* WEEKLY HOLIDAY AWARD */}
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-medium">
+                  Weekly Holiday Award
+                </h3>
+
+                <p className="text-sm text-muted-foreground">
+                  Credit bonus hours when an employee works on a weekly holiday.
+                </p>
+              </div>
+
+              <div
+                className={`flex items-center gap-3 rounded-xl border p-4 transition-colors ${
+                  schedule.weeklyHolidayAwardEnabled
+                    ? "border-primary bg-primary/5"
+                    : "hover:bg-muted/50"
+                }`}
+              >
+                <Checkbox
+                  checked={schedule.weeklyHolidayAwardEnabled}
+                  onCheckedChange={(checked) =>
+                    setSchedule({
+                      ...schedule,
+                      weeklyHolidayAwardEnabled: Boolean(checked),
+                    })
+                  }
+                />
+
+                <div>
+                  <span className="font-medium">Award bonus hours on weekly holidays</span>
+                  <p className="text-xs text-muted-foreground">
+                    When off, working a weekly holiday credits no holiday hours.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+                {/* AWARD HOURS */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Award (hours)
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={24}
+                    step={0.5}
+                    disabled={!schedule.weeklyHolidayAwardEnabled}
+                    value={schedule.weeklyHolidayAwardHours ?? 4}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        weeklyHolidayAwardHours: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Flat holiday-hour bonus credited once the minimum is met.
+                  </p>
+                </div>
+
+                {/* MINIMUM HOURS */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    Minimum hours to earn award
+                  </label>
+
+                  <Input
+                    type="number"
+                    min={0}
+                    max={26}
+                    step={0.5}
+                    disabled={!schedule.weeklyHolidayAwardEnabled}
+                    value={schedule.weeklyHolidayMinHours ?? 6}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        weeklyHolidayMinHours: Number(e.target.value),
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Minimum worked hours (before break deductions) on a weekly holiday to qualify.
+                  </p>
+                </div>
               </div>
             </div>
 

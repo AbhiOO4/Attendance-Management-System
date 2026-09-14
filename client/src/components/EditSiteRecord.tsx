@@ -175,6 +175,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
       checkoutRemarkGraceMinutes: workConfig?.checkoutRemarkGraceMinutes ?? CHECKOUT_REMARK_GRACE_MINUTES,
+      weeklyHolidayAwardEnabled: workConfig?.weeklyHolidayAwardEnabled ?? true,
+      weeklyHolidayAwardHours: workConfig?.weeklyHolidayAwardHours ?? 4,
+      weeklyHolidayMinHours: workConfig?.weeklyHolidayMinHours ?? 6,
     }),
     [workConfig]
   )
@@ -326,15 +329,13 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
 
   const holidayHours = useMemo(() => {
     if (!record?.isHoliday) return 0
-    // Raw-hours status (fullday/halfday/absent), matching the server's calc.
-    const rawStatus =
-      rawHours >= config.fullDayHours
-        ? "fullday"
-        : rawHours >= config.halfDayHours
-          ? "halfday"
-          : "absent"
-    return computeHolidayHours(totalWorkHours, rawStatus, record?.holidayReason ?? null)
-  }, [record?.isHoliday, record?.holidayReason, rawHours, totalWorkHours, config.fullDayHours, config.halfDayHours])
+    // Weekly gate uses RAW hours; public credits net. Matches the server's calc.
+    return computeHolidayHours(rawHours, totalWorkHours, record?.holidayReason ?? null, {
+      enabled: config.weeklyHolidayAwardEnabled,
+      minHours: config.weeklyHolidayMinHours,
+      awardHours: config.weeklyHolidayAwardHours,
+    })
+  }, [record?.isHoliday, record?.holidayReason, rawHours, totalWorkHours, config.weeklyHolidayAwardEnabled, config.weeklyHolidayMinHours, config.weeklyHolidayAwardHours])
 
   const currentSiteSessions = useMemo(() =>
     sessions

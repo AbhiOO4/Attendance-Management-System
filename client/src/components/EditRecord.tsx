@@ -178,6 +178,9 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      weeklyHolidayAwardEnabled: workConfig?.weeklyHolidayAwardEnabled ?? true,
+      weeklyHolidayAwardHours: workConfig?.weeklyHolidayAwardHours ?? 4,
+      weeklyHolidayMinHours: workConfig?.weeklyHolidayMinHours ?? 6,
     }),
     [workConfig]
   )
@@ -372,23 +375,20 @@ const [sessionToDelete, setSessionToDelete] =
   const holidayHours = useMemo(() => {
     if (!record?.isHoliday) return 0
 
-    // The holiday calc uses the raw-hours status (fullday/halfday/absent),
-    // matching the server — not display statuses like "sick"/"pending".
-    const rawStatus =
-      rawHours >= config.fullDayHours
-        ? "fullday"
-        : rawHours >= config.halfDayHours
-          ? "halfday"
-          : "absent"
-
-    return computeHolidayHours(totalWorkHours, rawStatus, record?.holidayReason ?? null)
+    // Weekly gate uses RAW hours; public credits net. Matches the server's calc.
+    return computeHolidayHours(rawHours, totalWorkHours, record?.holidayReason ?? null, {
+      enabled: config.weeklyHolidayAwardEnabled,
+      minHours: config.weeklyHolidayMinHours,
+      awardHours: config.weeklyHolidayAwardHours,
+    })
   }, [
     record?.isHoliday,
     record?.holidayReason,
     rawHours,
     totalWorkHours,
-    config.fullDayHours,
-    config.halfDayHours,
+    config.weeklyHolidayAwardEnabled,
+    config.weeklyHolidayMinHours,
+    config.weeklyHolidayAwardHours,
   ])
 
   const status = useMemo(() => {

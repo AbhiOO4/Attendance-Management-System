@@ -25,6 +25,12 @@ export type WorkConfig = {
   // Minutes a check-out may run past the category default before a supervisor remark
   // is required on edit. Optional for older configs — callers fall back to a default.
   checkoutRemarkGraceMinutes?: number;
+  // Weekly-holiday award: working >= weeklyHolidayMinHours RAW hours on a weekly
+  // holiday credits a flat weeklyHolidayAwardHours bonus (when enabled). Optional
+  // for older configs — computeHolidayHours falls back to defaults.
+  weeklyHolidayAwardEnabled?: boolean;
+  weeklyHolidayAwardHours?: number;
+  weeklyHolidayMinHours?: number;
 };
 
 /**

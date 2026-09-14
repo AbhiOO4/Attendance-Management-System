@@ -114,6 +114,9 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      weeklyHolidayAwardEnabled: workConfig?.weeklyHolidayAwardEnabled ?? true,
+      weeklyHolidayAwardHours: workConfig?.weeklyHolidayAwardHours ?? 4,
+      weeklyHolidayMinHours: workConfig?.weeklyHolidayMinHours ?? 6,
     }),
     [workConfig]
   )
@@ -275,8 +278,13 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
   const holidayHours = useMemo(() => {
     if (!applyHoliday) return 0
-    return computeHolidayHours(totalWorkHours, status, holidayInfo.reason)
-  }, [applyHoliday, totalWorkHours, status, holidayInfo.reason])
+    // Weekly gate uses RAW hours; public credits net. Matches the server's calc.
+    return computeHolidayHours(rawHours, totalWorkHours, holidayInfo.reason, {
+      enabled: config.weeklyHolidayAwardEnabled,
+      minHours: config.weeklyHolidayMinHours,
+      awardHours: config.weeklyHolidayAwardHours,
+    })
+  }, [applyHoliday, rawHours, totalWorkHours, holidayInfo.reason, config.weeklyHolidayAwardEnabled, config.weeklyHolidayMinHours, config.weeklyHolidayAwardHours])
 
 
   // --------------------------------------------------

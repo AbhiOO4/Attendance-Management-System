@@ -40,6 +40,9 @@ export const updateWorkSchedule = async (req, res) => {
       checkoutReminderGraceMinutes,
       checkoutRemarkGraceMinutes,
       annualLeaveDefaultDays,
+      weeklyHolidayAwardEnabled,
+      weeklyHolidayAwardHours,
+      weeklyHolidayMinHours,
     } = req.body;
 
 
@@ -128,6 +131,30 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.annualLeaveDefaultDays = annualLeaveDefaultDays;
+    }
+
+    if (weeklyHolidayAwardEnabled !== undefined) {
+      schedule.weeklyHolidayAwardEnabled = Boolean(weeklyHolidayAwardEnabled);
+    }
+
+    if (weeklyHolidayAwardHours !== undefined) {
+      if (weeklyHolidayAwardHours < 0 || weeklyHolidayAwardHours > 24) {
+        return res.status(400).json({
+          success: false,
+          message: "Weekly holiday award hours must be between 0 and 24",
+        });
+      }
+      schedule.weeklyHolidayAwardHours = weeklyHolidayAwardHours;
+    }
+
+    if (weeklyHolidayMinHours !== undefined) {
+      if (weeklyHolidayMinHours < 0 || weeklyHolidayMinHours > 26) {
+        return res.status(400).json({
+          success: false,
+          message: "Weekly holiday minimum hours must be between 0 and 26",
+        });
+      }
+      schedule.weeklyHolidayMinHours = weeklyHolidayMinHours;
     }
 
     // Optional validation

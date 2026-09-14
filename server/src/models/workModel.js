@@ -52,6 +52,34 @@ const workScheduleSchema = new mongoose.Schema(
       default: [],
     },
 
+    // Weekly-holiday award: when an employee WORKS on a weekly holiday and puts in
+    // at least `weeklyHolidayMinHours` RAW worked hours, they are credited a flat
+    // `weeklyHolidayAwardHours` holiday-hour bonus (independent of full/half-day
+    // status). Below the minimum, or when disabled, the credit is 0. Public
+    // holidays are unaffected (they still credit the day's net worked hours).
+    // See computeAttendanceTotals in utils/attendanceMath.js (mirrored in the
+    // client's lib/attendanceUtils.ts — keep them in sync).
+    weeklyHolidayAwardEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
+    // Flat holiday-hour credit awarded for working the minimum hours on a weekly holiday.
+    weeklyHolidayAwardHours: {
+      type: Number,
+      min: 0,
+      max: 24,
+      default: 4,
+    },
+
+    // Minimum RAW worked hours on a weekly holiday to earn the award.
+    weeklyHolidayMinHours: {
+      type: Number,
+      min: 0,
+      max: 26,
+      default: 6,
+    },
+
     // NOTE: nightShiftCutoffHour / cutoffHistory were removed with the cutoff redesign.
     // A session's business day is Attendance.date and cross-midnight is an explicit
     // per-session day offset (rawCheckIn/rawCheckOut + checkInNextDay/checkOutNextDay),

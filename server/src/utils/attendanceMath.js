@@ -4,9 +4,11 @@
 // recalculation script in seed/seed.js. Any formula change here requires
 // re-running that recalculation script against existing records.
 
-// Flat hour credits for working on a WEEKLY holiday, by attendance status.
-// (Public holidays credit the actual net worked hours instead.)
-export const WEEKLY_HOLIDAY_HOURS = { fullday: 15, halfday: 10 };
+// Default weekly-holiday award knobs, used when the WorkSchedule doc predates
+// these fields. Working a weekly holiday for at least `minHours` RAW worked hours
+// credits a flat `awardHours` bonus (see computeAttendanceTotals). Public
+// holidays credit the actual net worked hours instead.
+export const WEEKLY_HOLIDAY_AWARD_DEFAULTS = { enabled: true, awardHours: 4, minHours: 6 };
 
 /**
  * Auto break count from a day's RAW (pre-deduction) worked hours.
@@ -36,11 +38,13 @@ export function computeAutoBreaks(rawHours, fullDayHours) {
  *  3. NET HRS  — raw minus total break deduction (never below 0).
  *  4. OVERTIME — calculated on NET hours against overtimeThreshold; forced to 0 on holidays.
  *  5. HOLIDAY  — public holiday credits NET hours; weekly holiday credits a flat
- *                15 (fullday) / 10 (halfday); 0 otherwise.
+ *                `weeklyHolidayAwardHours` when RAW hours reach `weeklyHolidayMinHours`
+ *                (and the award is enabled), else 0; 0 on a normal day.
  *
  * @param {number}      rawHours    Sum of all session workedHours
  * @param {object}      workConfig  WorkSchedule document (needs fullDayHours, halfDayHours,
- *                                  overtimeThreshold, breakDurationMinutes)
+ *                                  overtimeThreshold, breakDurationMinutes, and the
+ *                                  weeklyHolidayAward* knobs)
  * @param {number|null} breaksTaken null = auto; 0+ = supervisor override
  * @param {{isHoliday: boolean, reason: "weekly"|"public"|null}|null} holidayInfo
  *                                  The record's holiday state; null/false = normal day
@@ -49,6 +53,11 @@ export function computeAutoBreaks(rawHours, fullDayHours) {
 export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null, holidayInfo = null) {
   const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
   const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
+
+  // Weekly-holiday award knobs (fall back to defaults for older config docs).
+  const weeklyHolidayAwardEnabled = workConfig.weeklyHolidayAwardEnabled ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.enabled;
+  const weeklyHolidayAwardHours = workConfig.weeklyHolidayAwardHours ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.awardHours;
+  const weeklyHolidayMinHours = workConfig.weeklyHolidayMinHours ?? WEEKLY_HOLIDAY_AWARD_DEFAULTS.minHours;
 
   // STEP 1 – Status from raw hours (never affected by break deduction)
   let status = 'absent';
@@ -77,7 +86,10 @@ export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null
     if (holidayInfo.reason === 'public') {
       holidayHours = netWorkHours;
     } else if (holidayInfo.reason === 'weekly') {
-      holidayHours = WEEKLY_HOLIDAY_HOURS[status] || 0;
+      // Flat award for working at least the minimum RAW hours on a weekly holiday.
+      holidayHours = (weeklyHolidayAwardEnabled && rawHours >= weeklyHolidayMinHours)
+        ? weeklyHolidayAwardHours
+        : 0;
     }
   }
 

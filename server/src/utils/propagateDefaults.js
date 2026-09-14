@@ -359,7 +359,15 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
 
         const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
           rawHours,
-          { fullDayHours, halfDayHours, overtimeThreshold, breakDurationMinutes: (workConfig && workConfig.breakDurationMinutes) || 0 },
+          {
+            fullDayHours,
+            halfDayHours,
+            overtimeThreshold,
+            breakDurationMinutes: (workConfig && workConfig.breakDurationMinutes) || 0,
+            weeklyHolidayAwardEnabled: workConfig && workConfig.weeklyHolidayAwardEnabled,
+            weeklyHolidayAwardHours: workConfig && workConfig.weeklyHolidayAwardHours,
+            weeklyHolidayMinHours: workConfig && workConfig.weeklyHolidayMinHours,
+          },
           record.breaksTaken ?? null,
           { isHoliday: record.isHoliday, reason: record.holidayReason }
         );
