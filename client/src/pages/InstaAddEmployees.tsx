@@ -111,9 +111,17 @@ interface Employee {
     //   assigned         — homed at another site (→ Request) vs unassigned (→ Add)
     //   hasPendingRequest— an open transfer request already exists for this employee
     //   homeStatus       — attendance state at their HOME site today
+    //   visitingSite     — a site they are OUT visiting today (session or pending stash),
+    //                      shown in place of the home site; null when not visiting
+    //   visitingStatus   — attendance state at that visiting site today
     assigned?: boolean
     hasPendingRequest?: boolean
     homeStatus?: 'unassigned' | 'not-marked' | 'present' | 'checked-out' | 'submitted'
+    visitingSite?: {
+        _id: string
+        siteName: string
+    } | null
+    visitingStatus?: 'not-marked' | 'present' | 'checked-out' | 'submitted'
 }
 
 interface EmployeeResponse {
@@ -576,37 +584,64 @@ function InstaAddEmployees() {
         )
     }
 
+    // Shared status → colour styling and label for the attendance-state badges (home &
+    // visiting), so both read in the same visual language.
+    const STATUS_CLS: Record<string, string> = {
+        "not-marked": "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300 border-slate-200/60 dark:border-slate-700/40",
+        present: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200/60 dark:border-emerald-800/30",
+        "checked-out": "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-200/60 dark:border-blue-800/30",
+        submitted: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border-violet-200/60 dark:border-violet-800/30",
+    }
+    const STATUS_LABEL: Record<string, string> = {
+        "not-marked": "not marked",
+        present: "present",
+        "checked-out": "checked out",
+        submitted: "submitted",
+    }
+
     // Attendance state at the employee's HOME site today — answers "has it been saved
     // there yet?" so a requester isn't blind to the other site's progress.
     const homeStatusBadge = (employee: Employee) => {
         const status = employee.homeStatus
         if (!status || status === "unassigned") return null
-        const map: Record<string, { label: string; cls: string }> = {
-            "not-marked": {
-                label: "Home: not marked",
-                cls: "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300 border-slate-200/60 dark:border-slate-700/40",
-            },
-            present: {
-                label: "Home: present",
-                cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200/60 dark:border-emerald-800/30",
-            },
-            "checked-out": {
-                label: "Home: checked out",
-                cls: "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 border-blue-200/60 dark:border-blue-800/30",
-            },
-            submitted: {
-                label: "Home: submitted",
-                cls: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border-violet-200/60 dark:border-violet-800/30",
-            },
-        }
-        const m = map[status]
-        if (!m) return null
+        const cls = STATUS_CLS[status]
+        if (!cls) return null
         return (
-            <Badge variant="outline" className={`text-[10px] font-medium py-0 px-2 ${m.cls}`}>
-                {m.label}
+            <Badge variant="outline" className={`text-[10px] font-medium py-0 px-2 ${cls}`}>
+                Home: {STATUS_LABEL[status]}
             </Badge>
         )
     }
+
+    // The employee is OUT visiting another site today — show that site's marked/not-marked
+    // state instead of the (misleading) home "not marked". An amber "Visiting" tag makes the
+    // out-of-home state obvious; the status badge reuses the same colours as the home badge.
+    const visitingBadges = (employee: Employee) => {
+        const status = employee.visitingStatus
+        if (!employee.visitingSite || !status) return null
+        return (
+            <>
+                <Badge
+                    variant="outline"
+                    className="text-[10px] font-medium py-0 px-2 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200/60 dark:border-amber-800/30"
+                >
+                    Visiting
+                </Badge>
+                <Badge variant="outline" className={`text-[10px] font-medium py-0 px-2 ${STATUS_CLS[status] || ""}`}>
+                    {STATUS_LABEL[status] || status}
+                </Badge>
+            </>
+        )
+    }
+
+    // The "Current Site" column is taken over by the visiting site when the employee is out
+    // visiting; otherwise it shows their home site. Name + badges are derived together so the
+    // desktop table and mobile card stay in sync.
+    const displaySiteName = (employee: Employee, fallback: string) =>
+        employee.visitingSite ? employee.visitingSite.siteName : employee.currentSite?.siteName || fallback
+
+    const siteStatusBadges = (employee: Employee) =>
+        employee.visitingSite ? visitingBadges(employee) : homeStatusBadge(employee)
 
     if (loading) {
         return (
@@ -858,7 +893,7 @@ function InstaAddEmployees() {
                                                                 Temporary
                                                             </Badge>
                                                         )}
-                                                        {homeStatusBadge(employee)}
+                                                        {siteStatusBadges(employee)}
                                                     </div>
                                                 </div>
                                                 {renderRowAction(employee)}
@@ -868,7 +903,7 @@ function InstaAddEmployees() {
                                                 <div>
                                                     <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70">Current Site</div>
                                                     <div className="font-medium text-foreground truncate mt-0.5">
-                                                        {employee.currentSite?.siteName || "Unassigned"}
+                                                        {displaySiteName(employee, "Unassigned")}
                                                     </div>
                                                 </div>
                                                 <div>
@@ -933,8 +968,10 @@ function InstaAddEmployees() {
                                                     </TableCell>
                                                     <TableCell className="font-medium text-foreground text-sm">
                                                         <div className="flex flex-col gap-1">
-                                                            <span>{employee.currentSite?.siteName || "-"}</span>
-                                                            {homeStatusBadge(employee)}
+                                                            <span>{displaySiteName(employee, "-")}</span>
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {siteStatusBadges(employee)}
+                                                            </div>
                                                         </div>
                                                     </TableCell>
                                                     <TableCell className="text-sm text-muted-foreground">

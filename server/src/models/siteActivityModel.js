@@ -68,6 +68,7 @@ const siteActivitySchema = new mongoose.Schema(
         "sent_to_site", // source-initiated "send to site" push
         "employee_added", // added to this site's roster
         "employee_removed", // removed from this site's roster
+        "scheduled_add", // deferred (from-tomorrow) add/move scheduled for a future day
         "scheduled_removal", // deferred removal scheduled for a future day
         "auto_checkout", // the system cron auto-closed an open shift
         "default_propagated", // a site default-time change was applied to a record

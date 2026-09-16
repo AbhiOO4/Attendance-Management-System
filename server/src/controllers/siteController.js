@@ -1528,6 +1528,11 @@ export const instaAddEmployee = async (req, res) => {
       })
     }
 
+    // Home site the employee is leaving (null = an unassigned/pool add). Captured before any
+    // mutation below repoints currentSite, so the cross-site (admin direct-add) activity log
+    // can name the real origin and surface in both the source and destination site's feeds.
+    const previousSiteId = employee.currentSite || null
+
     // Supervisors may only instant-add UNASSIGNED (pool) employees. An employee
     // homed at another site must be brought over via a transfer Request so that
     // site's supervisor is aware. Admins/superadmins keep direct add; the deferred
@@ -1566,6 +1571,36 @@ export const instaAddEmployee = async (req, res) => {
 
       await session.commitTransaction()
       session.endSession()
+
+      // --- Site activity: scheduled (from-tomorrow) add/move (best-effort) ---
+      try {
+        const addActor = await resolveActor(req)
+        if (previousSiteId) {
+          // A homed employee scheduled to move here tomorrow — record from/to so it
+          // shows in both sites' feeds, like a scheduled transfer.
+          const fromSiteDoc = await siteModel.findById(previousSiteId).select("siteName")
+          await recordSiteActivity({
+            type: "scheduled_add",
+            actor: addActor,
+            employee: employee._id,
+            employeeName: employee.name,
+            fromSiteId: previousSiteId,
+            toSiteId: siteId,
+            summary: `${addActor.actorName} scheduled a move of ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${site.siteName} (effective tomorrow)`,
+          })
+        } else {
+          await recordSiteActivity({
+            type: "scheduled_add",
+            actor: addActor,
+            employee: employee._id,
+            employeeName: employee.name,
+            siteId,
+            summary: `${addActor.actorName} scheduled ${employee.name} to be added to ${site.siteName} (effective tomorrow)`,
+          })
+        }
+      } catch (e) {
+        console.error("[insta-add] scheduled activity log failed:", e.message)
+      }
 
       return res.status(200).json({
         success: true,
@@ -1795,6 +1830,38 @@ export const instaAddEmployee = async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
+    // --- Site activity: immediate add (best-effort; a cross-site add shows in both feeds) ---
+    try {
+      const addActor = await resolveActor(req)
+      if (previousSiteId) {
+        // Admin direct-add of an employee homed at another site — a cross-site move done
+        // without a transfer Request. Record it like a direct transfer (from/to) so it
+        // appears in both the source and destination site's feeds.
+        const fromSiteDoc = await siteModel.findById(previousSiteId).select("siteName")
+        await recordSiteActivity({
+          type: onlyForToday ? "transfer_today" : "transfer_permanent",
+          actor: addActor,
+          employee: employee._id,
+          employeeName: employee.name,
+          fromSiteId: previousSiteId,
+          toSiteId: siteId,
+          summary: `${addActor.actorName} transferred ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${site.siteName} (${onlyForToday ? "for today" : "permanent"})`,
+        })
+      } else {
+        // Unassigned (pool) employee added to this site's roster.
+        await recordSiteActivity({
+          type: "employee_added",
+          actor: addActor,
+          employee: employee._id,
+          employeeName: employee.name,
+          siteId,
+          summary: `${addActor.actorName} added ${employee.name} to ${site.siteName}${onlyForToday ? " for today" : ""}`,
+        })
+      }
+    } catch (e) {
+      console.error("[insta-add] activity log failed:", e.message)
+    }
+
     return res.status(200).json({
       success: true,
       message: onlyForToday
@@ -2003,15 +2070,74 @@ export const getAvailableEmployeesForSite = async (
       .map((e) => e.currentSite?._id)
       .filter(Boolean)
 
-    const [pendingReqDocs, todaysAttendance, homeLocks] = await Promise.all([
+    const [pendingReqDocs, todaysAttendance] = await Promise.all([
       TransferRequest.find({ employee: { $in: pageEmpIds }, status: "pending" }).select("employee"),
       attendanceModel.find({ employee: { $in: pageEmpIds }, date: today }).select("employee sessions"),
-      AttendanceLock.find({ siteId: { $in: homeSiteIds }, date: today, isLocked: true }).select("siteId"),
     ])
 
     const pendingSet = new Set(pendingReqDocs.map((r) => r.employee.toString()))
     const attByEmp = new Map(todaysAttendance.map((a) => [a.employee.toString(), a]))
-    const lockedHomeSet = new Set(homeLocks.map((l) => l.siteId.toString()))
+
+    const todayStr = today.toISOString().split("T")[0]
+    const addTargetId = siteId.toString()
+
+    // Detect the site each employee is VISITING today: a session (or a pending stash) at a
+    // site that is neither their home nor the add-target. This is what lets the row read as
+    // the visiting site instead of the misleading home site + "not marked". Prefer an OPEN
+    // session (present), else the latest closed one (checked out); fall back to a stash that
+    // has not yet materialised into a session (not marked).
+    const detectVisit = (emp) => {
+      const homeSiteId = emp.currentSite?._id?.toString() || null
+      const att = attByEmp.get(emp._id.toString())
+      const visitingSessions = (att?.sessions || []).filter((s) => {
+        const sid = s.siteId?.toString()
+        if (!sid || !s.checkIn) return false
+        return sid !== homeSiteId && sid !== addTargetId
+      })
+      if (visitingSessions.length > 0) {
+        const open = visitingSessions.find((s) => !s.checkOut)
+        if (open) return { siteId: open.siteId.toString(), status: "present" }
+        const latest = visitingSessions.reduce((a, b) =>
+          new Date(b.checkIn).getTime() > new Date(a.checkIn).getTime() ? b : a
+        )
+        return { siteId: latest.siteId.toString(), status: "checked-out" }
+      }
+      // Stash-only visit (destination not yet submitted → no session materialised). A
+      // permanent move stashes its OWN new home, so require the stash to differ from
+      // currentSite to keep this strictly a visit.
+      const stashSite = emp.pendingTransferSiteId?.toString()
+      const stashIsToday =
+        emp.pendingTransferDate &&
+        new Date(emp.pendingTransferDate).toISOString().split("T")[0] === todayStr
+      if (stashSite && stashIsToday && stashSite !== homeSiteId && stashSite !== addTargetId) {
+        return { siteId: stashSite, status: "not-marked" } // upgraded to "submitted" below if locked
+      }
+      return null
+    }
+
+    const visitByEmp = new Map()
+    for (const emp of paginatedEmployees) {
+      const v = detectVisit(emp)
+      if (v) visitByEmp.set(emp._id.toString(), v)
+    }
+    const visitingSiteIds = [...new Set([...visitByEmp.values()].map((v) => v.siteId))]
+
+    // One lock lookup covers BOTH home sites (homeStatus) and visiting sites (so a stash into
+    // an already-submitted visiting site reads "submitted"); one name lookup resolves the
+    // visiting sites for display.
+    const [locks, visitingSiteDocs] = await Promise.all([
+      AttendanceLock.find({
+        siteId: { $in: [...homeSiteIds, ...visitingSiteIds] },
+        date: today,
+        isLocked: true,
+      }).select("siteId"),
+      visitingSiteIds.length
+        ? siteModel.find({ _id: { $in: visitingSiteIds } }).select("siteName")
+        : [],
+    ])
+
+    const lockedSet = new Set(locks.map((l) => l.siteId.toString()))
+    const visitingNameById = new Map(visitingSiteDocs.map((s) => [s._id.toString(), s.siteName]))
 
     const enriched = paginatedEmployees.map((emp) => {
       const obj = emp.toObject()
@@ -2026,10 +2152,24 @@ export const getAvailableEmployeesForSite = async (
         const homeSession = att?.sessions?.find((s) => s.siteId?.toString() === homeSiteId)
         if (homeSession?.checkIn && homeSession?.checkOut) homeStatus = "checked-out"
         else if (homeSession?.checkIn) homeStatus = "present"
-        else if (lockedHomeSet.has(homeSiteId)) homeStatus = "submitted"
+        else if (lockedSet.has(homeSiteId)) homeStatus = "submitted"
         else homeStatus = "not-marked"
       }
       obj.homeStatus = homeStatus
+
+      // Visiting-site context — the UI shows this in place of the home site when present.
+      const visit = visitByEmp.get(emp._id.toString())
+      if (visit) {
+        obj.visitingSite = {
+          _id: visit.siteId,
+          siteName: visitingNameById.get(visit.siteId) || "Unknown site",
+        }
+        obj.visitingStatus =
+          visit.status === "not-marked" && lockedSet.has(visit.siteId) ? "submitted" : visit.status
+      } else {
+        obj.visitingSite = null
+        obj.visitingStatus = null
+      }
       return obj
     })
 
