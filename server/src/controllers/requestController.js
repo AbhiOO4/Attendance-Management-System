@@ -21,7 +21,7 @@ import notificationModel from "../models/notificationModel.js"
 import { isAssignableSite } from "../utils/siteAssignable.js"
 import { getTodayLocal } from "../utils/timeLocal.js"
 import { notifyUser, notifyAdmins, findSiteSupervisors } from "../utils/notify.js"
-import { applyHandover, placeMiddayArrival } from "../utils/handover.js"
+import { applyHandover, placeMiddayArrival, createPreSaveVisitRecord } from "../utils/handover.js"
 import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
@@ -395,6 +395,24 @@ export const acceptRequest = async (req, res) => {
       toSiteId: request.toSite,
       toJobId: request.toJob || null,
       mode: request.mode,
+      session,
+    })
+
+    // Give the pull-accept path the same record guarantee the push / send-to-site paths already
+    // have. applyHandover only repoints the home (permanent) or writes the pendingTransfer stash
+    // (today) and relies on the destination's draft build to surface the arrival — but a
+    // saved/locked destination never rebuilds its draft, so the arrival would be orphaned with no
+    // record. Materialize it now. request.fromSite is the stored source (unaffected by the
+    // permanent repoint above), so it powers the destination record's "Transferred from" badge.
+    // createPreSaveVisitRecord PUSH-or-CREATEs onto today's doc, so it is safe when the employee
+    // already has a record today and respects the unique {employee, date} index.
+    await createPreSaveVisitRecord({
+      employee,
+      toSite,
+      toJobId: request.toJob || null,
+      fromSiteId: request.fromSite,
+      markedById: req.user.id,
+      actor: await resolveActor(req),
       session,
     })
 
