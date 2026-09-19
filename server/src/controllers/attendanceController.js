@@ -4170,15 +4170,17 @@ export const transferEmployee = async (req, res) => {
     await employee.populate("currentSite", "siteName")
 
     const relocated = !onlyForToday
+    // The arrival is always recorded now (placeMiddayArrival pushes the session immediately).
+    // `pending` (destination unlocked) only means its draft will ALSO show the row for editing.
     return res.status(200).json({
       success: true,
       message: onlyForToday
-        ? (!isPending
-            ? "Session added at target site for today; home site unchanged"
-            : "Session for today will apply when the target site's attendance is next opened or submitted; home site unchanged")
-        : (!isPending
-            ? "Employee transferred; new session added at target site"
-            : "Employee transferred; check-in will apply when the target site's attendance is next opened or submitted"),
+        ? (isPending
+            ? "Session added at target site for today; it will also show on that site's sheet when they next open it. Home site unchanged"
+            : "Session added at target site for today; home site unchanged")
+        : (isPending
+            ? "Employee transferred; session added at target site (also shown on that site's sheet when next opened)"
+            : "Employee transferred; new session added at target site"),
       pending: isPending,
       relocated,
       employee,

@@ -64,14 +64,18 @@ export async function applyHandover({ employee, toSiteId, toJobId = null, mode, 
  * (attendanceController.transferEmployee) and the accepted-request path
  * (requestController.acceptRequest for a "push" request).
  *
- * If the destination site already has ANY saved attendance today, the visitor's
- * session is pushed straight onto the employee's attendance doc; otherwise the
- * pendingTransfer* stash is written and the destination's draft consumes it when it
- * is next opened/submitted. For a permanent move (!onlyForToday) the home repoints
- * (currentSite/currentJob + Job.employees[] + the supervisor's User.assignedSite).
+ * The arrival is ALWAYS recorded now: the visitor's session is pushed straight onto the
+ * employee's attendance doc (the source check-out becomes the destination check-in), so it
+ * is durable and immediately visible in records/reports regardless of whether the
+ * destination has submitted. When the destination is NOT locked, the pendingTransfer* stash
+ * is ALSO written so that site's roster-built draft surfaces the visitor as an editable row;
+ * its submit reconciles the pushed session in place (same-site sessions are replaced, not
+ * duplicated). For a permanent move (!onlyForToday) the home repoints (currentSite/currentJob
+ * + Job.employees[] + the supervisor's User.assignedSite).
  *
  * Runs inside the caller's mongoose transaction. Throws Error with a `.status` for
- * the caller to surface. Returns { pending } — true when the stash path was taken.
+ * the caller to surface. Returns { pending } — true when the destination is unlocked (its
+ * draft will also show the arrival), false when locked. The session is recorded either way.
  */
 export async function placeMiddayArrival({
   employee,
@@ -107,42 +111,53 @@ export async function placeMiddayArrival({
     isLocked: true,
   }).session(session))
 
-  if (targetLocked) {
-    const incompleteAtTarget = doc.sessions.find(
-      (s) => s.siteId.toString() === toSiteId.toString() && (!s.checkIn || !s.checkOut)
-    )
-    if (incompleteAtTarget) {
-      const err = new Error("Employee already has an incomplete session at the target site today")
-      err.status = 400
-      throw err
-    }
+  // Never stack a second OPEN session at the destination (a completed earlier visit is fine).
+  const incompleteAtTarget = doc.sessions.find(
+    (s) => s.siteId.toString() === toSiteId.toString() && (!s.checkIn || !s.checkOut)
+  )
+  if (incompleteAtTarget) {
+    const err = new Error("Employee already has an incomplete session at the target site today")
+    err.status = 400
+    throw err
+  }
 
-    doc.sessions.push({
-      siteId: toSiteId,
-      jobId: jobId || null,
-      checkIn: carriedCheckIn,
-      checkOut: null,
-      workedHours: 0,
-      markedBy: markedById,
-      transferredFromSiteId: fromSiteId,
-    })
+  // Record the arrival on the employee's doc NOW, whether or not the destination has locked.
+  // The employee always has today's doc here (they were marked at the source), so we carry the
+  // source check-out forward as an OPEN destination session — a continuous timeline. Previously
+  // an UNLOCKED destination got only the pendingTransfer* stash, so the arrival had no record
+  // until that site's draft was opened and submitted: invisible on an already-open page until a
+  // refetch, absent from reports meanwhile, and lost if the site never marked attendance that
+  // day. The locked and unlocked paths now agree on materialising the record.
+  doc.sessions.push({
+    siteId: toSiteId,
+    jobId: jobId || null,
+    checkIn: carriedCheckIn,
+    checkOut: null,
+    workedHours: 0,
+    markedBy: markedById,
+    transferredFromSiteId: fromSiteId,
+  })
 
-    await doc.save({ session })
+  await doc.save({ session })
 
-    await recordAttendanceAudit({
-      attendance: doc,
-      actor,
-      type: "transferred_in",
-      summary: "Session added via transfer",
-      session,
-    })
-  } else {
+  await recordAttendanceAudit({
+    attendance: doc,
+    actor,
+    type: "transferred_in",
+    summary: "Session added via transfer",
+    session,
+  })
+
+  // UNLOCKED destination: ALSO write the pendingTransfer* stash so that site's roster-built
+  // draft still surfaces the visitor as an editable row (the draft reads roster + stash, not
+  // existing records). Its submit reconciles the session in place — same-site sessions are
+  // replaced, not duplicated. A LOCKED destination has no draft to rebuild, so no stash.
+  if (!targetLocked) {
     employee.pendingTransferCheckIn = carriedCheckIn
     employee.pendingTransferSiteId = toSiteId
     employee.pendingTransferDate = attendanceDate
     employee.pendingTransferFromSiteId = fromSiteId
-    // Carry the destination job so the visitor's session at the new site records it
-    // (parity with the immediate-session branch above, which sets jobId directly).
+    // Carry the destination job so the draft's visitor row records this site's job.
     employee.pendingTransferJobId = jobId || null
   }
 
