@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { formatLocalDateTime12h } from "@/lib/dateUtils"
 import toast from "react-hot-toast"
 
 type AuditEntry = {
@@ -45,20 +46,6 @@ interface Props {
   /** Dialog heading (e.g. the employee's name). */
   title?: string
   className?: string
-}
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime()
-  if (Number.isNaN(then)) return ""
-  const s = Math.round((Date.now() - then) / 1000)
-  if (s < 60) return "just now"
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.round(h / 24)
-  if (d < 7) return `${d}d ago`
-  return new Date(iso).toLocaleDateString()
 }
 
 function errMessage(err: unknown, fallback: string): string {
@@ -188,7 +175,7 @@ export default function AttendanceRecordHistory({
                 >
                   <div className="text-foreground">{e.summary}</div>
                   <div className="text-muted-foreground">
-                    {e.actorName} · {relativeTime(e.createdAt)}
+                    {e.actorName} · {formatLocalDateTime12h(e.createdAt)}
                   </div>
                 </li>
               )

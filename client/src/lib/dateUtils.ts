@@ -211,6 +211,26 @@ export function formatLocalTime12h(dateVal?: string | Date | null): string {
   return `${hoursStr}:${minutes} ${ampm}`;
 }
 
+/**
+ * Formats an absolute instant as a full date + 12h time in the app's timezone,
+ * e.g. "19 Sep 2026, 02:34 PM". Used for audit/history timestamps that span multiple
+ * days, where a time-only label would be ambiguous. Reuses formatLocalTime12h for the
+ * time part (so AM/PM matches session times) and formats the date off the same
+ * APP_OFFSET-shifted instant read as UTC. Returns "" for empty/invalid input.
+ */
+export function formatLocalDateTime12h(dateVal?: string | Date | null): string {
+  const time = formatLocalTime12h(dateVal);
+  if (!time) return "";
+  const shifted = new Date(new Date(dateVal as string | Date).getTime() - APP_OFFSET * 60 * 1000);
+  const datePart = shifted.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `${datePart}, ${time}`;
+}
+
 // ---------------------------------------------------------------------------
 // Cutoff-free session helpers (cutoff redesign) — EXACT mirror of
 // server/src/utils/timeLocal.js (combineFromOffset / deriveOffsets /
