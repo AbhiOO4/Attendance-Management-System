@@ -513,7 +513,7 @@ function EmployeeAttendanceDetail() {
               <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
                 <div className="rounded-lg border p-4">
                   <p className="text-sm text-muted-foreground">
-                    Normal Hours
+                    Regular Hours
                   </p>
                   <p className="mt-1 text-2xl font-bold">
                     {round2(totals.totalHours - totals.otHours)} hrs

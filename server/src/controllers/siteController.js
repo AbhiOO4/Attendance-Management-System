@@ -10,6 +10,7 @@ import { escapeRegExp } from '../utils/escapeRegExp.js'
 import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
+import { recordNetFactor } from '../utils/manHours.js'
 import { combineFromOffset, getDateLocal, getTodayLocal } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
 import { isAssignableSite } from '../utils/siteAssignable.js'
@@ -531,6 +532,10 @@ export const getSiteJobs = async (req,res) => {
       const jobsWorkedToday =
         new Set();
 
+      // Man-hours are net of the day's unpaid break, shared across the
+      // record's sessions pro-rata by raw hours (see utils/manHours.js).
+      const netFactor = recordNetFactor(record);
+
       for (const session of record.sessions) {
         if (
           session.siteId?.toString() !==
@@ -558,7 +563,7 @@ export const getSiteJobs = async (req,res) => {
         jobStatsMap[
           jobKey
         ].totalManHours +=
-          session.workedHours || 0;
+          (session.workedHours || 0) * netFactor;
 
         jobStatsMap[
           jobKey
@@ -983,13 +988,16 @@ export const jobManHoursAndDays = async (req,res) => {
       let contributedToJob =
         false;
 
+      // Man-hours net of the day's unpaid break, shared pro-rata by raw hours.
+      const netFactor = recordNetFactor(record);
+
       for (const session of record.sessions) {
         if (
           session.jobId?.toString() ===
           jobId
         ) {
           totalManHours +=
-            session.workedHours || 0;
+            (session.workedHours || 0) * netFactor;
 
           contributedToJob =
             true;
@@ -1073,6 +1081,9 @@ export const siteManHoursAndDays = async (req,res) => {
       let workedOnSite =
         false;
 
+      // Man-hours net of the day's unpaid break, shared pro-rata by raw hours.
+      const netFactor = recordNetFactor(record);
+
       for (const session of record.sessions) {
         if (
           session.siteId?.toString() !==
@@ -1082,7 +1093,7 @@ export const siteManHoursAndDays = async (req,res) => {
         }
 
         totalManHours +=
-          session.workedHours || 0;
+          (session.workedHours || 0) * netFactor;
 
         workedOnSite = true;
       }

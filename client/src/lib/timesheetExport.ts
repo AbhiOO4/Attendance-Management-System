@@ -630,7 +630,7 @@ export function addTimesheetSheet(
   worksheet.addRow([])
 
   const summaryRows: [string, number][] = [
-    ["Total Normal Hours", round2(totals.totalHours - totals.otHours)],
+    ["Total Regular Hours", round2(totals.totalHours - totals.otHours)],
     [
       "Total OT Hours (OT + Holiday)",
       round2(totals.otHours + totals.holidayHours),

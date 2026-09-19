@@ -34,6 +34,9 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs"
 
+// Round to 2 decimals (avoids float artifacts when summing rounded hours).
+const round2 = (n: number) => Math.round(n * 100) / 100
+
 // --- Monthly Attendance types ---
 
 interface ReportEmployee {
@@ -66,7 +69,7 @@ interface JobReportJob {
   jobName: string
   isActive: boolean
   isCompleted: boolean
-  normalHours: number
+  regularHours: number
   overtimeHours: number
   holidayHours: number
   totalOTHours: number
@@ -532,10 +535,9 @@ function JobReportTab() {
           "Job Number": job.jobCode || "",
           "Job Name": job.jobName || "",
           Status: job.isCompleted ? "Completed" : job.isActive ? "Active" : "Inactive",
-          "Normal Hours": job.normalHours,
-          "OT Hours": job.overtimeHours,
-          "Holiday Hours": job.holidayHours,
+          "Regular Hours": job.regularHours,
           "Total OT Hours": job.totalOTHours,
+          "Man Hours": round2(job.regularHours + job.totalOTHours),
         })
       }
     }
@@ -603,22 +605,21 @@ function JobReportTab() {
             <TableRow>
               <TableHead className="w-[240px]">Job Number</TableHead>
               <TableHead>Job Name</TableHead>
-              <TableHead className="text-right">Normal Hours</TableHead>
-              <TableHead className="text-right">OT Hours</TableHead>
-              <TableHead className="text-right">Holiday Hours</TableHead>
+              <TableHead className="text-right">Regular Hours</TableHead>
               <TableHead className="text-right">Total OT Hours</TableHead>
+              <TableHead className="text-right">Man Hours</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={5} className="text-center h-24 text-muted-foreground">
                   Loading...
                 </TableCell>
               </TableRow>
             ) : filteredSites.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={5} className="text-center h-24 text-muted-foreground">
                   No data found
                 </TableCell>
               </TableRow>
@@ -627,13 +628,12 @@ function JobReportTab() {
                 const isCollapsed = collapsedSites.has(site.siteId)
                 const siteTotals = site.jobs.reduce(
                   (acc, j) => {
-                    acc.normal += j.normalHours
-                    acc.ot += j.overtimeHours
-                    acc.holiday += j.holidayHours
+                    acc.regular += j.regularHours
                     acc.totalOT += j.totalOTHours
+                    acc.manHours += j.regularHours + j.totalOTHours
                     return acc
                   },
-                  { normal: 0, ot: 0, holiday: 0, totalOT: 0 }
+                  { regular: 0, totalOT: 0, manHours: 0 }
                 )
 
                 return (
@@ -667,16 +667,13 @@ function JobReportTab() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
-                        {siteTotals.normal.toFixed(2)}
+                        {siteTotals.regular.toFixed(2)}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground">
-                        {siteTotals.ot.toFixed(2)}
-                      </TableCell>
-                      <TableCell className="text-right text-muted-foreground">
-                        {siteTotals.holiday.toFixed(2)}
+                        {siteTotals.totalOT.toFixed(2)}
                       </TableCell>
                       <TableCell className="text-right font-medium text-muted-foreground">
-                        {siteTotals.totalOT.toFixed(2)}
+                        {siteTotals.manHours.toFixed(2)}
                       </TableCell>
                     </TableRow>
 
@@ -701,10 +698,9 @@ function JobReportTab() {
                               </span>
                             )}
                           </TableCell>
-                          <TableCell className="text-right">{job.normalHours}</TableCell>
-                          <TableCell className="text-right">{job.overtimeHours}</TableCell>
-                          <TableCell className="text-right">{job.holidayHours}</TableCell>
-                          <TableCell className="text-right font-medium">{job.totalOTHours}</TableCell>
+                          <TableCell className="text-right">{job.regularHours}</TableCell>
+                          <TableCell className="text-right">{job.totalOTHours}</TableCell>
+                          <TableCell className="text-right font-medium">{round2(job.regularHours + job.totalOTHours)}</TableCell>
                         </TableRow>
                       ))}
                   </SiteGroup>

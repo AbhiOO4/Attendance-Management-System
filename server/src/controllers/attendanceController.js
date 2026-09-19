@@ -12,6 +12,7 @@ import userModel from '../models/userModel.js';
 import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
+import { recordNetFactor } from '../utils/manHours.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
@@ -768,7 +769,7 @@ export const jobReport = async (req, res) => {
             // to each job by its session's share of the day's raw worked hours,
             // matching how OT/holiday are split below. (_rawTotal > 0 is
             // guaranteed by the $match above, so the divide is safe.)
-            normalHours: {
+            regularHours: {
               $sum: {
                 $multiply: [
                   {
@@ -826,7 +827,7 @@ export const jobReport = async (req, res) => {
       }
 
       const h = hoursMap.get(job._id.toString());
-      const normal = h ? h.normalHours : 0;
+      const normal = h ? h.regularHours : 0;
       const ot = h ? h.overtimeHours : 0;
       const holiday = h ? h.holidayHours : 0;
 
@@ -836,7 +837,7 @@ export const jobReport = async (req, res) => {
         jobName: job.name,
         isActive: job.isActive !== false,
         isCompleted: job.isCompleted === true,
-        normalHours: round(normal),
+        regularHours: round(normal),
         overtimeHours: round(ot),
         holidayHours: round(holiday),
         totalOTHours: round(ot + holiday),
@@ -5008,9 +5009,12 @@ const getActiveSitesOverview = async (req, res) => {
         const day = new Date(record.date).toISOString().split('T')[0];
         let workedOnSite = false;
 
+        // Man-hours net of the day's unpaid break, shared pro-rata by raw hours.
+        const netFactor = recordNetFactor(record);
+
         for (const session of record.sessions) {
           if (session.siteId?.toString() !== siteIdStr) continue;
-          totalManHours += session.workedHours || 0;
+          totalManHours += (session.workedHours || 0) * netFactor;
           workedOnSite = true;
         }
 
