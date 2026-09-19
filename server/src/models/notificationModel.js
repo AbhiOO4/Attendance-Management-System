@@ -23,6 +23,7 @@ const notificationSchema = new mongoose.Schema(
         "request_accepted", // your request was accepted (employee arrives)
         "request_rejected", // your request was rejected
         "transfer_arrived", // a midday transfer landed an employee at your site
+        "request_escalated", // a pending request went unhandled and was escalated to admins
       ],
       required: true,
     },

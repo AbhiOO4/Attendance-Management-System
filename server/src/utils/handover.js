@@ -18,6 +18,7 @@
  */
 import jobModel from "../models/jobModel.js"
 import Attendance from "../models/attendanceModel.js"
+import AttendanceLock from "../models/lockModel.js"
 import userModel from "../models/userModel.js"
 import { recordAttendanceAudit } from "./attendanceAudit.js"
 import { getTodayLocal, combineFromOffset } from "./timeLocal.js"
@@ -94,12 +95,19 @@ export async function placeMiddayArrival({
     throw err
   }
 
-  const targetHasSavedRecord = await Attendance.exists({
+  // "Has the destination LOCKED (submitted) today?" is the accurate signal for whether its
+  // roster-built draft will rebuild — not "does any session exist at the site today". The
+  // older proxy misread an unlocked site that had merely received an earlier arrival's
+  // session as saved, which would push this session in with no stash and leave it invisible
+  // in that site's draft. The lock is the true signal, and matches how a locked destination
+  // shows saved records while an unlocked one shows a stash-driven draft.
+  const targetLocked = !!(await AttendanceLock.findOne({
+    siteId: toSiteId,
     date: attendanceDate,
-    "sessions.siteId": toSiteId,
-  }).session(session)
+    isLocked: true,
+  }).session(session))
 
-  if (targetHasSavedRecord) {
+  if (targetLocked) {
     const incompleteAtTarget = doc.sessions.find(
       (s) => s.siteId.toString() === toSiteId.toString() && (!s.checkIn || !s.checkOut)
     )
@@ -163,7 +171,7 @@ export async function placeMiddayArrival({
     await userModel.findByIdAndUpdate(employee.user, { assignedSite: toSiteId }, { session })
   }
 
-  return { pending: !targetHasSavedRecord }
+  return { pending: !targetLocked }
 }
 
 /**

@@ -2937,42 +2937,50 @@ export const sendEmployeeToSite = async (req, res) => {
         })
       }
 
-      // An arrival (today OR permanent) into a destination whose attendance is ALREADY
-      // saved can't rely on the draft: the destination's draft build never runs for a
-      // saved/locked day, so a today stash or a permanent roster row would be orphaned
-      // with no record. Detect it with the same proxy placeMiddayArrival uses (any
-      // session carrying the destination's siteId today).
-      const targetSaved = await attendanceModel
-        .exists({ date: today, "sessions.siteId": toSiteId })
-        .session(session)
+      // Is the destination's attendance already SUBMITTED (locked) for today? That — not
+      // "does any session exist there" — is the accurate signal for whether its draft will
+      // rebuild. The destination page shows a roster-built DRAFT while unlocked (which
+      // surfaces a today-visitor only via the pendingTransfer* stash) and SAVED RECORDS once
+      // locked. The old proxy (`exists sessions.siteId`) misread an unlocked site that had
+      // merely received an earlier arrival's session as "saved", which broke stash handling.
+      const destLocked = !!(await AttendanceLock.findOne({
+        siteId: toSiteId,
+        date: today,
+        isLocked: true,
+      }).session(session))
 
       // The source the employee is leaving — captured BEFORE a permanent applyHandover
       // repoints currentSite, so the destination record's "Transferred from" badge (below)
       // points at the real origin.
       const fromSiteId = employee.currentSite
 
-      // Home change: a permanent move always repoints currentSite/currentJob; a today
-      // visit into an UNSAVED destination writes the pendingTransfer* stash for the draft
-      // to consume. A today visit into a saved destination needs neither — the record is
-      // created directly below.
-      if (mode === "permanent" || !targetSaved) {
+      // Home change: a permanent move always repoints currentSite/currentJob; a today visit
+      // into an UNLOCKED destination writes the pendingTransfer* stash so that site's
+      // roster-built draft surfaces the visitor. A today visit into a LOCKED destination
+      // needs no stash — there is no draft to rebuild; the record created below is what shows.
+      if (mode === "permanent" || !destLocked) {
         await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
       }
 
-      // Saved destination (either mode): create today's record directly so the arrival is
-      // visible immediately instead of orphaned until a draft rebuild that never comes.
-      if (targetSaved) {
-        const sendActor = await resolveActor(req)
-        await createPreSaveVisitRecord({
-          employee,
-          toSite,
-          toJobId: toJobId || null,
-          fromSiteId,
-          markedById: req.user.id,
-          actor: sendActor,
-          session,
-        })
-      }
+      // Materialise the arrival's record NOW, in every case. Previously an UNLOCKED
+      // destination got only the stash (today) / repointed roster row (permanent), so the
+      // arrival had NO record until that site's draft was next opened and submitted — it was
+      // invisible on any already-open page until a manual refetch, absent from reports in the
+      // meantime, and lost entirely if the site never marked attendance that day. Creating it
+      // here makes the visit durable and immediately visible. The destination's draft still
+      // shows the row (via the stash for a today visit, or the repointed roster for a
+      // permanent move) and its submit reconciles the session in place — same-site sessions
+      // are REPLACED, not duplicated (see the submit path's otherSiteSessions merge).
+      const sendActor = await resolveActor(req)
+      await createPreSaveVisitRecord({
+        employee,
+        toSite,
+        toJobId: toJobId || null,
+        fromSiteId,
+        markedById: req.user.id,
+        actor: sendActor,
+        session,
+      })
     }
 
     await session.commitTransaction()

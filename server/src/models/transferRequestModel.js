@@ -134,6 +134,15 @@ const transferRequestSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Set once the stale-request escalation cron has pinged admins about a still-pending
+    // request (cron/escalateStaleRequests.js), so it escalates ONCE rather than every tick.
+    // null = never escalated. A supervisor's push can silently fail (best-effort delivery),
+    // so this is the safety net that ensures someone with authority always sees a stuck request.
+    escalatedAt: {
+      type: Date,
+      default: null,
+    },
+
     note: {
       type: String,
       default: "",
