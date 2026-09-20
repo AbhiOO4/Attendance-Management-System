@@ -180,9 +180,6 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
-      weeklyHolidayAwardEnabled: workConfig?.weeklyHolidayAwardEnabled ?? true,
-      weeklyHolidayAwardHours: workConfig?.weeklyHolidayAwardHours ?? 4,
-      weeklyHolidayMinHours: workConfig?.weeklyHolidayMinHours ?? 6,
     }),
     [workConfig]
   )
@@ -387,20 +384,12 @@ const [sessionToDelete, setSessionToDelete] =
   const holidayHours = useMemo(() => {
     if (!record?.isHoliday) return 0
 
-    // Weekly gate uses RAW hours; public credits net. Matches the server's calc.
-    return computeHolidayHours(rawHours, totalWorkHours, record?.holidayReason ?? null, {
-      enabled: config.weeklyHolidayAwardEnabled,
-      minHours: config.weeklyHolidayMinHours,
-      awardHours: config.weeklyHolidayAwardHours,
-    })
+    // Any holiday (public or weekly) credits the day's net worked hours.
+    return computeHolidayHours(totalWorkHours, record?.holidayReason ?? null)
   }, [
     record?.isHoliday,
     record?.holidayReason,
-    rawHours,
     totalWorkHours,
-    config.weeklyHolidayAwardEnabled,
-    config.weeklyHolidayMinHours,
-    config.weeklyHolidayAwardHours,
   ])
 
   const status = useMemo(() => {

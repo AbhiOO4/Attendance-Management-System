@@ -149,9 +149,8 @@ const attendanceSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Hours credited for working on a holiday (paid at the OT rate by the
-    // monthly report). public → net worked hours; weekly → flat 15 (fullday)
-    // or 10 (halfday). Always 0 when isHoliday is false.
+    // Hours credited for working on a holiday (any holiday, public or weekly):
+    // the day's net worked hours. Always 0 when isHoliday is false.
     holidayHours: {
       type: Number,
       default: 0,

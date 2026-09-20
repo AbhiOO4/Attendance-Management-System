@@ -751,95 +751,192 @@ export const monthlyReport = async (req, res) => {
 
 export const jobReport = async (req, res) => {
   try {
-    const [jobs, results] = await Promise.all([
+    // Optional month scope. No params → all-time ("entire life cycle", the default).
+    // Both present → restrict to that calendar month; anything else is a bad request.
+    const { month, year } = req.query;
+    const hasMonth = month !== undefined && month !== "";
+    const hasYear = year !== undefined && year !== "";
+
+    let dateMatch = [];
+    let scopeMonth = null;
+    let scopeYear = null;
+
+    if (hasMonth || hasYear) {
+      const monthNum = Number(month);
+      const yearNum = Number(year);
+      if (
+        !hasMonth ||
+        !hasYear ||
+        isNaN(monthNum) ||
+        isNaN(yearNum) ||
+        monthNum < 1 ||
+        monthNum > 12 ||
+        yearNum < 2000 ||
+        yearNum > 3000
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Provide both a valid month (1-12) and year, or omit both for all-time.",
+        });
+      }
+
+      // Attendance.date is stored at UTC midnight of the business day (see the mark
+      // controller), so build the range with Date.UTC to match it regardless of the
+      // server's own timezone. End is exclusive: first instant of the next month.
+      const startDate = new Date(Date.UTC(yearNum, monthNum - 1, 1));
+      const endDate = new Date(Date.UTC(yearNum, monthNum, 1));
+      dateMatch = [{ $match: { date: { $gte: startDate, $lt: endDate } } }];
+      scopeMonth = monthNum;
+      scopeYear = yearNum;
+    }
+
+    // Per-session apportionment: each session takes its share of the record's
+    // net / OT / holiday by its fraction of the day's raw worked hours.
+    // Regular = net − (OT + holiday): the base-rate (normal-status) portion only.
+    // On a holiday OT is 0 and holidayHours = net, so regular is 0 — those worked
+    // hours belong to the holiday bucket (Total OT), not regular, and must not be
+    // counted twice. Never negative (OT and holiday are mutually exclusive and
+    // their sum never exceeds net; _rawTotal > 0 is guaranteed by the $match).
+    const share = { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] };
+    const regularExpr = {
+      $sum: {
+        $multiply: [
+          {
+            $subtract: [
+              { $ifNull: ["$totalWorkHours", 0] },
+              { $add: [{ $ifNull: ["$overtimeHours", 0] }, { $ifNull: ["$holidayHours", 0] }] },
+            ],
+          },
+          share,
+        ],
+      },
+    };
+    const overtimeExpr = { $sum: { $multiply: [{ $ifNull: ["$overtimeHours", 0] }, share] } };
+    const holidayExpr = { $sum: { $multiply: [{ $ifNull: ["$holidayHours", 0] }, share] } };
+
+    // Scope to the selected month (if any) FIRST, then keep records with worked
+    // hours and unwind to one session per document.
+    const basePipeline = [
+      ...dateMatch,
+      { $addFields: { _rawTotal: { $sum: "$sessions.workedHours" } } },
+      { $match: { _rawTotal: { $gt: 0 } } },
+      { $unwind: "$sessions" },
+    ];
+
+    const [jobs, jobResults, unassignedResults] = await Promise.all([
       Job.find({ isDeleted: { $ne: true } })
         .populate("site", "siteName isActive isPermanent isDeleted isCompleted")
         .lean(),
 
+      // Hours grouped by job (sessions that HAVE a job).
       Attendance.aggregate([
-        { $addFields: { _rawTotal: { $sum: "$sessions.workedHours" } } },
-        { $match: { _rawTotal: { $gt: 0 } } },
-        { $unwind: "$sessions" },
+        ...basePipeline,
         { $match: { "sessions.jobId": { $ne: null } } },
         {
           $group: {
             _id: "$sessions.jobId",
-            // Normal (regular) hours = net worked minus overtime, i.e. the
-            // base-rate portion — breaks and the OT hours excluded. Apportioned
-            // to each job by its session's share of the day's raw worked hours,
-            // matching how OT/holiday are split below. (_rawTotal > 0 is
-            // guaranteed by the $match above, so the divide is safe.)
-            regularHours: {
-              $sum: {
-                $multiply: [
-                  {
-                    $subtract: [
-                      { $ifNull: ["$totalWorkHours", 0] },
-                      { $ifNull: ["$overtimeHours", 0] },
-                    ],
-                  },
-                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
-                ],
-              },
-            },
-            overtimeHours: {
-              $sum: {
-                $multiply: [
-                  { $ifNull: ["$overtimeHours", 0] },
-                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
-                ],
-              },
-            },
-            holidayHours: {
-              $sum: {
-                $multiply: [
-                  { $ifNull: ["$holidayHours", 0] },
-                  { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] },
-                ],
-              },
-            },
+            regularHours: regularExpr,
+            overtimeHours: overtimeExpr,
+            holidayHours: holidayExpr,
+          },
+        },
+      ]),
+
+      // Hours grouped by SITE for sessions with NO job — otherwise these worked
+      // hours are dropped from the report and every site total undercounts them.
+      Attendance.aggregate([
+        ...basePipeline,
+        { $match: { "sessions.jobId": null, "sessions.siteId": { $ne: null } } },
+        {
+          $group: {
+            _id: "$sessions.siteId",
+            regularHours: regularExpr,
+            overtimeHours: overtimeExpr,
+            holidayHours: holidayExpr,
           },
         },
       ]),
     ]);
 
+    const round = (n) => Number((n || 0).toFixed(2));
+
     const hoursMap = new Map();
-    for (const r of results) {
-      hoursMap.set(r._id.toString(), r);
+    for (const r of jobResults) hoursMap.set(r._id.toString(), r);
+
+    const unassignedMap = new Map();
+    for (const r of unassignedResults) {
+      if (r._id) unassignedMap.set(r._id.toString(), r);
     }
 
-    const round = (n) => Number(n.toFixed(2));
     const siteMap = new Map();
-
-    for (const job of jobs) {
-      if (!job.site) continue;
-      const siteId = job.site._id.toString();
-
+    const ensureSite = (site) => {
+      const siteId = site._id.toString();
       if (!siteMap.has(siteId)) {
         siteMap.set(siteId, {
           siteId,
-          siteName: job.site.siteName,
-          isActive: job.site.isActive !== false,
-          isPermanent: job.site.isPermanent === true,
-          isCompleted: job.site.isCompleted === true,
+          siteName: site.siteName,
+          isActive: site.isActive !== false,
+          isPermanent: site.isPermanent === true,
+          isCompleted: site.isCompleted === true,
           jobs: [],
         });
       }
+      return siteMap.get(siteId);
+    };
+
+    // Real job rows.
+    for (const job of jobs) {
+      if (!job.site) continue;
+      const siteEntry = ensureSite(job.site);
 
       const h = hoursMap.get(job._id.toString());
-      const normal = h ? h.regularHours : 0;
       const ot = h ? h.overtimeHours : 0;
       const holiday = h ? h.holidayHours : 0;
 
-      siteMap.get(siteId).jobs.push({
+      siteEntry.jobs.push({
         jobId: job._id,
         jobCode: job.jobCode,
         jobName: job.name,
         isActive: job.isActive !== false,
         isCompleted: job.isCompleted === true,
-        regularHours: round(normal),
+        regularHours: round(h ? h.regularHours : 0),
         overtimeHours: round(ot),
         holidayHours: round(holiday),
+        totalOTHours: round(ot + holiday),
+      });
+    }
+
+    // Ensure sites that have ONLY job-less hours (no jobs at all) still appear.
+    const missingSiteIds = [...unassignedMap.keys()].filter((id) => !siteMap.has(id));
+    if (missingSiteIds.length) {
+      const missingSites = await Site.find(
+        { _id: { $in: missingSiteIds }, isDeleted: { $ne: true } },
+        "siteName isActive isPermanent isCompleted"
+      ).lean();
+      for (const s of missingSites) ensureSite(s);
+    }
+
+    // Synthetic "Unassigned (no job)" row per site with job-less hours, so the
+    // site total includes them and the rows still sum to the total.
+    for (const [siteId, u] of unassignedMap) {
+      const siteEntry = siteMap.get(siteId);
+      if (!siteEntry) continue; // site deleted / not found
+
+      const reg = round(u.regularHours);
+      const ot = round(u.overtimeHours);
+      const holiday = round(u.holidayHours);
+      if (reg === 0 && ot === 0 && holiday === 0) continue;
+
+      siteEntry.jobs.push({
+        jobId: null,
+        jobCode: null,
+        jobName: "Unassigned (no job)",
+        isActive: true,
+        isCompleted: false,
+        unassigned: true,
+        regularHours: reg,
+        overtimeHours: ot,
+        holidayHours: holiday,
         totalOTHours: round(ot + holiday),
       });
     }
@@ -848,7 +945,7 @@ export const jobReport = async (req, res) => {
       a.siteName.localeCompare(b.siteName)
     );
 
-    return res.status(200).json({ success: true, report });
+    return res.status(200).json({ success: true, month: scopeMonth, year: scopeYear, report });
   } catch (error) {
     console.error("jobReport error:", error);
     return res.status(500).json({

@@ -630,12 +630,15 @@ export function addTimesheetSheet(
   worksheet.addRow([])
 
   const summaryRows: [string, number][] = [
-    ["Total Regular Hours", round2(totals.totalHours - totals.otHours)],
+    // Regular = net worked minus OT and holiday hours (holiday-worked hours belong
+    // to the holiday bucket, not regular). Grand Total = net worked hours, counted
+    // once (= Regular + Total OT); holiday hours are not added again on top.
+    ["Total Regular Hours", round2(totals.totalHours - totals.otHours - totals.holidayHours)],
     [
       "Total OT Hours (OT + Holiday)",
       round2(totals.otHours + totals.holidayHours),
     ],
-    ["Grand Total", round2(totals.totalHours + totals.holidayHours)],
+    ["Grand Total", round2(totals.totalHours)],
   ]
 
   summaryRows.forEach(([label, value]) => {

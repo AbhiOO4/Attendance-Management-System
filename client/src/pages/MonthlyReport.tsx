@@ -64,11 +64,12 @@ interface MonthlyReportResponse {
 // --- Job Report types ---
 
 interface JobReportJob {
-  jobId: string
-  jobCode: string
+  jobId: string | null
+  jobCode: string | null
   jobName: string
   isActive: boolean
   isCompleted: boolean
+  unassigned?: boolean
   regularHours: number
   overtimeHours: number
   holidayHours: number
@@ -86,6 +87,8 @@ interface JobReportSite {
 
 interface JobReportResponse {
   success: boolean
+  month: number | null
+  year: number | null
   report: JobReportSite[]
 }
 
@@ -476,16 +479,29 @@ function MonthlyAttendanceTab() {
 // Job Report Tab
 // =============================================================================
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+]
+
 function JobReportTab() {
   const [loading, setLoading] = useState(false)
   const [sites, setSites] = useState<JobReportSite[]>([])
   const [search, setSearch] = useState("")
   const [collapsedSites, setCollapsedSites] = useState<Set<string>>(new Set())
 
+  // Period scope: "all" = entire life cycle (default), else a 1-12 month + year.
+  const [month, setMonth] = useState("all")
+  const [year, setYear] = useState(String(new Date().getFullYear()))
+
   async function fetchJobReport() {
     try {
       setLoading(true)
-      const res = await api.get<JobReportResponse>("/api/attendance/reports/job-report")
+      const params = month === "all" ? {} : { month, year }
+      const res = await api.get<JobReportResponse>(
+        "/api/attendance/reports/job-report",
+        { params }
+      )
       setSites(res.data.report || [])
     } catch (error) {
       console.log(error)
@@ -496,8 +512,11 @@ function JobReportTab() {
   }
 
   useEffect(() => {
+    // In "all" mode year is irrelevant; in month mode wait for a plausible year.
+    if (month !== "all" && !/^\d{4}$/.test(year)) return
     fetchJobReport()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month, year])
 
   const filteredSites = useMemo(() => {
     if (!search) return sites
@@ -534,7 +553,9 @@ function JobReportTab() {
           Site: site.siteName,
           "Job Number": job.jobCode || "",
           "Job Name": job.jobName || "",
-          Status: job.isCompleted ? "Completed" : job.isActive ? "Active" : "Inactive",
+          Status: job.unassigned
+            ? ""
+            : job.isCompleted ? "Completed" : job.isActive ? "Active" : "Inactive",
           "Regular Hours": job.regularHours,
           "Total OT Hours": job.totalOTHours,
           "Man Hours": round2(job.regularHours + job.totalOTHours),
@@ -549,15 +570,47 @@ function JobReportTab() {
     const fileData = new Blob([excelBuffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
     })
-    saveAs(fileData, `job-report.xlsx`)
+    const suffix = month === "all" ? "all-time" : `${month}-${year}`
+    saveAs(fileData, `job-report-${suffix}.xlsx`)
   }
 
-  const totalJobs = filteredSites.reduce((sum, s) => sum + s.jobs.length, 0)
+  // Count only real jobs — the synthetic "Unassigned (no job)" row is not a job.
+  const totalJobs = filteredSites.reduce(
+    (sum, s) => sum + s.jobs.filter((j) => !j.unassigned).length,
+    0
+  )
+
+  // Human-readable label for the active period.
+  const periodLabel =
+    month === "all" ? "Entire life cycle" : `${MONTH_NAMES[Number(month) - 1]} ${year}`
 
   return (
     <div className="space-y-4">
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
+        <Select value={month} onValueChange={setMonth}>
+          <SelectTrigger className="w-[170px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Entire life cycle</SelectItem>
+            {MONTH_NAMES.map((monthName, index) => (
+              <SelectItem key={monthName} value={String(index + 1)}>
+                {monthName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {month !== "all" && (
+          <Input
+            className="w-[80px]"
+            placeholder="Year"
+            value={year}
+            onChange={(e) => setYear(e.target.value)}
+          />
+        )}
+
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -590,6 +643,7 @@ function JobReportTab() {
 
       {/* Summary */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground border-b pb-3">
+        <span className="font-medium text-foreground">{periodLabel}</span>
         <span>
           <span className="font-medium text-foreground">{filteredSites.length}</span> sites
         </span>
@@ -599,7 +653,7 @@ function JobReportTab() {
       </div>
 
       {/* Table */}
-      <div className="rounded-lg border overflow-auto max-h-[calc(100vh-280px)]">
+      <div className="rounded-lg border">
         <Table>
           <TableHeader className="sticky top-0 bg-background z-10">
             <TableRow>
@@ -636,6 +690,9 @@ function JobReportTab() {
                   { regular: 0, totalOT: 0, manHours: 0 }
                 )
 
+                // The synthetic "Unassigned (no job)" row is not a real job.
+                const realJobCount = site.jobs.filter((j) => !j.unassigned).length
+
                 return (
                   <SiteGroup key={site.siteId}>
                     {/* Site header row */}
@@ -662,7 +719,7 @@ function JobReportTab() {
                             </span>
                           )}
                           <span className="text-xs text-muted-foreground font-normal">
-                            ({site.jobs.length} {site.jobs.length === 1 ? "job" : "jobs"})
+                            ({realJobCount} {realJobCount === 1 ? "job" : "jobs"})
                           </span>
                         </div>
                       </TableCell>
@@ -681,12 +738,14 @@ function JobReportTab() {
                     {!isCollapsed &&
                       site.jobs.map((job) => (
                         <TableRow
-                          key={job.jobId}
+                          key={job.jobId ?? `unassigned-${site.siteId}`}
                           className={job.isCompleted || !job.isActive ? "opacity-50" : ""}
                         >
                           <TableCell className="pl-10">{job.jobCode || "—"}</TableCell>
                           <TableCell>
-                            <span>{job.jobName || "—"}</span>
+                            <span className={job.unassigned ? "italic text-muted-foreground" : ""}>
+                              {job.jobName || "—"}
+                            </span>
                             {job.isCompleted && (
                               <span className="ml-1.5 text-[10px] text-muted-foreground font-medium uppercase">
                                 Completed

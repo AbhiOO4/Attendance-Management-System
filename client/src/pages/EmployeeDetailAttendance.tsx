@@ -516,7 +516,7 @@ function EmployeeAttendanceDetail() {
                     Regular Hours
                   </p>
                   <p className="mt-1 text-2xl font-bold">
-                    {round2(totals.totalHours - totals.otHours)} hrs
+                    {round2(totals.totalHours - totals.otHours - totals.holidayHours)} hrs
                   </p>
                 </div>
 
