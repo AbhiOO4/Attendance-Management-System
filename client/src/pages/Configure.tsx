@@ -45,6 +45,11 @@ type WorkSchedule = {
   checkoutRemarkGraceMinutes: number;
   lopDeductionAmount: number;
   annualLeaveDefaultDays: number;
+  erpCompanyName: string;
+  erpDefaultActivityType: string;
+  erpOvertimeActivityType: string;
+  erpOvertimeType: string;
+  erpPaidLeaveType: string;
 };
 
 
@@ -100,6 +105,11 @@ export default function Configure() {
     checkoutRemarkGraceMinutes: 15,
     lopDeductionAmount: 3.5,
     annualLeaveDefaultDays: 30,
+    erpCompanyName: "New Gulf Desert Projects LLC",
+    erpDefaultActivityType: "Construction",
+    erpOvertimeActivityType: "",
+    erpOvertimeType: "",
+    erpPaidLeaveType: "Annual Leave",
   });
 
   const [holidayForm, setHolidayForm] = useState({
@@ -179,6 +189,11 @@ export default function Configure() {
         checkoutRemarkGraceMinutes: schedule.checkoutRemarkGraceMinutes,
         lopDeductionAmount: schedule.lopDeductionAmount,
         annualLeaveDefaultDays: schedule.annualLeaveDefaultDays,
+        erpCompanyName: schedule.erpCompanyName,
+        erpDefaultActivityType: schedule.erpDefaultActivityType,
+        erpOvertimeActivityType: schedule.erpOvertimeActivityType,
+        erpOvertimeType: schedule.erpOvertimeType,
+        erpPaidLeaveType: schedule.erpPaidLeaveType,
       });
 
       if (res.data?.data) setSchedule(res.data.data);
@@ -564,6 +579,116 @@ export default function Configure() {
 
                   <p className="text-xs text-muted-foreground">
                     Default paid-leave entitlement per employee per calendar year. Can be overridden per employee.
+                  </p>
+                </div>
+
+                {/* ERPNEXT COMPANY NAME */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    ERPNext Company Name
+                  </label>
+
+                  <Input
+                    type="text"
+                    value={schedule.erpCompanyName ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        erpCompanyName: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Fills the Company column on the ERPNext Attendance &amp; Timesheet export files. Must match the Company name in ERPNext.
+                  </p>
+                </div>
+
+                {/* ERPNEXT ACTIVITY TYPE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    ERPNext Activity Type
+                  </label>
+
+                  <Input
+                    type="text"
+                    value={schedule.erpDefaultActivityType ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        erpDefaultActivityType: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Stamped on regular Timesheet time-logs in the ERPNext export. The costing rate for this activity lives in ERPNext (Activity Cost per employee) — this app tracks hours only.
+                  </p>
+                </div>
+
+                {/* ERPNEXT OVERTIME ACTIVITY TYPE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    ERPNext Overtime Activity Type
+                  </label>
+
+                  <Input
+                    type="text"
+                    value={schedule.erpOvertimeActivityType ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        erpOvertimeActivityType: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    When set, the Timesheet export splits each working day into a regular line (above) and a separate overtime line under this Activity Type, so OT can be costed at a premium in ERPNext. Leave blank to put all hours on the regular Activity Type.
+                  </p>
+                </div>
+
+                {/* ERPNEXT OVERTIME TYPE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    ERPNext Overtime Type
+                  </label>
+
+                  <Input
+                    type="text"
+                    value={schedule.erpOvertimeType ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        erpOvertimeType: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    Must match an Overtime Type in ERPNext. When set, overtime hours are written onto each Attendance row (actual_overtime_duration) so payroll can consume them. Leave blank to omit OT from the Attendance export (it still appears in the OT summary file).
+                  </p>
+                </div>
+
+                {/* ERPNEXT PAID LEAVE TYPE */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">
+                    ERPNext Paid Leave Type
+                  </label>
+
+                  <Input
+                    type="text"
+                    value={schedule.erpPaidLeaveType ?? ""}
+                    onChange={(e) =>
+                      setSchedule({
+                        ...schedule,
+                        erpPaidLeaveType: e.target.value,
+                      })
+                    }
+                  />
+
+                  <p className="text-xs text-muted-foreground">
+                    ERPNext Leave Type for approved PAID (annual) leave — those days export as "On Leave" with this type. Sick leave and LOP are unpaid, so they export as plain "Absent". Must match a Leave Type in ERPNext.
                   </p>
                 </div>
 

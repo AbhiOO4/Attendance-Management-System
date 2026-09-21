@@ -16,6 +16,7 @@ import { recordNetFactor } from '../utils/manHours.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { buildAttendanceCsv, buildTimesheetCsv, buildOtSummaryCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { isAssignableSite } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
@@ -6078,8 +6079,92 @@ export const getEmployeesOnLeaveForDate = async (req, res) => {
   }
 };
 
+// GET /api/attendance/reports/erpnext/:month/:year?type=attendance|timesheet|ot-summary
+// Streams one ERPNext Data Import CSV for the month. The app holds no rates, so every
+// file carries hours + status only; ERPNext supplies rates from its own masters. See
+// utils/erpnextExport.js for the row shapes and the pro-rata break handling.
+export const exportErpnext = async (req, res) => {
+  try {
+    const { month, year } = req.params;
+    const type = String(req.query.type || "attendance").toLowerCase();
+
+    const monthNum = Number(month);
+    const yearNum = Number(year);
+    if (isNaN(monthNum) || isNaN(yearNum) || monthNum < 1 || monthNum > 12) {
+      return res.status(400).json({ success: false, message: "Invalid month or year" });
+    }
+
+    const startDate = new Date(yearNum, monthNum - 1, 1);
+    const endDate = new Date(yearNum, monthNum, 1);
+
+    // Optional single-employee scope (the per-employee route or ?employeeId=). The
+    // employee detail page passes the employee's Mongo _id. Absent → whole roster.
+    const empId = req.params.employeeId || req.query.employeeId;
+    const filter = { date: { $gte: startDate, $lt: endDate } };
+    if (empId) {
+      if (!mongoose.isValidObjectId(empId)) {
+        return res.status(400).json({ success: false, message: "Invalid employeeId" });
+      }
+      filter.employee = empId;
+    }
+
+    const [attendances, workConfig] = await Promise.all([
+      Attendance.find(filter)
+        .populate("employee", "employeeId name")
+        .populate("sessions.jobId", "jobCode")
+        .lean(),
+      workModel.findOne({ type: "default" }).lean(),
+    ]);
+
+    // Drop records whose employee was hard-deleted — they can't link in ERPNext.
+    const records = attendances.filter((a) => a.employee && a.employee.employeeId);
+
+    const companyName = workConfig?.erpCompanyName || DEFAULT_COMPANY;
+    const activityType = workConfig?.erpDefaultActivityType || DEFAULT_ACTIVITY_TYPE;
+    const overtimeActivityType = workConfig?.erpOvertimeActivityType || "";
+    const overtimeType = workConfig?.erpOvertimeType || "";
+    const paidLeaveType = workConfig?.erpPaidLeaveType || "";
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const stamp = `${yearNum}-${pad2(monthNum)}`;
+
+    let built;
+    let filename;
+    if (type === "attendance") {
+      built = buildAttendanceCsv(records, { companyName, overtimeType, paidLeaveType });
+      filename = `erpnext-attendance-${stamp}.csv`;
+    } else if (type === "timesheet") {
+      built = buildTimesheetCsv(records, { companyName, activityType, overtimeActivityType });
+      filename = `erpnext-timesheet-${stamp}.csv`;
+    } else if (type === "ot-summary") {
+      built = buildOtSummaryCsv(records, { monthLabel: stamp });
+      filename = `erpnext-ot-holiday-${stamp}.csv`;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "type must be one of: attendance, timesheet, ot-summary",
+      });
+    }
+
+    if (built.meta?.skippedNoJob != null) {
+      res.setHeader("X-Erpnext-Skipped-No-Job", String(built.meta.skippedNoJob));
+    }
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    // Leading BOM so Excel opens the UTF-8 CSV with the right encoding.
+    return res.status(200).send("﻿" + built.csv);
+  } catch (error) {
+    console.error("exportErpnext error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate ERPNext export",
+      error: error.message,
+    });
+  }
+};
+
 const attendanceController = {
   monthlyReport,
+  exportErpnext,
   jobReport,
   getSummary,
   unlockAttendance,

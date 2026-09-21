@@ -41,6 +41,67 @@ export function computeAutoBreaks(rawHours, fullDayHours) {
  *                                  The record's holiday state; null/false = normal day
  * @returns {{ netWorkHours, status, overtimeHours, breaksApplied, holidayHours }}
  */
+// Round to 2 decimals, guarding against float artefacts (0.1 + 0.2 style drift).
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+/**
+ * Distribute a total across weighted buckets PRO-RATA, rounded to 2dp, with the rounding
+ * residual pushed onto the largest-weight bucket so the parts sum EXACTLY to `total`.
+ *
+ * The shared primitive behind the ERPNext export's two day-level splits: a day's NET
+ * hours across sessions (weighted by raw hours) and a day's OVERTIME across sessions
+ * (weighted by net hours). Zero total weight → all zeros; a single bucket → the whole total.
+ *
+ * @param {number[]} weights  non-negative bucket weights, in order
+ * @param {number}   total    the amount to distribute (2dp)
+ * @returns {number[]} one value (2dp) per weight, in order; Σ === total
+ */
+export function allocateProRata(weights, total) {
+  const w = (Array.isArray(weights) ? weights : []).map((x) => Math.max(Number(x) || 0, 0));
+  const n = w.length;
+  if (n === 0) return [];
+
+  const sumW = w.reduce((a, b) => a + b, 0);
+  const t = Math.max(Number(total) || 0, 0);
+
+  // No weight at all (e.g. an all-empty day): nothing to distribute.
+  if (sumW <= 0) return w.map(() => 0);
+  // Single bucket: the whole total lands on it.
+  if (n === 1) return [round2(t)];
+
+  const out = w.map((x) => round2((x / sumW) * t));
+  const residual = round2(t - out.reduce((a, b) => a + b, 0));
+  if (residual !== 0) {
+    let maxIdx = 0;
+    for (let i = 1; i < n; i++) if (w[i] > w[maxIdx]) maxIdx = i;
+    out[maxIdx] = round2(out[maxIdx] + residual);
+  }
+  return out;
+}
+
+/**
+ * Allocate a day's NET worked hours across its sessions, PRO-RATA by each session's
+ * RAW worked hours.
+ *
+ * Breaks are a single day-level deduction (see computeAttendanceTotals) — a session
+ * carries only its raw `workedHours`, never a per-session net. This spreads the day's
+ * break deduction across sessions in proportion to their raw share, so the per-session
+ * net sums EXACTLY back to the day net (`record.totalWorkHours`). Used by the ERPNext
+ * timesheet export so that per-job/project cost reconciles to the net hours actually
+ * paid. On a single-session day the whole net (and thus the whole break) sits on that
+ * one session.
+ *
+ * @param {Array<{workedHours?: number}>} sessions  the day's sessions (raw workedHours each)
+ * @param {number} dayNetHours                       record.totalWorkHours (net, already 2dp)
+ * @returns {number[]} one net-hours value (2dp) per session, in input order; Σ === dayNetHours
+ */
+export function allocateSessionNetHours(sessions, dayNetHours) {
+  const raws = (Array.isArray(sessions) ? sessions : []).map(
+    (s) => Math.max(Number(s?.workedHours) || 0, 0)
+  );
+  return allocateProRata(raws, dayNetHours);
+}
+
 export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null, holidayInfo = null) {
   const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
   const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;

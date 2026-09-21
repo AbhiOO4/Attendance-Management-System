@@ -9,6 +9,7 @@ import {
   getDisplayStatus,
   round2,
 } from "@/lib/timesheetExport"
+import { saveAs } from "file-saver"
 
 import {
   useEffect,
@@ -38,6 +39,13 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 
 import {
   Select,
@@ -151,6 +159,8 @@ function EmployeeAttendanceDetail() {
   const [sortOrder, setSortOrder] =
     useState<"asc" | "desc">("asc")
 
+  const [erpBusy, setErpBusy] = useState(false)
+
   // Annual paid-leave balance (for the selected year) + grant history. Admin-only.
   const [leaveBalance, setLeaveBalance] =
     useState<LeaveBalance | null>(null)
@@ -257,6 +267,29 @@ function EmployeeAttendanceDetail() {
     }
   }
 
+  // Download one ERPNext Data Import CSV scoped to THIS employee (hours + status only;
+  // rates live in ERPNext). Same server shapers as the bulk Monthly Report export.
+  const downloadErp = async (
+    type: "attendance" | "timesheet" | "ot-summary",
+    label: string
+  ) => {
+    try {
+      setErpBusy(true)
+      const res = await api.get(
+        `/api/attendance/employee/${id}/erpnext/${month}/${year}`,
+        { params: { type }, responseType: "blob" }
+      )
+      const mm = String(month).padStart(2, "0")
+      const who = employee?.employeeId ?? id
+      saveAs(res.data as Blob, `erpnext-${type}-${who}-${year}-${mm}.csv`)
+    } catch (error) {
+      console.log(error)
+      toast.error(`Failed to export ${label}`)
+    } finally {
+      setErpBusy(false)
+    }
+  }
+
   useEffect(() => {
     fetchEmployee()
   }, [id])
@@ -310,9 +343,12 @@ function EmployeeAttendanceDetail() {
         else if (record.isPaidLeave) {
           acc.daysLeave += 1
         }
-        // Half-days count as present.
+        // Half-days count as present; full/half are also tallied separately for the
+        // breakdown shown under Days Present.
         else if (record.status === "fullday" || record.status === "halfday") {
           acc.daysPresent += 1
+          if (record.status === "fullday") acc.daysFull += 1
+          else acc.daysHalf += 1
         } else {
           acc.daysAbsent += 1
         }
@@ -324,6 +360,8 @@ function EmployeeAttendanceDetail() {
         otHours: 0,
         holidayHours: 0,
         daysPresent: 0,
+        daysFull: 0,
+        daysHalf: 0,
         daysAbsent: 0,
         daysLeave: 0,
       }
@@ -477,6 +515,38 @@ function EmployeeAttendanceDetail() {
                   Export Spreadsheet
                 </Button>
 
+                {canWrite && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        disabled={erpBusy}
+                        className="w-full sm:w-auto"
+                      >
+                        <Download className="mr-2 h-4 w-4" />
+                        Export for ERPNext
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => downloadErp("attendance", "Attendance (payroll)")}
+                      >
+                        Attendance (payroll)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => downloadErp("timesheet", "Timesheet (job cost)")}
+                      >
+                        Timesheet (job cost)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => downloadErp("ot-summary", "OT & Holiday summary")}
+                      >
+                        OT &amp; Holiday summary
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+
                 {canWrite && employee && (
                   <GrantLeaveDialog
                     employeeId={employee._id}
@@ -535,6 +605,9 @@ function EmployeeAttendanceDetail() {
                   </p>
                   <p className="mt-1 text-2xl font-bold">
                     {totals.daysPresent}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {totals.daysFull} full · {totals.daysHalf} half
                   </p>
                 </div>
 

@@ -41,6 +41,11 @@ export const updateWorkSchedule = async (req, res) => {
       checkoutRemarkGraceMinutes,
       lopDeductionAmount,
       annualLeaveDefaultDays,
+      erpCompanyName,
+      erpDefaultActivityType,
+      erpOvertimeActivityType,
+      erpOvertimeType,
+      erpPaidLeaveType,
     } = req.body;
 
 
@@ -139,6 +144,28 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.annualLeaveDefaultDays = annualLeaveDefaultDays;
+    }
+
+    // ERPNext export labels (free text; no rate logic). Empty string is allowed —
+    // the export falls back to its built-in defaults when a field is blank.
+    if (erpCompanyName !== undefined) {
+      schedule.erpCompanyName = String(erpCompanyName).trim();
+    }
+
+    if (erpDefaultActivityType !== undefined) {
+      schedule.erpDefaultActivityType = String(erpDefaultActivityType).trim();
+    }
+
+    if (erpOvertimeActivityType !== undefined) {
+      schedule.erpOvertimeActivityType = String(erpOvertimeActivityType).trim();
+    }
+
+    if (erpOvertimeType !== undefined) {
+      schedule.erpOvertimeType = String(erpOvertimeType).trim();
+    }
+
+    if (erpPaidLeaveType !== undefined) {
+      schedule.erpPaidLeaveType = String(erpPaidLeaveType).trim();
     }
 
     // Optional validation

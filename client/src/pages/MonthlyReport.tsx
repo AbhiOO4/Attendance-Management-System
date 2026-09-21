@@ -33,6 +33,13 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
+import toast from "react-hot-toast"
 
 // Round to 2 decimals (avoids float artifacts when summing rounded hours).
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -105,6 +112,7 @@ function MonthlyAttendanceTab() {
   const [name, setName] = useState("")
   const [employeeId, setEmployeeId] = useState("")
   const [jobTitle, setJobTitle] = useState("")
+  const [erpBusy, setErpBusy] = useState(false)
 
   // Client-side pagination for the display only. The full month stays in `reports`
   // so search spans everyone and Export always covers the whole roster.
@@ -237,6 +245,28 @@ function MonthlyAttendanceTab() {
     saveAs(fileData, `monthly-report-${month}-${year}.xlsx`)
   }
 
+  // Download one ERPNext Data Import CSV for the selected month. The server streams the
+  // file (hours + status only — rates live in ERPNext); we just save the blob.
+  async function downloadErp(
+    type: "attendance" | "timesheet" | "ot-summary",
+    label: string
+  ) {
+    try {
+      setErpBusy(true)
+      const res = await api.get(
+        `/api/attendance/reports/erpnext/${month}/${year}`,
+        { params: { type }, responseType: "blob" }
+      )
+      const mm = String(month).padStart(2, "0")
+      saveAs(res.data as Blob, `erpnext-${type}-${year}-${mm}.csv`)
+    } catch (error) {
+      console.error(error)
+      toast.error(`Failed to export ${label}`)
+    } finally {
+      setErpBusy(false)
+    }
+  }
+
   const months = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -305,7 +335,7 @@ function MonthlyAttendanceTab() {
           </Button>
         )}
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -315,6 +345,32 @@ function MonthlyAttendanceTab() {
             <Download className="mr-1.5 h-3.5 w-3.5" />
             Export all
           </Button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" disabled={erpBusy}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Export for ERPNext
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => downloadErp("attendance", "Attendance (payroll)")}
+              >
+                Attendance (payroll)
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => downloadErp("timesheet", "Timesheet (job cost)")}
+              >
+                Timesheet (job cost)
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => downloadErp("ot-summary", "OT & Holiday summary")}
+              >
+                OT &amp; Holiday summary
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 

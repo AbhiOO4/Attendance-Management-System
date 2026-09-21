@@ -106,6 +106,54 @@ const workScheduleSchema = new mongoose.Schema(
       default: 15,
     },
 
+    // ERPNext export settings. The app holds no rates — these only label the exported
+    // Data Import rows so they link to the right ERPNext masters. `erpCompanyName` fills
+    // the Company column on the Attendance/Timesheet files; `erpDefaultActivityType` is
+    // the Activity Type stamped on every Timesheet time-log (the Activity Cost per
+    // employee, and thus the costing rate, lives in ERPNext). See utils/erpnextExport.js.
+    erpCompanyName: {
+      type: String,
+      trim: true,
+      // The ERPNext Company master name (link field — must match ERPNext exactly). This
+      // differs from the app's printed letterhead ("NEW GULF DESSERT PROJECT LLC").
+      default: "New Gulf Desert Projects LLC",
+    },
+
+    erpDefaultActivityType: {
+      type: String,
+      trim: true,
+      default: "Construction",
+    },
+
+    // ERPNext Activity Type for the OVERTIME portion of a timesheet. When set, the
+    // Timesheet export splits each working session into a regular line (erpDefaultActivityType)
+    // and an overtime line (this) so ERPNext can cost OT at a premium via its own Activity
+    // Cost per employee. Empty → no split (all hours on the regular activity type).
+    erpOvertimeActivityType: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    // ERPNext Overtime Type (a master) stamped on Attendance rows that carry overtime,
+    // alongside actual_overtime_duration = the day's OT hours. Empty → OT is left off the
+    // Attendance export (it still appears in the OT/holiday summary file). Set this to a
+    // valid Overtime Type from your ERPNext to feed OT into payroll from the same import.
+    erpOvertimeType: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    // ERPNext Leave Type used for PAID (annual) leave rows in the Attendance export
+    // (status "On Leave"). Only paid leave maps to On Leave; sick/LOP are unpaid → Absent.
+    // Must match a Leave Type master in ERPNext.
+    erpPaidLeaveType: {
+      type: String,
+      trim: true,
+      default: "Annual Leave",
+    },
+
     // Monetary penalty (in OMR) attached to a Loss-of-Pay (LOP) day. When a
     // supervisor toggles an absent record to LOP (Attendance.isLop), the record's
     // remark is auto-filled with "Deduct <lopDeductionAmount> OMR". Purely an

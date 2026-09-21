@@ -28,6 +28,14 @@ router.get('/reports/carryovers', authorizeRoles("admin", "supervisor"), require
 
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
+// ERPNext Data Import CSV export (?type=attendance|timesheet|ot-summary). Superadmin
+// only, matching the Monthly Report page this lives on.
+router.get('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), attendanceController.exportErpnext)
+
+// Per-employee ERPNext export (same CSVs, scoped to one employee for easier testing).
+// admin + superadmin — lives on the employee detail page. Bulk route above stays superadmin.
+router.get('/employee/:employeeId/erpnext/:month/:year', authorizeRoles("admin"), attendanceController.exportErpnext)
+
 // --- Annual paid leave (admin implicitly allows superadmin) ---
 // Specific /leave/* paths declared before the /:attendanceId wildcard.
 router.get('/leave/balance/:employeeId', authorizeRoles("admin"), attendanceController.getLeaveBalance)
