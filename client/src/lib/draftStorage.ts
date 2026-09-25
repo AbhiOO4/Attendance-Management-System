@@ -42,10 +42,11 @@ export function safeRemoveItem(key: string) {
 
 export const draftStorageKey = (siteId: string, date: string) => `attendance_draft_${siteId}_${date}`
 
-const DRAFT_KEY_RE = /^attendance_draft_.+_(\d{4}-\d{2}-\d{2})$/
+// Draft caches and cloud-draft outboxes (lib/cloudDraft.ts) — both keyed by site + day.
+const DRAFT_KEY_RE = /^attendance_(?:draft|outbox)_.+_(\d{4}-\d{2}-\d{2})$/
 
 /**
- * Drop cached drafts for every day except `today`, across all sites. The page always opens on
+ * Drop cached drafts / outboxes for every day except `today`, across all sites. The page always opens on
  * the current business day, so an older draft can never be rehydrated again — it's dead weight
  * that only accumulates (abandoned drafts, a second supervisor beaten to Save) until the
  * storage quota is hit.

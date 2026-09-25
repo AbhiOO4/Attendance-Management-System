@@ -20,14 +20,24 @@ import { type WorkConfig } from "@/lib/dateUtils"
  * `Attendance.date`, and cross-midnight is an explicit per-session day offset. Nothing
  * here needs to resolve a boundary hour.
  */
+// Runtime feature switches the server reports alongside the schedule (server/src/utils/features.js).
+export type Features = {
+  // Shared cloud attendance draft on the Site Attendance page.
+  cloudDraft: boolean
+}
+
+const NO_FEATURES: Features = { cloudDraft: false }
+
 type WorkConfigContextType = {
   config: WorkConfig | null
+  features: Features
   loading: boolean
   refreshConfig: () => Promise<WorkConfig | null>
 }
 
 const WorkConfigContext = createContext<WorkConfigContextType>({
   config: null,
+  features: NO_FEATURES,
   loading: true,
   refreshConfig: async () => null,
 })
@@ -41,25 +51,40 @@ export const WorkConfigProvider = ({
   const { pathname } = useLocation()
 
   const [config, setConfig] = useState<WorkConfig | null>(null)
+  const [features, setFeatures] = useState<Features>(NO_FEATURES)
   const [loading, setLoading] = useState(true)
+  // The user whose first config fetch has completed (success or failure). Until it matches the
+  // signed-in user, consumers see `loading`: a page's mount effect runs BEFORE this provider's
+  // effect turns `loading` on for a newly signed-in user, and would otherwise start with no
+  // schedule and no feature switches (e.g. SiteAttendance missing the weekly holiday).
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
   // Revalidation must not flip `loading` — pages like SiteAttendance render a full-page
   // spinner while it is true, and we don't want that on every navigation.
-  const inFlight = useRef(false)
+  const inFlight = useRef<Promise<WorkConfig | null> | null>(null)
 
   const refreshConfig = useCallback(async () => {
-    if (inFlight.current) return config
-    inFlight.current = true
+    // Share a request already in flight rather than answering with a possibly stale value, so
+    // the initial load below resolves only once the schedule has actually arrived.
+    if (inFlight.current) return inFlight.current
+    const run = (async () => {
+      try {
+        const res = await api.get("/api/config")
+        const next = (res.data?.data ?? null) as WorkConfig | null
+        setConfig(next)
+        const cloudDraft = !!res.data?.features?.cloudDraft
+        setFeatures((prev) => (prev.cloudDraft === cloudDraft ? prev : { cloudDraft }))
+        return next
+      } catch {
+        // Keep the last-known config on a transient failure rather than dropping to null.
+        return config
+      }
+    })()
+    inFlight.current = run
     try {
-      const res = await api.get("/api/config")
-      const next = (res.data?.data ?? null) as WorkConfig | null
-      setConfig(next)
-      return next
-    } catch {
-      // Keep the last-known config on a transient failure rather than dropping to null.
-      return config
+      return await run
     } finally {
-      inFlight.current = false
+      inFlight.current = null
     }
   }, [config])
 
@@ -67,14 +92,21 @@ export const WorkConfigProvider = ({
   useEffect(() => {
     if (!user) {
       setConfig(null)
+      setFeatures(NO_FEATURES)
       setLoading(false)
       return
     }
     setLoading(true)
-    refreshConfig().finally(() => setLoading(false))
+    const userId = user._id
+    refreshConfig().finally(() => {
+      setLoading(false)
+      setLoadedFor(userId)
+    })
     // Only re-run on login/logout; navigation revalidation is handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
+
+  const effectiveLoading = loading || (!!user && loadedFor !== user._id)
 
   // Revalidate on navigation and when the tab regains focus. The work schedule is a
   // singleton an admin can change at any time, and its pay numbers drive hours/OT display —
@@ -104,10 +136,11 @@ export const WorkConfigProvider = ({
   const value = useMemo<WorkConfigContextType>(
     () => ({
       config,
-      loading,
+      features,
+      loading: effectiveLoading,
       refreshConfig,
     }),
-    [config, loading, refreshConfig]
+    [config, features, effectiveLoading, refreshConfig]
   )
 
   return (

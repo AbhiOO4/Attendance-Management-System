@@ -27,6 +27,8 @@ import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
 import { computeExpectedDraftRoster } from '../utils/draftRoster.js';
+import AttendanceDraftRow from '../models/attendanceDraftRowModel.js';
+import { isCloudDraftEnabled } from '../utils/features.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
 // "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
@@ -1446,6 +1448,39 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       }
     }
 
+    // DRAFT GUARD (shared cloud draft). Each posted row names the rev of the shared draft row
+    // it reflects (0 = untouched, derived from defaults). If another supervisor changed a row
+    // since, refuse — the submitter must see that change before it's saved over. Clients that
+    // predate the cloud draft send no draftRev and pass while no one has shared edits.
+    if (isCloudDraftEnabled()) {
+      const storedRows = await AttendanceDraftRow.find(
+        { siteId, date: attendanceDate },
+        "employee rev updatedByName"
+      )
+        .session(session)
+        .lean();
+      const storedById = new Map(storedRows.map((r) => [String(r.employee), r]));
+      const stale = attendance.filter((entry) => {
+        const stored = storedById.get(String(entry.employee._id));
+        return (Number(entry.draftRev) || 0) !== (stored?.rev ?? 0);
+      });
+      if (stale.length) {
+        const rows = stale.map((entry) => ({
+          employee: String(entry.employee._id),
+          name: entry.employee?.name ?? null,
+          updatedByName: storedById.get(String(entry.employee._id))?.updatedByName ?? null,
+        }));
+        throwValidationError(
+          409,
+          `Another device changed ${rows.length} row(s) on this sheet (${rows
+            .slice(0, 5)
+            .map((r) => r.name || "an employee")
+            .join(", ")}). Review them and save again.`,
+          { code: "DRAFT_CHANGED", rows }
+        );
+      }
+    }
+
     const workConfig = await workModel.findOne().session(session)
     if (!workConfig) {
       throwValidationError(404, "Work configuration not found");
@@ -1860,6 +1895,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       lockedBy: markedBy,
       lockedAt: new Date(),
     }], { session })
+
+    // The day is now real attendance — the shared draft rows are done with (unconditionally,
+    // so switching the cloud draft off never strands rows for a submitted day).
+    await AttendanceDraftRow.deleteMany({ siteId, date: attendanceDate }, { session });
 
     // Audit log joins the same transaction (best-effort inside the helper).
     await recordAttendanceAuditBatch(auditRows, session);

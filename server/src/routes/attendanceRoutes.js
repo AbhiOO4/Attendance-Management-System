@@ -3,6 +3,7 @@ import express from 'express'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles, requireSiteAccess } from '../middlewares/rbac.js'
 import attendanceController from '../controllers/attendanceController.js'
+import * as draftController from '../controllers/draftController.js'
 
 const router = express.Router()
 
@@ -13,6 +14,11 @@ router.use(verifyToken)
 // --- Specific routes FIRST (must come before /:attendanceId wildcard) ---
 
 router.post('/submit', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.siteFirstSubmitAttendance)
+
+// Shared cloud draft of a site's unsubmitted day (404 while CLOUD_DRAFT_ENABLED is off).
+router.get('/draft', authorizeRoles("admin", "supervisor"), requireSiteAccess, draftController.getDraft)
+
+router.put('/draft/rows', authorizeRoles("admin", "supervisor"), requireSiteAccess, draftController.saveDraftRows)
 
 router.get('/dashboard', authorizeRoles("admin", "supervisor"), attendanceController.getSummary)
 

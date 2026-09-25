@@ -189,8 +189,34 @@ The Site Attendance draft is built client-side from the roster (`loadRosterConte
   `timestamps: false` so a remark doesn't trip it.
 - **Refresh** — the page re-checks lock/roster/carryovers (draft) or reloads the sheet (saved)
   on visibility/focus/online/pageshow and on a timer; failures to load the day's state show a
-  Retry card rather than a guessed draft. API responses are `Cache-Control: no-store` and the
-  service worker deliberately has no `/api` runtime cache.
+  Retry card rather than a guessed draft. Rows exactly equal to their previous derived default
+  (untouched) follow a changed default on refresh. API responses are `Cache-Control: no-store`
+  and the service worker deliberately has no `/api` runtime cache.
+
+### Shared cloud draft (runtime switch `CLOUD_DRAFT_ENABLED`)
+Lets several supervisors mark one site/day from different devices. Off by default; the server
+reports it as `features.cloudDraft` on `GET /api/config` (`utils/features.js`,
+`WorkConfigContext`). Off → draft endpoints 404, the submit draft guard is skipped, and the page
+keeps on-device drafts exactly as before.
+- **Storage** — `AttendanceDraftRow` (`models/attendanceDraftRowModel.js`): only rows someone
+  TOUCHED (overrides), each with a `rev`; unique `{siteId, date, employee}`, 3-day TTL. Every
+  device derives untouched rows itself (`makeBuildRow`), so roster changes need no draft writes.
+  Submit deletes the site/day's rows in its transaction.
+- **API** (`controllers/draftController.js`) — `GET /api/attendance/draft?siteId&date` (rows +
+  lock) and `PUT /api/attendance/draft/rows` (per-row `baseRev`; a stale write comes back in
+  `conflicts` with the current row). Both `requireSiteAccess`.
+- **Client** (`lib/cloudDraft.ts` + the sync engine in `SiteAttendance.tsx`) — a row is an
+  unsynced edit iff its fields differ from its baseline (the remote row, else the derived
+  default); diffing covers every draft writer. Edits push 600ms after typing, other devices'
+  edits are pulled every 15s and on resume, merged per unit (sessions / breaks / sick) with a
+  "Keep mine" toast on a true clash. Unsynced edits live in the localStorage outbox
+  (`attendance_outbox_<site>_<date>`, with the base they were made from) until acknowledged.
+- **Submit** sends each row's `draftRev`; the server answers 409 `DRAFT_CHANGED` if any stored
+  row moved on, so nobody saves over a change they haven't seen.
+- The mode is chosen at page load; the switch turning OFF stops syncing immediately (the
+  on-device draft, kept current throughout, takes over). `WorkConfigContext` reports `loading`
+  until the first config fetch for the signed-in user completes, so pages never initialise
+  without the schedule or the feature switches.
 
 ### Cron jobs (`server/src/cron/`)
 Started on boot from `server.js`. `autoCheckOut.js` and `autoCheckIn.js` fill in

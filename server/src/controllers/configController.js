@@ -1,6 +1,7 @@
 import workModel from '../models/workModel.js'
 import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
+import { getFeatures } from '../utils/features.js';
 
 export const getWorkSchedule = async (req, res) => {
   try {
@@ -17,6 +18,8 @@ export const getWorkSchedule = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: schedule,
+      // Runtime feature switches (utils/features.js) — clients read them here.
+      features: getFeatures(),
     });
   } catch (error) {
     return res.status(500).json({

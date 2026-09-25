@@ -13,6 +13,22 @@ import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
 import { safeGetItem, safeSetItem, safeRemoveItem, draftStorageKey, pruneStaleDraftKeys } from "@/lib/draftStorage"
+import {
+  applyEditable,
+  describeFields,
+  editableOf,
+  fetchDraft,
+  mergeEditable,
+  readOutbox,
+  removeOutbox,
+  saveDraftRows,
+  serializeEditable,
+  writeOutbox,
+  type EditableFields,
+  type Outbox,
+  type RemoteRow,
+  type SaveDraftResult,
+} from "@/lib/cloudDraft"
 import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
@@ -291,7 +307,9 @@ interface DraftAttendancePayload {
   siteId: string,
   date: string,
   isHoliday: boolean
-  attendance : DraftAttendanceRecord[]
+  // draftRev: the shared cloud draft version of the row (0 = untouched default); the server
+  // refuses the submit (DRAFT_CHANGED) if another device has changed the row since.
+  attendance : (DraftAttendanceRecord & { draftRev?: number })[]
 }
 
 // Search query filter type is a single string
@@ -409,19 +427,36 @@ const refreshRowMetadata = (
   return JSON.stringify(next) === JSON.stringify(rec) ? rec : next
 }
 
+// Result of pushing a device's edits to the shared cloud draft (see syncNow).
+type SyncOutcome = "ok" | "conflict" | "failed" | "submitted"
+
+type RosterMergeOptions = {
+  // Serialized derived default (buildRow) of each employee under the PREVIOUS roster context.
+  // A row still exactly equal to it was never touched, so it follows the new default — e.g.
+  // a site default changed from another device. Omitted on a first build.
+  prevDerived?: Map<string, string>
+  prevCarryoverIds?: Set<string>
+  // Shared cloud draft overrides: those rows are never re-derived, and a row added now starts
+  // from its override instead of the default.
+  overrides?: Map<string, EditableFields>
+}
+
 /**
  * Reconcile draft rows with the current roster, keeping every edit on rows that still belong:
  *   - blank employees still finishing yesterday's shift (carryover);
  *   - drop rows for anyone now on leave, working at another site today, or (with a fresh
  *     roster) no longer on this site at all — possibly changed from ANOTHER device, which would
  *     otherwise submit a phantom record for them here;
+ *   - rows nobody touched follow a changed default (see RosterMergeOptions.prevDerived) — except
+ *     one whose carryover just closed: it stays blank, the employee starts today absent;
  *   - append a fresh row for each roster member not yet present (added / sent here meanwhile).
  * Pure — safe inside a functional setState. Returns `current` itself when nothing changed.
  */
 const mergeDraftWithRoster = (
   current: DraftAttendanceRecord[],
   ctx: RosterContext,
-  carryoverIds: Set<string>
+  carryoverIds: Set<string>,
+  opts: RosterMergeOptions = {}
 ): RosterMergeResult => {
   const rosterById = new Map(ctx.rosterEmployees.map((emp) => [String(emp._id), emp]))
   const removed: RosterMergeResult["removed"] = []
@@ -441,19 +476,38 @@ const mergeDraftWithRoster = (
       continue
     }
     const emp = rosterById.get(id)
-    kept.push(emp ? refreshRowMetadata(rec, ctx.buildRow(emp)) : rec)
+    if (!emp) {
+      kept.push(rec)
+      continue
+    }
+    const fresh = ctx.buildRow(emp)
+    let row = rec
+    const carryoverJustClosed = !!opts.prevCarryoverIds?.has(id) && !carryoverIds.has(id)
+    const untouched =
+      !opts.overrides?.has(id) &&
+      opts.prevDerived?.get(id) === serializeEditable(editableOf(rec))
+    if (untouched && !carryoverJustClosed) {
+      const rederived = { ...rec, sessions: fresh.sessions, breaksTaken: fresh.breaksTaken, isSickLeave: fresh.isSickLeave }
+      if (serializeEditable(editableOf(rederived)) !== serializeEditable(editableOf(rec))) row = rederived
+    }
+    kept.push(refreshRowMetadata(row, fresh))
   }
 
   const present = new Set(kept.map((rec) => String(rec.employee._id)))
   const arrivals = ctx.rosterEmployees.filter((emp) => !present.has(String(emp._id)))
   const added = arrivals.map((emp) => ({ id: String(emp._id), name: emp.name }))
+  const arrivalRows = arrivals.map((emp) => {
+    const row = ctx.buildRow(emp)
+    const override = opts.overrides?.get(String(emp._id))
+    return override ? applyEditable(row, override) : row
+  })
 
   const unchanged =
     arrivals.length === 0 &&
     kept.length === current.length &&
     kept.every((rec, i) => rec === current[i])
   return {
-    next: unchanged ? current : [...kept, ...arrivals.map(ctx.buildRow)],
+    next: unchanged ? current : [...kept, ...arrivalRows],
     added,
     removed,
   }
@@ -517,6 +571,17 @@ const NewRowBadge = () => (
     title="Added to this site after the page was opened — check the times"
   >
     New
+  </Badge>
+)
+
+// Shared draft: this row was just changed on another supervisor's device.
+const EditedElsewhereBadge = ({ by }: { by: string }) => (
+  <Badge
+    variant="secondary"
+    className="bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200/50 dark:border-sky-800/30 text-[10px] px-1.5 py-0 h-4"
+    title={`Changed by ${by} on another device`}
+  >
+    Edited by {by}
   </Badge>
 )
 
@@ -789,6 +854,8 @@ interface DraftRowProps {
   onOpenCarryover?: (employeeId: string) => void
   /** True when this row was added by a roster refresh after the page loaded (needs review). */
   isNew?: boolean
+  /** Shared draft: who just changed this row on another device (shown for a couple of minutes). */
+  editedBy?: string | null
   onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
   onUpdateBreaks: (employeeId: string, value: number | null) => void
   onClearSession: (employeeId: string, sessionIndex: number) => void
@@ -812,6 +879,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   carryoverSiteName,
   onOpenCarryover,
   isNew,
+  editedBy,
   onUpdateSession,
   onUpdateBreaks,
   onClearSession,
@@ -850,6 +918,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               )}
               {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
               {isNew && <NewRowBadge />}
+              {editedBy && <EditedElsewhereBadge by={editedBy} />}
             </div>
 
             <p className="text-sm text-muted-foreground">
@@ -1014,6 +1083,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   carryoverSiteName,
   onOpenCarryover,
   isNew,
+  editedBy,
   onUpdateSession,
   onUpdateBreaks,
   onClearSession,
@@ -1052,6 +1122,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 )}
                 {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
                 {isNew && <NewRowBadge />}
+                {editedBy && <EditedElsewhereBadge by={editedBy} />}
               </div>
 
               <p className="text-sm text-muted-foreground">
@@ -1246,7 +1317,7 @@ function SiteAttendance() {
   // This page always operates on the CURRENT business day, which is simply today's calendar
   // date — a night shift that runs past midnight stays on the day it started, and is closed
   // the next morning through the carryover flow below.
-  const { config: workConfig, loading: configLoading } = useWorkConfig()
+  const { config: workConfig, features, loading: configLoading } = useWorkConfig()
   const { user } = useAuth()
   // Supervisors' transfers are held as requests the destination must accept; admins
   // and superadmins transfer immediately.
@@ -1418,6 +1489,36 @@ function SiteAttendance() {
   // The cached draft was restored without a fresh roster (offline at load), so it may be
   // missing arrivals / still hold departures until the next successful refresh.
   const [rosterUnverified, setRosterUnverified] = useState(false)
+
+  // Serialized derived default (buildRow) of every roster employee, and the carryover set, under
+  // the latest roster context — how a refresh tells an untouched row (follows a changed default)
+  // from an edited one, and the baseline the cloud draft diffs edits against.
+  const derivedRef = useRef(new Map<string, string>())
+  const carryoverIdsRef = useRef(new Set<string>())
+  const lastCtxRef = useRef<RosterContext | null>(null)
+
+  // ---- Shared cloud draft (features.cloudDraft; lib/cloudDraft.ts) ----
+  // Chosen when the day loads and kept for the page's life so the sheet never switches models
+  // mid-edit — except that the server switch turning OFF stops syncing at once (kill switch);
+  // the on-device draft, kept up to date all along, carries on from there.
+  const [cloudMode, setCloudMode] = useState(false)
+  const cloudActive = cloudMode && features.cloudDraft && !attendanceExists
+  // The shared draft was on when the page loaded and has since been switched off.
+  const [cloudSwitchedOff, setCloudSwitchedOff] = useState(false)
+  const cloudOffNotice = (cloudSwitchedOff || (cloudMode && !features.cloudDraft)) && !attendanceExists
+  // Last known server version (rev + fields) of every stored draft row, by employee.
+  const remoteRowsRef = useRef(new Map<string, RemoteRow>())
+  // Fields just merged in from the server (applyRemoteRows) that React hasn't committed yet —
+  // draftAttendanceRef still holds the pre-merge row until the next render. The dirty check
+  // reads these first, so a push racing that render can't re-send the stale value over the
+  // change it just took in. Cleared whenever draftAttendanceRef catches up.
+  const remoteOverlayRef = useRef(new Map<string, EditableFields>())
+  const [syncState, setSyncState] = useState<{ status: "synced" | "saving" | "offline"; pending: number }>({
+    status: "synced",
+    pending: 0,
+  })
+  // Rows another device changed in the last couple of minutes: employee → editor's name.
+  const [remoteEdits, setRemoteEdits] = useState<Record<string, { by: string | null; at: number }>>({})
 
   const [isHoliday, setIsHoliday] = useState(false)
 
@@ -1633,7 +1734,10 @@ function SiteAttendance() {
   // The in-page ← button routes through here: leave immediately when clean,
   // otherwise raise the unsaved-changes dialog (which leaves via goBackOrFallback).
   const handleBackNavigation = () => {
-    if (!isDirty) {
+    // Shared draft: edits are on the server (or in the outbox, pushed on the next visit), so
+    // leaving loses nothing.
+    if (!isDirty || cloudActive) {
+      if (cloudActive) persistOutboxNow()
       goBackOrFallback()
       return
     }
@@ -1761,6 +1865,89 @@ function SiteAttendance() {
   // without explicit collarType/nationality resolve to foreignSkilled (older data).
   const [collarTab, setCollarTab] = useState<CollarTab>("all")
 
+  // A fresh draft row for `emp` at `siteData`: the category day-default check-in (blank for an
+  // employee still on yesterday's shift), or a visitor's carried check-in and per-visit job.
+  // Pure given its inputs — also used to re-derive the defaults after an Edit-defaults save.
+  const makeBuildRow = (siteData: Site, carryoverIds: Set<string>) =>
+    (emp: Employee): DraftAttendanceRecord => {
+      const hasPendingTransfer =
+        !!emp.pendingTransferSiteId &&
+        String(emp.pendingTransferSiteId) === String(siteData._id) &&
+        !!emp.pendingTransferDate &&
+        String(emp.pendingTransferDate).slice(0, 10) === today.slice(0, 10)
+
+      // Each of the four categories prefills from its OWN day default check-in;
+      // never fall back across categories — if the applicable default is empty, the
+      // check-in is left empty.
+      const category = categoryOf(emp.collarType, emp.nationality)
+      const dayDefaultByCategory: Record<RosterCategory, string> = {
+        foreignSkilled: siteData.defaultCheckIn || "",
+        foreignStaff: siteData.staffDefaultCheckIn || "",
+        omaniSkilled: siteData.omaniDefaultCheckIn || "",
+        omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
+      }
+      const roleDefaultIn = dayDefaultByCategory[category]
+      // Carryover employees default to ABSENT (empty) — they're still finishing
+      // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
+      const isCarryover = carryoverIds.has(emp._id)
+      const defaultIn = isCarryover
+        ? ""
+        : hasPendingTransfer && emp.pendingTransferCheckIn
+        ? toTimeValue(emp.pendingTransferCheckIn)
+        : roleDefaultIn
+      // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
+      // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
+      const isNightShift = false
+      // A cross-site visitor works this site's job for the day (pendingTransferJobId),
+      // not their home currentJob — so their session's job (and thus job-hours
+      // attribution) records the visited site's job. Non-visitors keep currentJob.
+      const sessionJob = hasPendingTransfer
+        ? emp.pendingTransferJobId || null
+        : emp.currentJob
+      return {
+        employee: {
+          _id: emp._id,
+          name: emp.name,
+          user: emp.user || null,
+          employmentType: emp.employmentType,
+        },
+
+        employeeId: emp.employeeId,
+
+        jobTitle: emp.jobTitle,
+
+        collarType: emp.collarType,
+
+        nationality: emp.nationality,
+
+        jobId:
+          sessionJob?._id || null,
+
+        sessions: [
+          {
+            siteId: siteData._id,
+            job: sessionJob,
+            checkIn: defaultIn,
+            checkOut: "",
+            workedHours: 0,
+            isNightShift,
+            // Auto-initialized only when the check-in is the category day default
+            // (not a carryover blank and not a transfer's own check-in).
+            checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
+          },
+        ],
+
+        isSickLeave: false,
+
+        transferredFrom: hasPendingTransfer && emp.pendingTransferFromSiteId
+          ? {
+              siteId: emp.pendingTransferFromSiteId._id,
+              name: emp.pendingTransferFromSiteId.siteName,
+            }
+          : null,
+      }
+    }
+
   // Everything needed to decide WHO belongs on today's draft and how a fresh row looks.
   // Built on load and again on every refresh (resume, poll, a refused submit), then applied to
   // the current rows by mergeDraftWithRoster.
@@ -1849,85 +2036,7 @@ function SiteAttendance() {
       )
     })
 
-    const buildRow =
-      (emp: Employee): DraftAttendanceRecord => {
-        const hasPendingTransfer =
-          !!emp.pendingTransferSiteId &&
-          String(emp.pendingTransferSiteId) === String(siteData._id) &&
-          !!emp.pendingTransferDate &&
-          String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
-
-        // Each of the four categories prefills from its OWN day default check-in;
-        // never fall back across categories — if the applicable default is empty, the
-        // check-in is left empty.
-        const category = categoryOf(emp.collarType, emp.nationality)
-        const dayDefaultByCategory: Record<RosterCategory, string> = {
-          foreignSkilled: siteData.defaultCheckIn || "",
-          foreignStaff: siteData.staffDefaultCheckIn || "",
-          omaniSkilled: siteData.omaniDefaultCheckIn || "",
-          omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
-        }
-        const roleDefaultIn = dayDefaultByCategory[category]
-        // Carryover employees default to ABSENT (empty) — they're still finishing
-        // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
-        const isCarryover = carryoverIds.has(emp._id)
-        const defaultIn = isCarryover
-          ? ""
-          : hasPendingTransfer && emp.pendingTransferCheckIn
-          ? toTimeValue(emp.pendingTransferCheckIn)
-          : roleDefaultIn
-        // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
-        // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
-        const isNightShift = false
-        // A cross-site visitor works this site's job for the day (pendingTransferJobId),
-        // not their home currentJob — so their session's job (and thus job-hours
-        // attribution) records the visited site's job. Non-visitors keep currentJob.
-        const sessionJob = hasPendingTransfer
-          ? emp.pendingTransferJobId || null
-          : emp.currentJob
-        return {
-          employee: {
-            _id: emp._id,
-            name: emp.name,
-            user: emp.user || null,
-            employmentType: emp.employmentType,
-          },
-
-          employeeId: emp.employeeId,
-
-          jobTitle: emp.jobTitle,
-
-          collarType: emp.collarType,
-
-          nationality: emp.nationality,
-
-          jobId:
-            sessionJob?._id || null,
-
-          sessions: [
-            {
-              siteId: siteData._id,
-              job: sessionJob,
-              checkIn: defaultIn,
-              checkOut: "",
-              workedHours: 0,
-              isNightShift,
-              // Auto-initialized only when the check-in is the category day default
-              // (not a carryover blank and not a transfer's own check-in).
-              checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
-            },
-          ],
-
-          isSickLeave: false,
-
-          transferredFrom: hasPendingTransfer && emp.pendingTransferFromSiteId
-            ? {
-                siteId: emp.pendingTransferFromSiteId._id,
-                name: emp.pendingTransferFromSiteId.siteName,
-              }
-            : null,
-        }
-      }
+    const buildRow = makeBuildRow(siteData, carryoverIds)
 
     return {
       rosterLoaded,
@@ -1939,10 +2048,29 @@ function SiteAttendance() {
     }
   }
 
-  // Build today's draft on page load: the cached draft (if any) reconciled against a fresh
-  // roster, else a fresh build. Throws when there's neither a roster nor a cached draft to
-  // show — the caller turns that into the Retry card rather than an empty sheet.
-  const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
+  // Adopt a freshly loaded roster context as the baseline for later refreshes and for the cloud
+  // draft's diffing: every roster employee's derived default row, serialized.
+  const adoptRosterContext = (ctx: RosterContext, carryoverIds: Set<string>) => {
+    if (!ctx.rosterLoaded) return
+    lastCtxRef.current = ctx
+    carryoverIdsRef.current = carryoverIds
+    derivedRef.current = new Map(
+      ctx.rosterEmployees.map((emp) => [String(emp._id), serializeEditable(editableOf(ctx.buildRow(emp)))])
+    )
+  }
+
+  const remoteOverrides = () =>
+    new Map([...remoteRowsRef.current].map(([empId, row]) => [empId, editableOf(row)]))
+
+  // Build today's draft on page load. Without the cloud draft: the on-device cached draft (if
+  // any) reconciled against a fresh roster, else a fresh build. With it: the roster's defaults,
+  // overlaid by the shared draft's rows, overlaid by this device's unsynced edits. Throws when
+  // there's nothing trustworthy to show — the caller turns that into the Retry card.
+  const initializeAttendanceFromEmployees = async (
+    siteData: Site,
+    carryoverIds: Set<string>,
+    cloud: boolean
+  ) => {
     const ctx = await loadRosterContext(siteData, carryoverIds)
     setOnLeaveEmployees(ctx.onLeave)
 
@@ -1956,6 +2084,67 @@ function SiteAttendance() {
       }
     }
 
+    let draft: Awaited<ReturnType<typeof fetchDraft>> | null = null
+    if (cloud) {
+      // Every device derives the untouched rows from the roster — without it there's no sheet.
+      if (!ctx.rosterLoaded) throw new Error("Couldn't load this site's employees")
+      try {
+        draft = await fetchDraft(id || "", today)
+      } catch (err) {
+        // Switched off since the config was read — carry on with the on-device draft.
+        if ((err as { response?: { data?: { code?: string } } })?.response?.data?.code !== "CLOUD_DRAFT_DISABLED") throw err
+      }
+    }
+
+    if (draft) {
+      if (draft.lock) throw new Error("This site's attendance was just submitted — tap Retry to see it")
+
+      remoteRowsRef.current = new Map(draft.rows.map((row) => [row.employee, row]))
+      const derivedRows = mergeDraftWithRoster([], ctx, carryoverIds).next
+      let rows = mergeDraftWithRoster([], ctx, carryoverIds, { overrides: remoteOverrides() }).next
+      adoptRosterContext(ctx, carryoverIds)
+
+      // This device's unsynced edits: its outbox — or, the first time it joins the shared draft
+      // today, whatever it had drafted on-device (uploaded as edits of the defaults).
+      let pending = readOutbox(id || "", today)
+      if (pending === null) {
+        pending = {}
+        const derivedById = new Map(derivedRows.map((row) => [String(row.employee._id), row]))
+        for (const cached of cachedRows ?? []) {
+          const empId = String(cached.employee._id)
+          const derived = derivedById.get(empId)
+          if (!derived) continue
+          const fields = editableOf(cached)
+          if (serializeEditable(fields) === serializeEditable(editableOf(derived))) continue
+          pending[empId] = { fields, base: editableOf(derived), baseRev: 0 }
+        }
+      }
+      const outbox: Outbox = pending
+      const clashes: string[] = []
+      rows = rows.map((row) => {
+        const empId = String(row.employee._id)
+        const entry = outbox[empId]
+        if (!entry) return row
+        if ((remoteRowsRef.current.get(empId)?.rev ?? 0) === entry.baseRev) return applyEditable(row, entry.fields)
+        // The shared row moved on while these edits waited: keep the parts nobody else changed.
+        const { merged, conflict } = mergeEditable(entry.base, entry.fields, editableOf(row))
+        if (conflict) clashes.push(row.employee.name)
+        return applyEditable(row, merged)
+      })
+      // Also marks this device as on the shared draft for today (see the migration above).
+      writeOutbox(id || "", today, outbox)
+      if (clashes.length) {
+        toast(
+          `Changed on another device while this one was away: ${clashes.join(", ")} — their version was kept.`,
+          { duration: 9000, icon: "ℹ️" }
+        )
+      }
+      setRosterUnverified(false)
+      setCloudMode(true)
+      setDraftAttendance(rows)
+      return
+    }
+
     if (!ctx.rosterLoaded && !cachedRows) {
       throw new Error("Couldn't load this site's employees")
     }
@@ -1963,12 +2152,268 @@ function SiteAttendance() {
     // A cached draft is restored as-is when the roster couldn't be fetched (offline); the
     // next successful refresh reconciles it, and the server refuses a submit that doesn't
     // match the real roster anyway.
+    setCloudMode(false)
     setRosterUnverified(!ctx.rosterLoaded)
     setDraftAttendance(mergeDraftWithRoster(cachedRows ?? [], ctx, carryoverIds).next)
+    adoptRosterContext(ctx, carryoverIds)
     // Don't mark the page dirty just for REHYDRATING a saved draft — the unsaved-changes
     // prompt should fire only when the user actually edits during THIS visit. The draft is
     // already persisted, so nothing is lost by starting clean; the first edit flips isDirty
     // and re-arms both the persistence sync and the leave guard.
+  }
+
+  // ---- Shared cloud draft: sync engine ----
+  // A row's baseline is what it would be with no edits on this device: the shared draft's
+  // version, else its derived default. A row that differs from its baseline is an unsynced edit.
+  // Diffing (rather than hooking each edit) covers every writer — typing, Absent/Undo, breaks,
+  // the defaults propagation — and never uploads a change that merely came from the roster or
+  // from another device.
+
+  const baselineOf = (empId: string): EditableFields | null => {
+    const remote = remoteRowsRef.current.get(empId)
+    if (remote) return editableOf(remote)
+    const derived = derivedRef.current.get(empId)
+    return derived ? (JSON.parse(derived) as EditableFields) : null
+  }
+
+  type DirtyRow = { empId: string; fields: EditableFields; base: EditableFields; baseRev: number }
+
+  const computeDirty = (rows: DraftAttendanceRecord[]): DirtyRow[] => {
+    const dirty: DirtyRow[] = []
+    for (const rec of rows) {
+      const empId = String(rec.employee._id)
+      const base = baselineOf(empId)
+      if (!base) continue
+      const fields = remoteOverlayRef.current.get(empId) ?? editableOf(rec)
+      if (serializeEditable(fields) === serializeEditable(base)) continue
+      dirty.push({ empId, fields, base, baseRev: remoteRowsRef.current.get(empId)?.rev ?? 0 })
+    }
+    return dirty
+  }
+
+  // Unsynced edits go to localStorage first, so a reload or a killed PWA doesn't lose them.
+  const persistOutbox = (dirty: DirtyRow[]) =>
+    writeOutbox(
+      id || "",
+      today,
+      Object.fromEntries(dirty.map((d) => [d.empId, { fields: d.fields, base: d.base, baseRev: d.baseRev }]))
+    )
+
+  const persistOutboxNow = () => {
+    if (liveRef.current.cloudActive) persistOutbox(computeDirty(draftAttendanceRef.current))
+  }
+
+  // The server's switch was turned off under us (the draft endpoints now 404).
+  const stopCloudMode = () => {
+    setCloudMode(false)
+    setCloudSwitchedOff(true)
+    toast("Shared drafts were switched off — this device keeps its copy of the sheet until it's saved.", {
+      icon: "ℹ️",
+      duration: 8000,
+    })
+  }
+
+  const conflictToast = (empId: string, name: string, by: string | null, theirs: EditableFields, mine: EditableFields) => {
+    toast(
+      (t) => (
+        <span className="flex items-center gap-3 text-sm">
+          <span>
+            {name} was just changed{by ? ` by ${by}` : " on another device"} to {describeFields(theirs)} — your
+            edit ({describeFields(mine)}) wasn't applied.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              toast.dismiss(t.id)
+              // Re-applying makes the row differ from the (new) baseline, so it's pushed again
+              // on top of their version.
+              setDraftAttendance((prev) =>
+                prev.map((rec) => (String(rec.employee._id) === empId ? applyEditable(rec, mine) : rec))
+              )
+              setIsDirty(true)
+            }}
+          >
+            Keep mine
+          </Button>
+        </span>
+      ),
+      { id: `draft-conflict-${empId}`, duration: 12000 }
+    )
+  }
+
+  // Bring server rows onto the sheet, merging per unit against `bases` (the baseline each row
+  // had before): a unit only the server changed is taken; one this device also changed to
+  // something else keeps the server's value and offers "Keep mine".
+  const applyRemoteRows = (rows: RemoteRow[], bases: Map<string, EditableFields>) => {
+    const byId = new Map(rows.map((row) => [row.employee, row]))
+    for (const row of rows) {
+      const rec = draftAttendanceRef.current.find((r) => String(r.employee._id) === row.employee)
+      const base = bases.get(row.employee)
+      if (!rec || !base) continue
+      const mine = remoteOverlayRef.current.get(row.employee) ?? editableOf(rec)
+      const { merged, conflict } = mergeEditable(base, mine, editableOf(row))
+      remoteOverlayRef.current.set(row.employee, merged)
+      if (conflict) conflictToast(row.employee, rec.employee.name, row.updatedByName, editableOf(row), mine)
+    }
+    setDraftAttendance((prev) => {
+      let changed = false
+      const next = prev.map((rec) => {
+        const row = byId.get(String(rec.employee._id))
+        const base = row ? bases.get(row.employee) : undefined
+        if (!row || !base) return rec
+        const merged = mergeEditable(base, editableOf(rec), editableOf(row)).merged
+        if (serializeEditable(merged) === serializeEditable(editableOf(rec))) return rec
+        changed = true
+        return applyEditable(rec, merged)
+      })
+      return changed ? next : prev
+    })
+    // Keep the on-device copy current too — it's the fallback if the switch is turned off.
+    setIsDirty(true)
+  }
+
+  const syncPromiseRef = useRef<Promise<SyncOutcome> | null>(null)
+  const syncQueuedRef = useRef(false)
+
+  // Push this device's edits to the shared draft. Single-flight: a call during a push queues one
+  // more pass. Anything but "ok" means the supervisor should look before submitting: an edit
+  // lost to another device's change ("conflict" — merged in, toast shown), a failed push
+  // ("failed" — kept in the outbox, retried later), or the day already submitted elsewhere.
+  const syncNow = async (): Promise<SyncOutcome> => {
+    if (!liveRef.current.cloudActive) return "ok"
+    if (syncPromiseRef.current) {
+      syncQueuedRef.current = true
+      return syncPromiseRef.current
+    }
+    const run = (async (): Promise<SyncOutcome> => {
+      let outcome: SyncOutcome = "ok"
+      do {
+        syncQueuedRef.current = false
+        const dirty = computeDirty(draftAttendanceRef.current)
+        persistOutbox(dirty)
+        if (dirty.length === 0) {
+          setSyncState({ status: "synced", pending: 0 })
+          break
+        }
+        setSyncState({ status: "saving", pending: dirty.length })
+
+        let result: SaveDraftResult
+        try {
+          result = await saveDraftRows(
+            id || "",
+            today,
+            dirty.map((d) => ({ employee: d.empId, ...d.fields, baseRev: d.baseRev }))
+          )
+        } catch (err) {
+          const data = (err as { response?: { data?: { code?: string; lockedByName?: string | null; lockedAt?: string | null } } })
+            ?.response?.data
+          if (data?.code === "ALREADY_SUBMITTED") {
+            await adoptSubmittedElsewhere(data)
+            return "submitted"
+          }
+          if (data?.code === "CLOUD_DRAFT_DISABLED") {
+            stopCloudMode()
+            return "ok"
+          }
+          setSyncState({ status: "offline", pending: dirty.length })
+          return "failed"
+        }
+
+        const dirtyById = new Map(dirty.map((d) => [d.empId, d]))
+        for (const s of result.saved) {
+          const d = dirtyById.get(s.employee)
+          if (d) {
+            remoteRowsRef.current.set(s.employee, {
+              ...d.fields,
+              employee: s.employee,
+              rev: s.rev,
+              updatedAt: s.updatedAt,
+              updatedBy: user?._id ?? null,
+              updatedByName: s.updatedByName,
+            })
+          }
+        }
+        if (result.conflicts.length) {
+          outcome = "conflict"
+          const bases = new Map<string, EditableFields>()
+          const theirs: RemoteRow[] = []
+          for (const c of result.conflicts) {
+            if (!c.current) {
+              // Gone from the server — the day is being submitted; the lock check will follow.
+              remoteRowsRef.current.delete(c.employee)
+              continue
+            }
+            remoteRowsRef.current.set(c.employee, c.current)
+            const d = dirtyById.get(c.employee)
+            if (d) {
+              bases.set(c.employee, d.base)
+              theirs.push(c.current)
+            }
+          }
+          applyRemoteRows(theirs, bases)
+          // Don't push again in this pass: the merge above renders first, and the debounce it
+          // triggers pushes whatever of this device's edits survived it.
+          syncQueuedRef.current = false
+        }
+        // Edits typed during the push are picked up by the queued pass (or the next debounce).
+        const remaining = computeDirty(draftAttendanceRef.current).length
+        setSyncState({ status: remaining ? "saving" : "synced", pending: remaining })
+      } while (syncQueuedRef.current)
+      return outcome
+    })()
+    syncPromiseRef.current = run
+    try {
+      return await run
+    } finally {
+      syncPromiseRef.current = null
+    }
+  }
+
+  const pullPromiseRef = useRef<Promise<void> | null>(null)
+
+  // Fetch other devices' edits — and notice a submit — then merge them in (applyRemoteRows).
+  const pullDraft = async (): Promise<void> => {
+    if (!liveRef.current.cloudActive) return
+    if (pullPromiseRef.current) return pullPromiseRef.current
+    const run = (async () => {
+      let draft: Awaited<ReturnType<typeof fetchDraft>>
+      try {
+        draft = await fetchDraft(id || "", today)
+      } catch (err) {
+        if ((err as { response?: { data?: { code?: string } } })?.response?.data?.code === "CLOUD_DRAFT_DISABLED") {
+          stopCloudMode()
+        }
+        return
+      }
+      if (draft.lock) {
+        await adoptSubmittedElsewhere(draft.lock)
+        return
+      }
+      const changed = draft.rows.filter((row) => (remoteRowsRef.current.get(row.employee)?.rev ?? 0) < row.rev)
+      if (changed.length === 0) return
+      const bases = new Map<string, EditableFields>()
+      for (const row of changed) {
+        const base = baselineOf(row.employee)
+        if (base) bases.set(row.employee, base)
+      }
+      changed.forEach((row) => remoteRowsRef.current.set(row.employee, row))
+      applyRemoteRows(changed, bases)
+      const now = Date.now()
+      const fromOthers = changed.filter((row) => row.updatedBy !== user?._id)
+      if (fromOthers.length) {
+        setRemoteEdits((prev) => ({
+          ...prev,
+          ...Object.fromEntries(fromOthers.map((row) => [row.employee, { by: row.updatedByName, at: now }])),
+        }))
+      }
+    })()
+    pullPromiseRef.current = run
+    try {
+      await run
+    } finally {
+      pullPromiseRef.current = null
+    }
   }
 
   const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
@@ -2135,6 +2580,8 @@ function SiteAttendance() {
     transferModalOpen,
     isEditingDefaults,
     site,
+    cloudActive,
+    syncPending: syncState.pending,
   })
   useEffect(() => {
     liveRef.current = {
@@ -2147,6 +2594,8 @@ function SiteAttendance() {
       transferModalOpen,
       isEditingDefaults,
       site,
+      cloudActive,
+      syncPending: syncState.pending,
     }
   })
 
@@ -2176,9 +2625,15 @@ function SiteAttendance() {
   // The server refuses a second submit, so nothing from this device's draft was applied: drop
   // it and show the saved sheet, saying so plainly instead of leaving a dead Save button.
   const adoptSubmittedElsewhere = async (info: { lockedByName?: string | null; lockedAt?: string | null }) => {
-    const hadEdits = liveRef.current.isDirty
+    // With the shared draft only edits that never reached the server were left out; without
+    // it, every edit on this device was.
+    const hadEdits = liveRef.current.cloudActive ? liveRef.current.syncPending > 0 : liveRef.current.isDirty
     discardPendingDraftWrite()
     safeRemoveItem(draftStorageKey(id || "", today))
+    removeOutbox(id || "", today)
+    remoteRowsRef.current.clear()
+    setRemoteEdits({})
+    setSyncState({ status: "synced", pending: 0 })
     setIsDirty(false)
     setRosterChange(null)
     setAttendanceExists(true)
@@ -2234,9 +2689,20 @@ function SiteAttendance() {
 
         setOnLeaveEmployees(ctx.onLeave)
         setRosterUnverified(false)
-        const result = mergeDraftWithRoster(draftAttendanceRef.current, ctx, carryoverIds)
+        // Untouched rows follow a changed default; shared-draft rows never re-derive.
+        const opts: RosterMergeOptions = {
+          prevDerived: derivedRef.current,
+          prevCarryoverIds: carryoverIdsRef.current,
+          overrides: liveRef.current.cloudActive ? remoteOverrides() : undefined,
+        }
+        const result = mergeDraftWithRoster(draftAttendanceRef.current, ctx, carryoverIds, opts)
         // Apply against the latest state so keystrokes made during the fetch survive.
-        setDraftAttendance((prev) => mergeDraftWithRoster(prev, ctx, carryoverIds).next)
+        setDraftAttendance((prev) => mergeDraftWithRoster(prev, ctx, carryoverIds, opts).next)
+        adoptRosterContext(ctx, carryoverIds)
+        if (liveRef.current.cloudActive) {
+          await pullDraft()
+          void syncNow()
+        }
         if (result.added.length || result.removed.length) {
           noteRosterChange(result.added, result.removed)
           if (!force) {
@@ -2315,12 +2781,32 @@ function SiteAttendance() {
   const handleSubmit = async () => {
     if (submittingRef.current) return
     submittingRef.current = true
-    // Submit exactly the rows on screen now.
-    const rows = draftAttendanceRef.current
+    const cloud = liveRef.current.cloudActive
     try {
       setSaving(true)
 
       setOverlapError(null)
+
+      // Shared draft: land this device's last edits first. If one lost to another device's
+      // change (now merged in, with a toast) or the push failed, stop — Save again after a look.
+      if (cloud) {
+        const outcome = await syncNow()
+        if (outcome === "submitted") return
+        if (outcome !== "ok") {
+          toast.error(
+            outcome === "failed"
+              ? "Couldn't sync your latest changes — check the connection and try again."
+              : "Some rows were just changed on another device — review them and tap Save again.",
+            { duration: 7000 }
+          )
+          return
+        }
+      }
+
+      // Submit exactly the rows on screen now, each naming the shared-draft version it shows.
+      const rows = draftAttendanceRef.current.map((rec) =>
+        cloud ? { ...rec, draftRev: remoteRowsRef.current.get(String(rec.employee._id))?.rev ?? 0 } : rec
+      )
 
       const payload: DraftAttendancePayload = {
         siteId: id || "",
@@ -2368,6 +2854,11 @@ function SiteAttendance() {
         safeRemoveItem(draftStorageKey(id || "", today))
         safeRemoveItem(`active_inline_edit_row_${id}`)
         safeRemoveItem(`active_inline_edit_data_${id}`)
+        // The server cleared the shared draft rows in the same transaction.
+        removeOutbox(id || "", today)
+        remoteRowsRef.current.clear()
+        setRemoteEdits({})
+        setSyncState({ status: "synced", pending: 0 })
 
         setAttendanceExists(true)
 
@@ -2384,6 +2875,19 @@ function SiteAttendance() {
 
       if (responseData?.code === "ROSTER_CHANGED") {
         await handleRosterChangedOnSubmit(responseData.rosterChange)
+      } else if (responseData?.code === "DRAFT_CHANGED") {
+        if (cloud) {
+          // Another supervisor changed rows while this one was saving — show them first.
+          await pullDraft()
+          toast.error(responseData.message, { duration: 7000 })
+        } else {
+          // The server holds shared-draft edits this page can't see: the shared draft was
+          // switched on after it loaded. Reload to join it (this device's draft is kept).
+          flushPendingDraftWrite()
+          setIsDirty(false)
+          toast("Other supervisors are editing this sheet — reloading to show their changes…", { icon: "🔄" })
+          window.setTimeout(() => window.location.reload(), 1500)
+        }
       } else if (responseData?.code === "ALREADY_SUBMITTED") {
         await adoptSubmittedElsewhere(responseData)
       } else if (responseData?.code === "SUBMIT_CONFLICT") {
@@ -2826,6 +3330,8 @@ function SiteAttendance() {
   const draftAttendanceRef = useRef<DraftAttendanceRecord[]>(draftAttendance)
   useEffect(() => {
     draftAttendanceRef.current = draftAttendance
+    // Any server merge is now part of the committed rows (see remoteOverlayRef).
+    remoteOverlayRef.current.clear()
   }, [draftAttendance])
 
   const clearDraftSession = useCallback((employeeId: string, sessionIndex: number) => {
@@ -3176,6 +3682,18 @@ function SiteAttendance() {
       // Remove response-only fields before setting site state
       const { propagation: _propagation, ...siteData } = updatedSite
       setSite(siteData)
+
+      // Re-derive every row's default under the new site values, so the rows the propagation
+      // above just moved to the new default still count as untouched (the shared draft then
+      // doesn't upload them as edits, and later refreshes keep them following the default).
+      const lastCtx = lastCtxRef.current
+      if (lastCtx) {
+        const buildRow = makeBuildRow(siteData, carryoverIdsRef.current)
+        lastCtxRef.current = { ...lastCtx, buildRow }
+        derivedRef.current = new Map(
+          lastCtx.rosterEmployees.map((emp) => [String(emp._id), serializeEditable(editableOf(buildRow(emp)))])
+        )
+      }
       setIsEditingDefaults(false)
       setUpdateDefaultsDialogOpen(false)
     } catch (error: any) {
@@ -3383,12 +3901,26 @@ function SiteAttendance() {
     return computeSiteStats(source)
   }, [attendanceExists, attendance, draftAttendance, computeSiteStats])
 
+  // Keep the latest refresh / sync closures for the listeners and timers below.
+  const refreshRef = useRef(refreshFromServer)
+  const cloudOpsRef = useRef({ syncNow, pullDraft, persistOutboxNow })
+  useEffect(() => {
+    refreshRef.current = refreshFromServer
+    cloudOpsRef.current = { syncNow, pullDraft, persistOutboxNow }
+  })
+
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isDirty) return
 
       // Persist any debounced-but-unwritten draft edits before the tab closes.
       flushPendingDraftWrite()
+
+      // Shared draft: nothing to warn about — unsent edits are in the outbox.
+      if (cloudActive) {
+        cloudOpsRef.current.persistOutboxNow()
+        return
+      }
 
       e.preventDefault()
       e.returnValue = ""
@@ -3405,10 +3937,11 @@ function SiteAttendance() {
         handleBeforeUnload
       )
     }
-  }, [isDirty])
+  }, [isDirty, cloudActive])
 
   // Sync draft attendance to local storage — debounced (see
-  // pendingDraftWriteRef near the top of the component).
+  // pendingDraftWriteRef near the top of the component). Kept up to date in shared-draft mode
+  // too: it's the fallback if the shared draft is switched off.
   useEffect(() => {
     if (!(isDirty && draftAttendance && draftAttendance.length > 0 && id)) {
       // Draft no longer eligible for persistence (e.g. just submitted) —
@@ -3422,9 +3955,13 @@ function SiteAttendance() {
       data: draftAttendance,
     }
 
+    // Editing without the shared draft (switched off): forget this device's shared-draft
+    // marker, so when it's switched back on these edits are carried into it.
+    if (!cloudActive) removeOutbox(id, today)
+
     const timer = setTimeout(flushPendingDraftWrite, 300)
     return () => clearTimeout(timer)
-  }, [draftAttendance, isDirty, id, today])
+  }, [draftAttendance, isDirty, id, today, cloudActive])
 
   // Flush any pending draft write when leaving the page (SPA navigation).
   useEffect(() => {
@@ -3459,7 +3996,8 @@ function SiteAttendance() {
   }, [id])
 
   useEffect(() => {
-    if (!isDirty) return
+    // Shared draft: nothing is lost by leaving (see handleBackNavigation), so no trap.
+    if (!isDirty || cloudActive) return
 
     // Trap the browser / hardware Back button while there are unsaved changes:
     // push a TAGGED duplicate of this page so a Back press fires popstate (which
@@ -3479,7 +4017,7 @@ function SiteAttendance() {
     return () => {
       window.removeEventListener("popstate", handlePopState)
     }
-  }, [isDirty])
+  }, [isDirty, cloudActive])
 
   // Mobile drag gestures while the search/filter UI is engaged:
   //  - ANY drag blurs the search input so the keyboard gets out of the way
@@ -3587,7 +4125,7 @@ function SiteAttendance() {
       } else {
         await Promise.all([
           checkHolidayStatus(calculatedDate),
-          initializeAttendanceFromEmployees(siteData, carryoverIds),
+          initializeAttendanceFromEmployees(siteData, carryoverIds, features.cloudDraft),
         ])
       }
       lastRefreshAtRef.current = Date.now()
@@ -3620,11 +4158,30 @@ function SiteAttendance() {
     pruneStaleDraftKeys(today)
   }, [today])
 
-  // Keep the latest refresh closure for the listeners below.
-  const refreshRef = useRef(refreshFromServer)
+  // Shared draft: push edits shortly after typing stops.
   useEffect(() => {
-    refreshRef.current = refreshFromServer
-  })
+    if (!cloudActive) return
+    const timer = window.setTimeout(() => void cloudOpsRef.current.syncNow(), 600)
+    return () => window.clearTimeout(timer)
+  }, [draftAttendance, cloudActive])
+
+  // Shared draft: pull other devices' edits every 15s while visible, retry unsent edits, and
+  // let "edited by …" row hints fade after two minutes.
+  useEffect(() => {
+    if (!cloudActive || loading || loadError) return
+    const tick = () => {
+      if (document.visibilityState !== "visible") return
+      void cloudOpsRef.current.pullDraft()
+      void cloudOpsRef.current.syncNow()
+      const cutoff = Date.now() - 120_000
+      setRemoteEdits((prev) => {
+        const fresh = Object.entries(prev).filter(([, v]) => v.at >= cutoff)
+        return fresh.length === Object.keys(prev).length ? prev : Object.fromEntries(fresh)
+      })
+    }
+    const timer = window.setInterval(tick, 15_000)
+    return () => window.clearInterval(timer)
+  }, [cloudActive, loading, loadError])
 
   // Resync whenever the page comes back into view — a PWA is suspended in the background and
   // resumed with its old in-memory state (a notification tap on an already-open tab only
@@ -3636,9 +4193,13 @@ function SiteAttendance() {
     const run = () => {
       if (document.visibilityState === "visible") void refreshRef.current()
     }
+    const persistNow = () => {
+      flushPendingDraftWrite()
+      cloudOpsRef.current.persistOutboxNow()
+    }
     const onVisibility = () => {
       if (document.visibilityState === "visible") run()
-      else flushPendingDraftWrite()
+      else persistNow()
     }
     const onPageShow = (e: PageTransitionEvent) => {
       if (e.persisted) run()
@@ -3647,14 +4208,14 @@ function SiteAttendance() {
     window.addEventListener("focus", run)
     window.addEventListener("online", run)
     window.addEventListener("pageshow", onPageShow)
-    window.addEventListener("pagehide", flushPendingDraftWrite)
+    window.addEventListener("pagehide", persistNow)
     const timer = window.setInterval(run, attendanceExists ? 60_000 : 120_000)
     return () => {
       document.removeEventListener("visibilitychange", onVisibility)
       window.removeEventListener("focus", run)
       window.removeEventListener("online", run)
       window.removeEventListener("pageshow", onPageShow)
-      window.removeEventListener("pagehide", flushPendingDraftWrite)
+      window.removeEventListener("pagehide", persistNow)
       window.clearInterval(timer)
     }
     // flushPendingDraftWrite only touches a ref, so the first render's copy is fine.
@@ -3803,6 +4364,27 @@ function SiteAttendance() {
                     "Save Attendance"
                   )}
                 </Button>
+              )}
+
+              {/* Shared draft status: edits autosave for every supervisor on this site. */}
+              {cloudActive && (
+                <p
+                  className={cn(
+                    "text-center text-[11px]",
+                    syncState.status === "offline" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+                  )}
+                >
+                  {syncState.status === "saving"
+                    ? "Saving draft…"
+                    : syncState.status === "offline"
+                    ? `Offline — ${syncState.pending} change${syncState.pending === 1 ? "" : "s"} not shared yet`
+                    : "Shared draft · all changes saved"}
+                </p>
+              )}
+              {cloudOffNotice && (
+                <p className="text-center text-[11px] text-amber-600 dark:text-amber-400">
+                  Shared draft off — this sheet is kept on this device
+                </p>
               )}
 
               {id && <SiteActivityLog siteId={id} date={today} />}
@@ -5163,6 +5745,7 @@ function SiteAttendance() {
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                       onOpenCarryover={handleOpenCarryover}
                       isNew={newRowIds.has(record.employee._id)}
+                      editedBy={remoteEdits[record.employee._id] ? remoteEdits[record.employee._id].by || "another device" : null}
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                       onUpdateSession={updateDraftSession}
@@ -5204,6 +5787,7 @@ function SiteAttendance() {
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                         onOpenCarryover={handleOpenCarryover}
                         isNew={newRowIds.has(record.employee._id)}
+                        editedBy={remoteEdits[record.employee._id] ? remoteEdits[record.employee._id].by || "another device" : null}
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                         onUpdateSession={updateDraftSession}
