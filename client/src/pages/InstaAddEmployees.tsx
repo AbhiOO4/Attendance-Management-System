@@ -114,8 +114,13 @@ interface Employee {
     //   visitingSite     — a site they are OUT visiting today (session or pending stash),
     //                      shown in place of the home site; null when not visiting
     //   visitingStatus   — attendance state at that visiting site today
+    //   markedToday      — checked in anywhere today. At home, a request still goes ahead
+    //                      (their supervisor chooses on accept how the day splits)
+    //   markedAway       — checked in at a site other than home; the server refuses a request
     assigned?: boolean
     hasPendingRequest?: boolean
+    markedToday?: boolean
+    markedAway?: boolean
     homeStatus?: 'unassigned' | 'not-marked' | 'present' | 'checked-out' | 'submitted'
     visitingSite?: {
         _id: string
@@ -531,6 +536,17 @@ function InstaAddEmployees() {
             setRequestEmployee(null)
         } catch (error) {
             if (axios.isAxiosError(error)) {
+                // Checked in at another site since the list loaded — flip the open dialog to
+                // its "can't request" notice instead of toasting.
+                if (error.response?.data?.code === "MARKED_ELSEWHERE") {
+                    setRequestEmployee({ ...requestEmployee, markedToday: true, markedAway: true })
+                    setEmployees((prev) =>
+                        prev.map((e) =>
+                            e._id === requestEmployee._id ? { ...e, markedToday: true, markedAway: true } : e
+                        )
+                    )
+                    return
+                }
                 toast.error(error.response?.data?.message || "Couldn't send request")
                 // Already-pending (409) — reflect it so the row shows "Requested".
                 if (error.response?.status === 409) {
@@ -640,6 +656,14 @@ function InstaAddEmployees() {
 
     const siteStatusBadges = (employee: Employee) =>
         employee.visitingSite ? visitingBadges(employee) : homeStatusBadge(employee)
+
+    // Request dialog state for an employee already checked in today. Away (at a site other
+    // than home) blocks the request — that site has them now. At home it only needs a note:
+    // their supervisor chooses on accept whether the whole day moves here or is split.
+    const requestBlocked = !!requestEmployee?.markedAway
+    const checkedInAtHome = !!requestEmployee?.markedToday && !requestBlocked
+    const awaySiteName = requestEmployee?.visitingSite?.siteName || "another site"
+    const homeSiteName = requestEmployee?.currentSite?.siteName || "their site"
 
     if (loading) {
         return (
@@ -1308,69 +1332,97 @@ function InstaAddEmployees() {
                                         <strong className="text-foreground">{site?.siteName}</strong>
                                     </span>
                                 </div>
-                                <div>{homeStatusBadge(requestEmployee)}</div>
+                                <div className="flex flex-wrap gap-1">{siteStatusBadges(requestEmployee)}</div>
                             </div>
                         )}
 
-                        {/* Job at this site */}
-                        <div className="space-y-2.5">
-                            <div className="flex items-center gap-1.5">
-                                <Briefcase className="h-4 w-4 text-muted-foreground" />
-                                <label className="text-sm font-semibold text-foreground">Assign Job Role</label>
+                        {requestBlocked ? (
+                            <div className="rounded-xl border border-amber-200/70 bg-amber-50 p-3 space-y-1.5 text-amber-800 dark:bg-amber-950/20 dark:border-amber-800/30 dark:text-amber-200">
+                                <div className="font-medium flex items-center gap-1.5 text-sm">
+                                    <AlertCircle className="h-4 w-4 shrink-0" />
+                                    Working at another site today
+                                </div>
+                                <p className="text-xs leading-snug">
+                                    {requestEmployee?.name} is working at <strong>{awaySiteName}</strong> today,
+                                    so a transfer request can't be sent. Ask {awaySiteName}'s supervisor
+                                    to <strong>Transfer</strong> them.
+                                </p>
                             </div>
-                            <Select
-                                value={requestJob ?? "none"}
-                                onValueChange={(value) => setRequestJob(value === "none" ? null : value)}
-                            >
-                                <SelectTrigger className="w-full bg-background border-input shadow-sm hover:border-accent">
-                                    <SelectValue placeholder="Select job (optional)" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="none">Don't assign job</SelectItem>
-                                    {site?.jobs?.filter(job => job.isActive !== false && !job.isDeleted && !job.isCompleted).map((job) => (
-                                        <SelectItem key={job._id} value={job._id}>
-                                            {job.name}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        {/* Transfer type */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-semibold text-foreground">Transfer type</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setRequestMode("today")}
-                                    className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "today" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
-                                >
-                                    <div className="font-semibold text-sm text-foreground">For today</div>
-                                    <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
-                                        Full day here; back on their site tomorrow.
+                        ) : (
+                            <>
+                                {checkedInAtHome && (
+                                    <div className="flex items-start gap-2 rounded-xl border border-sky-200/70 bg-sky-50 p-3 text-xs text-sky-800 dark:bg-sky-950/20 dark:border-sky-800/30 dark:text-sky-200">
+                                        <Clock3 className="h-4 w-4 shrink-0 mt-0.5" />
+                                        <span className="leading-snug">
+                                            {requestEmployee?.name} already checked in at{" "}
+                                            <strong>{homeSiteName}</strong> today. When {homeSiteName}'s supervisor
+                                            accepts, they'll choose whether to move {requestEmployee?.name}'s whole
+                                            day here or split it at the time they leave.
+                                        </span>
                                     </div>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setRequestMode("permanent")}
-                                    className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "permanent" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
-                                >
-                                    <div className="font-semibold text-sm text-foreground">Permanent</div>
-                                    <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
-                                        Home site moves here from today.
-                                    </div>
-                                </button>
-                            </div>
-                        </div>
+                                )}
 
-                        <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                            <span>
-                                This sends a request to{" "}
-                                <strong className="text-foreground">{requestEmployee?.currentSite?.siteName || "their site"}</strong>'s
-                                supervisor. The employee joins your roster only once they accept.
-                            </span>
-                        </div>
+                                {/* Job at this site */}
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center gap-1.5">
+                                        <Briefcase className="h-4 w-4 text-muted-foreground" />
+                                        <label className="text-sm font-semibold text-foreground">Assign Job Role</label>
+                                    </div>
+                                    <Select
+                                        value={requestJob ?? "none"}
+                                        onValueChange={(value) => setRequestJob(value === "none" ? null : value)}
+                                    >
+                                        <SelectTrigger className="w-full bg-background border-input shadow-sm hover:border-accent">
+                                            <SelectValue placeholder="Select job (optional)" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">Don't assign job</SelectItem>
+                                            {site?.jobs?.filter(job => job.isActive !== false && !job.isDeleted && !job.isCompleted).map((job) => (
+                                                <SelectItem key={job._id} value={job._id}>
+                                                    {job.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                {/* Transfer type */}
+                                <div className="space-y-2">
+                                    <label className="text-sm font-semibold text-foreground">Transfer type</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setRequestMode("today")}
+                                            className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "today" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
+                                        >
+                                            <div className="font-semibold text-sm text-foreground">For today</div>
+                                            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                                Full day here; back on their site tomorrow.
+                                            </div>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setRequestMode("permanent")}
+                                            className={`rounded-xl border p-3 text-left transition-colors ${requestMode === "permanent" ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"}`}
+                                        >
+                                            <div className="font-semibold text-sm text-foreground">Permanent</div>
+                                            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                                Home site moves here from today.
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                                    <span>
+                                        This sends a request to{" "}
+                                        <strong className="text-foreground">{requestEmployee?.currentSite?.siteName || "their site"}</strong>'s
+                                        supervisor. The employee joins your roster only once they accept.
+                                    </span>
+                                </div>
+                            </>
+                        )}
                     </div>
 
                     <DialogFooter className="px-6 py-4 bg-muted/30 border-t border-border/40 flex sm:justify-end gap-2">
@@ -1380,25 +1432,27 @@ function InstaAddEmployees() {
                             disabled={requestSubmitting}
                             className="w-full sm:w-auto"
                         >
-                            Cancel
+                            {requestBlocked ? "Close" : "Cancel"}
                         </Button>
-                        <Button
-                            onClick={submitRequest}
-                            disabled={requestSubmitting}
-                            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
-                        >
-                            {requestSubmitting ? (
-                                <>
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Sending...
-                                </>
-                            ) : (
-                                <>
-                                    <Send className="h-4 w-4" />
-                                    Send Request
-                                </>
-                            )}
-                        </Button>
+                        {!requestBlocked && (
+                            <Button
+                                onClick={submitRequest}
+                                disabled={requestSubmitting}
+                                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5"
+                            >
+                                {requestSubmitting ? (
+                                    <>
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Sending...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Send className="h-4 w-4" />
+                                        Send Request
+                                    </>
+                                )}
+                            </Button>
+                        )}
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

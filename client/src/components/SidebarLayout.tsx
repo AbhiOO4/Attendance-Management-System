@@ -3,6 +3,7 @@ import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { Menu } from "lucide-react"
 import { api } from "@/lib/api"
+import { startRequestsLive, REQUESTS_LIVE_EVENT } from "@/lib/requestsLive"
 
 import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
@@ -160,9 +161,19 @@ export default function SidebarLayout() {
     return []
   }, [user])
 
-  // Requests nav badge: pending incoming decisions + unread notifications. Polled
-  // lightly (90s, paused when the tab is hidden) with a cheap indexed count, plus
-  // a refetch on tab focus and on the in-app "requests:updated" event. No sockets.
+  // Live stream of request changes (lib/requestsLive.ts) — one per signed-in tab,
+  // kept across user-object refreshes. The badge below and the Requests page listen
+  // for its REQUESTS_LIVE_EVENT.
+  const userId = user?._id
+  useEffect(() => {
+    if (!userId) return
+    return startRequestsLive()
+  }, [userId])
+
+  // Requests nav badge: pending incoming decisions + unread notifications (a cheap
+  // indexed count). Refetched the moment the live stream reports a change, on tab
+  // focus and on the in-app "requests:updated" event; a light 90s poll (paused when
+  // the tab is hidden) is the fallback for when the stream can't connect.
   const [requestsCount, setRequestsCount] = useState(0)
 
   useEffect(() => {
@@ -188,12 +199,14 @@ export default function SidebarLayout() {
     const onUpdate = () => fetchSummary()
     document.addEventListener("visibilitychange", onVisible)
     window.addEventListener("requests:updated", onUpdate)
+    window.addEventListener(REQUESTS_LIVE_EVENT, onUpdate)
 
     return () => {
       cancelled = true
       window.clearInterval(id)
       document.removeEventListener("visibilitychange", onVisible)
       window.removeEventListener("requests:updated", onUpdate)
+      window.removeEventListener(REQUESTS_LIVE_EVENT, onUpdate)
     }
   }, [user])
 
@@ -209,8 +222,18 @@ export default function SidebarLayout() {
     <div className="flex h-screen w-full">
       {/* Mobile Header */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-14 border-b bg-background flex items-center px-4 z-50">
-        <button onClick={() => setOpen(true)}>
+        <button
+          onClick={() => setOpen(true)}
+          className="relative"
+          aria-label={requestsCount > 0 ? `Open menu (${requestsCount} new in Requests)` : "Open menu"}
+        >
           <Menu className="w-6 h-6" />
+          {/* The sidebar (and its Requests badge) is hidden on mobile — surface the count here. */}
+          {requestsCount > 0 && (
+            <span className="absolute -top-1.5 -right-2 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold ring-2 ring-background">
+              {requestsCount > 9 ? "9+" : requestsCount}
+            </span>
+          )}
         </button>
         <span className="ml-4 font-semibold">AMS</span>
       </div>

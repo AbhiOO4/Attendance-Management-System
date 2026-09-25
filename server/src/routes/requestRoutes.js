@@ -10,6 +10,7 @@ import {
   getSummary,
   listNotifications,
   markNotificationsRead,
+  streamRequestEvents,
 } from "../controllers/requestController.js"
 
 const router = express.Router()
@@ -20,6 +21,8 @@ router.use(verifyToken)
 router.get("/summary", authorizeRoles("admin", "supervisor"), getSummary)
 router.get("/notifications", authorizeRoles("admin", "supervisor"), listNotifications)
 router.post("/notifications/read", authorizeRoles("admin", "supervisor"), markNotificationsRead)
+// Live "something changed" events for the badge + Requests page (server-sent events).
+router.get("/stream", authorizeRoles("admin", "supervisor"), streamRequestEvents)
 
 // Requests. Only supervisors create (admins direct-add); two-site auth is done
 // inside each controller, so requireSiteAccess (single-site) is not used here.

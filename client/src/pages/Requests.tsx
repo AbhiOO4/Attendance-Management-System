@@ -1,14 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import toast from "react-hot-toast"
 import axios from "axios"
 
 import { api } from "@/lib/api"
+import { REQUESTS_LIVE_EVENT, type RequestsLiveDetail } from "@/lib/requestsLive"
 import { useAuth } from "@/context/AuthContext"
-import { getCurrentTargetDateString, toLocalDateString, formatLocalTime12h, formatLogicalDateLabel } from "@/lib/dateUtils"
+import {
+  getCurrentTargetDateString,
+  toLocalDateString,
+  toLocalTimeString,
+  formatLocalTime12h,
+  formatLogicalDateLabel,
+} from "@/lib/dateUtils"
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Loader2,
@@ -40,7 +48,14 @@ type TransferRequest = {
   // is sending this employee mid-day into a site (destination decides). Absent on
   // legacy docs → treated as "pull".
   direction?: "pull" | "push"
+  // The source check-out carried forward as the destination check-in: set on a push when
+  // made, and on a pull accepted as a "split".
   carriedCheckIn?: string | null
+  // Incoming pending pull only: the employee's latest check-in at their home site today.
+  // Present → accepting needs a choice (move the whole day, or split it).
+  sourceDay?: { checkIn: string; checkOut: string | null } | null
+  // Pull only, once accepted: how an already-started home day was handled.
+  dayHandling?: "move" | "split" | null
   // "push" only: business day of the source record (a night transfer accepted after
   // midnight still lands on the night's own day). null on pull / older requests.
   attendanceDate?: string | null
@@ -154,22 +169,34 @@ function RequestCard({
 function RequestTiming({ req }: { req: TransferRequest }) {
   const day = (req.direction === "push" ? req.attendanceDate : null) || req.dateLocal
   const notToday = !!day && day !== getCurrentTargetDateString()
-  const startsAt = req.direction === "push" && req.carriedCheckIn ? formatLocalTime12h(req.carriedCheckIn) : null
-  if (!startsAt && !notToday) return null
+  const startsAt = req.carriedCheckIn ? formatLocalTime12h(req.carriedCheckIn) : null
+  const wholeDay = req.dayHandling === "move"
+  if (!startsAt && !notToday && !wholeDay) return null
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
       <Clock3 className="h-3.5 w-3.5 shrink-0" />
       {startsAt && <span>Starts at <span className="font-medium text-foreground">{startsAt}</span></span>}
-      {startsAt && notToday && <span>·</span>}
+      {wholeDay && <span className="font-medium text-foreground">Whole day moved</span>}
+      {(startsAt || wholeDay) && notToday && <span>·</span>}
       {notToday && <span>For {formatLogicalDateLabel(day)}</span>}
     </div>
   )
 }
 
+// How an already-started home day is handled when a pull request is accepted.
+type AcceptChoice = { dayHandling: "move" | "split"; splitAt?: string }
+
+const choiceTileCls = (selected: boolean) =>
+  `block cursor-pointer rounded-xl border p-3 text-left transition-colors ${
+    selected ? "border-primary bg-primary/5 ring-1 ring-primary/30" : "border-border bg-muted/30 hover:border-primary/20"
+  }`
+
 /**
  * Accept / Reject for a pending incoming request. Reject asks for an optional reason (the
  * requester sees it); accepting a PERMANENT request asks for a second tap, since it moves the
- * employee's home site.
+ * employee's home site. Accepting a pull for an employee who already checked in here today
+ * asks how that day is handled — moved whole, or split at the time they left — folding in
+ * the permanent confirmation.
  */
 function IncomingActions({
   req,
@@ -178,10 +205,108 @@ function IncomingActions({
 }: {
   req: TransferRequest
   busy: boolean
-  onAct: (action: "accept" | "reject", note?: string) => void
+  onAct: (action: "accept" | "reject", note?: string, choice?: AcceptChoice) => void
 }) {
-  const [stage, setStage] = useState<"idle" | "rejecting" | "confirming">("idle")
+  const [stage, setStage] = useState<"idle" | "rejecting" | "confirming" | "day">("idle")
   const [note, setNote] = useState("")
+  const [dayChoice, setDayChoice] = useState<"move" | "split" | null>(null)
+  const [splitAt, setSplitAt] = useState("")
+
+  const sourceDay = req.direction !== "push" ? req.sourceDay : null
+
+  const openDayStage = () => {
+    if (!sourceDay) return
+    setDayChoice(null)
+    // Default "until" time: their check-out here if they have one, else now.
+    setSplitAt(toLocalTimeString(sourceDay.checkOut || new Date()))
+    setStage("day")
+  }
+
+  if (stage === "day" && sourceDay) {
+    const name = req.employee?.name || "The employee"
+    const toName = req.toSite?.siteName || "the other site"
+    const checkInStr = toLocalTimeString(sourceDay.checkIn)
+    // Same-day HH:mm strings compare in time order; the server re-validates.
+    const splitValid = /^\d{2}:\d{2}$/.test(splitAt) && splitAt > checkInStr
+    const canConfirm = dayChoice === "move" || (dayChoice === "split" && splitValid)
+    return (
+      <div className="space-y-3 pt-1">
+        <p className="text-xs text-foreground">
+          {name} checked in here today at{" "}
+          <span className="font-medium">{formatLocalTime12h(sourceDay.checkIn)}</span>
+          {sourceDay.checkOut ? <> (until {formatLocalTime12h(sourceDay.checkOut)})</> : " (still checked in)"}.
+          How should today be handled?
+        </p>
+        <div role="radiogroup" className="grid gap-2 sm:grid-cols-2">
+          <label className={choiceTileCls(dayChoice === "move")}>
+            <input
+              type="radio"
+              name={`day-${req._id}`}
+              className="sr-only"
+              checked={dayChoice === "move"}
+              onChange={() => setDayChoice("move")}
+            />
+            <div className="font-semibold text-sm text-foreground">Didn't work here</div>
+            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+              Their session here is removed; {toName} records the whole day.
+            </div>
+          </label>
+          <label className={choiceTileCls(dayChoice === "split")}>
+            <input
+              type="radio"
+              name={`day-${req._id}`}
+              className="sr-only"
+              checked={dayChoice === "split"}
+              onChange={() => setDayChoice("split")}
+            />
+            <div className="font-semibold text-sm text-foreground">Worked here until</div>
+            <Input
+              type="time"
+              value={splitAt}
+              onChange={(e) => {
+                setSplitAt(e.target.value)
+                setDayChoice("split")
+              }}
+              onFocus={() => setDayChoice("split")}
+              className="mt-1.5 h-8 bg-background"
+            />
+            <div className="text-[11px] text-muted-foreground leading-snug mt-1">
+              Their session here ends then; {toName} starts from that time.
+            </div>
+            {dayChoice === "split" && !splitValid && (
+              <div className="text-[11px] text-red-600 dark:text-red-400 mt-1">
+                Must be later than their check-in ({formatLocalTime12h(sourceDay.checkIn)}).
+              </div>
+            )}
+          </label>
+        </div>
+        {req.mode === "permanent" && (
+          <p className="text-xs text-foreground">
+            This also moves {name}'s home site to <span className="font-medium">{toName}</span> from today.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStage("idle")}>
+            Back
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy || !canConfirm}
+            onClick={() =>
+              onAct(
+                "accept",
+                undefined,
+                dayChoice === "move" ? { dayHandling: "move" } : { dayHandling: "split", splitAt }
+              )
+            }
+          >
+            {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Check className="h-4 w-4 mr-1.5" />}
+            {req.mode === "permanent" ? "Confirm permanent move" : "Accept"}
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   if (stage === "rejecting") {
     return (
@@ -252,7 +377,9 @@ function IncomingActions({
         <Button
           size="sm"
           disabled={busy}
-          onClick={() => (req.mode === "permanent" ? setStage("confirming") : onAct("accept"))}
+          onClick={() =>
+            sourceDay ? openDayStage() : req.mode === "permanent" ? setStage("confirming") : onAct("accept")
+          }
         >
           {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Check className="h-4 w-4 mr-1.5" />}
           Accept
@@ -346,51 +473,81 @@ export default function Requests() {
   })
   const toggleExpanded = (key: Tab) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
-  const fetchAll = useCallback(async () => {
+  // Live refreshes can overlap; only the newest fetch may apply its result.
+  const fetchSeq = useRef(0)
+
+  const fetchAll = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const seq = ++fetchSeq.current
     try {
       const [inc, out, notif] = await Promise.all([
         api.get("/api/requests", { params: { box: "incoming" } }),
         api.get("/api/requests", { params: { box: "outgoing" } }),
         api.get("/api/requests/notifications"),
       ])
+      if (seq !== fetchSeq.current) return
       setIncoming(inc.data?.data ?? [])
       setOutgoing(out.data?.data ?? [])
       setNotifications(notif.data?.data ?? [])
     } catch (error) {
       console.log(error)
-      toast.error("Failed to load requests")
+      // Background refreshes stay silent — the next event or focus retries.
+      if (!quiet) toast.error("Failed to load requests")
     } finally {
-      setLoading(false)
+      if (seq === fetchSeq.current) setLoading(false)
+    }
+  }, [])
+
+  // Seeing the page counts as "seen" — clear the unread badge.
+  const markRead = useCallback(async () => {
+    try {
+      await api.post("/api/requests/notifications/read", {})
+      window.dispatchEvent(new Event("requests:updated"))
+    } catch {
+      /* ignore */
     }
   }, [])
 
   useEffect(() => {
     fetchAll()
-  }, [fetchAll])
+    markRead()
+  }, [fetchAll, markRead])
 
-  // Visiting the page counts as "seen" — clear the unread badge.
+  // Live: refetch the moment a request or notification changes (lib/requestsLive.ts)
+  // and whenever the tab comes back into view. Activity that arrives while the page is
+  // on screen counts as seen, just like opening the page.
   useEffect(() => {
-    let cancelled = false
-    const markRead = async () => {
-      try {
-        await api.post("/api/requests/notifications/read", {})
-        if (!cancelled) window.dispatchEvent(new Event("requests:updated"))
-      } catch {
-        /* ignore */
+    const onLive = (e: Event) => {
+      const { scopes } = (e as CustomEvent<RequestsLiveDetail>).detail
+      if (scopes.every((s) => s === "read")) return // read-state only moves the badge
+      fetchAll({ quiet: true })
+      if (!document.hidden && (scopes.includes("notifications") || scopes.includes("resync"))) {
+        markRead()
       }
     }
-    markRead()
-    return () => {
-      cancelled = true
+    const onVisible = () => {
+      if (document.hidden) return
+      fetchAll({ quiet: true })
+      markRead()
     }
-  }, [])
+    window.addEventListener(REQUESTS_LIVE_EVENT, onLive)
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      window.removeEventListener(REQUESTS_LIVE_EVENT, onLive)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [fetchAll, markRead])
 
-  const act = async (id: string, action: "accept" | "reject" | "cancel", note?: string) => {
+  const act = async (
+    id: string,
+    action: "accept" | "reject" | "cancel",
+    note?: string,
+    choice?: AcceptChoice
+  ) => {
     setBusyId(id)
     try {
       const res = await api.post(
         `/api/requests/${id}/${action}`,
-        action === "reject" && note ? { note } : {}
+        action === "reject" && note ? { note } : action === "accept" && choice ? choice : {}
       )
       toast.success(res.data?.message || "Done")
       await fetchAll()
@@ -493,7 +650,7 @@ export default function Requests() {
                     <IncomingActions
                       req={req}
                       busy={busyId === req._id}
-                      onAct={(action, note) => act(req._id, action, note)}
+                      onAct={(action, note, choice) => act(req._id, action, note, choice)}
                     />
                   ) : (
                     req.note && <p className="text-xs text-muted-foreground italic pt-1">{req.note}</p>

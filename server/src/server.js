@@ -36,6 +36,7 @@ import { startAutoCheckOutCron } from './cron/autoCheckOut.js'
 import { startApplyScheduledAssignmentsCron } from './cron/applyScheduledAssignments.js'
 import { startCheckoutReminderCron } from './cron/checkoutReminder.js'
 import { startExpireTransferRequestsCron } from './cron/expireTransferRequests.js'
+import { startRealtimeWatchers } from './utils/realtime.js'
 // Transfer requests are no longer escalated: every admin sees every request in their
 // Requests inbox (requestController.incomingFilterFor), so nothing can sit unseen.
 // Night check-in is now pre-filled when a night shift is assigned (see
@@ -100,6 +101,7 @@ connectDB().then(async () => {
     startApplyScheduledAssignmentsCron();
     startCheckoutReminderCron();
     startExpireTransferRequestsCron();
+    startRealtimeWatchers();
     app.listen(process.env.PORT || 3000, () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })

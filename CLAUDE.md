@@ -218,6 +218,17 @@ keeps on-device drafts exactly as before.
   until the first config fetch for the signed-in user completes, so pages never initialise
   without the schedule or the feature switches.
 
+### Live Requests updates (server-sent events)
+The Requests page and the sidebar Requests badge update without a reload. Each signed-in
+tab holds `GET /api/requests/stream` open (`client/src/lib/requestsLive.ts`, started in
+`SidebarLayout`). `server/src/utils/realtime.js` watches the `transferrequests` and
+`notifications` collections with MongoDB CHANGE STREAMS — so every writer (controllers, the
+expiry cron, supersedes inside other transactions) is covered with no per-path hooks, and
+events fire only after commit. Events name what changed (`{ scopes: [...] }`: `requests`,
+`notifications`, `read`, `resync`) and carry no data; clients refetch the normal endpoints.
+Change streams need a replica set (Atlas is one; the app's transactions need one anyway). If
+they're unavailable the stream stays quiet and the badge's 90s poll still applies.
+
 ### Cron jobs (`server/src/cron/`)
 Started on boot from `server.js`. `autoCheckOut.js` and `autoCheckIn.js` fill in
 missing check-out/check-in times from each site's day/night default times for

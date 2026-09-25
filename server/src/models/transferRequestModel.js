@@ -90,10 +90,21 @@ const transferRequestSchema = new mongoose.Schema(
       index: true,
     },
 
-    // "push" only: the source check-out carried forward as the destination check-in
-    // when the request is accepted (a midday second session). null for "pull".
+    // The source check-out carried forward as the destination check-in (a midday second
+    // session). "push": set when the request is made. "pull": set on accept only when the
+    // decider split the day (dayHandling "split"); null otherwise.
     carriedCheckIn: {
       type: Date,
+      default: null,
+    },
+
+    // "pull" only, set on accept when the employee had already checked in at their home
+    // site today: "move" = that session was removed and the destination took the whole day;
+    // "split" = that session was closed at carriedCheckIn and the destination starts there.
+    // null when there was nothing to decide (not yet checked in) and on "push".
+    dayHandling: {
+      type: String,
+      enum: ["move", "split"],
       default: null,
     },
 

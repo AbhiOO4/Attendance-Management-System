@@ -4,15 +4,43 @@
     {
       "name": "server",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "server", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "server",
+        "run",
+        "dev"
+      ],
       "port": 3000,
       "autoPort": false
     },
     {
       "name": "client",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "client", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "client",
+        "run",
+        "dev"
+      ],
       "port": 5173,
+      "autoPort": false
+    },
+    {
+      "name": "scratch-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/dell/AppData/Local/Temp/claude/C--Users-dell-OneDrive-Desktop-webdev-attendance-monitor/3e2399aa-dac3-45e2-a7b9-54a5fa0e021f/scratchpad/whday/run-server.mjs"
+      ],
+      "port": 3100,
+      "autoPort": false
+    },
+    {
+      "name": "scratch-client",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/dell/AppData/Local/Temp/claude/C--Users-dell-OneDrive-Desktop-webdev-attendance-monitor/3e2399aa-dac3-45e2-a7b9-54a5fa0e021f/scratchpad/whday/run-client.mjs"
+      ],
+      "port": 5174,
       "autoPort": false
     }
   ]

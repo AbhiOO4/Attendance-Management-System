@@ -2274,6 +2274,16 @@ export const getAvailableEmployeesForSite = async (
       }
       obj.homeStatus = homeStatus
 
+      // Today's check-ins, for the Request dialog. markedToday: checked in anywhere (at home
+      // the request still goes ahead; the home supervisor chooses on accept how the day
+      // splits). markedAway: checked in at a site OTHER than home — mirrors createRequest's
+      // MARKED_ELSEWHERE refusal (requestController todayCheckIns), so the dialog blocks up front.
+      const todaySessions = attByEmp.get(emp._id.toString())?.sessions || []
+      obj.markedToday = todaySessions.some((s) => s.checkIn)
+      obj.markedAway = todaySessions.some(
+        (s) => s.checkIn && s.siteId?.toString() !== emp.currentSite?._id?.toString()
+      )
+
       // Visiting-site context — the UI shows this in place of the home site when present.
       const visit = visitByEmp.get(emp._id.toString())
       if (visit) {

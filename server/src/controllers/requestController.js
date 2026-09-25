@@ -6,6 +6,11 @@
  * the source-initiated midday Transfer (a second session). Requester picks
  * mode = "today" (a full-day visit; home unchanged) or "permanent" (home moves).
  *
+ * The employee may already have checked in at their home site (its sheet was saved).
+ * The home supervisor then chooses on accept: "move" the whole day (the home session is
+ * removed) or "split" it at the time they left (a midday transfer). A check-in at any
+ * OTHER site blocks the request — that site has them now and must Transfer them.
+ *
  * These endpoints do their own two-site authorization (a request spans two sites,
  * so requireSiteAccess — which validates a single site — is not used). All routes
  * sit below verifyToken, so req.user is the acting user ({ id, role }).
@@ -17,8 +22,15 @@ import userModel from "../models/userModel.js"
 import Attendance from "../models/attendanceModel.js"
 import TransferRequest from "../models/transferRequestModel.js"
 import notificationModel from "../models/notificationModel.js"
+import workModel from "../models/workModel.js"
 import { isAssignableSite, findAssignableJob } from "../utils/siteAssignable.js"
-import { getTodayLocal, isWithinCarryoverWindow } from "../utils/timeLocal.js"
+import {
+  getTodayLocal,
+  isWithinCarryoverWindow,
+  deriveOffsets,
+  combineFromOffset,
+  toLocalTimeString,
+} from "../utils/timeLocal.js"
 import { notifyUser, notifyAdmins, findSiteSupervisors } from "../utils/notify.js"
 import {
   applyHandover,
@@ -27,6 +39,14 @@ import {
   assertNotMovedOn,
 } from "../utils/handover.js"
 import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
+import { recordAttendanceAudit } from "../utils/attendanceAudit.js"
+import { recomputeRecordTotals } from "../utils/attendanceMath.js"
+import {
+  hasSessionOverlap,
+  buildCrossDayOverlapChecker,
+  crossDayOverlapMessage,
+} from "../utils/sessionOverlap.js"
+import { openEventStream } from "../utils/realtime.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -41,13 +61,108 @@ function todayAttendanceDate() {
   return new Date(getTodayLocal())
 }
 
-/** True when the employee has checked in ANYWHERE today (a day already in progress). */
-async function isMarkedToday(employeeId, session = null) {
+/**
+ * Today's check-ins for an employee, split by where they happened. A check-in at their
+ * HOME site no longer blocks a pull request — on accept, the home supervisor decides
+ * whether that day moves to the requester whole or is split at the time they left. A
+ * check-in anywhere ELSE means they're working at that site now, and only that site can
+ * move them on (Transfer). getAvailableEmployeesForSite's `markedAway` (siteController.js)
+ * mirrors the `elsewhere` rule so the Request dialog can say so up front.
+ */
+async function todayCheckIns(employee, session = null) {
   const doc = await Attendance.findOne({
-    employee: employeeId,
+    employee: employee._id,
     date: todayAttendanceDate(),
   }).session(session || null)
-  return !!(doc && doc.sessions.some((s) => s.checkIn))
+  const home = employee.currentSite ? String(employee.currentSite) : null
+  const checkedIn = (doc?.sessions || []).filter((s) => s.checkIn)
+  return {
+    doc,
+    homeSessions: checkedIn.filter((s) => String(s.siteId) === home),
+    elsewhere: checkedIn.find((s) => String(s.siteId) !== home) || null,
+  }
+}
+
+const siteNameOf = async (siteId, session = null) =>
+  (await Site.findById(siteId).select("siteName").session(session || null))?.siteName || "another site"
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+
+/** An Error carrying the HTTP status acceptRequest's catch replies with. */
+function httpError(status, message) {
+  const err = new Error(message)
+  err.status = status
+  return err
+}
+
+/**
+ * "Didn't work here": drop every session at the home site from today's record, so the
+ * destination (placed next by the normal accept path) takes the whole day. Totals are
+ * recomputed through the shared maths, as removeEmployee does.
+ */
+async function removeHomeDay({ doc, fromSiteId, toSiteName, workConfig, actor, session }) {
+  const fromSiteName = await siteNameOf(fromSiteId, session)
+  doc.sessions = doc.sessions.filter((s) => String(s.siteId) !== String(fromSiteId))
+  recomputeRecordTotals(doc, workConfig)
+  await doc.save({ session })
+  await recordAttendanceAudit({
+    attendance: doc,
+    actor,
+    type: "edited",
+    summary: `Session at ${fromSiteName} removed — whole day moved to ${toSiteName} (transfer request accepted)`,
+    session,
+  })
+}
+
+/**
+ * "Worked here until splitAt": close the latest home session today at `splitAt` and return
+ * that check-out, which becomes the destination's check-in (placeMiddayArrival). Overwrites
+ * an existing check-out — it is the decider's explicit time. The time must fall after the
+ * check-in on the same day: a wall time before it would otherwise roll to tomorrow and
+ * silently record a ~24h shift.
+ */
+async function closeHomeSessionAt({ doc, homeSessions, splitAt, toSiteName, workConfig, actor, employeeId, session }) {
+  const target = homeSessions.reduce((a, b) =>
+    new Date(b.checkIn).getTime() > new Date(a.checkIn).getTime() ? b : a
+  )
+  const checkInStr = toLocalTimeString(new Date(target.checkIn))
+  const recordDay = new Date(doc.date).toISOString().slice(0, 10)
+  const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInStr, splitAt, !!target.checkInNextDay)
+  if (checkOutNextDay !== checkInNextDay) {
+    throw httpError(400, `The time they left must be later than their check-in (${checkInStr})`)
+  }
+  const checkOut = combineFromOffset(recordDay, splitAt, checkOutNextDay)
+  const workedHours = (checkOut.getTime() - new Date(target.checkIn).getTime()) / (1000 * 60 * 60)
+  if (!(workedHours > 0)) {
+    throw httpError(400, `The time they left must be later than their check-in (${checkInStr})`)
+  }
+
+  const candidate = doc.sessions.map((s) =>
+    String(s._id) === String(target._id)
+      ? { checkIn: s.checkIn, checkOut }
+      : { checkIn: s.checkIn, checkOut: s.checkOut }
+  )
+  if (hasSessionOverlap(candidate)) {
+    throw httpError(400, "That time overlaps another session they have today")
+  }
+  const crossDay = await buildCrossDayOverlapChecker({ employeeIds: [employeeId], date: doc.date, dbSession: session })
+  const conflict = crossDay(employeeId, [{ checkIn: target.checkIn, checkOut }])
+  if (conflict) throw httpError(400, crossDayOverlapMessage(conflict))
+
+  target.checkOut = checkOut
+  target.workedHours = Number(workedHours.toFixed(2))
+  recomputeRecordTotals(doc, workConfig)
+  await doc.save({ session })
+
+  const fromSiteName = await siteNameOf(target.siteId, session)
+  await recordAttendanceAudit({
+    attendance: doc,
+    actor,
+    type: "edited",
+    summary: `Checked out at ${fromSiteName} at ${splitAt} for transfer to ${toSiteName} (transfer request accepted)`,
+    session,
+  })
+  return checkOut
 }
 
 // ---------------------------------------------------------------------------
@@ -103,12 +218,18 @@ export const createRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: "That job is not active at the destination site" })
     }
 
-    // Clean handover only — a marked employee is a midday case (use Transfer).
-    if (await isMarkedToday(employeeId)) {
+    // Checked in at their home site → fine; the home supervisor chooses how the day splits
+    // when they accept. Checked in anywhere else → that site has them now (Transfer).
+    const { elsewhere } = await todayCheckIns(employee)
+    if (elsewhere) {
+      const where = await siteNameOf(elsewhere.siteId)
       return res.status(409).json({
         success: false,
+        code: "MARKED_ELSEWHERE",
         message:
-          "Employee is already marked at their site today. This is now a midday transfer — ask their site's supervisor to Transfer them.",
+          String(elsewhere.siteId) === String(toSiteId)
+            ? `${employee.name} already has a session at your site today`
+            : `${employee.name} is working at ${where} today, so they can't be requested. Ask ${where}'s supervisor to Transfer them.`,
       })
     }
 
@@ -249,6 +370,32 @@ export const listRequests = async (req, res) => {
     for (const r of requests) {
       const site = decidingSiteOf(r)
       r.deciders = site ? supsBySite.get(site.toString()) || [] : []
+    }
+
+    // Incoming pending PULL requests for today: the employee's latest check-in at the home
+    // (deciding) site today, if any. Accepting one then needs a choice — move the whole day
+    // or split it — so the card asks up front instead of bouncing off DAY_CHOICE_REQUIRED.
+    if (box !== "outgoing") {
+      const today = getTodayLocal()
+      const decidable = requests.filter(
+        (r) => r.status === "pending" && r.direction !== "push" && r.dateLocal === today && r.employee?._id
+      )
+      if (decidable.length) {
+        const atts = await Attendance.find({
+          employee: { $in: decidable.map((r) => r.employee._id) },
+          date: todayAttendanceDate(),
+        })
+          .select("employee sessions.siteId sessions.checkIn sessions.checkOut")
+          .lean()
+        const attByEmp = new Map(atts.map((a) => [String(a.employee), a]))
+        for (const r of decidable) {
+          const home = String(r.fromSite?._id || "")
+          const latest = (attByEmp.get(String(r.employee._id))?.sessions || [])
+            .filter((s) => s.checkIn && String(s.siteId) === home)
+            .sort((a, b) => new Date(b.checkIn).getTime() - new Date(a.checkIn).getTime())[0]
+          r.sourceDay = latest ? { checkIn: latest.checkIn, checkOut: latest.checkOut || null } : null
+        }
+      }
     }
 
     return res.status(200).json({ success: true, data: requests })
@@ -454,62 +601,136 @@ export const acceptRequest = async (req, res) => {
       })
     }
 
-    // Marked-today guard: a day already in progress is a midday case, not a handover.
-    if (await isMarkedToday(employee._id, session)) {
+    // Working at another site now → only that site can move them on (Transfer).
+    const { doc: todayDoc, homeSessions, elsewhere } = await todayCheckIns(employee, session)
+    if (elsewhere) {
+      const where = await siteNameOf(elsewhere.siteId, session)
       return expireAndRespond({
         request, req, res, session,
-        note: "Employee was already marked today",
-        message: "Employee has already been marked today — request expired. Use Transfer for a midday move.",
+        note: `${employee.name} is working at ${where} today`,
+        message: `${employee.name} is working at ${where} today — request expired. Ask ${where}'s supervisor to Transfer them.`,
       })
     }
 
-    // Place the employee at the destination (shared with the source-push path).
-    await applyHandover({
-      employee,
-      toSiteId: request.toSite,
-      toJobId: toJob?._id || null,
-      mode: request.mode,
-      session,
-    })
+    const acceptActor = await resolveActor(req)
 
-    // Give the pull-accept path the same record guarantee the push / send-to-site paths already
-    // have. applyHandover only repoints the home (permanent) or writes the pendingTransfer stash
-    // (today) and relies on the destination's draft build to surface the arrival — but a
-    // saved/locked destination never rebuilds its draft, so the arrival would be orphaned with no
-    // record. Materialize it now. request.fromSite is the stored source (unaffected by the
-    // permanent repoint above), so it powers the destination record's "Transferred from" badge.
-    // createPreSaveVisitRecord PUSH-or-CREATEs onto today's doc, so it is safe when the employee
-    // already has a record today and respects the unique {employee, date} index.
-    await createPreSaveVisitRecord({
-      employee,
-      toSite,
-      toJobId: toJob?._id || null,
-      fromSiteId: request.fromSite,
-      markedById: req.user.id,
-      actor: await resolveActor(req),
-      session,
-    })
+    // Already checked in at home today: the decider says how the day splits. "move" = they
+    // didn't really work here, so the home session goes and the destination takes the whole
+    // day; "split" = they worked here until `splitAt`, which closes the home session and
+    // starts the destination one (a midday transfer). Missing → ask; the request stays
+    // pending (the client refetches and shows the choice).
+    let dayHandling = null
+    let splitCheckOut = null
+    if (homeSessions.length) {
+      const { dayHandling: choice, splitAt } = req.body || {}
+      if (choice !== "move" && !(choice === "split" && HHMM.test(String(splitAt || "")))) {
+        await session.abortTransaction()
+        session.endSession()
+        return res.status(409).json({
+          success: false,
+          code: "DAY_CHOICE_REQUIRED",
+          message: `${employee.name} has checked in at their site today — choose whether to move their whole day or split it`,
+        })
+      }
+      dayHandling = choice
+      const workConfig = await workModel.findOne().session(session)
+      if (dayHandling === "move") {
+        await removeHomeDay({
+          doc: todayDoc,
+          fromSiteId: request.fromSite,
+          toSiteName: toSite.siteName,
+          workConfig,
+          actor: acceptActor,
+          session,
+        })
+      } else {
+        splitCheckOut = await closeHomeSessionAt({
+          doc: todayDoc,
+          homeSessions,
+          splitAt,
+          toSiteName: toSite.siteName,
+          workConfig,
+          actor: acceptActor,
+          employeeId: employee._id,
+          session,
+        })
+      }
+    }
+
+    if (dayHandling === "split") {
+      // A midday transfer: the home check-out just set becomes the destination check-in.
+      // Shared with the push path — carries the session, stashes for an unlocked
+      // destination, and repoints the home for a permanent move.
+      await placeMiddayArrival({
+        employee,
+        fromSiteId: request.fromSite,
+        toSiteId: request.toSite,
+        jobId: toJob?._id || null,
+        carriedCheckIn: splitCheckOut,
+        attendanceDate: todayAttendanceDate(),
+        onlyForToday: request.mode === "today",
+        markedById: req.user.id,
+        actor: acceptActor,
+        session,
+        attendanceDoc: todayDoc,
+      })
+      request.carriedCheckIn = splitCheckOut
+    } else {
+      // Place the employee at the destination (shared with the source-push path).
+      await applyHandover({
+        employee,
+        toSiteId: request.toSite,
+        toJobId: toJob?._id || null,
+        mode: request.mode,
+        session,
+      })
+
+      // Give the pull-accept path the same record guarantee the push / send-to-site paths
+      // already have. applyHandover only repoints the home (permanent) or writes the
+      // pendingTransfer stash (today) and relies on the destination's draft build to surface
+      // the arrival — but a saved/locked destination never rebuilds its draft, so the arrival
+      // would be orphaned with no record. Materialize it now. request.fromSite is the stored
+      // source (unaffected by the permanent repoint above), so it powers the destination
+      // record's "Transferred from" badge. createPreSaveVisitRecord PUSH-or-CREATEs onto
+      // today's doc (re-read inside this transaction, so a "move" above is already applied),
+      // so it is safe when the employee already has a record today and respects the unique
+      // {employee, date} index.
+      await createPreSaveVisitRecord({
+        employee,
+        toSite,
+        toJobId: toJob?._id || null,
+        fromSiteId: request.fromSite,
+        markedById: req.user.id,
+        actor: acceptActor,
+        session,
+      })
+    }
 
     request.status = "accepted"
     request.decidedBy = req.user.id
     request.decidedAt = new Date()
+    request.dayHandling = dayHandling
     await request.save({ session })
 
     await session.commitTransaction()
     session.endSession()
+
+    // How the home day was handled, for the notification / feed / reply wording.
+    const splitAtStr = splitCheckOut ? toLocalTimeString(splitCheckOut) : null
+    const handledNote =
+      dayHandling === "move" ? " — whole day moved" : splitAtStr ? ` from ${splitAtStr}` : ""
 
     // Notify the requester (their employee is arriving).
     const empName = employee.name
     await notifyUser(request.requestedBy, {
       type: "request_accepted",
       title: "Transfer request accepted",
-      body: `${empName} is now on your site${request.mode === "permanent" ? " (permanent)" : " for today"}.`,
+      body: `${empName} is now on your site${request.mode === "permanent" ? " (permanent)" : " for today"}${handledNote}.`,
       url: "/requests",
       relatedRequest: request._id,
     })
 
     // --- Site activity: request accepted, employee handed over (best-effort, after commit) ---
-    const acceptActor = await resolveActor(req)
     const acceptFromSite = await Site.findById(request.fromSite).select("siteName")
     await recordSiteActivity({
       type: "request_accepted",
@@ -518,10 +739,16 @@ export const acceptRequest = async (req, res) => {
       employeeName: empName,
       fromSiteId: request.fromSite,
       toSiteId: request.toSite,
-      summary: `${acceptActor.actorName} accepted transfer of ${empName} from ${acceptFromSite?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})`,
+      summary: `${acceptActor.actorName} accepted transfer of ${empName} from ${acceptFromSite?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})${handledNote}`,
     })
 
-    return res.status(200).json({ success: true, message: `Request accepted.${jobNote}`, data: request })
+    const acceptedMsg =
+      dayHandling === "move"
+        ? `Request accepted — ${empName}'s whole day moved to ${toSite.siteName}.`
+        : dayHandling === "split"
+        ? `Request accepted — ${empName} checked out here at ${splitAtStr} and starts at ${toSite.siteName} from then.`
+        : "Request accepted."
+    return res.status(200).json({ success: true, message: `${acceptedMsg}${jobNote}`, data: request })
   } catch (error) {
     await session.abortTransaction()
     session.endSession()
@@ -688,4 +915,12 @@ export const markNotificationsRead = async (req, res) => {
     console.error("[requests] markNotificationsRead error:", error)
     return res.status(500).json({ success: false, message: "Failed to mark read" })
   }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/requests/stream — live updates (server-sent events). Held open; each
+// event only names what changed, and the client refetches the endpoints above.
+// ---------------------------------------------------------------------------
+export const streamRequestEvents = (req, res) => {
+  openEventStream(req, res)
 }

@@ -253,6 +253,8 @@ function RemoveEmployeeDialog({
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div className="text-sm leading-relaxed">
               This unassigns them and deletes today&apos;s session for this site.
+              Moving them to another site instead? Use Transfer on their attendance
+              row, or accept that site&apos;s request — both keep today&apos;s record.
             </div>
           </div>
         )}
