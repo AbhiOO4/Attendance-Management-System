@@ -62,6 +62,26 @@ export function getTodayLocal() {
   return getDateLocal(0);
 }
 
+// Local noon — the morning/afternoon boundary the carryover flow already uses (the
+// pinned pending check-out card, openSessionAudit, propagateDefaults): until then,
+// yesterday's record is still "live" for a shift that ran past midnight.
+const CARRYOVER_WINDOW_END_MINUTES = 12 * 60;
+
+/**
+ * True when a record for business day `dateStr` ("YYYY-MM-DD") may still be acted on
+ * as a live day: it is today, or it is yesterday and it is not yet local noon. A night
+ * shift sits on the record of the day it started, so a transfer made (or accepted) after
+ * midnight still belongs to yesterday's record until the carryover window closes.
+ */
+export function isWithinCarryoverWindow(dateStr) {
+  if (!dateStr) return false;
+  const day = String(dateStr).slice(0, 10);
+  if (day === getTodayLocal()) return true;
+  if (day !== getDateLocal(-1)) return false;
+  const [h, m] = getCurrentLocalTime().split(":").map(Number);
+  return h * 60 + m < CARRYOVER_WINDOW_END_MINUTES;
+}
+
 // ---------------------------------------------------------------------------
 // Cutoff-free session helpers (cutoff redesign).
 //

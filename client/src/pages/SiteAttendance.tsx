@@ -221,7 +221,21 @@ export interface AttendanceRecord {
 
   // Set (day-scoped) when this employee was transferred into this site.
   transferredFrom?: TransferredFrom
+
+  // The employee's home site. A row whose home is another site is a visitor here — a
+  // supervisor can send them on for today but can't re-home them.
+  homeSiteId?: string | null
+
+  // Where this employee went after their last session here: a midday transfer still
+  // awaiting the destination's approval, or one already placed. Blocks a second Transfer.
+  outgoing?: OutgoingTransfer
 }
+
+type OutgoingTransfer = {
+  status: "pending" | "transferred"
+  siteId: string
+  siteName: string
+} | null
 
 
 
@@ -393,6 +407,37 @@ const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
     Transferred from {siteName}
   </Badge>
 )
+
+// Shown on a SOURCE row once the employee has been transferred on (or a midday transfer
+// request is awaiting the destination's approval), naming where they went.
+const OutgoingTransferBadge = ({ outgoing }: { outgoing: NonNullable<OutgoingTransfer> }) => (
+  <Badge
+    variant="secondary"
+    className={cn(
+      "text-[10px] px-1.5 py-0 h-4 border",
+      outgoing.status === "pending"
+        ? "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200/50 dark:border-amber-800/30"
+        : "bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300 border-slate-200/60 dark:border-slate-700/40"
+    )}
+    title={
+      outgoing.status === "pending"
+        ? `Transfer to ${outgoing.siteName} is awaiting their approval`
+        : `Transferred to ${outgoing.siteName}`
+    }
+  >
+    {outgoing.status === "pending" ? "Transfer pending" : "Transferred"} → {outgoing.siteName}
+  </Badge>
+)
+
+// Why Transfer is unavailable on a saved row (null = available).
+function transferBlockReason(record: AttendanceRecord): string | null {
+  if (record.isSickLeave || record.isLop) return "Cannot transfer — employee is on sick leave / LOP"
+  if (record.outgoing?.status === "pending")
+    return `A transfer to ${record.outgoing.siteName} is already awaiting their approval`
+  if (record.outgoing?.status === "transferred")
+    return `Already transferred to ${record.outgoing.siteName}`
+  return null
+}
 
 // Shown on an employee's today-row when they have an OPEN (un-checked-out) session on
 // yesterday's record for this site. Persists all day (the prominent pinned card above
@@ -1102,6 +1147,43 @@ function SiteAttendance() {
 
   const formattedDate = formatCurrentDateLabel()
 
+  // The page is pinned to the business day it was opened on (`today`). A PWA left open past
+  // midnight would keep marking and transferring against yesterday's sheet, so as soon as the
+  // day has changed, say so and offer a reload (save anything pending for yesterday first).
+  useEffect(() => {
+    const check = () => {
+      if (getCurrentTargetDateString() === today) return
+      toast(
+        (t) => (
+          <span className="flex items-center gap-3 text-sm">
+            <span>A new day has started — this sheet is still on {today}.</span>
+            <Button
+              size="sm"
+              onClick={() => {
+                toast.dismiss(t.id)
+                window.location.reload()
+              }}
+            >
+              Reload
+            </Button>
+          </span>
+        ),
+        { id: "day-rollover", duration: Infinity }
+      )
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") check()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("focus", check)
+    const timer = window.setInterval(check, 60_000)
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("focus", check)
+      window.clearInterval(timer)
+    }
+  }, [today])
+
   // ---- Carryover (cutoff redesign, Phase 5) ----
   // Yesterday's records with an OPEN (checked-in, not checked-out) session for this site.
   // Surfaced today so a supervisor can enter the real check-out; rolling one-day window.
@@ -1238,6 +1320,17 @@ function SiteAttendance() {
   const [transferModalOpen, setTransferModalOpen] = useState(false)
   const [transferTargetRecord, setTransferTargetRecord] = useState<AttendanceRecord | null>(null)
   const [pendingTransferAfterCheckout, setPendingTransferAfterCheckout] = useState<AttendanceRecord | null>(null)
+  // The record day the transfer belongs to (today, or yesterday for a night shift still
+  // running past midnight — the carryover), and whether this site may re-home the employee.
+  const [transferDate, setTransferDate] = useState<string>(today)
+  const [transferPermanentAllowed, setTransferPermanentAllowed] = useState(true)
+  // A transfer waiting on the full record editor to fill the check-out first (a carryover,
+  // or a row with several sessions here, which the inline editor can't handle).
+  const [pendingTransferAfterEdit, setPendingTransferAfterEdit] = useState<{
+    record: AttendanceRecord
+    date: string
+    permanentAllowed: boolean
+  } | null>(null)
 
   const [isEditingDefaults, setIsEditingDefaults] = useState(false)
   const [editDefaultCheckIn, setEditDefaultCheckIn] = useState("")
@@ -1537,11 +1630,15 @@ function SiteAttendance() {
       // a draft, so a later visit can't remove anything — that's the multi-site case.) An
       // offline fetch failure falls back to the cached draft unchanged.
       let employeesList: Employee[] = []
+      // Whether the roster above is authoritative. Offline it's an empty fallback, and the
+      // cached draft must then be restored as-is rather than pruned against it.
+      let rosterLoaded = false
       try {
         const res = await api.get<EmployeesResponse>("/api/employees", {
           params: { site: id },
         })
         employeesList = res.data.employees
+        rosterLoaded = true
       } catch (fetchErr) {
         console.log(fetchErr)
       }
@@ -1691,12 +1788,18 @@ function SiteAttendance() {
         // check-in for an employee now mid-shift from yesterday, or a row for one now visiting
         // another site. Strip carryover check-ins and DROP the away-visitor rows so the
         // restored draft matches a fresh build (no home record for someone working elsewhere).
+        // With a fresh roster in hand, also drop rows for anyone no longer on it at all — sent
+        // or moved to another site, removed, deactivated — possibly from ANOTHER device, which
+        // would otherwise submit a phantom record for them here. Edits on every other row
+        // survive, so adding or sending one employee never costs the rest of the draft.
+        const rosterIds = new Set(rosterEmployees.map((emp) => String(emp._id)))
         const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
           (rec) =>
             !awayVisitingIds.has(String(rec.employee._id)) &&
             // Drop rows for anyone now on approved leave (a draft cached before the
             // grant may still hold a prefilled check-in for them).
-            !leaveIds.has(String(rec.employee._id))
+            !leaveIds.has(String(rec.employee._id)) &&
+            (!rosterLoaded || rosterIds.has(String(rec.employee._id)))
         )
         // An employee SENT to this site AFTER the draft was cached — an inbound visitor
         // (pendingTransferSiteId = this site) or a permanent move (currentSite = this site) —
@@ -2143,8 +2246,7 @@ function SiteAttendance() {
       // If this edit was forced by a Transfer click (checkout wasn't filled
       // yet), proceed straight to the site-picker modal now that it is.
       if (pendingTransferAfterCheckout?.attendanceId === record.attendanceId) {
-        setTransferTargetRecord(updatedRecord as AttendanceRecord)
-        setTransferModalOpen(true)
+        openTransferModal({ ...record, ...(updatedRecord as AttendanceRecord), name: record.name }, today)
         setPendingTransferAfterCheckout(null)
       }
     } catch (error: any) {
@@ -2165,18 +2267,52 @@ function SiteAttendance() {
     }
   }
 
-  // Transfer entry point from the kebab menu. If the current site's session
-  // isn't checked out yet, force that edit first (reusing the existing
-  // inline-edit row) and only open the site-picker modal once it saves.
+  // A supervisor may re-home only their own site's employees; a visitor (home elsewhere,
+  // or unassigned) can only be sent on for the day. Admins may always move permanently.
+  const canMovePermanently = (record: AttendanceRecord) =>
+    isAdmin || (!!record.homeSiteId && String(record.homeSiteId) === String(id))
+
+  const openTransferModal = (
+    record: AttendanceRecord,
+    recordDate: string,
+    permanentAllowed: boolean = canMovePermanently(record)
+  ) => {
+    setTransferTargetRecord(record)
+    setTransferDate(recordDate)
+    setTransferPermanentAllowed(permanentAllowed)
+    setTransferModalOpen(true)
+  }
+
+  // Transfer entry point from the kebab menu. The transfer carries the LATEST session's
+  // check-out here (that's the one the server uses), so it must be filled first: a
+  // single-session row reuses the inline-edit row; a row with several sessions here opens
+  // the full editor. The site-picker modal opens once the check-out saves.
   const handleTransferClick = (record: AttendanceRecord) => {
-    const currentSession = record.sessions[0]
-    if (!currentSession?.checkOut) {
+    const latestSession = [...record.sessions].sort(
+      (a, b) => new Date(b.checkIn || 0).getTime() - new Date(a.checkIn || 0).getTime()
+    )[0]
+    if (!latestSession?.checkOut) {
+      if (record.sessions.length > 1) {
+        setPendingTransferAfterEdit({ record, date: today, permanentAllowed: canMovePermanently(record) })
+        openEditRecord(record)
+        toast("Enter the check-out, then pick where they're going.", { icon: "↔️" })
+        return
+      }
       setPendingTransferAfterCheckout(record)
       startInlineEdit(record)
       return
     }
-    setTransferTargetRecord(record)
-    setTransferModalOpen(true)
+    openTransferModal(record, today)
+  }
+
+  // Transfer a night shift that is still running past midnight (a carryover at THIS site):
+  // close yesterday's check-out in the record editor, then pick the destination. The arrival
+  // lands on yesterday's record — the night shift's own day. Carryover employees are rostered
+  // here, so this site may move them permanently.
+  const handleCarryoverTransfer = (rec: AttendanceRecord) => {
+    setPendingTransferAfterEdit({ record: rec, date: String(rec.date).slice(0, 10), permanentAllowed: true })
+    openCarryoverRecord(rec)
+    toast("Enter the check-out, then pick where they're going.", { icon: "↔️" })
   }
 
   const updateDraftSession = useCallback((
@@ -3647,15 +3783,30 @@ function SiteAttendance() {
                         {awaySiteName ? ` • ${awaySiteName}` : ""}
                       </p>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-8 shrink-0 gap-1.5"
-                      onClick={() => openCarryoverRecord(rec)}
-                    >
-                      <Clock3 className="h-4 w-4" />
-                      Check out
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {/* Transfer a night shift still running past midnight — only for a shift
+                          at THIS site (an away carryover belongs to that other site). */}
+                      {!awaySiteName && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 gap-1.5"
+                          onClick={() => handleCarryoverTransfer(rec)}
+                        >
+                          <ArrowLeftRight className="h-4 w-4" />
+                          Transfer
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5"
+                        onClick={() => openCarryoverRecord(rec)}
+                      >
+                        <Clock3 className="h-4 w-4" />
+                        Check out
+                      </Button>
+                    </div>
                   </div>
                 )
               })}
@@ -3757,6 +3908,9 @@ function SiteAttendance() {
                               {record.transferredFrom && (
                                 <TransferredFromBadge siteName={record.transferredFrom.name} />
                               )}
+                              {record.outgoing && (
+                                <OutgoingTransferBadge outgoing={record.outgoing} />
+                              )}
                               {carryoverEmpIds.has(record.employee) && (
                                 <CarryoverBadge siteName={carryoverAwaySiteByEmp.get(record.employee) ?? null} onClick={() => handleOpenCarryover(record.employee)} />
                               )}
@@ -3787,8 +3941,8 @@ function SiteAttendance() {
                                 lopDisabledReason="Only available when the employee has no check-in today"
                                 onToggleLop={() => toggleSavedLop(record)}
                                 showTransfer
-                                transferDisabled={!!record.isSickLeave || !!record.isLop}
-                                transferDisabledReason="Cannot transfer — employee is on sick leave / LOP"
+                                transferDisabled={!!transferBlockReason(record)}
+                                transferDisabledReason={transferBlockReason(record) ?? undefined}
                                 onTransfer={() => handleTransferClick(record)}
                                 attendanceId={record.attendanceId}
                                 employeeName={record.name}
@@ -4157,6 +4311,9 @@ function SiteAttendance() {
                                         {record.transferredFrom && (
                                           <TransferredFromBadge siteName={record.transferredFrom.name} />
                                         )}
+                                        {record.outgoing && (
+                                          <OutgoingTransferBadge outgoing={record.outgoing} />
+                                        )}
                                         {carryoverEmpIds.has(record.employee) && (
                                           <CarryoverBadge siteName={carryoverAwaySiteByEmp.get(record.employee) ?? null} onClick={() => handleOpenCarryover(record.employee)} />
                                         )}
@@ -4440,8 +4597,8 @@ function SiteAttendance() {
                                         lopDisabledReason="Only available when the employee has no check-in today"
                                         onToggleLop={() => toggleSavedLop(record)}
                                         showTransfer
-                                        transferDisabled={!!record.isSickLeave || !!record.isLop}
-                                        transferDisabledReason="Cannot transfer — employee is on sick leave / LOP"
+                                        transferDisabled={!!transferBlockReason(record)}
+                                        transferDisabledReason={transferBlockReason(record) ?? undefined}
                                         onTransfer={() => handleTransferClick(record)}
                                         attendanceId={record.attendanceId}
                                         employeeName={record.name}
@@ -4566,6 +4723,9 @@ function SiteAttendance() {
         onClose={() => {
           setEditOpen(false)
           setEditSiteOverride(null)
+          // Closing the editor ends a pending "fill check-out, then transfer" hand-off —
+          // onUpdated (which runs first on a save) has already opened the transfer if due.
+          setPendingTransferAfterEdit(null)
         }}
         attendanceId={selectedRecord?.attendanceId ?? null}
         // For a cross-site carryover close, the modal is fed the open shift's HOME site
@@ -4585,6 +4745,20 @@ function SiteAttendance() {
             setDraftAttendance((prev) =>
               clearCarryoverSessions(prev, new Set([String(edited.employee)]))
             )
+          }
+          // The editor was opened to fill a check-out before a Transfer — continue to the
+          // site picker once this site's sessions are all checked out. Deferred a tick so
+          // this dialog finishes closing before the next one opens.
+          const pending = pendingTransferAfterEdit
+          if (pending && edited && pending.record.attendanceId === edited.attendanceId) {
+            const stillOpen = ((updatedRecord as AttendanceRecord).sessions || []).some(
+              (s) => !!s.checkIn && !s.checkOut
+            )
+            if (stillOpen) {
+              toast.error("Enter the check-out to continue the transfer")
+            } else {
+              setTimeout(() => openTransferModal(pending.record, pending.date, pending.permanentAllowed), 150)
+            }
           }
         }}
       />
@@ -4666,13 +4840,15 @@ function SiteAttendance() {
         employeeId={transferTargetRecord?.employee ?? ""}
         employeeName={transferTargetRecord?.name ?? ""}
         fromSiteId={id ?? ""}
-        date={today}
-        isSupervisor={!!transferTargetRecord?.user}
+        date={transferDate}
         willRequest={transferNeedsApproval}
+        permanentAllowed={transferPermanentAllowed}
         onTransferred={() => {
           setTransferModalOpen(false)
           setTransferTargetRecord(null)
           fetchAttendance(today)
+          // A carryover transfer changes yesterday's record — refresh that list too.
+          fetchCarryovers(today)
         }}
       />
 

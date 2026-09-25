@@ -25,6 +25,9 @@ import { Loader2, ArrowLeftRight, MapPin } from "lucide-react"
 interface Job {
   _id: string
   name: string
+  isActive?: boolean
+  isDeleted?: boolean
+  isCompleted?: boolean
 }
 
 interface Site {
@@ -37,17 +40,23 @@ interface Site {
   jobs: Job[]
 }
 
+type TransferMode = "today" | "permanent"
+
 interface TransferEmployeeModalProps {
   open: boolean
   onClose: () => void
   employeeId: string
   employeeName: string
   fromSiteId: string
+  // Business day of the record being transferred from: today, or yesterday for a night
+  // shift still running past midnight (the carryover).
   date: string
-  isSupervisor?: boolean
   // The acting user's transfer will be held as a request the destination site's
   // supervisors must accept (true for supervisors; admins transfer immediately).
   willRequest?: boolean
+  // False when this site may not re-home the employee (a supervisor on a visitor's row —
+  // only their home site or an admin can move them permanently).
+  permanentAllowed?: boolean
   onTransferred?: (result: { pending: boolean; requested?: boolean }) => void
 }
 
@@ -58,15 +67,16 @@ function TransferEmployeeModal({
   employeeName,
   fromSiteId,
   date,
-  isSupervisor = false,
   willRequest = false,
+  permanentAllowed = true,
   onTransferred,
 }: TransferEmployeeModalProps) {
   const [sites, setSites] = useState<Site[]>([])
   const [loadingSites, setLoadingSites] = useState(false)
   const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
-  const [onlyForToday, setOnlyForToday] = useState(false)
+  // Nothing preselected: the user must consciously pick "For today" or "Permanent".
+  const [mode, setMode] = useState<TransferMode | null>(null)
   const [transferring, setTransferring] = useState(false)
 
   const fetchSites = async () => {
@@ -96,7 +106,7 @@ function TransferEmployeeModal({
     if (!open) {
       setSelectedSiteId(null)
       setSelectedJobId(null)
-      setOnlyForToday(false)
+      setMode(null)
     }
   }, [open])
 
@@ -112,6 +122,10 @@ function TransferEmployeeModal({
       toast.error("Select a destination site")
       return
     }
+    if (!mode) {
+      toast.error("Choose 'For today' or 'Permanent'")
+      return
+    }
     try {
       setTransferring(true)
       const res = await api.post("/api/attendance/transfer", {
@@ -120,7 +134,7 @@ function TransferEmployeeModal({
         toSiteId: selectedSiteId,
         jobId: selectedJobId || null,
         date,
-        onlyForToday,
+        onlyForToday: mode === "today",
       })
       toast.success(res.data.message || "Employee transferred")
       onTransferred?.({ pending: !!res.data.pending, requested: !!res.data.requested })
@@ -133,6 +147,15 @@ function TransferEmployeeModal({
       setTransferring(false)
     }
   }
+
+  const blockClass = (active: boolean, disabled = false) =>
+    `rounded-xl border p-3 text-left transition-colors ${
+      disabled
+        ? "border-border bg-muted/20 opacity-60 cursor-not-allowed"
+        : active
+        ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+        : "border-border bg-muted/30 hover:border-primary/20"
+    }`
 
   return (
     <Dialog
@@ -203,35 +226,42 @@ function TransferEmployeeModal({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">No job</SelectItem>
-              {selectedSite.jobs.map((job) => (
-                <SelectItem key={job._id} value={job._id}>
-                  {job.name}
-                </SelectItem>
-              ))}
+              {selectedSite.jobs
+                ?.filter((j) => j.isActive !== false && !j.isDeleted && !j.isCompleted)
+                .map((job) => (
+                  <SelectItem key={job._id} value={job._id}>
+                    {job.name}
+                  </SelectItem>
+                ))}
             </SelectContent>
           </Select>
         )}
 
-        <label className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover:bg-accent/50">
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-primary mt-0.5"
-            checked={onlyForToday}
-            onChange={(e) => setOnlyForToday(e.target.checked)}
-          />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium">Only for today</p>
-            <p className="text-xs text-muted-foreground">
-              {onlyForToday
-                ? isSupervisor
-                  ? "A visit for today only — their home site and attendance assignment stay unchanged; back on their own site tomorrow."
-                  : "A visit for today only — their home site stays unchanged; back on it tomorrow."
-                : isSupervisor
-                ? "Permanent move — their home site and attendance assignment move to the destination."
-                : "Permanent move — their home site moves to the destination from today."}
-            </p>
-          </div>
-        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setMode("today")}
+            className={blockClass(mode === "today")}
+          >
+            <div className="font-semibold text-sm text-foreground">For today</div>
+            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+              A visit — back on their home site tomorrow.
+            </div>
+          </button>
+          <button
+            type="button"
+            disabled={!permanentAllowed}
+            onClick={() => permanentAllowed && setMode("permanent")}
+            className={blockClass(mode === "permanent", !permanentAllowed)}
+          >
+            <div className="font-semibold text-sm text-foreground">Permanent</div>
+            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+              {permanentAllowed
+                ? "Their home site moves to the destination from today."
+                : "Only their home site or an admin can move them permanently."}
+            </div>
+          </button>
+        </div>
 
         <DialogFooter>
           <Button
@@ -243,7 +273,7 @@ function TransferEmployeeModal({
           </Button>
           <Button
             onClick={handleTransfer}
-            disabled={transferring || !selectedSiteId}
+            disabled={transferring || !selectedSiteId || !mode}
           >
             {transferring ? (
               <Loader2 className="h-4 w-4 animate-spin mr-2" />

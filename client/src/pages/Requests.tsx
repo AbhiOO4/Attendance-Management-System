@@ -4,11 +4,12 @@ import axios from "axios"
 
 import { api } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
-import { getCurrentTargetDateString, toLocalDateString } from "@/lib/dateUtils"
+import { getCurrentTargetDateString, toLocalDateString, formatLocalTime12h, formatLogicalDateLabel } from "@/lib/dateUtils"
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Loader2,
   Inbox,
@@ -19,6 +20,7 @@ import {
   MapPin,
   ArrowRight,
   Briefcase,
+  Clock3,
 } from "lucide-react"
 
 type Ref = { _id: string; name?: string; siteName?: string } | null
@@ -39,6 +41,9 @@ type TransferRequest = {
   // legacy docs → treated as "pull".
   direction?: "pull" | "push"
   carriedCheckIn?: string | null
+  // "push" only: business day of the source record (a night transfer accepted after
+  // midnight still lands on the night's own day). null on pull / older requests.
+  attendanceDate?: string | null
   status: RequestStatus
   requestedBy: Ref
   approver: Ref
@@ -138,7 +143,121 @@ function RequestCard({
         )}
       </div>
 
+      <RequestTiming req={req} />
+
       {children}
+    </div>
+  )
+}
+
+/** When the move happens: a mid-day transfer's start time here, and the day if not today. */
+function RequestTiming({ req }: { req: TransferRequest }) {
+  const day = (req.direction === "push" ? req.attendanceDate : null) || req.dateLocal
+  const notToday = !!day && day !== getCurrentTargetDateString()
+  const startsAt = req.direction === "push" && req.carriedCheckIn ? formatLocalTime12h(req.carriedCheckIn) : null
+  if (!startsAt && !notToday) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      <Clock3 className="h-3.5 w-3.5 shrink-0" />
+      {startsAt && <span>Starts at <span className="font-medium text-foreground">{startsAt}</span></span>}
+      {startsAt && notToday && <span>·</span>}
+      {notToday && <span>For {formatLogicalDateLabel(day)}</span>}
+    </div>
+  )
+}
+
+/**
+ * Accept / Reject for a pending incoming request. Reject asks for an optional reason (the
+ * requester sees it); accepting a PERMANENT request asks for a second tap, since it moves the
+ * employee's home site.
+ */
+function IncomingActions({
+  req,
+  busy,
+  onAct,
+}: {
+  req: TransferRequest
+  busy: boolean
+  onAct: (action: "accept" | "reject", note?: string) => void
+}) {
+  const [stage, setStage] = useState<"idle" | "rejecting" | "confirming">("idle")
+  const [note, setNote] = useState("")
+
+  if (stage === "rejecting") {
+    return (
+      <div className="space-y-2 pt-1">
+        <Textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={500}
+          placeholder="Reason (optional) — the requester will see this"
+          className="min-h-16 text-sm"
+          autoFocus
+        />
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStage("idle")}>
+            Back
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => onAct("reject", note.trim())}
+            className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+          >
+            {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <X className="h-4 w-4 mr-1.5" />}
+            Reject request
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (stage === "confirming") {
+    return (
+      <div className="space-y-2 pt-1">
+        <p className="text-xs text-foreground">
+          This moves {req.employee?.name || "the employee"}'s home site to{" "}
+          <span className="font-medium">{req.toSite?.siteName || "the destination"}</span> from today.
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStage("idle")}>
+            Back
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => onAct("accept")}>
+            {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Check className="h-4 w-4 mr-1.5" />}
+            Confirm permanent move
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+      <span className="text-xs text-muted-foreground">
+        Requested by {req.requestedBy?.name || "a supervisor"}
+      </span>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => setStage("rejecting")}
+          className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+        >
+          <X className="h-4 w-4 mr-1.5" />
+          Reject
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy}
+          onClick={() => (req.mode === "permanent" ? setStage("confirming") : onAct("accept"))}
+        >
+          {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Check className="h-4 w-4 mr-1.5" />}
+          Accept
+        </Button>
+      </div>
     </div>
   )
 }
@@ -266,10 +385,13 @@ export default function Requests() {
     }
   }, [])
 
-  const act = async (id: string, action: "accept" | "reject" | "cancel") => {
+  const act = async (id: string, action: "accept" | "reject" | "cancel", note?: string) => {
     setBusyId(id)
     try {
-      const res = await api.post(`/api/requests/${id}/${action}`)
+      const res = await api.post(
+        `/api/requests/${id}/${action}`,
+        action === "reject" && note ? { note } : {}
+      )
       toast.success(res.data?.message || "Done")
       await fetchAll()
       window.dispatchEvent(new Event("requests:updated"))
@@ -344,7 +466,7 @@ export default function Requests() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Cross-site transfer requests for today's roster.
-            {user?.role !== "supervisor" && " You also handle requests for sites without a supervisor."}
+            {user?.role !== "supervisor" && " You can see every site's requests and decide any of them."}
           </p>
         </CardHeader>
       </Card>
@@ -368,31 +490,11 @@ export default function Requests() {
               renderItem={(req) => (
                 <RequestCard key={req._id} req={req}>
                   {req.status === "pending" ? (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                      <span className="text-xs text-muted-foreground">
-                        Requested by {req.requestedBy?.name || "a supervisor"}
-                      </span>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busyId === req._id}
-                          onClick={() => act(req._id, "reject")}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-                        >
-                          <X className="h-4 w-4 mr-1.5" />
-                          Reject
-                        </Button>
-                        <Button size="sm" disabled={busyId === req._id} onClick={() => act(req._id, "accept")}>
-                          {busyId === req._id ? (
-                            <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                          ) : (
-                            <Check className="h-4 w-4 mr-1.5" />
-                          )}
-                          Accept
-                        </Button>
-                      </div>
-                    </div>
+                    <IncomingActions
+                      req={req}
+                      busy={busyId === req._id}
+                      onAct={(action, note) => act(req._id, action, note)}
+                    />
                   ) : (
                     req.note && <p className="text-xs text-muted-foreground italic pt-1">{req.note}</p>
                   )}

@@ -113,6 +113,16 @@ const employeeSchema = new mongoose.Schema({
     default: false
   },
 
+  // The site whose action created the pending scheduled* change (Send to site "starts
+  // tomorrow", a deferred add, a Tomorrow-tab job change or removal). Lets that site
+  // cancel its own scheduled change, and lets the cron skip a removal once the employee
+  // has permanently moved away from the site that scheduled it. null on older docs.
+  scheduledBySiteId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Site',
+    default: null
+  },
+
   isActive: {
     type: Boolean,
     default: true

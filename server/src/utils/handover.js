@@ -19,9 +19,9 @@
 import jobModel from "../models/jobModel.js"
 import Attendance from "../models/attendanceModel.js"
 import AttendanceLock from "../models/lockModel.js"
-import userModel from "../models/userModel.js"
+import Site from "../models/siteModel.js"
 import { recordAttendanceAudit } from "./attendanceAudit.js"
-import { getTodayLocal, combineFromOffset } from "./timeLocal.js"
+import { getTodayLocal, combineFromOffset, toLocalDateString } from "./timeLocal.js"
 import { categoryForEmployee } from "./collar.js"
 import { dayCheckInFieldFor } from "./rosterFields.js"
 
@@ -58,24 +58,59 @@ export async function applyHandover({ employee, toSiteId, toJobId = null, mode, 
 }
 
 /**
+ * Refuse a midday transfer whose source session has already been left: the employee has
+ * a session at another site starting at/after the source check-out (they were already
+ * transferred on — e.g. a second click on a stale row), or is open at a third site right
+ * now. Without this the same check-out could be carried to two sites, leaving two OPEN
+ * sessions from the same time; the overlap checks can't catch that, since they treat an
+ * open session as a zero-length instant. Throws Error with `.status` 409.
+ */
+export async function assertNotMovedOn({ doc, fromSiteId, toSiteId, carriedCheckIn, session = null }) {
+  if (!doc || !carriedCheckIn) return
+  const carriedMs = new Date(carriedCheckIn).getTime()
+  const from = String(fromSiteId)
+  const to = String(toSiteId)
+
+  const blocker = (doc.sessions || []).find((s) => {
+    const sid = String(s.siteId)
+    if (sid === from || !s.checkIn) return false
+    if (new Date(s.checkIn).getTime() >= carriedMs) return true // already moved on
+    return !s.checkOut && sid !== to // working at a third site right now
+  })
+  if (!blocker) return
+
+  const site = await Site.findById(blocker.siteId).select("siteName").session(session || null)
+  const err = new Error(
+    `Employee has already moved on to ${site?.siteName || "another site"} — refresh the page`
+  )
+  err.status = 409
+  throw err
+}
+
+/**
  * Place a MIDDAY arrival — the single source of truth for the source-initiated
  * "Transfer" (a second session), carrying the source check-out forward as the
  * destination check-in. Used by BOTH the immediate admin path
  * (attendanceController.transferEmployee) and the accepted-request path
  * (requestController.acceptRequest for a "push" request).
  *
+ * `attendanceDate` is the business day of the SOURCE record, not necessarily today: a
+ * night shift sits on the record of the day it started, so a transfer made (or accepted)
+ * after midnight continues YESTERDAY's timeline and its arrival belongs on that record.
+ *
  * The arrival is ALWAYS recorded now: the visitor's session is pushed straight onto the
  * employee's attendance doc (the source check-out becomes the destination check-in), so it
  * is durable and immediately visible in records/reports regardless of whether the
- * destination has submitted. When the destination is NOT locked, the pendingTransfer* stash
- * is ALSO written so that site's roster-built draft surfaces the visitor as an editable row;
- * its submit reconciles the pushed session in place (same-site sessions are replaced, not
- * duplicated). For a permanent move (!onlyForToday) the home repoints (currentSite/currentJob
- * + Job.employees[] + the supervisor's User.assignedSite).
+ * destination has submitted. When the destination is NOT locked for TODAY, the
+ * pendingTransfer* stash is ALSO written so that site's roster-built draft surfaces the
+ * visitor as an editable row; its submit reconciles the pushed session in place (same-site
+ * sessions are replaced, not duplicated). For a permanent move (!onlyForToday) the home
+ * repoints (currentSite/currentJob + Job.employees[]). A supervisor's User.assignedSite
+ * (auth scope) is admin-owned and never follows the move.
  *
  * Runs inside the caller's mongoose transaction. Throws Error with a `.status` for
- * the caller to surface. Returns { pending } — true when the destination is unlocked (its
- * draft will also show the arrival), false when locked. The session is recorded either way.
+ * the caller to surface. Returns { pending } — true when the destination's draft will also
+ * show the arrival (unlocked, today), false otherwise. The session is recorded either way.
  */
 export async function placeMiddayArrival({
   employee,
@@ -94,10 +129,17 @@ export async function placeMiddayArrival({
     attendanceDoc ||
     (await Attendance.findOne({ employee: employee._id, date: attendanceDate }).session(session))
   if (!doc) {
-    const err = new Error("No attendance record found for this employee today")
+    const err = new Error("No attendance record found for this employee on that day")
     err.status = 400
     throw err
   }
+
+  // The same source check-out can only be carried forward once.
+  await assertNotMovedOn({ doc, fromSiteId, toSiteId, carriedCheckIn, session })
+
+  // Only TODAY's record has a roster-built draft at the destination that could surface the
+  // visitor; a night-shift continuation lands on yesterday's record, which no draft reads.
+  const isTodayRecord = new Date(attendanceDate).toISOString().slice(0, 10) === getTodayLocal()
 
   // "Has the destination LOCKED (submitted) today?" is the accurate signal for whether its
   // roster-built draft will rebuild — not "does any session exist at the site today". The
@@ -121,13 +163,27 @@ export async function placeMiddayArrival({
     throw err
   }
 
+  // A night shift carries on as a night shift: when the source session was one, or the carried
+  // check-out already falls after the record's midnight, flag the arrival so the destination's
+  // NIGHT auto-checkout (which only closes night-flagged sessions on yesterday's record) closes
+  // it the next morning, instead of leaving it open for a manual carryover close.
+  const sourceSession = doc.sessions.find(
+    (s) =>
+      String(s.siteId) === String(fromSiteId) &&
+      s.checkOut &&
+      new Date(s.checkOut).getTime() === new Date(carriedCheckIn).getTime()
+  )
+  const recordDayStr = new Date(attendanceDate).toISOString().slice(0, 10)
+  const continuesNight =
+    !!sourceSession?.isNightShift || toLocalDateString(carriedCheckIn) > recordDayStr
+
   // Record the arrival on the employee's doc NOW, whether or not the destination has locked.
-  // The employee always has today's doc here (they were marked at the source), so we carry the
-  // source check-out forward as an OPEN destination session — a continuous timeline. Previously
-  // an UNLOCKED destination got only the pendingTransfer* stash, so the arrival had no record
-  // until that site's draft was opened and submitted: invisible on an already-open page until a
-  // refetch, absent from reports meanwhile, and lost if the site never marked attendance that
-  // day. The locked and unlocked paths now agree on materialising the record.
+  // The employee always has a doc for this day here (they were marked at the source), so we
+  // carry the source check-out forward as an OPEN destination session — a continuous timeline.
+  // Previously an UNLOCKED destination got only the pendingTransfer* stash, so the arrival had
+  // no record until that site's draft was opened and submitted: invisible on an already-open
+  // page until a refetch, absent from reports meanwhile, and lost if the site never marked
+  // attendance that day. The locked and unlocked paths now agree on materialising the record.
   doc.sessions.push({
     siteId: toSiteId,
     jobId: jobId || null,
@@ -136,6 +192,7 @@ export async function placeMiddayArrival({
     workedHours: 0,
     markedBy: markedById,
     transferredFromSiteId: fromSiteId,
+    isNightShift: continuesNight,
   })
 
   await doc.save({ session })
@@ -151,8 +208,10 @@ export async function placeMiddayArrival({
   // UNLOCKED destination: ALSO write the pendingTransfer* stash so that site's roster-built
   // draft still surfaces the visitor as an editable row (the draft reads roster + stash, not
   // existing records). Its submit reconciles the session in place — same-site sessions are
-  // replaced, not duplicated. A LOCKED destination has no draft to rebuild, so no stash.
-  if (!targetLocked) {
+  // replaced, not duplicated. A LOCKED destination has no draft to rebuild, so no stash; nor
+  // does a past record (a night continuation), since drafts only ever read today's stash.
+  const stashWritten = !targetLocked && isTodayRecord
+  if (stashWritten) {
     employee.pendingTransferCheckIn = carriedCheckIn
     employee.pendingTransferSiteId = toSiteId
     employee.pendingTransferDate = attendanceDate
@@ -162,9 +221,8 @@ export async function placeMiddayArrival({
   }
 
   // onlyForToday: the session is carried above (push / pendingTransfer stash), but the
-  // employee's home is untouched — no currentSite/currentJob move, no job-membership
-  // change, and (for a supervisor) no assignedSite change. They're visiting for the day
-  // and return to their home site's roster tomorrow.
+  // employee's home is untouched — no currentSite/currentJob move and no job-membership
+  // change. They're visiting for the day and return to their home site's roster tomorrow.
   if (!onlyForToday) {
     const oldJobId = employee.currentJob
     if (oldJobId) {
@@ -180,13 +238,7 @@ export async function placeMiddayArrival({
     await jobModel.findByIdAndUpdate(jobId, { $addToSet: { employees: employee._id } }, { session })
   }
 
-  // Auth follows the home: a permanent move repoints the supervisor's assignedSite;
-  // an only-for-today visit leaves it alone.
-  if (!onlyForToday && employee.user) {
-    await userModel.findByIdAndUpdate(employee.user, { assignedSite: toSiteId }, { session })
-  }
-
-  return { pending: !targetLocked }
+  return { pending: stashWritten }
 }
 
 /**

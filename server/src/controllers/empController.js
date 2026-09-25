@@ -10,6 +10,7 @@ import siteModel from '../models/siteModel.js'
 import workModel from '../models/workModel.js'
 import { resolveCollarType } from '../utils/collar.js'
 import { getTodayLocal } from '../utils/timeLocal.js'
+import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 
 //Admin
 
@@ -132,7 +133,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledBySiteId"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
@@ -494,12 +495,11 @@ export const editEmployee = async (req, res) => {
     );
 
     if (employee.user) {
+      // Keep the linked supervisor account's name/ID in step. Their assignedSite (auth
+      // scope) is admin-owned in Manage Users and never follows a roster/site change.
       await userModel.findByIdAndUpdate(employee.user, {
         name,
         employeeId,
-        // Keep the supervisor's assignedSite in sync only when the edit actually
-        // carried a site change.
-        ...(currentSite !== undefined ? { assignedSite: currentSite } : {}),
       }, { session });
     }
 
@@ -652,6 +652,7 @@ export const restoreEmployee = async (req, res) => {
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = null;
     employee.scheduledRemoval = false;
+    employee.scheduledBySiteId = null;
 
     await employee.save({ session });
 
@@ -1152,32 +1153,9 @@ export const releaseTempWorker = async (req, res) => {
       if (attendanceRecord.sessions.length === 0) {
         await attendanceModel.findByIdAndDelete(attendanceRecord._id, { session });
       } else {
+        // Same maths as every other write path (breaks, OT on net, holiday hours).
         const workConfig = await workModel.findOne().session(session);
-        const fullDayHours = workConfig?.fullDayHours || 8;
-        const halfDayHours = workConfig?.halfDayHours || 4;
-        const overtimeThreshold = workConfig?.overtimeThreshold || 8;
-
-        const totalWorkHours = attendanceRecord.sessions.reduce(
-          (sum, s) => sum + (s.workedHours || 0),
-          0
-        );
-
-        let status = 'absent';
-        if (totalWorkHours >= fullDayHours) {
-          status = 'fullday';
-        } else if (totalWorkHours >= halfDayHours) {
-          status = 'halfday';
-        }
-
-        let overtimeHours = 0;
-        if (totalWorkHours > overtimeThreshold) {
-          overtimeHours = totalWorkHours - overtimeThreshold;
-        }
-
-        attendanceRecord.totalWorkHours = totalWorkHours;
-        attendanceRecord.status = status;
-        attendanceRecord.overtimeHours = overtimeHours;
-
+        recomputeRecordTotals(attendanceRecord, workConfig);
         await attendanceRecord.save({ session });
       }
     }

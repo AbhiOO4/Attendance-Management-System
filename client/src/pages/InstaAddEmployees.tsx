@@ -250,8 +250,8 @@ function InstaAddEmployees() {
     const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
 
     // Instant add only: ON = carry a session for today without moving the employee's home
-    // site (a one-day visit); OFF (default) = permanently move them here. For a supervisor
-    // this also decides whether their attendance assignment follows (auth = home).
+    // site (a one-day visit); OFF (default) = permanently move them here. A supervisor's own
+    // site access (Manage Users) never follows either way.
     const [onlyForToday, setOnlyForToday] = useState(false)
 
     // Instant add only: the employee's existing sessions at OTHER sites today.
@@ -460,12 +460,10 @@ function InstaAddEmployees() {
                     : "Employee added successfully"
             )
 
+            // Keep the site's unsaved attendance draft: when it next loads, the draft appends the
+            // newly added employee and keeps every time already typed for the others. Only the
+            // saved-view inline-edit cache is reset, as the saved list has changed.
             if (siteId) {
-                Object.keys(localStorage).forEach((key) => {
-                    if (key.startsWith(`attendance_draft_${siteId}_`)) {
-                        localStorage.removeItem(key)
-                    }
-                })
                 localStorage.removeItem(`active_inline_edit_row_${siteId}`)
                 localStorage.removeItem(`active_inline_edit_data_${siteId}`)
             }
@@ -1206,11 +1204,7 @@ function InstaAddEmployees() {
                                         <p className="text-sm font-semibold text-foreground">Only for today</p>
                                         <p className="text-xs text-muted-foreground leading-snug">
                                             {onlyForToday
-                                                ? selectedEmployee?.user
-                                                    ? "A visit for today only — home site and attendance assignment stay unchanged; back on their own site tomorrow."
-                                                    : "A visit for today only — home site stays unchanged; back on it tomorrow."
-                                                : selectedEmployee?.user
-                                                ? "Permanent — home site and attendance assignment move to this site."
+                                                ? "A visit for today only — home site stays unchanged; back on it tomorrow."
                                                 : "Permanent — home site moves to this site from today."}
                                         </p>
                                     </div>

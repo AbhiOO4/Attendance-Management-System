@@ -107,6 +107,9 @@ interface Employee {
   scheduledEffectiveDate?: string | null
   // "Leaving tomorrow" — a deferred removal scheduled from the Tomorrow tab.
   scheduledRemoval?: boolean
+  // The site whose action created the pending scheduled change — lets THIS site cancel a
+  // move it scheduled itself (Send to site → starts tomorrow).
+  scheduledBySiteId?: string | null
   nationality?: "foreign" | "omani"
   collarType?: "skilled" | "staff"
   // "Only for today" visitor stash: their home stays at currentSite but they're marked
@@ -980,9 +983,29 @@ function SiteRoster({
       !isAwayToday(e)
     const canSendTomorrow =
       mode === "tomorrow" && info.onSiteToday && !info.hasSchedule
+    // A move away that THIS site scheduled (Send to site → starts tomorrow) can be undone
+    // here until midnight. A move another site scheduled is cancelled from that site.
+    const canCancelMove =
+      mode === "today" && info.movingAway && refId(e.scheduledBySiteId) === siteId
 
     return (
       <div className="flex items-center justify-end gap-1">
+        {canCancelMove && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-amber-700 hover:bg-amber-500/10 dark:text-amber-300"
+            disabled={cancelingId === e._id}
+            onClick={() => cancelSchedule(e._id)}
+          >
+            {cancelingId === e._id ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <X className="mr-1 h-4 w-4" />
+            )}
+            Cancel move
+          </Button>
+        )}
         {(canSend || canSendTomorrow) && (
           <Button
             variant="ghost"
@@ -1092,7 +1115,9 @@ function SiteRoster({
             variant="secondary"
             className="h-4 bg-amber-50 px-1.5 py-0 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
           >
-            Moving tomorrow
+            {siteRefName(e.scheduledSiteId)
+              ? `Moving to ${siteRefName(e.scheduledSiteId)} tomorrow`
+              : "Moving tomorrow"}
           </Badge>
         )}
         {mode === "today" && info.jobChangePending && (

@@ -22,15 +22,17 @@ import mongoose from "mongoose"
  *                   are untouched (back home tomorrow). Applied via the pendingTransfer*
  *                   stash on the employee (empModel.js), same rails as transferEmployee.
  *   - "permanent" → the employee's home moves to the destination going forward
- *                   (currentSite/currentJob repoint + job membership + supervisor auth).
+ *                   (currentSite/currentJob repoint + job membership). A supervisor's
+ *                   User.assignedSite (auth scope) is admin-owned and never follows.
  *
  * `carriedCheckIn` is set only for a "push": the source check-out snapshotted at
- * request time, replayed as the destination check-in when the request is accepted.
+ * request time, replayed as the destination check-in when the request is accepted
+ * (only if the source check-out is unchanged by then), on the `attendanceDate` record.
  *
  * `approver` is a REPRESENTATIVE supervisor of the DECIDING site kept for display; null
- * means that site had no supervisor at creation, so the request falls to admins. It is
- * NOT the authorization key — a site may have several supervisors and ANY of them (or
- * an admin) may decide, resolved by the deciding site === assignedSite in requestController.
+ * means that site had no supervisor at creation. It is NOT the authorization key — a site
+ * may have several supervisors and ANY of them may decide (resolved by the deciding site
+ * === assignedSite in requestController), and every admin sees and may decide every request.
  * Lifecycle:
  *   pending → accepted | rejected | cancelled | expired
  * A partial-unique index enforces at most one pending request per employee (either
@@ -116,11 +118,21 @@ const transferRequestSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Local business day ("YYYY-MM-DD") the request targets. Requests are a
-    // today-only setup action, so the expiry cron closes anything not from today.
+    // Local business day ("YYYY-MM-DD") the request was made on. A "pull" is a
+    // today-only handover, so the expiry cron closes it once this is no longer today.
     dateLocal: {
       type: String,
       required: true,
+    },
+
+    // "push" only: business day ("YYYY-MM-DD") of the SOURCE attendance record the carried
+    // check-out lives on. A night shift sits on the record of the day it started, so a
+    // transfer made or accepted after midnight continues THAT record, and the request stays
+    // acceptable until the carryover window closes (local noon the next day). null on pull
+    // requests and on push requests created before this field existed (use dateLocal).
+    attendanceDate: {
+      type: String,
+      default: null,
     },
 
     decidedBy: {
@@ -134,10 +146,8 @@ const transferRequestSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Set once the stale-request escalation cron has pinged admins about a still-pending
-    // request (cron/escalateStaleRequests.js), so it escalates ONCE rather than every tick.
-    // null = never escalated. A supervisor's push can silently fail (best-effort delivery),
-    // so this is the safety net that ensures someone with authority always sees a stuck request.
+    // Legacy: stamped by the removed stale-request escalation cron. Admins now see every
+    // request in their inbox, so nothing needs escalating; kept so existing docs still load.
     escalatedAt: {
       type: Date,
       default: null,

@@ -13,15 +13,19 @@
 import mongoose from "mongoose"
 import empModel from "../models/empModel.js"
 import Site from "../models/siteModel.js"
-import Job from "../models/jobModel.js"
 import userModel from "../models/userModel.js"
 import Attendance from "../models/attendanceModel.js"
 import TransferRequest from "../models/transferRequestModel.js"
 import notificationModel from "../models/notificationModel.js"
-import { isAssignableSite } from "../utils/siteAssignable.js"
-import { getTodayLocal } from "../utils/timeLocal.js"
+import { isAssignableSite, findAssignableJob } from "../utils/siteAssignable.js"
+import { getTodayLocal, isWithinCarryoverWindow } from "../utils/timeLocal.js"
 import { notifyUser, notifyAdmins, findSiteSupervisors } from "../utils/notify.js"
-import { applyHandover, placeMiddayArrival, createPreSaveVisitRecord } from "../utils/handover.js"
+import {
+  applyHandover,
+  placeMiddayArrival,
+  createPreSaveVisitRecord,
+  assertNotMovedOn,
+} from "../utils/handover.js"
 import { recordSiteActivity, resolveActor } from "../utils/siteActivity.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
@@ -95,11 +99,8 @@ export const createRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: "Destination site is not a valid transfer target" })
     }
 
-    if (toJobId) {
-      const job = await Job.findById(toJobId)
-      if (!job || job.site.toString() !== toSiteId.toString()) {
-        return res.status(400).json({ success: false, message: "Job does not belong to the destination site" })
-      }
+    if (toJobId && !(await findAssignableJob(toJobId, toSiteId))) {
+      return res.status(400).json({ success: false, message: "That job is not active at the destination site" })
     }
 
     // Clean handover only — a marked employee is a midday case (use Transfer).
@@ -169,8 +170,9 @@ export const createRequest = async (req, res) => {
 }
 
 /**
- * The "incoming" filter — requests this user is responsible for deciding.
- * - Admins: requests routed to them, or to no supervisor (approver null).
+ * The "incoming" filter — requests this user can see and decide.
+ * - Admins: EVERY request, across all sites. Any admin may step in on any request, so
+ *   nothing can sit unseen (this replaced the old stale-request escalation cron).
  * - Supervisors: EVERY request whose DECIDING site is theirs. The deciding site is
  *   fromSite for a "pull" (a destination asking for their employee) and toSite for a
  *   "push" (a source sending an employee into their site). Site-based rather than the
@@ -180,7 +182,7 @@ export const createRequest = async (req, res) => {
  */
 async function incomingFilterFor(user) {
   if (isAdmin(user.role)) {
-    return { $or: [{ approver: user.id }, { approver: null }] }
+    return {}
   }
   const me = await userModel.findById(user.id).select("assignedSite")
   if (!me?.assignedSite) return { _id: { $in: [] } }
@@ -269,6 +271,22 @@ async function mayDecide(request, user) {
   return me.assignedSite.toString() === decidingSite.toString()
 }
 
+/**
+ * Inside acceptRequest's transaction: close a request the situation has overtaken as
+ * `expired` (with a reason), COMMIT that, and reply 409 — so the card leaves the inbox
+ * instead of offering an Accept that can only fail.
+ */
+async function expireAndRespond({ request, req, res, session, note, message }) {
+  request.status = "expired"
+  request.decidedBy = req.user.id
+  request.decidedAt = new Date()
+  request.note = note
+  await request.save({ session })
+  await session.commitTransaction()
+  session.endSession()
+  return res.status(409).json({ success: false, message })
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/requests/:id/accept — execute the handover
 // ---------------------------------------------------------------------------
@@ -289,22 +307,96 @@ export const acceptRequest = async (req, res) => {
       return res.status(403).json({ success: false, message: "You are not allowed to decide this request" })
     }
 
+    const isPush = request.direction === "push"
+
+    // A request only makes sense for the day it was made. A pull is a same-day handover. A
+    // push (midday/night transfer) continues its SOURCE record's timeline, which stays live
+    // until the carryover window closes (local noon the next day) — so a night transfer sent
+    // at 23:30 can still be accepted at 00:15 and lands on that night's record. The hourly
+    // expiry cron may not have run yet, so the window is enforced here too.
+    const recordDay = isPush ? request.attendanceDate || request.dateLocal : request.dateLocal
+    const stillLive = isPush ? isWithinCarryoverWindow(recordDay) : recordDay === getTodayLocal()
+    if (!stillLive) {
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Expired — the day it was for has ended",
+        message: `This request was for ${recordDay} and has expired`,
+      })
+    }
+
     const employee = await empModel.findById(request.employee).session(session)
     if (!employee) {
       await session.abortTransaction()
       session.endSession()
       return res.status(404).json({ success: false, message: "Employee not found" })
     }
+    if (!employee.isActive) {
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Employee was deactivated",
+        message: "This employee has been deactivated — request expired",
+      })
+    }
+
+    const toSite = await Site.findById(request.toSite).session(session)
+    if (!isAssignableSite(toSite)) {
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Destination site is no longer active",
+        message: "The destination site is no longer active — request expired",
+      })
+    }
+
+    // A job deactivated after the request was made is dropped (placed with no job) rather
+    // than failing the accept; the decider is told in the success message.
+    const toJob = request.toJob ? await findAssignableJob(request.toJob, request.toSite, session) : null
+    const jobNote =
+      request.toJob && !toJob ? " The requested job is no longer active, so no job was assigned." : ""
 
     // A source-initiated midday transfer (push): the employee is marked at the source
     // by design, so the pull-lane drift/marked-today guards below don't apply. Place the
     // arrival exactly as the immediate transfer does (carried check-in, second session).
-    if (request.direction === "push") {
-      const toSitePush = await Site.findById(request.toSite).session(session)
-      if (!isAssignableSite(toSitePush)) {
-        await session.abortTransaction()
-        session.endSession()
-        return res.status(400).json({ success: false, message: "Destination site is no longer a valid target" })
+    if (isPush) {
+      const toSitePush = toSite
+      const attendanceDate = new Date(recordDay)
+      const doc = await Attendance.findOne({ employee: employee._id, date: attendanceDate }).session(session)
+
+      // The source check-out snapshotted at request time must still stand — if it was edited
+      // or removed since, replaying it would start the destination session at the wrong time.
+      const carriedMs = request.carriedCheckIn ? new Date(request.carriedCheckIn).getTime() : NaN
+      const sourceIntact =
+        !!doc &&
+        doc.sessions.some(
+          (s) =>
+            String(s.siteId) === String(request.fromSite) &&
+            s.checkOut &&
+            new Date(s.checkOut).getTime() === carriedMs
+        )
+      if (!sourceIntact) {
+        return expireAndRespond({
+          request, req, res, session,
+          note: "The source check-out changed after the request was sent",
+          message:
+            "The employee's check-out at the source site has changed since this was sent — request expired. Ask them to transfer again.",
+        })
+      }
+
+      // Already placed somewhere else since the request was made → the request is moot.
+      try {
+        await assertNotMovedOn({
+          doc,
+          fromSiteId: request.fromSite,
+          toSiteId: request.toSite,
+          carriedCheckIn: request.carriedCheckIn,
+          session,
+        })
+      } catch (err) {
+        if (err.status !== 409) throw err
+        return expireAndRespond({
+          request, req, res, session,
+          note: err.message.replace(" — refresh the page", ""),
+          message: err.message.replace("refresh the page", "request expired"),
+        })
       }
 
       const pushActor = await resolveActor(req)
@@ -312,13 +404,14 @@ export const acceptRequest = async (req, res) => {
         employee,
         fromSiteId: request.fromSite,
         toSiteId: request.toSite,
-        jobId: request.toJob || null,
+        jobId: toJob?._id || null,
         carriedCheckIn: request.carriedCheckIn,
-        attendanceDate: todayAttendanceDate(),
+        attendanceDate,
         onlyForToday: request.mode === "today",
         markedById: req.user.id,
         actor: pushActor,
         session,
+        attendanceDoc: doc,
       })
 
       request.status = "accepted"
@@ -349,51 +442,32 @@ export const acceptRequest = async (req, res) => {
         summary: `${pushActor.actorName} accepted the midday transfer of ${empNamePush} from ${pushFromSite?.siteName || "their site"} to ${toSitePush?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})`,
       })
 
-      return res.status(200).json({ success: true, message: "Request accepted", data: request })
+      return res.status(200).json({ success: true, message: `Request accepted.${jobNote}`, data: request })
     }
 
     // Drift guard: the employee must still be homed at the requested site.
     if (!employee.currentSite || employee.currentSite.toString() !== request.fromSite.toString()) {
-      request.status = "expired"
-      request.decidedBy = req.user.id
-      request.decidedAt = new Date()
-      request.note = "Employee moved before the request was accepted"
-      await request.save({ session })
-      await session.commitTransaction()
-      session.endSession()
-      return res.status(409).json({
-        success: false,
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Employee moved before the request was accepted",
         message: "Employee has since moved home site — request expired",
       })
     }
 
     // Marked-today guard: a day already in progress is a midday case, not a handover.
     if (await isMarkedToday(employee._id, session)) {
-      request.status = "expired"
-      request.decidedBy = req.user.id
-      request.decidedAt = new Date()
-      request.note = "Employee was already marked today"
-      await request.save({ session })
-      await session.commitTransaction()
-      session.endSession()
-      return res.status(409).json({
-        success: false,
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Employee was already marked today",
         message: "Employee has already been marked today — request expired. Use Transfer for a midday move.",
       })
-    }
-
-    const toSite = await Site.findById(request.toSite).session(session)
-    if (!isAssignableSite(toSite)) {
-      await session.abortTransaction()
-      session.endSession()
-      return res.status(400).json({ success: false, message: "Destination site is no longer a valid target" })
     }
 
     // Place the employee at the destination (shared with the source-push path).
     await applyHandover({
       employee,
       toSiteId: request.toSite,
-      toJobId: request.toJob || null,
+      toJobId: toJob?._id || null,
       mode: request.mode,
       session,
     })
@@ -409,7 +483,7 @@ export const acceptRequest = async (req, res) => {
     await createPreSaveVisitRecord({
       employee,
       toSite,
-      toJobId: request.toJob || null,
+      toJobId: toJob?._id || null,
       fromSiteId: request.fromSite,
       markedById: req.user.id,
       actor: await resolveActor(req),
@@ -447,7 +521,7 @@ export const acceptRequest = async (req, res) => {
       summary: `${acceptActor.actorName} accepted transfer of ${empName} from ${acceptFromSite?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${request.mode === "permanent" ? "permanent" : "for today"})`,
     })
 
-    return res.status(200).json({ success: true, message: "Request accepted", data: request })
+    return res.status(200).json({ success: true, message: `Request accepted.${jobNote}`, data: request })
   } catch (error) {
     await session.abortTransaction()
     session.endSession()
@@ -464,7 +538,7 @@ export const acceptRequest = async (req, res) => {
 // ---------------------------------------------------------------------------
 export const rejectRequest = async (req, res) => {
   try {
-    const { note = "" } = req.body || {}
+    const note = String(req.body?.note ?? "").trim().slice(0, 500)
     const request = await TransferRequest.findById(req.params.id)
     if (!request || request.status !== "pending") {
       return res.status(404).json({ success: false, message: "Request not found or already handled" })
@@ -473,11 +547,16 @@ export const rejectRequest = async (req, res) => {
       return res.status(403).json({ success: false, message: "You are not allowed to decide this request" })
     }
 
-    request.status = "rejected"
-    request.decidedBy = req.user.id
-    request.decidedAt = new Date()
-    request.note = note
-    await request.save()
+    // Conditional on still-pending: an Accept committing in the meantime must win, not be
+    // overwritten by this (already-read) "pending" snapshot.
+    const decided = await TransferRequest.findOneAndUpdate(
+      { _id: request._id, status: "pending" },
+      { $set: { status: "rejected", decidedBy: req.user.id, decidedAt: new Date(), note } },
+      { new: true }
+    )
+    if (!decided) {
+      return res.status(404).json({ success: false, message: "Request not found or already handled" })
+    }
 
     const employee = await empModel.findById(request.employee).select("name")
     await notifyUser(request.requestedBy, {
@@ -504,7 +583,7 @@ export const rejectRequest = async (req, res) => {
       summary: `${rejectActor.actorName} rejected the transfer request for ${employee?.name || "the employee"} (${rejFromSite?.siteName || "?"} → ${rejToSite?.siteName || "?"})${note ? `: ${note}` : ""}`,
     })
 
-    return res.status(200).json({ success: true, message: "Request rejected", data: request })
+    return res.status(200).json({ success: true, message: "Request rejected", data: decided })
   } catch (error) {
     console.error("[requests] rejectRequest error:", error)
     return res.status(500).json({ success: false, message: "Failed to reject request" })
@@ -524,10 +603,15 @@ export const cancelRequest = async (req, res) => {
       return res.status(403).json({ success: false, message: "You can only cancel your own requests" })
     }
 
-    request.status = "cancelled"
-    request.decidedBy = req.user.id
-    request.decidedAt = new Date()
-    await request.save()
+    // Conditional on still-pending, so a concurrently committing Accept isn't overwritten.
+    const cancelled = await TransferRequest.findOneAndUpdate(
+      { _id: request._id, status: "pending" },
+      { $set: { status: "cancelled", decidedBy: req.user.id, decidedAt: new Date() } },
+      { new: true }
+    )
+    if (!cancelled) {
+      return res.status(404).json({ success: false, message: "Request not found or already handled" })
+    }
 
     // --- Site activity: requester withdrew the request (best-effort) ---
     const cancelActor = await resolveActor(req)
@@ -546,7 +630,7 @@ export const cancelRequest = async (req, res) => {
       summary: `${cancelActor.actorName} cancelled the transfer request for ${canEmp?.name || "the employee"} (${canFromSite?.siteName || "?"} → ${canToSite?.siteName || "?"})`,
     })
 
-    return res.status(200).json({ success: true, message: "Request cancelled", data: request })
+    return res.status(200).json({ success: true, message: "Request cancelled", data: cancelled })
   } catch (error) {
     console.error("[requests] cancelRequest error:", error)
     return res.status(500).json({ success: false, message: "Failed to cancel request" })

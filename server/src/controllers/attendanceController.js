@@ -13,14 +13,15 @@ import Job from '../models/jobModel.js';
 import customHolidayModel from '../models/holidayModel.js';
 import { getStaffEmployeeIds } from '../utils/collar.js';
 import { recordNetFactor } from '../utils/manHours.js';
-import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal } from '../utils/timeLocal.js';
+import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal, isWithinCarryoverWindow } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { buildAttendanceCsv, buildTimesheetCsv, buildOtSummaryCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
-import { isAssignableSite } from '../utils/siteAssignable.js';
+import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
-import { placeMiddayArrival } from '../utils/handover.js';
+import { placeMiddayArrival, assertNotMovedOn } from '../utils/handover.js';
+import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js';
 import TransferRequest from '../models/transferRequestModel.js';
 import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
@@ -1985,6 +1986,26 @@ export const getSiteAttendance = async (req, res) => {
 
           nationality: "$employee.nationality",
 
+          // The employee's home site — a row whose home is elsewhere is a visitor here,
+          // who may be sent on for the day but not re-homed by this site's supervisor.
+          homeSiteId: "$employee.currentSite",
+
+          // Other sites' session starts, used below to tell whether the employee has
+          // already moved on from here; stripped before the response.
+          otherSessions: {
+            $map: {
+              input: {
+                $filter: {
+                  input: "$sessions",
+                  as: "s",
+                  cond: { $ne: ["$$s.siteId", siteObjectId] },
+                },
+              },
+              as: "s",
+              in: { siteId: "$$s.siteId", checkIn: "$$s.checkIn" },
+            },
+          },
+
           // Current supervisor remark, so the inline-edit over-default remark prompt can
           // prefill it instead of clobbering an existing note.
           remark: "$remark",
@@ -2045,6 +2066,51 @@ export const getSiteAttendance = async (req, res) => {
     ]
 
     const result = await Attendance.aggregate(pipeline)
+
+    // Outgoing transfer state per row, so the SOURCE site sees where an employee went and
+    // can't transfer the same check-out twice: a midday transfer still awaiting the
+    // destination's approval ("pending"), or a session elsewhere starting at/after their
+    // last check-out here ("transferred"). Nothing while they're still open here.
+    const pendingPush = await TransferRequest.find({
+      status: "pending",
+      direction: "push",
+      fromSite: siteObjectId,
+      employee: { $in: result.map((r) => r.employee) },
+    })
+      .select("employee toSite")
+      .lean()
+    const pendingToByEmp = new Map(pendingPush.map((r) => [String(r.employee), String(r.toSite)]))
+
+    for (const row of result) {
+      const pendingTo = pendingToByEmp.get(String(row.employee))
+      const openHere = row.sessions.some((s) => s.checkIn && !s.checkOut)
+      const lastOutHere = Math.max(
+        0,
+        ...row.sessions.filter((s) => s.checkOut).map((s) => new Date(s.checkOut).getTime())
+      )
+      let movedTo = null
+      if (!openHere && lastOutHere > 0) {
+        const onward = (row.otherSessions || [])
+          .filter((s) => s.checkIn && new Date(s.checkIn).getTime() >= lastOutHere)
+          .sort((a, b) => new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime())[0]
+        if (onward) movedTo = String(onward.siteId)
+      }
+      row.outgoing = pendingTo
+        ? { status: "pending", siteId: pendingTo }
+        : movedTo
+        ? { status: "transferred", siteId: movedTo }
+        : null
+      delete row.otherSessions
+    }
+
+    const outgoingSiteIds = [...new Set(result.map((r) => r.outgoing?.siteId).filter(Boolean))]
+    if (outgoingSiteIds.length) {
+      const outgoingSites = await Site.find({ _id: { $in: outgoingSiteIds } }).select("siteName").lean()
+      const nameById = new Map(outgoingSites.map((s) => [String(s._id), s.siteName]))
+      for (const row of result) {
+        if (row.outgoing) row.outgoing.siteName = nameById.get(row.outgoing.siteId) || "another site"
+      }
+    }
 
     // Day-level holiday flag comes from the date itself, not from an employee's
     // record — temporary workers now store isHoliday:false even on a holiday, so a
@@ -4050,16 +4116,25 @@ export const addSessionToAttendance = async (
 // POST /api/attendance/transfer
 // Moves an employee from their current site to a new one, carrying their
 // checkout time at the source site forward as the check-in at the
-// destination. See empModel.js pendingTransfer* fields for why this can't
-// always create a session directly (destination site may not have any
-// saved attendance for today yet).
+// destination. `date` is the business day of the SOURCE record: today, or —
+// until local noon — yesterday, for a night shift that is still running
+// (the carryover). The arrival is always placed on that same record.
 export const transferEmployee = async (req, res) => {
-  const { employeeId, fromSiteId, toSiteId, jobId = null, date, onlyForToday = false } = req.body
+  const { employeeId, fromSiteId, toSiteId, jobId = null, date, onlyForToday } = req.body
 
   if (!employeeId || !fromSiteId || !toSiteId || !date) {
     return res.status(400).json({
       success: false,
       message: "employeeId, fromSiteId, toSiteId and date are required",
+    })
+  }
+
+  // The dialog makes the user pick "For today" or "Permanent" explicitly — never default
+  // to a permanent re-home just because a field was left out.
+  if (typeof onlyForToday !== "boolean") {
+    return res.status(400).json({
+      success: false,
+      message: "Choose whether the transfer is for today only or permanent",
     })
   }
 
@@ -4070,7 +4145,17 @@ export const transferEmployee = async (req, res) => {
     })
   }
 
-  const attendanceDate = new Date(date)
+  // Today's record, or yesterday's while its night shift is still live (before local
+  // noon). Anything else means the page is showing an old day — e.g. left open overnight.
+  const recordDay = String(date).slice(0, 10)
+  if (!isWithinCarryoverWindow(recordDay)) {
+    return res.status(400).json({
+      success: false,
+      message: `This sheet is for ${recordDay}, which can no longer be transferred from — reload the page`,
+    })
+  }
+
+  const attendanceDate = new Date(recordDay)
   attendanceDate.setUTCHours(0, 0, 0, 0)
 
   const dbSession = await mongoose.startSession()
@@ -4095,16 +4180,27 @@ export const transferEmployee = async (req, res) => {
       throwValidationError(400, "Target site is not a valid transfer destination")
     }
 
-    if (jobId) {
-      const job = await Job.findById(jobId).session(dbSession)
-      if (!job || job.site.toString() !== toSiteId.toString()) {
-        throwValidationError(400, "Job does not belong to the target site")
-      }
+    if (jobId && !(await findAssignableJob(jobId, toSiteId, dbSession))) {
+      throwValidationError(400, "That job is not active at the target site")
     }
 
     const employee = await empModel.findById(employeeId).session(dbSession)
-    if (!employee) {
+    if (!employee || !employee.isActive) {
       throwValidationError(404, "Employee not found")
+    }
+
+    // Only the employee's HOME site (or an admin) may re-home them. A site they are merely
+    // visiting today can send them on for the rest of the day, but a permanent move of
+    // another site's employee must come from that site (or an admin).
+    if (
+      req.user.role === "supervisor" &&
+      !onlyForToday &&
+      (!employee.currentSite || employee.currentSite.toString() !== fromSiteId.toString())
+    ) {
+      throwValidationError(
+        403,
+        "Only the employee's home site or an admin can move them permanently — choose 'For today'"
+      )
     }
 
     const attendanceDoc = await Attendance.findOne({
@@ -4113,7 +4209,7 @@ export const transferEmployee = async (req, res) => {
     }).session(dbSession)
 
     if (!attendanceDoc) {
-      throwValidationError(400, "No attendance record found for this employee today")
+      throwValidationError(400, "No attendance record found for this employee on that day")
     }
 
     const sourceSession = attendanceDoc.sessions
@@ -4129,6 +4225,16 @@ export const transferEmployee = async (req, res) => {
     }
 
     const carriedCheckIn = sourceSession.checkOut
+
+    // This check-out can only be carried forward once (a second click on a stale row, or a
+    // request made after they already went elsewhere, would place them at two sites).
+    await assertNotMovedOn({
+      doc: attendanceDoc,
+      fromSiteId,
+      toSiteId,
+      carriedCheckIn,
+      session: dbSession,
+    })
 
     // Supervisor-initiated midday transfer → a request the DESTINATION site's
     // supervisors must accept before the employee lands there (verification that the
@@ -4154,6 +4260,9 @@ export const transferEmployee = async (req, res) => {
               approver: destSupervisors[0]?._id ?? null,
               status: "pending",
               dateLocal: getTodayLocal(),
+              // The source record's day — the arrival is placed on this record when the
+              // destination accepts, even if that happens after midnight (night shift).
+              attendanceDate: recordDay,
             },
           ],
           { session: dbSession }
@@ -4226,8 +4335,36 @@ export const transferEmployee = async (req, res) => {
       attendanceDoc,
     })
 
+    // Any request still pending for this employee is overtaken by the direct transfer.
+    const transferredNote = `they were transferred to ${toSite?.siteName || "another site"} directly`
+    const superseded = await supersedePendingRequests({
+      filter: { employee: employee._id },
+      note: transferredNote,
+      decidedBy: req.user.id,
+      session: dbSession,
+    })
+
     await dbSession.commitTransaction()
     dbSession.endSession()
+
+    await notifySuperseded(superseded, transferredNote, { exceptUserId: req.user.id })
+
+    // Tell the SOURCE site's supervisor(s) — an admin moved their employee on.
+    try {
+      const departActor = await resolveActor(req)
+      await notifySiteSupervisors(
+        fromSiteId,
+        {
+          type: "transfer_departed",
+          title: "Employee transferred from your site",
+          body: `${employee.name} was transferred to ${toSite?.siteName || "another site"} by ${departActor.actorName}${onlyForToday ? " for today" : " (permanent)"}.`,
+          url: `/attendance/${fromSiteId}`,
+        },
+        { exceptUserId: req.user.id }
+      )
+    } catch (e) {
+      console.error("[transfer] departure notify failed:", e.message)
+    }
 
     // Notify the destination site's supervisor(s) that an employee arrived via a
     // midday transfer they did not request (the "unknowingly" case). Best-effort,

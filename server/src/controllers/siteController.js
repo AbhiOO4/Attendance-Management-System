@@ -11,14 +11,16 @@ import workModel from '../models/workModel.js'
 import { propagateDefaultChanges } from '../utils/propagateDefaults.js'
 import { getStaffEmployeeIds } from '../utils/collar.js'
 import { recordNetFactor } from '../utils/manHours.js'
-import { combineFromOffset, getDateLocal, getTodayLocal } from '../utils/timeLocal.js'
+import { combineFromOffset, getDateLocal, getTodayLocal, toLocalTimeString } from '../utils/timeLocal.js'
 import { hasSessionOverlap } from '../utils/sessionOverlap.js'
-import { isAssignableSite } from '../utils/siteAssignable.js'
+import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
 import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
 import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
+import { recomputeRecordTotals } from '../utils/attendanceMath.js'
+import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js'
 
 
 //Admin
@@ -35,7 +37,9 @@ export const getSites = async (req, res) => {
            filter.isActive = true
         }
 
-        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name")
+        // Job status fields let the site/job pickers (Transfer, Send to site) hide inactive,
+        // deleted and completed jobs — same shape getSite returns.
+        const sites = await siteModel.find(filter,"_id siteName locationDetails jobs isActive isPermanent isCompleted defaultCheckIn defaultCheckOut nightDefaultCheckIn nightDefaultCheckOut").sort({isCompleted: 1, isActive: -1}).populate("jobs", "name isActive isDeleted isCompleted")
         
         if (date) {
             const parsedDate = new Date(date)
@@ -288,8 +292,9 @@ export const removeEmployee = async (req, res) => {
     const today = new Date(getTodayLocal());
 
     // Strip this site's session from today's record, deleting the doc if it empties and
-    // recomputing derived totals from the remaining sessions otherwise (mirrors
-    // releaseTempWorker). Returns true if a session for this site was actually removed.
+    // recomputing derived totals from the remaining sessions otherwise (through the shared
+    // attendance maths, so breaks/OT/holiday hours match every other write path). Returns
+    // true if a session for this site was actually removed.
     const stripTodaySession = async () => {
       const record = await attendanceModel.findOne({
         employee: employee._id,
@@ -310,22 +315,7 @@ export const removeEmployee = async (req, res) => {
       }
 
       const workConfig = await workModel.findOne().session(session);
-      const fullDayHours = workConfig?.fullDayHours || 8;
-      const halfDayHours = workConfig?.halfDayHours || 4;
-      const overtimeThreshold = workConfig?.overtimeThreshold || 8;
-      const totalWorkHours = record.sessions.reduce(
-        (sum, s) => sum + (s.workedHours || 0),
-        0
-      );
-      record.totalWorkHours = totalWorkHours;
-      record.status =
-        totalWorkHours >= fullDayHours
-          ? "fullday"
-          : totalWorkHours >= halfDayHours
-          ? "halfday"
-          : "absent";
-      record.overtimeHours =
-        totalWorkHours > overtimeThreshold ? totalWorkHours - overtimeThreshold : 0;
+      recomputeRecordTotals(record, workConfig);
       await record.save({ session });
       return true;
     };
@@ -346,8 +336,20 @@ export const removeEmployee = async (req, res) => {
         await stripTodaySession();
       }
 
+      // A pending pull request asked THIS site to hand the employee over; once they're
+      // unassigned there is nothing left to hand over (the requester can add them directly).
+      const removedNote = "they were removed from their site and are now unassigned — add them directly"
+      const superseded = await supersedePendingRequests({
+        filter: { employee: employee._id, fromSite: siteId, direction: { $ne: "push" } },
+        note: removedNote,
+        decidedBy: req.user?.id || null,
+        session,
+      });
+
       await session.commitTransaction();
       session.endSession();
+
+      await notifySuperseded(superseded, removedNote, { exceptUserId: req.user?.id });
 
       // --- Site activity: employee removed from this site's roster (best-effort) ---
       try {
@@ -829,19 +831,13 @@ export const bulkSetEmployeeJob = async (req, res) => {
     }
 
     // Validate the target job (only when assigning to one, not to "No job").
-    if (jobId) {
-      const job = await jobModel
-        .findOne({ _id: jobId, isDeleted: { $ne: true } })
-        .session(session);
-
-      if (!job || !job.isActive || job.site.toString() !== siteId.toString()) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({
-          success: false,
-          message: "Invalid target job for this site",
-        });
-      }
+    if (jobId && !(await findAssignableJob(jobId, siteId, session))) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid target job for this site",
+      });
     }
 
     let updated = 0;
@@ -892,10 +888,17 @@ export const bulkSetEmployeeJob = async (req, res) => {
       }
 
       if (deferred) {
+        // A pending removal or move-away tomorrow would be silently cancelled by turning it
+        // into a job-only change — leave those rows alone (their own row offers Undo/Cancel).
+        if (employee.scheduledRemoval || employee.scheduledSiteId) {
+          skipped++;
+          continue;
+        }
         // Stash a from-tomorrow job-only change (keep the site); the cron applies it.
         employee.scheduledSiteId = null;
         employee.scheduledJobId = jobId || null;
         employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+        employee.scheduledBySiteId = siteId;
         await employee.save({ session });
         updated++;
         continue;
@@ -1203,6 +1206,16 @@ export const deactivateSite = async (req, res) => {
     );
 
 
+    // CLOSE PENDING TRANSFER REQUESTS to/from this site — none can be carried out now.
+    const closedNote = `${site.siteName} was deactivated`
+    const closedRequests = await supersedePendingRequests({
+      filter: { $or: [{ fromSite: siteId }, { toSite: siteId }] },
+      note: closedNote,
+      decidedBy: req.user?.id || null,
+      session,
+    });
+
+
     // DEACTIVATE SITE
 
 
@@ -1212,6 +1225,8 @@ export const deactivateSite = async (req, res) => {
 
     await session.commitTransaction();
     session.endSession();
+
+    await notifySuperseded(closedRequests, closedNote, { exceptUserId: req.user?.id });
 
     return res.status(200).json({
       message: "Site deactivated successfully",
@@ -1558,6 +1573,15 @@ export const instaAddEmployee = async (req, res) => {
       })
     }
 
+    if (currentJob && !(await findAssignableJob(currentJob, siteId, session))) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        success: false,
+        message: "That job is not active at this site",
+      })
+    }
+
     // ----------------------------------
     // DEFERRED (from-tomorrow) ADD via SiteDetail
     // ----------------------------------
@@ -1577,6 +1601,10 @@ export const instaAddEmployee = async (req, res) => {
       employee.scheduledSiteId = siteId
       employee.scheduledJobId = currentJob || null
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
+      // A leftover "leaving tomorrow" from the home site would make the cron apply the
+      // removal first and silently discard this add — the add supersedes it.
+      employee.scheduledRemoval = false
+      employee.scheduledBySiteId = siteId
 
       await employee.save({ session })
 
@@ -1616,6 +1644,15 @@ export const instaAddEmployee = async (req, res) => {
       return res.status(200).json({
         success: true,
         message: "Employee scheduled — starts tomorrow",
+      })
+    }
+
+    if (!isAssignableSite(site)) {
+      await session.abortTransaction()
+      session.endSession()
+      return res.status(400).json({
+        success: false,
+        message: "This site is not active, so employees can't be added to it",
       })
     }
 
@@ -1660,6 +1697,9 @@ export const instaAddEmployee = async (req, res) => {
       employee: empId,
       date: today,
     }).session(session)
+
+    // The site whose open session this add cuts short (if any) — told after commit.
+    let autoClosedSiteId = null
 
     if (attendance) {
       const alreadyHasSession = attendance.sessions.some(
@@ -1723,7 +1763,13 @@ export const instaAddEmployee = async (req, res) => {
 
         if (openSession) {
           openSession.checkOut = checkInDate
-          openSession.workedHours = (checkInDate.getTime() - new Date(openSession.checkIn).getTime()) / 3600000
+          openSession.workedHours = Number(
+            ((checkInDate.getTime() - new Date(openSession.checkIn).getTime()) / 3600000).toFixed(2)
+          )
+          // Closing a session changes the day's hours — keep the record's totals in step.
+          const workConfig = await workModel.findOne().session(session)
+          recomputeRecordTotals(attendance, workConfig)
+          autoClosedSiteId = openSession.siteId
         }
 
         await attendance.save({ session })
@@ -1760,6 +1806,7 @@ export const instaAddEmployee = async (req, res) => {
             checkOut: null,
             workedHours: 0,
             markedBy,
+            transferredFromSiteId: previousSiteId,
           })
 
           await attendance.save({ session })
@@ -1783,6 +1830,7 @@ export const instaAddEmployee = async (req, res) => {
               checkOut: null,
               workedHours: 0,
               markedBy,
+              transferredFromSiteId: previousSiteId,
             },
           ],
         }], { session })
@@ -1793,24 +1841,33 @@ export const instaAddEmployee = async (req, res) => {
     // SET PENDING TRANSFER FIELDS
     // ----------------------------------
 
-    employee.pendingTransferCheckIn = checkInDate
-    employee.pendingTransferSiteId = siteId
-    employee.pendingTransferDate = today
-    // Carry the job picked for this site so it lands on the visitor's session (via the
-    // destination draft) instead of defaulting to their home currentJob. Home job/site
-    // stay untouched for an only-for-today visit.
-    employee.pendingTransferJobId = currentJob || null
+    // Only an UNSAVED destination needs the stash: its roster-built draft reads it to show
+    // the arrival with the check-in and job entered here. A saved (locked) site already got
+    // the real session above and never rebuilds a draft, so a stash there would only linger.
+    if (!attendanceLock) {
+      employee.pendingTransferCheckIn = checkInDate
+      employee.pendingTransferSiteId = siteId
+      employee.pendingTransferDate = today
+      // Source site for the draft's "Transferred from" badge (null for a pool add) — always
+      // written so a stale value from an older, unconsumed stash can't leak through.
+      employee.pendingTransferFromSiteId = previousSiteId
+      // Carry the job picked for this site so it lands on the visitor's session (via the
+      // destination draft) instead of defaulting to their home currentJob. Home job/site
+      // stay untouched for an only-for-today visit.
+      employee.pendingTransferJobId = currentJob || null
+    }
 
     // ----------------------------------
     // UPDATE EMPLOYEE ASSIGNMENT
     // ----------------------------------
 
     // onlyForToday: carry the session (pendingTransfer* above) but leave the employee's
-    // home untouched — no currentSite/currentJob move, no job-membership change, and
-    // (for a supervisor) no assignedSite change. They return to their home roster tomorrow.
+    // home untouched — no currentSite/currentJob move and no job-membership change. They
+    // return to their home roster tomorrow. A supervisor's User.assignedSite (auth scope) is
+    // admin-owned and never follows a roster move, permanent or not.
     if (!onlyForToday) {
       employee.currentSite = siteId
-      employee.currentJob = currentJob
+      employee.currentJob = currentJob || null
     }
 
     await employee.save({ session })
@@ -1827,19 +1884,66 @@ export const instaAddEmployee = async (req, res) => {
       )
     }
 
-    // Auth follows the home: a permanent add of a supervisor makes this their assigned
-    // site. (The transfer path and the deferred cron already do this; the immediate add
-    // did not.)
-    if (!onlyForToday && employee.user) {
-      await userModel.findByIdAndUpdate(
-        employee.user,
-        { assignedSite: siteId },
+    if (!onlyForToday && currentJob) {
+      await jobModel.findByIdAndUpdate(
+        currentJob,
+        { $addToSet: { employees: employee._id } },
         { session }
       )
     }
 
+    // Any request still pending for this employee is overtaken by the direct add.
+    const addedNote = `they were added to ${site.siteName} directly`
+    const superseded = await supersedePendingRequests({
+      filter: { employee: employee._id },
+      note: addedNote,
+      decidedBy: markedBy || null,
+      session,
+    })
+
     await session.commitTransaction();
     session.endSession();
+
+    await notifySuperseded(superseded, addedNote, { exceptUserId: markedBy })
+
+    // Tell the site(s) this add took the employee from — their home (a cross-site add) and/or
+    // the site whose open session was just closed at this check-in. One message per site.
+    try {
+      const addActorForNotice = await resolveActor(req)
+      const noticeBySite = new Map()
+      if (previousSiteId && previousSiteId.toString() !== siteId.toString()) {
+        noticeBySite.set(
+          previousSiteId.toString(),
+          `${employee.name} was added to ${site.siteName} by ${addActorForNotice.actorName}${onlyForToday ? " for today" : " — their home site is now " + site.siteName}.`
+        )
+      }
+      if (autoClosedSiteId && autoClosedSiteId.toString() !== siteId.toString()) {
+        const key = autoClosedSiteId.toString()
+        const closedLine = `Their session at your site was closed at ${toLocalTimeString(checkInDate)}.`
+        noticeBySite.set(
+          key,
+          noticeBySite.has(key)
+            ? `${noticeBySite.get(key)} ${closedLine}`
+            : `${employee.name} was added to ${site.siteName} by ${addActorForNotice.actorName}. ${closedLine}`
+        )
+      }
+      await Promise.all(
+        [...noticeBySite.entries()].map(([noticeSiteId, body]) =>
+          notifySiteSupervisors(
+            noticeSiteId,
+            {
+              type: "transfer_departed",
+              title: "Employee moved off your site",
+              body,
+              url: `/attendance/${noticeSiteId}`,
+            },
+            { exceptUserId: markedBy }
+          )
+        )
+      )
+    } catch (e) {
+      console.error("[insta-add] departure notify failed:", e.message)
+    }
 
     // --- Site activity: immediate add (best-effort; a cross-site add shows in both feeds) ---
     try {
@@ -2282,8 +2386,19 @@ export const deleteSite = async (req, res) => {
       { session }
     );
 
+    // Close pending transfer requests to/from this site — none can be carried out now.
+    const closedNote = `${site.siteName} was deleted`
+    const closedRequests = await supersedePendingRequests({
+      filter: { $or: [{ fromSite: siteId }, { toSite: siteId }] },
+      note: closedNote,
+      decidedBy: req.user?.id || null,
+      session,
+    });
+
     await session.commitTransaction();
     session.endSession();
+
+    await notifySuperseded(closedRequests, closedNote, { exceptUserId: req.user?.id });
 
     return res.status(200).json({
       message: "Site and its associated jobs soft-deleted successfully",
@@ -2693,6 +2808,9 @@ export const updateEmployeeJob = async (req, res) => {
       employee.scheduledSiteId = onSiteHere ? null : employee.scheduledSiteId;
       employee.scheduledJobId = jobId || null;
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+      // A job-only change belongs to this site; editing an incoming add's job keeps the
+      // original scheduler (so the site that sent them can still cancel the move).
+      if (onSiteHere) employee.scheduledBySiteId = siteId;
       await employee.save({ session });
       await session.commitTransaction();
       session.endSession();
@@ -2760,14 +2878,16 @@ export const cancelScheduledAssignment = async (req, res) => {
       });
     }
 
-    // The pending change must belong to THIS site: either a scheduled add/move
-    // targeting it (scheduledSiteId), or a job-only change / scheduled removal for an
-    // employee currently on it (scheduledSiteId null, currentSite === siteId).
+    // The pending change must belong to THIS site: a scheduled add/move targeting it
+    // (scheduledSiteId), a job-only change / scheduled removal for an employee currently on
+    // it (scheduledSiteId null, currentSite === siteId), or any change THIS site scheduled —
+    // so a site that sent an employee away "starting tomorrow" can undo its own send.
     const belongsToSite =
       (employee.scheduledSiteId && employee.scheduledSiteId.toString() === siteId) ||
       (!employee.scheduledSiteId &&
         employee.currentSite &&
-        employee.currentSite.toString() === siteId);
+        employee.currentSite.toString() === siteId) ||
+      (employee.scheduledBySiteId && employee.scheduledBySiteId.toString() === siteId);
 
     if (!employee.scheduledEffectiveDate || !belongsToSite) {
       return res.status(400).json({
@@ -2780,6 +2900,7 @@ export const cancelScheduledAssignment = async (req, res) => {
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = null;
     employee.scheduledRemoval = false; // clears a "leaving tomorrow" (Undo)
+    employee.scheduledBySiteId = null;
     await employee.save();
 
     return res.status(200).json({
@@ -2823,6 +2944,9 @@ export const scheduleEmployeeRemoval = async (req, res) => {
     employee.scheduledSiteId = null;
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
+    // Records which site's removal this is, so the cron skips it if the employee has moved
+    // to another site permanently before midnight.
+    employee.scheduledBySiteId = siteId;
     await employee.save();
 
     // --- Site activity: deferred removal scheduled for tomorrow (best-effort) ---
@@ -2898,13 +3022,14 @@ export const sendEmployeeToSite = async (req, res) => {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ success: false, message: "Destination site is not a valid target" })
     }
-    if (toJobId) {
-      const job = await jobModel.findById(toJobId).session(session)
-      if (!job || job.site.toString() !== toSiteId.toString()) {
-        await session.abortTransaction(); session.endSession()
-        return res.status(400).json({ success: false, message: "Job does not belong to the destination site" })
-      }
+    if (toJobId && !(await findAssignableJob(toJobId, toSiteId, session))) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, message: "That job is not active at the destination site" })
     }
+
+    // Pending requests this same-day send overtakes (told after commit).
+    let superseded = []
+    const sentNote = `they were sent to ${toSite.siteName} directly`
 
     if (mode === "scheduled") {
       // A move that takes effect at tomorrow's rollover (applyScheduledAssignments cron):
@@ -2923,6 +3048,8 @@ export const sendEmployeeToSite = async (req, res) => {
       employee.scheduledJobId = toJobId || null
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
       employee.scheduledRemoval = false
+      // This (sending) site scheduled it, so it can cancel it from its own roster.
+      employee.scheduledBySiteId = siteId
       await employee.save({ session })
     } else {
       // today / permanent — a same-day handover, so it must be a clean pre-save move.
@@ -2981,10 +3108,41 @@ export const sendEmployeeToSite = async (req, res) => {
         actor: sendActor,
         session,
       })
+
+      // A pending request for this employee (someone asked for them, or a midday transfer
+      // awaiting acceptance) is overtaken by this direct send.
+      superseded = await supersedePendingRequests({
+        filter: { employee: employee._id },
+        note: sentNote,
+        decidedBy: req.user.id,
+        session,
+      })
     }
 
     await session.commitTransaction()
     session.endSession()
+
+    await notifySuperseded(superseded, sentNote, { exceptUserId: req.user.id })
+
+    // Tell the SOURCE site's other supervisors too (e.g. an admin, or a co-supervisor, sent
+    // their employee away) — best-effort, after commit; skip the caller.
+    try {
+      const departActor = await resolveActor(req)
+      await notifySiteSupervisors(
+        siteId,
+        {
+          type: "transfer_departed",
+          title: "Employee sent from your site",
+          body: `${employee.name} was sent to ${toSite?.siteName || "another site"} by ${departActor.actorName}${
+            mode === "permanent" ? " (permanent)" : mode === "scheduled" ? " (starts tomorrow)" : " for today"
+          }.`,
+          url: mode === "scheduled" ? `/site/${siteId}` : `/attendance/${siteId}`,
+        },
+        { exceptUserId: req.user.id }
+      )
+    } catch (e) {
+      console.error("[send-employee] departure notify failed:", e.message)
+    }
 
     // Notify the destination supervisor(s) (best-effort, after commit; skip the caller).
     try {

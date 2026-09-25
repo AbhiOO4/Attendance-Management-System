@@ -135,3 +135,28 @@ export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null
 
   return { netWorkHours, status, overtimeHours, breaksApplied, holidayHours };
 }
+
+/**
+ * Recompute an attendance record's day totals IN PLACE from its current sessions,
+ * using the record's own break override and holiday state. For write paths that
+ * change a record's sessions outside a full submit/edit (removing a session,
+ * auto-closing one) so their totals stay identical to what those paths produce.
+ *
+ * @param {object} record      Attendance document (sessions, breaksTaken, isHoliday, holidayReason)
+ * @param {object} workConfig  WorkSchedule document
+ * @returns {{ netWorkHours, status, overtimeHours, breaksApplied, holidayHours }}
+ */
+export function recomputeRecordTotals(record, workConfig) {
+  const rawHours = (record.sessions || []).reduce((sum, s) => sum + (s.workedHours || 0), 0);
+  const totals = computeAttendanceTotals(
+    rawHours,
+    workConfig,
+    record.breaksTaken ?? null,
+    { isHoliday: record.isHoliday, reason: record.holidayReason }
+  );
+  record.totalWorkHours = totals.netWorkHours;
+  record.status = totals.status;
+  record.overtimeHours = totals.overtimeHours;
+  record.holidayHours = totals.holidayHours;
+  return totals;
+}

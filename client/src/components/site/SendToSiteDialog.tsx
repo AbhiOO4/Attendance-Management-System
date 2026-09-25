@@ -111,14 +111,11 @@ function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferr
         mode: deferred ? "scheduled" : mode,
       })
       toast.success(res.data?.message || "Employee sent")
-      // A same-day send removes the employee from TODAY's roster, so this site's draft
-      // cache may be stale. A scheduled (tomorrow) send leaves today untouched — skip it.
+      // Keep this site's unsaved attendance draft: when it next loads it drops the row of
+      // anyone no longer on today's roster and keeps every time already typed for the rest.
+      // Only the saved-view inline-edit cache is reset. A scheduled (tomorrow) send leaves
+      // today untouched — nothing to reset.
       if (!deferred) {
-        Object.keys(localStorage).forEach((key) => {
-          if (key.startsWith(`attendance_draft_${siteId}_`)) {
-            localStorage.removeItem(key)
-          }
-        })
         localStorage.removeItem(`active_inline_edit_row_${siteId}`)
         localStorage.removeItem(`active_inline_edit_data_${siteId}`)
       }
@@ -209,8 +206,8 @@ function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferr
           <div className="rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground leading-snug">
             <span className="font-semibold text-foreground">Starts tomorrow.</span>{" "}
             They stay on your roster for the rest of today and move to the selected site at
-            the day rollover. You can undo it from the destination's Tomorrow roster before
-            midnight.
+            the day rollover. Changed your mind? Use "Cancel move" on their row in your Today
+            roster before midnight.
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-2">
