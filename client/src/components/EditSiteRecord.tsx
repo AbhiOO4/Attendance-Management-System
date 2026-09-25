@@ -156,13 +156,16 @@ interface EditSiteRecordProps {
   attendanceId: string | null
   site: Site
   onUpdated: (updatedRecord: AttendanceRecord) => void
+  // The save was refused because the record changed on another device (RECORD_CHANGED). The
+  // editor reloads itself; the parent should refresh its copy of the row too.
+  onStale?: () => void
 }
 
 // --------------------------------------------------
 // COMPONENT
 // --------------------------------------------------
 
-function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSiteRecordProps) {
+function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale }: EditSiteRecordProps) {
   const [, setOverlapInfo] = useState<any>(null)
   const [overlapSessionIds, setOverlapSessionIds] = useState<string[]>([])
   const [record, setRecord] = useState<AttendanceRecord | null>(null)
@@ -651,6 +654,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       if (error?.response?.data?.code === "RECORD_CHANGED") {
         // Reload the record as it is now; the modal stays open so the edit can be redone.
         await fetchAttendanceRecord()
+        onStale?.()
         toast.error(error.response.data.message, { duration: 7000 })
         return
       }

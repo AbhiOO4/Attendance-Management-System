@@ -5820,6 +5820,11 @@ function SiteAttendance() {
         // For a cross-site carryover close, the modal is fed the open shift's HOME site
         // so it loads/edits/writes against that site (see openCarryoverRecord).
         site={editSiteOverride ?? site!}
+        // Refused as changed-elsewhere: bring the sheet (and a carryover's source) up to date.
+        onStale={() => {
+          void fetchAttendance(today, { silent: true })
+          void fetchCarryovers(today)
+        }}
         onUpdated={(updatedRecord) => {
           const edited = selectedRecord
           const wasCarryover =
