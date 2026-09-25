@@ -430,7 +430,9 @@ export const checkPending = async (req, res) => {
         const parsedDate = new Date(date)
         parsedDate.setUTCHours(0, 0, 0, 0)
 
-        const lock = await AttendanceLock.findOne({ siteId, date: parsedDate })
+        // lockedBy name lets the Site Attendance page say WHO submitted when another
+        // supervisor's save lands while this page still holds a draft.
+        const lock = await AttendanceLock.findOne({ siteId, date: parsedDate }).populate("lockedBy", "name")
         let status = true
         if (!lock) {
             status = false

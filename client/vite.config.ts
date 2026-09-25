@@ -38,21 +38,11 @@ export default defineConfig({
               },
             },
           },
-          {
-            urlPattern: /^\/api\/.*$/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 5,
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24, // 24 hours
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
-              },
-            },
-          },
+          // NO rule for the API, deliberately. Rosters, locks and attendance are live shared
+          // state — a cached copy (e.g. NetworkFirst falling back after a slow network) would
+          // show a stale roster or "not yet submitted" and let a supervisor save over it. The
+          // old `/^\/api\/.*$/` NetworkFirst rule never actually matched (Workbox tests the
+          // full URL and the API is cross-origin) and was removed so nobody "fixes" it.
         ],
       },
       manifest: {

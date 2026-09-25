@@ -52,6 +52,13 @@ import requestRoutes from '../src/routes/requestRoutes.js'
 
 app.use(cookieParser())
 
+// API responses are live state (rosters, locks, attendance) — never let a browser, webview
+// or proxy cache serve an old copy. The PWA service worker doesn't cache /api either.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  next()
+})
+
 //Connecting routes
 app.use('/api/employees', empRoutes)
 app.use('/api/user', userRoutes)

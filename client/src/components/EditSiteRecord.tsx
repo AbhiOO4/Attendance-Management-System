@@ -145,6 +145,9 @@ export interface AttendanceRecord {
   collarType?: CollarType
   nationality?: Nationality
   remark?: string
+
+  // Version token from getAttendanceById, sent back as expectedUpdatedAt on save.
+  updatedAt?: string
 }
 
 interface EditSiteRecordProps {
@@ -607,6 +610,10 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
           checkOutNextDay: isNextDayInstant(session.checkOut, record?.date),
         })),
         breaksTaken,
+        // The version loaded when this editor opened: the server refuses the save
+        // (RECORD_CHANGED) if the record changed on another device since, rather than
+        // overwriting the newer times with this editor's copy.
+        expectedUpdatedAt: record.updatedAt,
       }
 
       const res = await api.patch(
@@ -640,6 +647,13 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated }: EditSi
       onClose()
     } catch (error: any) {
       console.log(error)
+
+      if (error?.response?.data?.code === "RECORD_CHANGED") {
+        // Reload the record as it is now; the modal stays open so the edit can be redone.
+        await fetchAttendanceRecord()
+        toast.error(error.response.data.message, { duration: 7000 })
+        return
+      }
 
       const overlap = error?.response?.data?.overlap
       if (overlap) {

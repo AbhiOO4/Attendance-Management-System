@@ -171,6 +171,27 @@ default to absent) and their today inputs are locked until it is closed. The win
 is a rolling one day; after that it is admin-only via edit-past. Nothing is
 auto-filled — an unclosed session stays incomplete by design.
 
+### Draft freshness & submit guards
+The Site Attendance draft is built client-side from the roster (`loadRosterContext` →
+`mergeDraftWithRoster` in `SiteAttendance.tsx`) and a page can sit open for hours, so:
+- **Submit roster guard** — `siteFirstSubmitAttendance` compares the posted employee set with
+  `computeExpectedDraftRoster` (`server/src/utils/draftRoster.js`, today only) and refuses a
+  mismatch with 409 `ROSTER_CHANGED` `{ rosterChange: { added, removed } }` before any write.
+  The client merges the change, flags rows "New" and asks for another Save (never auto-resubmits).
+  `draftRoster.js` MUST mirror the client draft filter exactly or every submit for a site is
+  refused — `findRecordedElsewhere` there is also what `GET /api/employees` uses.
+- **Already submitted** — any lock doc → 409 `ALREADY_SUBMITTED` `{ lockedByName, lockedAt }`
+  (a race's E11000 maps to the same; a write conflict → `SUBMIT_CONFLICT`). The page drops its
+  draft and shows the saved sheet.
+- **Saved-row edits** carry `expectedUpdatedAt` (the record's `updatedAt` as loaded);
+  `updateAttendance` answers 409 `RECORD_CHANGED` when it moved, instead of overwriting newer
+  times from another device or the auto-checkout cron. The remark endpoint writes with
+  `timestamps: false` so a remark doesn't trip it.
+- **Refresh** — the page re-checks lock/roster/carryovers (draft) or reloads the sheet (saved)
+  on visibility/focus/online/pageshow and on a timer; failures to load the day's state show a
+  Retry card rather than a guessed draft. API responses are `Cache-Control: no-store` and the
+  service worker deliberately has no `/api` runtime cache.
+
 ### Cron jobs (`server/src/cron/`)
 Started on boot from `server.js`. `autoCheckOut.js` and `autoCheckIn.js` fill in
 missing check-out/check-in times from each site's day/night default times for

@@ -12,6 +12,7 @@ import BulkAssignNightShift from "@/components/BulkAssignNightShift"
 import TransferEmployeeModal from "@/components/TransferEmployeeModal"
 import UpdateDefaultsDialog, { type DefaultChange } from "@/components/sites/UpdateDefaultsDialog"
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog"
+import { safeGetItem, safeSetItem, safeRemoveItem, draftStorageKey, pruneStaleDraftKeys } from "@/lib/draftStorage"
 import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
@@ -211,6 +212,10 @@ export interface AttendanceRecord {
   // inline-edit over-default remark prompt.
   remark?: string
 
+  // Version token. Sent back as expectedUpdatedAt on edits so a save from a stale view is
+  // refused (409 RECORD_CHANGED) instead of overwriting a newer change from another device.
+  updatedAt?: string
+
   breaksTaken?: number | null
 
   totalRawHours?: number
@@ -341,8 +346,11 @@ const clearCarryoverSessions = (
   carryoverIds: Set<string>
 ): DraftAttendanceRecord[] => {
   if (!carryoverIds || carryoverIds.size === 0) return records
+  const isBlank = (s: DraftSession) =>
+    !s.checkIn && !s.checkOut && !s.workedHours && !s.isNightShift && !s.manuallyCleared && !s.checkInAutoInit
   return records.map((rec) =>
-    carryoverIds.has(String(rec.employee._id))
+    // Already-blank rows keep their identity so a periodic refresh doesn't re-render them.
+    carryoverIds.has(String(rec.employee._id)) && !rec.sessions.every(isBlank)
       ? {
           ...rec,
           sessions: rec.sessions.map((s) => ({
@@ -357,6 +365,98 @@ const clearCarryoverSessions = (
         }
       : rec
   )
+}
+
+// Who belongs on today's draft and how a fresh row for them looks (see loadRosterContext).
+type RosterContext = {
+  // False when the roster fetch failed (offline) — membership then can't be verified.
+  rosterLoaded: boolean
+  rosterEmployees: Employee[]
+  leaveIds: Set<string>
+  awayIds: Set<string>
+  onLeave: { _id: string; name: string; employeeId: string; jobTitle: string }[]
+  buildRow: (emp: Employee) => DraftAttendanceRecord
+}
+
+type RosterMergeResult = {
+  next: DraftAttendanceRecord[]
+  added: { id: string; name: string }[]
+  removed: { id: string; name: string; reason: string }[]
+}
+
+// Update the roster-derived fields of an existing row from a freshly built one (job, title,
+// category, transfer source) — a draft cached hours ago may predate a job change. The
+// supervisor's entries (times, breaks, sick/absent/auto-init flags) are never touched.
+const refreshRowMetadata = (
+  rec: DraftAttendanceRecord,
+  fresh: DraftAttendanceRecord
+): DraftAttendanceRecord => {
+  const freshSession = fresh.sessions[0]
+  const next: DraftAttendanceRecord = {
+    ...rec,
+    employee: { ...rec.employee, ...fresh.employee },
+    employeeId: fresh.employeeId,
+    jobTitle: fresh.jobTitle,
+    collarType: fresh.collarType,
+    nationality: fresh.nationality,
+    jobId: fresh.jobId,
+    transferredFrom: fresh.transferredFrom,
+    sessions: rec.sessions.map((s, i) =>
+      i === 0 && freshSession ? { ...s, siteId: freshSession.siteId, job: freshSession.job } : s
+    ),
+  }
+  // Keep identity when nothing changed so memoized rows don't re-render on every refresh.
+  return JSON.stringify(next) === JSON.stringify(rec) ? rec : next
+}
+
+/**
+ * Reconcile draft rows with the current roster, keeping every edit on rows that still belong:
+ *   - blank employees still finishing yesterday's shift (carryover);
+ *   - drop rows for anyone now on leave, working at another site today, or (with a fresh
+ *     roster) no longer on this site at all — possibly changed from ANOTHER device, which would
+ *     otherwise submit a phantom record for them here;
+ *   - append a fresh row for each roster member not yet present (added / sent here meanwhile).
+ * Pure — safe inside a functional setState. Returns `current` itself when nothing changed.
+ */
+const mergeDraftWithRoster = (
+  current: DraftAttendanceRecord[],
+  ctx: RosterContext,
+  carryoverIds: Set<string>
+): RosterMergeResult => {
+  const rosterById = new Map(ctx.rosterEmployees.map((emp) => [String(emp._id), emp]))
+  const removed: RosterMergeResult["removed"] = []
+  const kept: DraftAttendanceRecord[] = []
+
+  for (const rec of clearCarryoverSessions(current, carryoverIds)) {
+    const id = String(rec.employee._id)
+    const reason = ctx.leaveIds.has(id)
+      ? "on approved leave today"
+      : ctx.awayIds.has(id)
+      ? "working at another site today"
+      : ctx.rosterLoaded && !rosterById.has(id)
+      ? "no longer on this site"
+      : null
+    if (reason) {
+      removed.push({ id, name: rec.employee.name, reason })
+      continue
+    }
+    const emp = rosterById.get(id)
+    kept.push(emp ? refreshRowMetadata(rec, ctx.buildRow(emp)) : rec)
+  }
+
+  const present = new Set(kept.map((rec) => String(rec.employee._id)))
+  const arrivals = ctx.rosterEmployees.filter((emp) => !present.has(String(emp._id)))
+  const added = arrivals.map((emp) => ({ id: String(emp._id), name: emp.name }))
+
+  const unchanged =
+    arrivals.length === 0 &&
+    kept.length === current.length &&
+    kept.every((rec, i) => rec === current[i])
+  return {
+    next: unchanged ? current : [...kept, ...arrivals.map(ctx.buildRow)],
+    added,
+    removed,
+  }
 }
 
 const isEmployeeAbsent = (
@@ -405,6 +505,18 @@ const TransferredFromBadge = ({ siteName }: { siteName: string }) => (
     title={`Transferred from ${siteName}`}
   >
     Transferred from {siteName}
+  </Badge>
+)
+
+// Shown on a draft row that a roster refresh added after the page loaded (someone was added
+// to or sent to this site meanwhile) — prefilled with the default, so it needs a look.
+const NewRowBadge = () => (
+  <Badge
+    variant="secondary"
+    className="bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200/50 dark:border-emerald-800/30 text-[10px] px-1.5 py-0 h-4"
+    title="Added to this site after the page was opened — check the times"
+  >
+    New
   </Badge>
 )
 
@@ -675,6 +787,8 @@ interface DraftRowProps {
   carryoverSiteName?: string | null
   /** Opens yesterday's carryover record for this employee so its check-out can be filled. */
   onOpenCarryover?: (employeeId: string) => void
+  /** True when this row was added by a roster refresh after the page loaded (needs review). */
+  isNew?: boolean
   onUpdateSession: (employeeId: string, sessionIndex: number, field: "checkIn" | "checkOut", value: string) => void
   onUpdateBreaks: (employeeId: string, value: number | null) => void
   onClearSession: (employeeId: string, sessionIndex: number) => void
@@ -697,6 +811,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   hasCarryover,
   carryoverSiteName,
   onOpenCarryover,
+  isNew,
   onUpdateSession,
   onUpdateBreaks,
   onClearSession,
@@ -734,6 +849,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
                 <TransferredFromBadge siteName={record.transferredFrom.name} />
               )}
               {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
+              {isNew && <NewRowBadge />}
             </div>
 
             <p className="text-sm text-muted-foreground">
@@ -897,6 +1013,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   hasCarryover,
   carryoverSiteName,
   onOpenCarryover,
+  isNew,
   onUpdateSession,
   onUpdateBreaks,
   onClearSession,
@@ -934,6 +1051,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                   <TransferredFromBadge siteName={record.transferredFrom.name} />
                 )}
                 {hasCarryover && <CarryoverBadge siteName={carryoverSiteName} onClick={() => onOpenCarryover?.(record.employee._id)} />}
+                {isNew && <NewRowBadge />}
               </div>
 
               <p className="text-sm text-muted-foreground">
@@ -1245,7 +1363,7 @@ function SiteAttendance() {
   const flushPendingDraftWrite = () => {
     const pending = pendingDraftWriteRef.current
     if (pending) {
-      localStorage.setItem(pending.key, JSON.stringify(pending.data))
+      safeSetItem(pending.key, JSON.stringify(pending.data))
       pendingDraftWriteRef.current = null
     }
   }
@@ -1275,11 +1393,31 @@ function SiteAttendance() {
 
   const [loading, setLoading] = useState(true)
 
+  // Set when the page couldn't establish the day's state (site, submitted-or-not, roster).
+  // Shown as an error card with Retry instead of silently falling into draft mode — a failed
+  // lock check used to present an already-saved site as a fresh, prefilled draft.
+  const [loadError, setLoadError] = useState<string | null>(null)
+
   const [saving, setSaving] = useState(false)
 
   const [attendanceExists, setAttendanceExists] = useState(false)
 
   const [isDirty, setIsDirty] = useState(false)
+
+  // Roster changes picked up AFTER the page loaded (a refresh on resume/poll, or a submit the
+  // server refused as ROSTER_CHANGED). Drives the review banner above the roster; added rows
+  // also get a "New" badge. Cleared on dismiss / successful submit.
+  const [rosterChange, setRosterChange] = useState<{
+    added: { id: string; name: string }[]
+    removed: { id: string; name: string; reason: string }[]
+  } | null>(null)
+  const newRowIds = useMemo(
+    () => new Set((rosterChange?.added ?? []).map((a) => a.id)),
+    [rosterChange]
+  )
+  // The cached draft was restored without a fresh roster (offline at load), so it may be
+  // missing arrivals / still hold departures until the next successful refresh.
+  const [rosterUnverified, setRosterUnverified] = useState(false)
 
   const [isHoliday, setIsHoliday] = useState(false)
 
@@ -1503,11 +1641,16 @@ function SiteAttendance() {
     setShowLeaveDialog(true)
   }
 
-  const fetchSite = async () => {
+  // Returns the site (undefined on failure). State is only replaced when the site actually
+  // changed: `site` feeds the Edit-defaults form fields, which a background refresh must not
+  // reset under a supervisor who is typing in them.
+  const fetchSite = async (): Promise<Site | undefined> => {
     try {
       const res = await api.get(`/api/site/${id}`)
 
-      setSite(res.data)
+      setSite((prev) =>
+        prev && JSON.stringify(prev) === JSON.stringify(res.data) ? prev : res.data
+      )
 
       return res.data
     } catch (error) {
@@ -1618,212 +1761,214 @@ function SiteAttendance() {
   // without explicit collarType/nationality resolve to foreignSkilled (older data).
   const [collarTab, setCollarTab] = useState<CollarTab>("all")
 
-  const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
+  // Everything needed to decide WHO belongs on today's draft and how a fresh row looks.
+  // Built on load and again on every refresh (resume, poll, a refused submit), then applied to
+  // the current rows by mergeDraftWithRoster.
+  //
+  // KEEP IN SYNC with server/src/utils/draftRoster.js (computeExpectedDraftRoster): the submit
+  // endpoint refuses (409 ROSTER_CHANGED) any employee set that differs from its copy of this
+  // filter, so the two must agree exactly.
+  const loadRosterContext = async (siteData: Site, carryoverIds: Set<string> = new Set()): Promise<RosterContext> => {
+    const activeToday = today
+
+    // Fetch the roster first so BOTH the cached-draft and fresh-build paths can identify
+    // this site's members who are visiting ANOTHER site today. Such an employee — added
+    // elsewhere while THIS (home) site is still unsaved — is dropped here entirely: we
+    // create no record for them at home, because they're being recorded at the site they
+    // actually worked. (Once home is saved we load the saved records instead of rebuilding
+    // a draft, so a later visit can't remove anything — that's the multi-site case.) An
+    // offline fetch failure falls back to the cached draft unchanged.
+    let employeesList: Employee[] = []
+    // Whether the roster above is authoritative. Offline it's an empty fallback, and the
+    // cached draft must then be restored as-is rather than pruned against it.
+    let rosterLoaded = false
     try {
-      const activeToday = today
+      const res = await api.get<EmployeesResponse>("/api/employees", {
+        params: { site: id },
+      })
+      employeesList = res.data.employees
+      rosterLoaded = true
+    } catch (fetchErr) {
+      console.log(fetchErr)
+    }
 
-      // Fetch the roster first so BOTH the cached-draft and fresh-build paths can identify
-      // this site's members who are visiting ANOTHER site today. Such an employee — added
-      // elsewhere while THIS (home) site is still unsaved — is dropped here entirely: we
-      // create no record for them at home, because they're being recorded at the site they
-      // actually worked. (Once home is saved we load the saved records instead of rebuilding
-      // a draft, so a later visit can't remove anything — that's the multi-site case.) An
-      // offline fetch failure falls back to the cached draft unchanged.
-      let employeesList: Employee[] = []
-      // Whether the roster above is authoritative. Offline it's an empty fallback, and the
-      // cached draft must then be restored as-is rather than pruned against it.
-      let rosterLoaded = false
-      try {
-        const res = await api.get<EmployeesResponse>("/api/employees", {
-          params: { site: id },
-        })
-        employeesList = res.data.employees
-        rosterLoaded = true
-      } catch (fetchErr) {
-        console.log(fetchErr)
-      }
-
-      // Employees on APPROVED annual leave today. They must never get a prefilled,
-      // markable draft row (that would silently record hours on a leave day); they're
-      // shown read-only in the "On leave today" panel instead. Best-effort — an offline
-      // failure just leaves the set empty (the server still refuses to overwrite leave).
-      let leaveIds = new Set<string>()
-      try {
-        const leaveRes = await api.get<{ data: { employeeIds: string[] } }>(
-          "/api/attendance/leave/on-date",
-          { params: { date: activeToday } }
-        )
-        leaveIds = new Set((leaveRes.data?.data?.employeeIds || []).map(String))
-      } catch (leaveErr) {
-        console.log(leaveErr)
-      }
-      setOnLeaveEmployees(
-        employeesList
-          .filter((emp) => leaveIds.has(String(emp._id)))
-          .map((emp) => ({
-            _id: emp._id,
-            name: emp.name,
-            employeeId: emp.employeeId,
-            jobTitle: emp.jobTitle,
-          }))
+    // Employees on APPROVED annual leave today. They must never get a prefilled,
+    // markable draft row (that would silently record hours on a leave day); they're
+    // shown read-only in the "On leave today" panel instead. Best-effort — an offline
+    // failure just leaves the set empty (the server still refuses to overwrite leave).
+    let leaveIds = new Set<string>()
+    try {
+      const leaveRes = await api.get<{ data: { employeeIds: string[] } }>(
+        "/api/attendance/leave/on-date",
+        { params: { date: activeToday } }
       )
+      leaveIds = new Set((leaveRes.data?.data?.employeeIds || []).map(String))
+    } catch (leaveErr) {
+      console.log(leaveErr)
+    }
+    const onLeave = employeesList
+      .filter((emp) => leaveIds.has(String(emp._id)))
+      .map((emp) => ({
+        _id: emp._id,
+        name: emp.name,
+        employeeId: emp.employeeId,
+        jobTitle: emp.jobTitle,
+      }))
 
-      const isVisitingElsewhere = (emp: Employee) =>
-        String(emp.currentSite) === String(siteData._id) &&
+    const isVisitingElsewhere = (emp: Employee) =>
+      String(emp.currentSite) === String(siteData._id) &&
+      !!emp.pendingTransferSiteId &&
+      String(emp.pendingTransferSiteId) !== String(siteData._id) &&
+      !!emp.pendingTransferDate &&
+      String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
+
+    // A home member is "away today" if they're on a pending visit elsewhere (stash still
+    // present) OR already have a recorded session at another site today (stash consumed
+    // when that site saved — the durable signal). Either way they must NOT get a markable
+    // row here, or they'd be recorded twice for the same day.
+    const isAwayToday = (emp: Employee) =>
+      isVisitingElsewhere(emp) || !!emp.recordedElsewhereToday
+
+    const awayVisitingIds = new Set(
+      employeesList.filter(isAwayToday).map((emp) => emp._id)
+    )
+
+    // The server's ?site= also returns only-for-today visitors (pendingTransferSiteId = this
+    // site) whose home is elsewhere. Keep on-site members — EXCEPT those visiting another
+    // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
+    // stale pendingTransfer* rows an abandoned draft may have left behind.
+    const rosterEmployees = employeesList.filter((emp) => {
+      // On approved leave today → excluded from the editable draft entirely.
+      if (leaveIds.has(String(emp._id))) return false
+      if (String(emp.currentSite) === String(siteData._id)) return !isAwayToday(emp)
+      return (
         !!emp.pendingTransferSiteId &&
-        String(emp.pendingTransferSiteId) !== String(siteData._id) &&
+        String(emp.pendingTransferSiteId) === String(siteData._id) &&
         !!emp.pendingTransferDate &&
         String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
-
-      // A home member is "away today" if they're on a pending visit elsewhere (stash still
-      // present) OR already have a recorded session at another site today (stash consumed
-      // when that site saved — the durable signal). Either way they must NOT get a markable
-      // row here, or they'd be recorded twice for the same day.
-      const isAwayToday = (emp: Employee) =>
-        isVisitingElsewhere(emp) || !!emp.recordedElsewhereToday
-
-      const awayVisitingIds = new Set(
-        employeesList.filter(isAwayToday).map((emp) => emp._id)
       )
+    })
 
-      // The server's ?site= also returns only-for-today visitors (pendingTransferSiteId = this
-      // site) whose home is elsewhere. Keep on-site members — EXCEPT those visiting another
-      // site today (recorded there, not here) — plus TODAY-dated visitors to this site; drop
-      // stale pendingTransfer* rows an abandoned draft may have left behind.
-      const rosterEmployees = employeesList.filter((emp) => {
-        // On approved leave today → excluded from the editable draft entirely.
-        if (leaveIds.has(String(emp._id))) return false
-        if (String(emp.currentSite) === String(siteData._id)) return !isAwayToday(emp)
-        return (
+    const buildRow =
+      (emp: Employee): DraftAttendanceRecord => {
+        const hasPendingTransfer =
           !!emp.pendingTransferSiteId &&
           String(emp.pendingTransferSiteId) === String(siteData._id) &&
           !!emp.pendingTransferDate &&
           String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
-        )
-      })
 
-      const buildRow =
-        (emp: Employee) => {
-          const hasPendingTransfer =
-            !!emp.pendingTransferSiteId &&
-            String(emp.pendingTransferSiteId) === String(siteData._id) &&
-            !!emp.pendingTransferDate &&
-            String(emp.pendingTransferDate).slice(0, 10) === activeToday.slice(0, 10)
-
-          // Each of the four categories prefills from its OWN day default check-in;
-          // never fall back across categories — if the applicable default is empty, the
-          // check-in is left empty.
-          const category = categoryOf(emp.collarType, emp.nationality)
-          const dayDefaultByCategory: Record<RosterCategory, string> = {
-            foreignSkilled: siteData.defaultCheckIn || "",
-            foreignStaff: siteData.staffDefaultCheckIn || "",
-            omaniSkilled: siteData.omaniDefaultCheckIn || "",
-            omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
-          }
-          const roleDefaultIn = dayDefaultByCategory[category]
-          // Carryover employees default to ABSENT (empty) — they're still finishing
-          // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
-          const isCarryover = carryoverIds.has(emp._id)
-          const defaultIn = isCarryover
-            ? ""
-            : hasPendingTransfer && emp.pendingTransferCheckIn
-            ? toTimeValue(emp.pendingTransferCheckIn)
-            : roleDefaultIn
-          // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
-          // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
-          const isNightShift = false
-          // A cross-site visitor works this site's job for the day (pendingTransferJobId),
-          // not their home currentJob — so their session's job (and thus job-hours
-          // attribution) records the visited site's job. Non-visitors keep currentJob.
-          const sessionJob = hasPendingTransfer
-            ? emp.pendingTransferJobId || null
-            : emp.currentJob
-          return {
-            employee: {
-              _id: emp._id,
-              name: emp.name,
-              user: emp.user || null,
-              employmentType: emp.employmentType,
-            },
-
-            employeeId: emp.employeeId,
-
-            jobTitle: emp.jobTitle,
-
-            collarType: emp.collarType,
-
-            nationality: emp.nationality,
-
-            jobId:
-              sessionJob?._id || null,
-
-            sessions: [
-              {
-                siteId: siteData._id,
-                job: sessionJob,
-                checkIn: defaultIn,
-                checkOut: "",
-                workedHours: 0,
-                isNightShift,
-                // Auto-initialized only when the check-in is the category day default
-                // (not a carryover blank and not a transfer's own check-in).
-                checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
-              },
-            ],
-
-            isSickLeave: false,
-
-            transferredFrom: hasPendingTransfer && emp.pendingTransferFromSiteId
-              ? {
-                  siteId: emp.pendingTransferFromSiteId._id,
-                  name: emp.pendingTransferFromSiteId.siteName,
-                }
-              : null,
-          }
+        // Each of the four categories prefills from its OWN day default check-in;
+        // never fall back across categories — if the applicable default is empty, the
+        // check-in is left empty.
+        const category = categoryOf(emp.collarType, emp.nationality)
+        const dayDefaultByCategory: Record<RosterCategory, string> = {
+          foreignSkilled: siteData.defaultCheckIn || "",
+          foreignStaff: siteData.staffDefaultCheckIn || "",
+          omaniSkilled: siteData.omaniDefaultCheckIn || "",
+          omaniStaff: siteData.omaniStaffDefaultCheckIn || "",
         }
+        const roleDefaultIn = dayDefaultByCategory[category]
+        // Carryover employees default to ABSENT (empty) — they're still finishing
+        // yesterday's shift, so we don't auto-prefill a fresh check-in for them.
+        const isCarryover = carryoverIds.has(emp._id)
+        const defaultIn = isCarryover
+          ? ""
+          : hasPendingTransfer && emp.pendingTransferCheckIn
+          ? toTimeValue(emp.pendingTransferCheckIn)
+          : roleDefaultIn
+        // A fresh draft row has no check-out yet, so it can't cross midnight. The flag is
+        // re-derived from the entered times (deriveOffsets) as soon as one is filled in.
+        const isNightShift = false
+        // A cross-site visitor works this site's job for the day (pendingTransferJobId),
+        // not their home currentJob — so their session's job (and thus job-hours
+        // attribution) records the visited site's job. Non-visitors keep currentJob.
+        const sessionJob = hasPendingTransfer
+          ? emp.pendingTransferJobId || null
+          : emp.currentJob
+        return {
+          employee: {
+            _id: emp._id,
+            name: emp.name,
+            user: emp.user || null,
+            employmentType: emp.employmentType,
+          },
 
-      const cached = localStorage.getItem(`attendance_draft_${id}_${activeToday}`)
-      if (cached) {
-        // A draft cached BEFORE the carryover/visit appeared can still hold an auto-prefilled
-        // check-in for an employee now mid-shift from yesterday, or a row for one now visiting
-        // another site. Strip carryover check-ins and DROP the away-visitor rows so the
-        // restored draft matches a fresh build (no home record for someone working elsewhere).
-        // With a fresh roster in hand, also drop rows for anyone no longer on it at all — sent
-        // or moved to another site, removed, deactivated — possibly from ANOTHER device, which
-        // would otherwise submit a phantom record for them here. Edits on every other row
-        // survive, so adding or sending one employee never costs the rest of the draft.
-        const rosterIds = new Set(rosterEmployees.map((emp) => String(emp._id)))
-        const restored = clearCarryoverSessions(JSON.parse(cached), carryoverIds).filter(
-          (rec) =>
-            !awayVisitingIds.has(String(rec.employee._id)) &&
-            // Drop rows for anyone now on approved leave (a draft cached before the
-            // grant may still hold a prefilled check-in for them).
-            !leaveIds.has(String(rec.employee._id)) &&
-            (!rosterLoaded || rosterIds.has(String(rec.employee._id)))
-        )
-        // An employee SENT to this site AFTER the draft was cached — an inbound visitor
-        // (pendingTransferSiteId = this site) or a permanent move (currentSite = this site) —
-        // is absent from the cached rows. Append a fresh row for each current roster member
-        // not already present, so new arrivals surface without discarding the supervisor's
-        // in-progress edits on the rows they've already touched.
-        const presentIds = new Set(restored.map((rec) => String(rec.employee._id)))
-        const additions = rosterEmployees
-          .filter((emp) => !presentIds.has(String(emp._id)))
-          .map(buildRow)
-        setDraftAttendance([...restored, ...additions])
-        // Don't mark the page dirty just for REHYDRATING a saved draft — the
-        // unsaved-changes prompt should fire only when the user actually edits
-        // during THIS visit. The draft is already persisted, so nothing is lost
-        // by starting clean; the first edit flips isDirty and re-arms both the
-        // persistence sync and the leave guard.
-        return
+          employeeId: emp.employeeId,
+
+          jobTitle: emp.jobTitle,
+
+          collarType: emp.collarType,
+
+          nationality: emp.nationality,
+
+          jobId:
+            sessionJob?._id || null,
+
+          sessions: [
+            {
+              siteId: siteData._id,
+              job: sessionJob,
+              checkIn: defaultIn,
+              checkOut: "",
+              workedHours: 0,
+              isNightShift,
+              // Auto-initialized only when the check-in is the category day default
+              // (not a carryover blank and not a transfer's own check-in).
+              checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
+            },
+          ],
+
+          isSickLeave: false,
+
+          transferredFrom: hasPendingTransfer && emp.pendingTransferFromSiteId
+            ? {
+                siteId: emp.pendingTransferFromSiteId._id,
+                name: emp.pendingTransferFromSiteId.siteName,
+              }
+            : null,
+        }
       }
 
-      setDraftAttendance(rosterEmployees.map(buildRow))
-    } catch (error) {
-      console.log(error)
-      setDraftAttendance([])
+    return {
+      rosterLoaded,
+      rosterEmployees,
+      leaveIds,
+      awayIds: new Set([...awayVisitingIds].map(String)),
+      onLeave,
+      buildRow,
     }
+  }
+
+  // Build today's draft on page load: the cached draft (if any) reconciled against a fresh
+  // roster, else a fresh build. Throws when there's neither a roster nor a cached draft to
+  // show — the caller turns that into the Retry card rather than an empty sheet.
+  const initializeAttendanceFromEmployees = async (siteData: Site, carryoverIds: Set<string> = new Set()) => {
+    const ctx = await loadRosterContext(siteData, carryoverIds)
+    setOnLeaveEmployees(ctx.onLeave)
+
+    let cachedRows: DraftAttendanceRecord[] | null = null
+    const cachedRaw = safeGetItem(draftStorageKey(id || "", today))
+    if (cachedRaw) {
+      try {
+        cachedRows = JSON.parse(cachedRaw)
+      } catch {
+        cachedRows = null
+      }
+    }
+
+    if (!ctx.rosterLoaded && !cachedRows) {
+      throw new Error("Couldn't load this site's employees")
+    }
+
+    // A cached draft is restored as-is when the roster couldn't be fetched (offline); the
+    // next successful refresh reconciles it, and the server refuses a submit that doesn't
+    // match the real roster anyway.
+    setRosterUnverified(!ctx.rosterLoaded)
+    setDraftAttendance(mergeDraftWithRoster(cachedRows ?? [], ctx, carryoverIds).next)
+    // Don't mark the page dirty just for REHYDRATING a saved draft — the unsaved-changes
+    // prompt should fire only when the user actually edits during THIS visit. The draft is
+    // already persisted, so nothing is lost by starting clean; the first edit flips isDirty
+    // and re-arms both the persistence sync and the leave guard.
   }
 
   const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
@@ -1899,7 +2044,12 @@ function SiteAttendance() {
 
   ///api/attendance/reports/daily?date=2026-05-29&siteId=69e231212487b777fb7eb7b5
 
-  const fetchAttendance = async (targetDate: string = today) => {
+  // Returns false on failure. `silent` is for background refreshes, where the sheet on screen
+  // is kept as-is; every other caller surfaces the failure instead of showing an empty sheet.
+  const fetchAttendance = async (
+    targetDate: string = today,
+    { silent = false }: { silent?: boolean } = {}
+  ): Promise<boolean> => {
     try {
       const res = await api.get<FetchedAttendance>("/api/attendance/reports/daily",
         {
@@ -1916,8 +2066,11 @@ function SiteAttendance() {
       // Also resolve and set the holidayReason
       await checkHolidayStatus(targetDate)
 
+      return true
     } catch (error) {
       console.log(error)
+      if (!silent) toast.error("Couldn't load the saved attendance sheet — pull to refresh or reopen the page.")
+      return false
     }
   }
 
@@ -1927,7 +2080,7 @@ function SiteAttendance() {
   // open), so it follows them and stays closable here. Returns the set of employee ids
   // so the draft build can skip auto-prefilling them (they default to absent). Rolling
   // one-day window: only the day before `targetToday`.
-  const fetchCarryovers = async (targetToday: string = today): Promise<Set<string>> => {
+  const fetchCarryovers = async (targetToday: string = today): Promise<Set<string> | null> => {
     try {
       const prevDate = yesterdayOf(targetToday)
       const res = await api.get<{ data: AttendanceRecord[] }>("/api/attendance/reports/carryovers", {
@@ -1940,12 +2093,230 @@ function SiteAttendance() {
       return new Set(open.map((r) => String(r.employee)))
     } catch (error) {
       console.log(error)
-      setCarryoverRecords([])
-      return new Set<string>()
+      // Keep what's on screen. null = unknown: a refresh then skips its roster merge rather
+      // than prefill a check-in for someone still on last night's shift.
+      return null
     }
   }
 
+  // Whether today's sheet is already submitted (a lock exists) and by whom. null when the
+  // check itself failed — "unknown" must never be read as "not submitted".
+  const checkAttendanceStatus = async (
+    targetDate?: string
+  ): Promise<{ exists: boolean; lockedByName: string | null; lockedAt: string | null } | null> => {
+    try {
+      const res = await api.post(
+        `/api/site/${id}/check-pending`,
+        {
+          date: targetDate ?? today,
+        }
+      )
+
+      return {
+        exists: !!res.data.status,
+        lockedByName: res.data.lock?.lockedBy?.name ?? null,
+        lockedAt: res.data.lock?.lockedAt ?? null,
+      }
+    } catch (error) {
+      console.log(error)
+      return null
+    }
+  }
+
+  // Live values for code that runs after awaits or from window listeners (refresh, submit
+  // recovery), where a render's closure would be stale.
+  const liveRef = useRef({
+    attendanceExists,
+    isDirty,
+    saving,
+    loading,
+    editingRowId,
+    editOpen,
+    transferModalOpen,
+    isEditingDefaults,
+    site,
+  })
+  useEffect(() => {
+    liveRef.current = {
+      attendanceExists,
+      isDirty,
+      saving,
+      loading,
+      editingRowId,
+      editOpen,
+      transferModalOpen,
+      isEditingDefaults,
+      site,
+    }
+  })
+
+  // Accumulate roster changes into the review banner (and the "New" row badges).
+  const noteRosterChange = (
+    added: { id: string; name: string }[],
+    removed: { id: string; name: string; reason: string }[]
+  ) => {
+    setRosterChange((prev) => {
+      const addedMap = new Map((prev?.added ?? []).map((a) => [a.id, a]))
+      const removedMap = new Map((prev?.removed ?? []).map((r) => [r.id, r]))
+      for (const a of added) {
+        addedMap.set(a.id, a)
+        removedMap.delete(a.id)
+      }
+      for (const r of removed) {
+        addedMap.delete(r.id)
+        // Keep the first (most specific) reason — e.g. "working at another site today".
+        if (!removedMap.has(r.id)) removedMap.set(r.id, r)
+      }
+      if (addedMap.size === 0 && removedMap.size === 0) return null
+      return { added: [...addedMap.values()], removed: [...removedMap.values()] }
+    })
+  }
+
+  // Another supervisor / device submitted this site's day while this page still held a draft.
+  // The server refuses a second submit, so nothing from this device's draft was applied: drop
+  // it and show the saved sheet, saying so plainly instead of leaving a dead Save button.
+  const adoptSubmittedElsewhere = async (info: { lockedByName?: string | null; lockedAt?: string | null }) => {
+    const hadEdits = liveRef.current.isDirty
+    discardPendingDraftWrite()
+    safeRemoveItem(draftStorageKey(id || "", today))
+    setIsDirty(false)
+    setRosterChange(null)
+    setAttendanceExists(true)
+    await fetchAttendance(today)
+    const who = info.lockedByName ? ` by ${info.lockedByName}` : ""
+    const when = info.lockedAt ? ` at ${formatLocalTime12h(info.lockedAt)}` : ""
+    toast(
+      `Attendance for this site was already submitted${who}${when}. Showing the saved sheet` +
+        (hadEdits ? " — changes made on this device were not applied; edit the rows here if needed." : "."),
+      { duration: 9000, icon: "ℹ️" }
+    )
+  }
+
+  const refreshInFlightRef = useRef<Promise<RosterMergeResult | null> | null>(null)
+  const lastRefreshAtRef = useRef(0)
+
+  // Re-sync the page with the server: did someone submit meanwhile, did the roster change
+  // (draft), did records change (saved). The draft is otherwise built once at load, so a page
+  // left open — typical for a PWA — would show and SUBMIT a stale roster. Runs on resume /
+  // focus / online, on a timer, and after a submit the server refused. Background runs are
+  // throttled and never interrupt an edit in progress; `force` bypasses both.
+  const refreshFromServer = async ({ force = false }: { force?: boolean } = {}): Promise<RosterMergeResult | null> => {
+    const live = liveRef.current
+    if (!force) {
+      if (live.loading || live.saving) return null
+      if (Date.now() - lastRefreshAtRef.current < 15_000) return null
+      if (refreshInFlightRef.current) return null
+    } else if (refreshInFlightRef.current) {
+      // Let the running refresh land first, then read the server again.
+      await refreshInFlightRef.current.catch(() => null)
+    }
+    // Past midnight this page is still on yesterday's sheet; the day-rollover toast owns that.
+    if (getCurrentTargetDateString() !== today) return null
+
+    const run = (async (): Promise<RosterMergeResult | null> => {
+      const status = await checkAttendanceStatus(today)
+      if (!status) return null
+
+      if (!liveRef.current.attendanceExists) {
+        if (status.exists) {
+          await adoptSubmittedElsewhere(status)
+          return null
+        }
+        // Fresh defaults for rows added now — unless the Edit-defaults form is open, whose
+        // fields a site refetch would reset.
+        const current = liveRef.current
+        const siteData = current.isEditingDefaults ? current.site : (await fetchSite()) ?? current.site
+        if (!siteData) return null
+        const carryoverIds = await fetchCarryovers(today)
+        if (!carryoverIds) return null
+        const ctx = await loadRosterContext(siteData, carryoverIds)
+        if (!ctx.rosterLoaded) return null
+
+        setOnLeaveEmployees(ctx.onLeave)
+        setRosterUnverified(false)
+        const result = mergeDraftWithRoster(draftAttendanceRef.current, ctx, carryoverIds)
+        // Apply against the latest state so keystrokes made during the fetch survive.
+        setDraftAttendance((prev) => mergeDraftWithRoster(prev, ctx, carryoverIds).next)
+        if (result.added.length || result.removed.length) {
+          noteRosterChange(result.added, result.removed)
+          if (!force) {
+            const parts = []
+            if (result.added.length) parts.push(`${result.added.length} added`)
+            if (result.removed.length) parts.push(`${result.removed.length} removed`)
+            toast(`Roster updated (${parts.join(", ")}) — see the note above the list.`, { icon: "🔄" })
+          }
+        }
+        return result
+      }
+
+      // Saved sheet: pick up edits from other devices and the auto-checkout cron — but never
+      // while a row or dialog is being edited, which a replaced record would disrupt.
+      const c = liveRef.current
+      if (c.editingRowId || c.editOpen || c.transferModalOpen) return null
+      await Promise.all([fetchAttendance(today, { silent: true }), fetchCarryovers(today)])
+      return null
+    })()
+
+    refreshInFlightRef.current = run
+    try {
+      return await run
+    } finally {
+      refreshInFlightRef.current = null
+      lastRefreshAtRef.current = Date.now()
+    }
+  }
+
+  // The server refused the submit because the roster moved since this sheet was built. Pull
+  // the current roster into the draft (edits kept), flag what changed, and let the supervisor
+  // review and tap Save again — rows nobody has looked at are never auto-submitted.
+  const handleRosterChangedOnSubmit = async (serverChange?: {
+    added?: { _id: string; name: string | null }[]
+    removed?: { _id: string; name: string | null }[]
+  }) => {
+    const merged = await refreshFromServer({ force: true })
+
+    const serverAdded = (serverChange?.added ?? []).map((a) => ({ id: String(a._id), name: a.name || "Employee" }))
+    const serverRemoved = (serverChange?.removed ?? []).map((r) => ({
+      id: String(r._id),
+      name: r.name || "Employee",
+      reason: "no longer on this site",
+    }))
+
+    // Rows the server says don't belong are dropped even if this device's roster read
+    // disagreed, so the next Save can't be refused for them again.
+    const removedIds = new Set(serverRemoved.map((r) => r.id))
+    if (removedIds.size) {
+      setDraftAttendance((prev) => {
+        const next = prev.filter((rec) => !removedIds.has(String(rec.employee._id)))
+        return next.length === prev.length ? prev : next
+      })
+    }
+    noteRosterChange(serverAdded, serverRemoved)
+
+    const localIds = new Set(
+      (merged?.next ?? draftAttendanceRef.current).map((rec) => String(rec.employee._id))
+    )
+    const unresolved = serverAdded.filter((a) => !localIds.has(a.id))
+    if (unresolved.length) {
+      toast.error(
+        `Couldn't load ${unresolved.map((a) => a.name).join(", ")} on this device. Reload the page before saving.`,
+        { duration: 9000 }
+      )
+    } else {
+      toast.error("The roster changed since this page was opened. Review the highlighted rows and tap Save again.", {
+        duration: 7000,
+      })
+    }
+  }
+
+  // A ref, not `saving`: a fast double tap lands before the disabled state re-renders.
+  const submittingRef = useRef(false)
+
   const handleSubmit = async () => {
+    if (submittingRef.current) return
+    submittingRef.current = true
+    // Submit exactly the rows on screen now.
+    const rows = draftAttendanceRef.current
     try {
       setSaving(true)
 
@@ -1955,10 +2326,8 @@ function SiteAttendance() {
         siteId: id || "",
         date: today,
         isHoliday,
-        attendance: draftAttendance,
+        attendance: rows,
       }
-
-      // console.log(payload)
 
       const res = await api.post(
         "/api/attendance/submit",
@@ -1975,7 +2344,7 @@ function SiteAttendance() {
         // back not-sick was force-cleared by the backend (they have a filled
         // session at another site). Surface this instead of silently reverting.
         const requestedSick = new Set(
-          draftAttendance
+          rows
             .filter((r) => r.isSickLeave)
             .map((r) => String(r.employee._id))
         )
@@ -1996,13 +2365,15 @@ function SiteAttendance() {
         // Drop any debounced draft write queued before the submit so it can't
         // resurrect the draft we just cleared.
         discardPendingDraftWrite()
-        localStorage.removeItem(`attendance_draft_${id}_${today}`)
-        localStorage.removeItem(`active_inline_edit_row_${id}`)
-        localStorage.removeItem(`active_inline_edit_data_${id}`)
+        safeRemoveItem(draftStorageKey(id || "", today))
+        safeRemoveItem(`active_inline_edit_row_${id}`)
+        safeRemoveItem(`active_inline_edit_data_${id}`)
 
         setAttendanceExists(true)
 
         setIsDirty(false)
+
+        setRosterChange(null)
 
         await fetchAttendance(today)
       }
@@ -2011,7 +2382,14 @@ function SiteAttendance() {
 
       const responseData = error?.response?.data
 
-      if (responseData?.overlap) {
+      if (responseData?.code === "ROSTER_CHANGED") {
+        await handleRosterChangedOnSubmit(responseData.rosterChange)
+      } else if (responseData?.code === "ALREADY_SUBMITTED") {
+        await adoptSubmittedElsewhere(responseData)
+      } else if (responseData?.code === "SUBMIT_CONFLICT") {
+        toast.error(responseData.message || "Another save happened at the same moment — please try again.")
+        await refreshFromServer({ force: true })
+      } else if (responseData?.overlap) {
         setOverlapError(responseData.overlap)
 
         toast.error(
@@ -2028,37 +2406,7 @@ function SiteAttendance() {
       }
     } finally {
       setSaving(false)
-    }
-  }
-
-  const checkAttendanceStatus = async (targetDate?: string) => {
-    try {
-      const res = await api.post(
-        `/api/site/${id}/check-pending`,
-        {
-          date: targetDate ?? today,
-        }
-      )
-
-      const exists = res.data.status || false
-
-      const locked = res.data.lock?.isLocked || false
-
-      setAttendanceExists(exists)
-
-      return {
-        exists,
-        locked,
-      }
-    } catch (error) {
-      console.log(error)
-
-      setAttendanceExists(false)
-
-      return {
-        exists: false,
-        locked: false,
-      }
+      submittingRef.current = false
     }
   }
 
@@ -2210,6 +2558,10 @@ function SiteAttendance() {
         ],
         // Pass the inline edited breaksTaken
         breaksTaken: inlineEdit.breaksTaken,
+        // The row as this device loaded it — the server refuses the save (RECORD_CHANGED) if
+        // another device or the auto-checkout cron changed the record since, instead of
+        // overwriting their newer times with this possibly-stale view.
+        expectedUpdatedAt: record.updatedAt,
       }
 
 
@@ -2252,7 +2604,14 @@ function SiteAttendance() {
     } catch (error: any) {
       console.log(error)
       const responseData = error?.response?.data
-      if (responseData?.overlap) {
+      if (responseData?.code === "RECORD_CHANGED") {
+        // Someone else saved this record first. Show their version; the supervisor re-edits.
+        cancelInlineEdit()
+        setRemarkPromptRecord(null)
+        setPendingTransferAfterCheckout(null)
+        await fetchAttendance(today)
+        toast.error(responseData.message, { duration: 7000 })
+      } else if (responseData?.overlap) {
         setOverlapError(responseData.overlap)
         toast.error(responseData.message || "Attendance sessions overlap")
       } else {
@@ -3204,51 +3563,128 @@ function SiteAttendance() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryFilter])
 
+  // Load the day. Any failure that leaves the page unable to tell what state the day is in
+  // (site, submitted-or-not, roster) lands on the Retry card — never a guessed draft.
+  // `loading` starts true, and retryLoad re-arms it before calling this again.
+  const initialize = async () => {
+    try {
+      const siteData = await fetchSite()
+      if (!siteData) throw new Error("Couldn't load this site")
+      const calculatedDate = today
+
+      // Yesterday's open sessions — surfaced today, and used to skip auto-prefill for
+      // employees who are still finishing a carried-over shift.
+      const carryoverIds = (await fetchCarryovers(calculatedDate)) ?? new Set<string>()
+
+      const statusRes = await checkAttendanceStatus(calculatedDate)
+      if (!statusRes) throw new Error("Couldn't check whether today's attendance was already submitted")
+      setAttendanceExists(statusRes.exists)
+
+      if (statusRes.exists) {
+        if (!(await fetchAttendance(calculatedDate, { silent: true }))) {
+          throw new Error("Couldn't load the saved attendance sheet")
+        }
+      } else {
+        await Promise.all([
+          checkHolidayStatus(calculatedDate),
+          initializeAttendanceFromEmployees(siteData, carryoverIds),
+        ])
+      }
+      lastRefreshAtRef.current = Date.now()
+    } catch (error) {
+      console.log(error)
+      setLoadError(error instanceof Error ? error.message : "Failed to load attendance")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const retryLoad = () => {
+    setLoadError(null)
+    setLoading(true)
+    initialize()
+  }
+
   useEffect(() => {
     // Wait for WorkConfigProvider so the pay numbers are available before the roster renders.
     if (configLoading) return
-
-    const initialize = async () => {
-      try {
-        setLoading(true)
-
-        const siteData = await fetchSite()
-        const calculatedDate = today
-
-        // Yesterday's open sessions — surfaced today, and used to skip auto-prefill for
-        // employees who are still finishing a carried-over shift.
-        const carryoverIds = await fetchCarryovers(calculatedDate)
-
-        const statusRes = await checkAttendanceStatus(calculatedDate)
-
-        if (statusRes?.exists) {
-          await fetchAttendance(calculatedDate)
-        } else {
-          await Promise.all([
-            checkHolidayStatus(calculatedDate),
-            siteData ? initializeAttendanceFromEmployees(siteData, carryoverIds) : Promise.resolve()
-          ])
-        }
-
-      } catch (error) {
-        console.log(error)
-
-        toast.error(
-          "Failed to load attendance"
-        )
-      } finally {
-        setLoading(false)
-      }
+    const load = async () => {
+      await initialize()
     }
-
-    initialize()
+    load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configLoading])
+
+  // Old days' draft caches can never be rehydrated again (the page always opens on today).
+  useEffect(() => {
+    pruneStaleDraftKeys(today)
+  }, [today])
+
+  // Keep the latest refresh closure for the listeners below.
+  const refreshRef = useRef(refreshFromServer)
+  useEffect(() => {
+    refreshRef.current = refreshFromServer
+  })
+
+  // Resync whenever the page comes back into view — a PWA is suspended in the background and
+  // resumed with its old in-memory state (a notification tap on an already-open tab only
+  // focuses it) — plus a slow timer while visible. Also persist the debounced draft write the
+  // moment the page is hidden: mobile browsers rarely fire beforeunload when a backgrounded
+  // app is killed.
+  useEffect(() => {
+    if (loading || loadError) return
+    const run = () => {
+      if (document.visibilityState === "visible") void refreshRef.current()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") run()
+      else flushPendingDraftWrite()
+    }
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) run()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("focus", run)
+    window.addEventListener("online", run)
+    window.addEventListener("pageshow", onPageShow)
+    window.addEventListener("pagehide", flushPendingDraftWrite)
+    const timer = window.setInterval(run, attendanceExists ? 60_000 : 120_000)
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("focus", run)
+      window.removeEventListener("online", run)
+      window.removeEventListener("pageshow", onPageShow)
+      window.removeEventListener("pagehide", flushPendingDraftWrite)
+      window.clearInterval(timer)
+    }
+    // flushPendingDraftWrite only touches a ref, so the first render's copy is fine.
+  }, [loading, loadError, attendanceExists])
 
   if (loading || configLoading) {
     return (
       <div className="flex justify-center items-center h-[60vh]">
         <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center p-6">
+        <Card className="w-full max-w-md">
+          <CardContent className="space-y-4 pt-6 text-center">
+            <p className="font-semibold">Couldn't load attendance</p>
+            <p className="text-sm text-muted-foreground">
+              {loadError}. Check the connection and try again — nothing has been changed.
+            </p>
+            <div className="flex justify-center gap-2">
+              <Button variant="outline" onClick={goBackOrFallback}>
+                Back
+              </Button>
+              <Button onClick={retryLoad}>Retry</Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     )
   }
@@ -3855,6 +4291,73 @@ function SiteAttendance() {
               ))}
             </div>
           </div>
+        </Card>
+      )}
+
+      {/* ROSTER CHANGED since this sheet was built — picked up by a refresh, or the reason a
+          Save was refused. New rows are prefilled with defaults, so the supervisor reviews
+          them (tap a name to find it) before saving again. */}
+      {!attendanceExists && rosterChange && (
+        <Card className="mb-4 gap-0 py-0 border-emerald-300 dark:border-emerald-800/50 bg-emerald-50/40 dark:bg-emerald-950/10">
+          <div className="px-4 py-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-0.5">
+                <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+                  The roster changed since this page was opened
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Check the rows marked New before saving. Rows no longer on this site were removed from the sheet.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={() => setRosterChange(null)}
+                title="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            {rosterChange.added.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="font-medium">Added:</span>
+                {rosterChange.added.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    className="rounded-md border border-emerald-300/70 bg-background px-2 py-0.5 hover:bg-emerald-50 dark:border-emerald-800/60 dark:hover:bg-emerald-950/30"
+                    onClick={() => {
+                      setCollarTab("all")
+                      setCategoryFilter(null)
+                      setSearchQuery(a.name)
+                    }}
+                  >
+                    {a.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {rosterChange.removed.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Removed:</span>
+                {rosterChange.removed.map((r) => (
+                  <span key={r.id} className="rounded-md border bg-background px-2 py-0.5">
+                    {r.name} — {r.reason}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {!attendanceExists && rosterUnverified && (
+        <Card className="mb-4 gap-0 py-0 border-amber-300 dark:border-amber-800/50 bg-amber-50/40 dark:bg-amber-950/10">
+          <p className="px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
+            Couldn't reach the server to check this site's roster — showing the draft saved on this
+            device. It will be checked again automatically before anything is saved.
+          </p>
         </Card>
       )}
 
@@ -4659,6 +5162,7 @@ function SiteAttendance() {
                       hasCarryover={carryoverEmpIds.has(record.employee._id)}
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                       onOpenCarryover={handleOpenCarryover}
+                      isNew={newRowIds.has(record.employee._id)}
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                       onUpdateSession={updateDraftSession}
@@ -4699,6 +5203,7 @@ function SiteAttendance() {
                         hasCarryover={carryoverEmpIds.has(record.employee._id)}
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                         onOpenCarryover={handleOpenCarryover}
+                        isNew={newRowIds.has(record.employee._id)}
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                         onUpdateSession={updateDraftSession}
@@ -4862,9 +5367,9 @@ function SiteAttendance() {
 
           // Leaving KEEPS the draft. Flush any debounced-but-unwritten edits so
           // the last keystrokes are persisted, then return to the page the user
-          // came from. The draft stays in localStorage and rehydrates when the
-          // page reopens today; it's cleared only by submitting or the date
-          // rolling over.
+          // came from. The draft stays in localStorage and rehydrates (reconciled
+          // against the current roster) when the page reopens today; it's cleared
+          // by submitting, and older days' drafts are pruned on the next visit.
           flushPendingDraftWrite()
           setIsDirty(false)
           goBackOrFallback()
@@ -4884,4 +5389,12 @@ function SiteAttendance() {
   )
 }
 
-export default SiteAttendance
+// Keyed by site id: moving between two /attendance/:id pages must start from a clean
+// component — otherwise the previous site's draft (and its refs) could be shown, and
+// submitted, under the new site's id.
+function SiteAttendanceRoute() {
+  const { id } = useParams()
+  return <SiteAttendance key={id} />
+}
+
+export default SiteAttendanceRoute

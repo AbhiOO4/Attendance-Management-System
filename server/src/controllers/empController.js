@@ -11,6 +11,7 @@ import workModel from '../models/workModel.js'
 import { resolveCollarType } from '../utils/collar.js'
 import { getTodayLocal } from '../utils/timeLocal.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
+import { findRecordedElsewhere } from '../utils/draftRoster.js'
 
 //Admin
 
@@ -177,38 +178,14 @@ export const getAllEmployees = async (req, res) => {
       // pendingTransferDate stamp set by the add/transfer flows. Raw UTC midnight would
       // resolve to the PREVIOUS day in the early-morning window (e.g. 00:00–05:30 IST),
       // mis-flagging who is "recorded elsewhere"/inbound today.
-      const todayStr = getTodayLocal();
-      const today = new Date(todayStr);
-      const rosterIds = employeesRaw.map((e) => e._id);
-      const atts = await attendanceModel.find(
-        { employee: { $in: rosterIds }, date: today },
-        "employee sessions"
-      );
       // Employees being placed AT the anchor site today (a visit/transfer whose stash points
-      // HERE) are arriving to work here now — e.g. transferred BACK after a morning visit
-      // elsewhere. They are NOT "recorded elsewhere" from this site's view; flagging them
-      // would drop the very draft row that carries their arrival. pendingTransferSiteId is a
-      // raw id for ?site= and a populated subdoc for ?rosterForSite=, so resolve both.
-      const refIdOf = (v) => (v == null ? null : String(v._id ?? v));
-      const inboundHere = new Set(
-        employeesRaw
-          .filter(
-            (e) =>
-              refIdOf(e.pendingTransferSiteId) === String(anchorSite) &&
-              e.pendingTransferDate &&
-              new Date(e.pendingTransferDate).toISOString().slice(0, 10) === todayStr
-          )
-          .map((e) => String(e._id))
-      );
-      const elsewhereByEmp = new Map();
-      for (const a of atts) {
-        if (inboundHere.has(String(a.employee))) continue; // arriving here today, not "elsewhere"
-        const sessions = a.sessions || [];
-        const hasHere = sessions.some((s) => String(s.siteId) === String(anchorSite));
-        if (hasHere) continue; // a real multi-site day (also here) still belongs here
-        const other = sessions.find((s) => s.siteId && String(s.siteId) !== String(anchorSite));
-        if (other) elsewhereByEmp.set(String(a.employee), String(other.siteId));
-      }
+      // HERE) are arriving to work here now — not "recorded elsewhere". Shared with the
+      // submit roster guard (utils/draftRoster.js) so both apply the identical rule.
+      const elsewhereByEmp = await findRecordedElsewhere({
+        employees: employeesRaw,
+        anchorSiteId: anchorSite,
+        todayStr: getTodayLocal(),
+      });
       if (elsewhereByEmp.size) {
         const otherIds = [...new Set(elsewhereByEmp.values())];
         const siteDocs = await siteModel.find({ _id: { $in: otherIds } }, "siteName");

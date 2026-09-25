@@ -26,6 +26,7 @@ import TransferRequest from '../models/transferRequestModel.js';
 import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
+import { computeExpectedDraftRoster } from '../utils/draftRoster.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
 // "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
@@ -1392,15 +1393,57 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       throw err;
     };
 
-    // LOCK CHECK (site-first guarantee)
+    // LOCK CHECK (site-first guarantee). ANY lock doc counts — an admin-unlocked day is still
+    // "submitted" (the page shows its saved records, matching checkPending), and re-running the
+    // draft submit would only hit the {siteId, date} unique index. 409 + a code so the page
+    // can switch to the saved sheet instead of leaving a dead draft on screen (typically a
+    // second supervisor whose page loaded before the first one saved).
     const existingLock = await AttendanceLock.findOne({
       siteId,
       date: attendanceDate,
-      isLocked: true,
-    }).session(session)
+    })
+      .populate("lockedBy", "name")
+      .session(session)
 
     if (existingLock) {
-      throwValidationError(400, "Attendance already submitted and locked for this site/date");
+      throwValidationError(409, "Attendance for this site was already submitted", alreadySubmittedExtra(existingLock));
+    }
+
+    // ROSTER GUARD. The client builds its draft once, from the roster at page load; a
+    // supervisor can then submit minutes or hours later. Refuse a submit whose employee set no
+    // longer matches the site's current draft roster — otherwise an employee added since then
+    // gets NO record (and the locked sheet never shows them), and one who has left gets a
+    // phantom record here. Only for the current business day: there is no historical roster to
+    // compare a past day's sheet against. Runs before any write, so a refusal persists nothing.
+    const submittedIds = attendance.map((e) => String(e?.employee?._id ?? ""));
+    if (submittedIds.some((id) => !id)) {
+      throwValidationError(400, "employee is required");
+    }
+    if (new Set(submittedIds).size !== submittedIds.length) {
+      throwValidationError(400, "The same employee appears more than once in this submission");
+    }
+    const dateStr = attendanceDate.toISOString().slice(0, 10);
+    if (dateStr === getTodayLocal()) {
+      const expected = await computeExpectedDraftRoster({ siteId, dateStr, session });
+      const submittedSet = new Set(submittedIds);
+      const added = [...expected.values()].filter((e) => !submittedSet.has(e._id));
+      const removedIds = submittedIds.filter((id) => !expected.has(id));
+      if (added.length || removedIds.length) {
+        const removedDocs = await empModel
+          .find({ _id: { $in: removedIds.filter((id) => mongoose.isValidObjectId(id)) } }, "name employeeId")
+          .session(session)
+          .lean();
+        const removedById = new Map(removedDocs.map((e) => [String(e._id), e]));
+        const removed = removedIds.map((id) => ({
+          _id: id,
+          name: removedById.get(id)?.name ?? null,
+          employeeId: removedById.get(id)?.employeeId ?? null,
+        }));
+        throwValidationError(409, rosterChangedMessage(added, removed), {
+          code: "ROSTER_CHANGED",
+          rosterChange: { added, removed },
+        });
+      }
     }
 
     const workConfig = await workModel.findOne().session(session)
@@ -1834,7 +1877,31 @@ export const siteFirstSubmitAttendance = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    console.error(error)
+
+    // Two submits racing for the same site/day: the loser either trips the lock's unique
+    // index or a write conflict on a shared attendance doc. The transaction is already rolled
+    // back — report it as "already submitted" / "try again" rather than a raw 500.
+    if (error?.code === 11000 && error?.keyPattern?.siteId) {
+      const lock = await AttendanceLock.findOne({ siteId, date: attendanceDate }).populate("lockedBy", "name").catch(() => null);
+      return res.status(409).json({
+        success: false,
+        message: "Attendance for this site was already submitted",
+        ...alreadySubmittedExtra(lock),
+      })
+    }
+    const transient =
+      error?.hasErrorLabel?.("TransientTransactionError") ||
+      error?.errorLabels?.includes?.("TransientTransactionError") ||
+      error?.code === 112; // WriteConflict
+    if (transient) {
+      return res.status(409).json({
+        success: false,
+        code: "SUBMIT_CONFLICT",
+        message: "Another save touched these records at the same moment — please try again.",
+      })
+    }
+
+    if (!error.status) console.error(error)
 
     return res.status(error.status || 500).json({
       success: false,
@@ -1844,6 +1911,27 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     })
   }
 }//
+
+// Response fields for a submit refused because the site/day already has a lock.
+function alreadySubmittedExtra(lock) {
+  return {
+    code: "ALREADY_SUBMITTED",
+    lockedByName: lock?.lockedBy?.name ?? null,
+    lockedAt: lock?.lockedAt ?? null,
+  };
+}
+
+// Human-readable ROSTER_CHANGED message — shown as-is by clients that predate the code.
+function rosterChangedMessage(added, removed) {
+  const names = (list) => {
+    const shown = list.slice(0, 5).map((e) => e.name || e.employeeId || "an employee").join(", ");
+    return list.length > 5 ? `${shown} and ${list.length - 5} more` : shown;
+  };
+  const parts = [];
+  if (added.length) parts.push(`added: ${names(added)}`);
+  if (removed.length) parts.push(`no longer here: ${names(removed)}`);
+  return `This site's roster changed since the page was loaded (${parts.join("; ")}). Review the sheet and save again.`;
+}
 
 
 //get saved attendance for a site 
@@ -2009,6 +2097,9 @@ export const getSiteAttendance = async (req, res) => {
           // Current supervisor remark, so the inline-edit over-default remark prompt can
           // prefill it instead of clobbering an existing note.
           remark: "$remark",
+
+          // Version token: the inline editor sends it back as expectedUpdatedAt.
+          updatedAt: "$updatedAt",
 
           status: "$status",
 
@@ -2855,6 +2946,25 @@ export const updateAttendance = async (req, res) => {
       }
     }
 
+    // Optimistic concurrency. The editors send the row as the device last loaded it, and this
+    // endpoint REPLACES the site's sessions — so an edit made from a stale page (another
+    // supervisor, or the auto-checkout cron, changed the record since) would silently wipe
+    // the newer values. Callers pass the updatedAt they loaded; a mismatch means someone else
+    // wrote first. Omitted by older clients → unchecked, as before.
+    const { expectedUpdatedAt } = req.body;
+    if (
+      expectedUpdatedAt &&
+      attendance.updatedAt &&
+      new Date(expectedUpdatedAt).getTime() !== new Date(attendance.updatedAt).getTime()
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "RECORD_CHANGED",
+        message: "This record was changed on another device since you opened it. It has been refreshed — check it and edit again.",
+        updatedAt: attendance.updatedAt,
+      });
+    }
+
     const workConfig = await workModel.findOne({
       type: "default",
     });
@@ -3406,6 +3516,9 @@ export const updateAttendance = async (req, res) => {
 
       breaksTaken: updatedAttendance.breaksTaken,
 
+      // Version token for the next edit's expectedUpdatedAt (see the check above).
+      updatedAt: updatedAttendance.updatedAt,
+
       totalRawHours: updatedAttendance.sessions.reduce((total, session) => total + (session.workedHours || 0), 0),
 
 
@@ -3817,6 +3930,9 @@ export const getAttendanceById = async (req, res) => {
           nationality: "$employee.nationality",
 
           remark: "$remark",
+
+          // Version token: EditSiteRecord sends it back as expectedUpdatedAt.
+          updatedAt: "$updatedAt",
 
           siteId: "$siteId",
 
@@ -5763,7 +5879,10 @@ export const updateAttendanceRemark = async (req, res) => {
     if (!auth.ok) return res.status(auth.status).json({ success: false, message: auth.message });
 
     const trimmed = remark.trim();
-    await Attendance.updateOne({ _id: attendanceId }, { $set: { remark: trimmed } });
+    // timestamps:false — updatedAt is the version token the time/break editors check
+    // (updateAttendance → expectedUpdatedAt). Those editors never write the remark, so a
+    // remark change can't be clobbered by them and must not trip a false "changed elsewhere".
+    await Attendance.updateOne({ _id: attendanceId }, { $set: { remark: trimmed } }, { timestamps: false });
     auth.record.remark = trimmed;
 
     await recordAttendanceAudit({
