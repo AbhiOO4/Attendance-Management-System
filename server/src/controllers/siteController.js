@@ -17,6 +17,7 @@ import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
 import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
+import { touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
 import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
@@ -3093,6 +3094,10 @@ export const sendEmployeeToSite = async (req, res) => {
       // points at the real origin.
       const fromSiteId = employee.currentSite
 
+      // Both rosters change: conflict with a submit of either site that's in flight, so it
+      // can't lock that day against the roster from just before this move (see touchSiteRosters).
+      await touchSiteRosters([fromSiteId, toSiteId], session)
+
       // Home change: a permanent move always repoints currentSite/currentJob; a today visit
       // into an UNLOCKED destination writes the pendingTransfer* stash so that site's
       // roster-built draft surfaces the visitor. A today visit into a LOCKED destination
@@ -3101,25 +3106,26 @@ export const sendEmployeeToSite = async (req, res) => {
         await applyHandover({ employee, toSiteId, toJobId: toJobId || null, mode, session })
       }
 
-      // Materialise the arrival's record NOW, in every case. Previously an UNLOCKED
-      // destination got only the stash (today) / repointed roster row (permanent), so the
-      // arrival had NO record until that site's draft was next opened and submitted — it was
-      // invisible on any already-open page until a manual refetch, absent from reports in the
-      // meantime, and lost entirely if the site never marked attendance that day. Creating it
-      // here makes the visit durable and immediately visible. The destination's draft still
-      // shows the row (via the stash for a today visit, or the repointed roster for a
-      // permanent move) and its submit reconciles the session in place — same-site sessions
-      // are REPLACED, not duplicated (see the submit path's otherSiteSessions merge).
-      const sendActor = await resolveActor(req)
-      await createPreSaveVisitRecord({
-        employee,
-        toSite,
-        toJobId: toJobId || null,
-        fromSiteId,
-        markedById: req.user.id,
-        actor: sendActor,
-        session,
-      })
+      // An UNLOCKED destination writes NO attendance here: the arrival is a row on its draft
+      // (via the stash, or the repointed roster for a permanent move), and the record is
+      // created when that site saves — like every other employee on its sheet. Pre-creating it
+      // put an unmarked open session in records/reports (which auto-checkout then closed as a
+      // full day), and its check-in made the marked-today guard above refuse a corrected send.
+      // Only a LOCKED destination never rebuilds its draft, so there the record is created now
+      // or the arrival would be orphaned. (A midday Transfer differs: placeMiddayArrival
+      // carries a real source check-out onto an existing record, so it always writes.)
+      if (destLocked) {
+        const sendActor = await resolveActor(req)
+        await createPreSaveVisitRecord({
+          employee,
+          toSite,
+          toJobId: toJobId || null,
+          fromSiteId,
+          markedById: req.user.id,
+          actor: sendActor,
+          session,
+        })
+      }
 
       // A pending request for this employee (someone asked for them, or a midday transfer
       // awaiting acceptance) is overtaken by this direct send.
@@ -3209,6 +3215,12 @@ export const sendEmployeeToSite = async (req, res) => {
   } catch (error) {
     await session.abortTransaction()
     session.endSession()
+    if (isWriteConflict(error)) {
+      return res.status(409).json({
+        success: false,
+        message: "One of these sites was being saved at the same moment — please try again.",
+      })
+    }
     console.error("[send-employee] error:", error)
     return res.status(500).json({ success: false, message: "Failed to send employee" })
   }

@@ -21,6 +21,7 @@ import Site from "../models/siteModel.js"
 import userModel from "../models/userModel.js"
 import Attendance from "../models/attendanceModel.js"
 import TransferRequest from "../models/transferRequestModel.js"
+import AttendanceLock from "../models/lockModel.js"
 import notificationModel from "../models/notificationModel.js"
 import workModel from "../models/workModel.js"
 import { isAssignableSite, findAssignableJob } from "../utils/siteAssignable.js"
@@ -47,6 +48,7 @@ import {
   crossDayOverlapMessage,
 } from "../utils/sessionOverlap.js"
 import { openEventStream } from "../utils/realtime.js"
+import { touchSiteRosters, isWriteConflict } from "../utils/draftRoster.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -676,6 +678,10 @@ export const acceptRequest = async (req, res) => {
       })
       request.carriedCheckIn = splitCheckOut
     } else {
+      // Both rosters change: conflict with a submit of either site that's in flight, so it
+      // can't lock that day against the roster from just before this move (see touchSiteRosters).
+      await touchSiteRosters([request.fromSite, request.toSite], session)
+
       // Place the employee at the destination (shared with the source-push path).
       await applyHandover({
         employee,
@@ -685,25 +691,31 @@ export const acceptRequest = async (req, res) => {
         session,
       })
 
-      // Give the pull-accept path the same record guarantee the push / send-to-site paths
-      // already have. applyHandover only repoints the home (permanent) or writes the
-      // pendingTransfer stash (today) and relies on the destination's draft build to surface
-      // the arrival — but a saved/locked destination never rebuilds its draft, so the arrival
-      // would be orphaned with no record. Materialize it now. request.fromSite is the stored
-      // source (unaffected by the permanent repoint above), so it powers the destination
-      // record's "Transferred from" badge. createPreSaveVisitRecord PUSH-or-CREATEs onto
-      // today's doc (re-read inside this transaction, so a "move" above is already applied),
-      // so it is safe when the employee already has a record today and respects the unique
+      // Same rule as Send-to-site: applyHandover repoints the home (permanent) or writes the
+      // pendingTransfer stash (today), which puts the arrival on an UNLOCKED destination's
+      // draft — its record is created when that site saves, so none is written here. A
+      // LOCKED destination never rebuilds its draft, so there the arrival would be orphaned:
+      // materialize it now. request.fromSite is the stored source (unaffected by the permanent
+      // repoint above), so it powers the destination record's "Transferred from" badge.
+      // createPreSaveVisitRecord PUSH-or-CREATEs onto today's doc (re-read inside this
+      // transaction, so a "move" above is already applied), respecting the unique
       // {employee, date} index.
-      await createPreSaveVisitRecord({
-        employee,
-        toSite,
-        toJobId: toJob?._id || null,
-        fromSiteId: request.fromSite,
-        markedById: req.user.id,
-        actor: acceptActor,
-        session,
-      })
+      const destLocked = !!(await AttendanceLock.findOne({
+        siteId: request.toSite,
+        date: todayAttendanceDate(),
+        isLocked: true,
+      }).session(session))
+      if (destLocked) {
+        await createPreSaveVisitRecord({
+          employee,
+          toSite,
+          toJobId: toJob?._id || null,
+          fromSiteId: request.fromSite,
+          markedById: req.user.id,
+          actor: acceptActor,
+          session,
+        })
+      }
     }
 
     request.status = "accepted"
@@ -752,6 +764,12 @@ export const acceptRequest = async (req, res) => {
   } catch (error) {
     await session.abortTransaction()
     session.endSession()
+    if (isWriteConflict(error)) {
+      return res.status(409).json({
+        success: false,
+        message: "One of these sites was being saved at the same moment — please try again.",
+      })
+    }
     console.error("[requests] acceptRequest error:", error)
     return res.status(error.status || 500).json({
       success: false,

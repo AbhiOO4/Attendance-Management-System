@@ -119,6 +119,14 @@ const siteSchema = new mongoose.Schema({
     trim: true,
     default: ""
   },
+  // Bumped inside every transaction that submits this site's day or moves an employee onto /
+  // off its roster (utils/draftRoster.js touchSiteRosters). Its value means nothing — the
+  // shared WRITE is what makes a submit and a concurrent roster move conflict, so one aborts
+  // instead of both committing against each other's stale roster.
+  rosterRev: {
+    type: Number,
+    default: 0
+  },
   // NOTE: nightShiftCutoffHour / cutoffHistory were removed with the cutoff redesign.
   // A site's day and night default windows may now overlap freely; cross-midnight is an
   // explicit per-session day offset on the attendance record, not a derived boundary hour.

@@ -180,6 +180,12 @@ The Site Attendance draft is built client-side from the roster (`loadRosterConte
   The client merges the change, flags rows "New" and asks for another Save (never auto-resubmits).
   `draftRoster.js` MUST mirror the client draft filter exactly or every submit for a site is
   refused — `findRecordedElsewhere` there is also what `GET /api/employees` uses.
+- **Same-day moves write no attendance into an UNSAVED site** — Send-to-site and an accepted
+  pull request only change the Employee (`currentSite` repoint, or the `pendingTransfer*` stash);
+  the destination's Save creates the record. Only a LOCKED destination gets the record directly
+  (`createPreSaveVisitRecord`), since it never rebuilds a draft. (A midday Transfer always writes:
+  it carries a real source check-out onto an existing record.) Submit and these moves both bump
+  `Site.rosterRev` (`touchSiteRosters`) so a concurrent pair write-conflicts and one gets a 409.
 - **Already submitted** — any lock doc → 409 `ALREADY_SUBMITTED` `{ lockedByName, lockedAt }`
   (a race's E11000 maps to the same; a write conflict → `SUBMIT_CONFLICT`). The page drops its
   draft and shows the saved sheet.

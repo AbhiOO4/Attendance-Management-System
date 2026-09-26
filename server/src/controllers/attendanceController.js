@@ -26,7 +26,7 @@ import TransferRequest from '../models/transferRequestModel.js';
 import Leave from '../models/leaveModel.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
-import { computeExpectedDraftRoster } from '../utils/draftRoster.js';
+import { computeExpectedDraftRoster, touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js';
 import AttendanceDraftRow from '../models/attendanceDraftRowModel.js';
 import { isCloudDraftEnabled } from '../utils/features.js';
 
@@ -1411,6 +1411,12 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       throwValidationError(409, "Attendance for this site was already submitted", alreadySubmittedExtra(existingLock));
     }
 
+    // Claim this site's roster for the rest of the transaction: a Send-to-site / accepted
+    // request moving someone on or off this site while we submit writes the same Site doc, so
+    // one of the two aborts (→ SUBMIT_CONFLICT below) instead of this submit locking the day
+    // against a roster that changed underneath it.
+    await touchSiteRosters([siteId], session);
+
     // ROSTER GUARD. The client builds its draft once, from the roster at page load; a
     // supervisor can then submit minutes or hours later. Refuse a submit whose employee set no
     // longer matches the site's current draft roster — otherwise an employee added since then
@@ -1928,11 +1934,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         ...alreadySubmittedExtra(lock),
       })
     }
-    const transient =
-      error?.hasErrorLabel?.("TransientTransactionError") ||
-      error?.errorLabels?.includes?.("TransientTransactionError") ||
-      error?.code === 112; // WriteConflict
-    if (transient) {
+    if (isWriteConflict(error)) {
       return res.status(409).json({
         success: false,
         code: "SUBMIT_CONFLICT",

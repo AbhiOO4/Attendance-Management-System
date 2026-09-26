@@ -13,6 +13,34 @@
  */
 import empModel from "../models/empModel.js"
 import attendanceModel from "../models/attendanceModel.js"
+import siteModel from "../models/siteModel.js"
+
+/**
+ * Serialize a draft submit against roster moves touching the same site. Transactions don't
+ * conflict on reads, so a submit already in flight could lock a site against the roster it read
+ * just before a move committed — the destination then misses the arrival (no record), or the
+ * source records them at home too. Both sides bump the site's `rosterRev` inside their
+ * transaction; overlapping transactions then write the same Site doc and one aborts with a
+ * WriteConflict (see isWriteConflict). `timestamps: false` keeps Site.updatedAt meaningful.
+ */
+export async function touchSiteRosters(siteIds, session) {
+  const ids = [...new Set(siteIds.filter(Boolean).map(String))]
+  if (!ids.length) return
+  await siteModel.updateMany(
+    { _id: { $in: ids } },
+    { $inc: { rosterRev: 1 } },
+    { session, timestamps: false }
+  )
+}
+
+/** A transaction aborted because a concurrent one wrote the same document — safe to retry. */
+export function isWriteConflict(error) {
+  return !!(
+    error?.hasErrorLabel?.("TransientTransactionError") ||
+    error?.errorLabels?.includes?.("TransientTransactionError") ||
+    error?.code === 112
+  )
+}
 
 // pendingTransferSiteId is a raw ObjectId on most reads but a populated subdoc on the
 // Manage-Employees roster read — resolve both.
