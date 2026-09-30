@@ -1,6 +1,6 @@
 import userModel from "../models/userModel.js";
 import bcrypt from "bcryptjs";
-import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
+import { authCookieOptions, generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
 import empModel from "../models/empModel.js";
 import siteModel from "../models/siteModel.js";
 import mongoose from "mongoose";
@@ -28,12 +28,7 @@ export const login = async (req, res) => {
 }
 
 export function logout(req, res) {
-    const isProduction = process.env.NODE_ENV === "production"
-    res.clearCookie("token", {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? "none" : "strict"
-    });
+    res.clearCookie("token", authCookieOptions());
     res.status(200).json({success: true, message: "Logged out successfully"})
 }
 

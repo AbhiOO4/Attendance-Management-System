@@ -17,7 +17,7 @@ There is no root package.json — each is installed and run separately.
 **Server** (`cd server`):
 - `npm run dev` — start API with nodemon (`src/server.js`)
 - `npm start` — start API with node
-- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots.
+- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). `SAME_SITE` (`strict`|`lax`|`none`) sets the auth cookie's SameSite per deployment (`authCookieOptions()` in `utils/generateTokenAndSetCookie.js`): `lax` when client and API share a registrable domain (live: `ngdp.online` → `api.ngdp.online`), `none` when they're cross-site (forces `Secure`); unset/invalid keeps the legacy default (`none` in production, `strict` otherwise). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots.
 
 **Client** (`cd client`):
 - `npm run dev` — Vite dev server (default http://localhost:5173)
