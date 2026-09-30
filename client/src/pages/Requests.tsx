@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import toast from "react-hot-toast"
 import axios from "axios"
+import { useNavigate } from "react-router-dom"
 
 import { api } from "@/lib/api"
 import { REQUESTS_LIVE_EVENT, type RequestsLiveDetail } from "@/lib/requestsLive"
@@ -29,6 +30,7 @@ import {
   ArrowRight,
   Briefcase,
   Clock3,
+  ChevronRight,
 } from "lucide-react"
 
 type Ref = { _id: string; name?: string; siteName?: string } | null
@@ -77,11 +79,25 @@ type Notification = {
   title: string
   body: string
   url: string
+  relatedRequest?: string | null
   read: boolean
   createdAt: string
 }
 
 type Tab = "incoming" | "sent" | "activity"
+
+const TAB_LABEL: Record<Tab, string> = { incoming: "Incoming", sent: "Sent", activity: "Activity" }
+
+// The tab a notification belongs to. A request's own notifications live with it — a new
+// request in the decider's Incoming, its outcome in the requester's Sent; the rest
+// (transferred in / out) only appear in Activity.
+const NOTIF_TAB: Record<string, Tab> = {
+  request_received: "incoming",
+  request_accepted: "sent",
+  request_rejected: "sent",
+  request_expired: "sent",
+}
+const tabOf = (n: Notification): Tab => NOTIF_TAB[n.type] ?? "activity"
 
 const STATUS_STYLES: Record<RequestStatus, string> = {
   pending: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200/60 dark:border-amber-800/30",
@@ -114,15 +130,35 @@ function ModeBadge({ mode }: { mode: "today" | "permanent" }) {
   )
 }
 
+/** Same red as the sidebar Requests badge, so "red" always means "this is the new thing". */
+function NewPill({ label = "New" }: { label?: string }) {
+  return (
+    <span className="inline-flex items-center h-5 px-2 rounded-full bg-red-500 text-white text-[11px] font-semibold">
+      {label}
+    </span>
+  )
+}
+
 function RequestCard({
   req,
+  highlight,
+  flash = false,
   children,
 }: {
   req: TransferRequest
+  // Set while a notification about this request is new this visit ("New" / "Updated").
+  highlight?: string
+  // Briefly ringed after jumping here from an Activity item.
+  flash?: boolean
   children?: React.ReactNode
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm space-y-3">
+    <div
+      id={`req-${req._id}`}
+      className={`rounded-xl border bg-card p-4 shadow-sm space-y-3 transition-shadow duration-500 ${
+        highlight ? "border-primary/40" : "border-border"
+      } ${flash ? "ring-2 ring-primary" : ""}`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold text-foreground truncate">
@@ -132,6 +168,7 @@ function RequestCard({
           <div className="text-xs text-muted-foreground mt-0.5">{req.employee?.jobTitle}</div>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
+          {highlight && <NewPill label={highlight} />}
           <StatusBadge status={req.status} />
           <ModeBadge mode={req.mode} />
           {req.direction === "push" && (
@@ -456,8 +493,16 @@ function CollapsibleList<T>({
 
 export default function Requests() {
   const { user } = useAuth()
+  const navigate = useNavigate()
 
   const [tab, setTab] = useState<Tab>("incoming")
+  // The first load opens on the tab holding the newest unread alert; after that (or once
+  // the user picks a tab) refreshes never switch tabs under them.
+  const tabPicked = useRef(false)
+  const selectTab = (key: Tab) => {
+    tabPicked.current = true
+    setTab(key)
+  }
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -473,6 +518,13 @@ export default function Requests() {
   })
   const toggleExpanded = (key: Tab) => setExpanded((e) => ({ ...e, [key]: !e[key] }))
 
+  // Notifications read during this visit. They stay highlighted as new until you leave,
+  // although the server copy is already marked read.
+  const [seenIds, setSeenIds] = useState<Set<string>>(() => new Set())
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden)
+  // A request card to scroll to and briefly ring, after jumping from an Activity item.
+  const [focusReqId, setFocusReqId] = useState<string | null>(null)
+
   // Live refreshes can overlap; only the newest fetch may apply its result.
   const fetchSeq = useRef(0)
 
@@ -485,9 +537,15 @@ export default function Requests() {
         api.get("/api/requests/notifications"),
       ])
       if (seq !== fetchSeq.current) return
+      const notifList: Notification[] = notif.data?.data ?? []
       setIncoming(inc.data?.data ?? [])
       setOutgoing(out.data?.data ?? [])
-      setNotifications(notif.data?.data ?? [])
+      setNotifications(notifList)
+      if (!tabPicked.current) {
+        tabPicked.current = true
+        const newest = notifList.find((n) => !n.read) // the feed is newest-first
+        if (newest) setTab(tabOf(newest))
+      }
     } catch (error) {
       console.log(error)
       // Background refreshes stay silent — the next event or focus retries.
@@ -497,37 +555,18 @@ export default function Requests() {
     }
   }, [])
 
-  // Seeing the page counts as "seen" — clear the unread badge.
-  const markRead = useCallback(async () => {
-    try {
-      await api.post("/api/requests/notifications/read", {})
-      window.dispatchEvent(new Event("requests:updated"))
-    } catch {
-      /* ignore */
-    }
-  }, [])
-
+  // Load, then refetch live the moment a request or notification changes
+  // (lib/requestsLive.ts) and whenever the tab comes back into view.
   useEffect(() => {
     fetchAll()
-    markRead()
-  }, [fetchAll, markRead])
-
-  // Live: refetch the moment a request or notification changes (lib/requestsLive.ts)
-  // and whenever the tab comes back into view. Activity that arrives while the page is
-  // on screen counts as seen, just like opening the page.
-  useEffect(() => {
     const onLive = (e: Event) => {
       const { scopes } = (e as CustomEvent<RequestsLiveDetail>).detail
       if (scopes.every((s) => s === "read")) return // read-state only moves the badge
       fetchAll({ quiet: true })
-      if (!document.hidden && (scopes.includes("notifications") || scopes.includes("resync"))) {
-        markRead()
-      }
     }
     const onVisible = () => {
-      if (document.hidden) return
-      fetchAll({ quiet: true })
-      markRead()
+      setPageVisible(!document.hidden)
+      if (!document.hidden) fetchAll({ quiet: true })
     }
     window.addEventListener(REQUESTS_LIVE_EVENT, onLive)
     document.addEventListener("visibilitychange", onVisible)
@@ -535,7 +574,44 @@ export default function Requests() {
       window.removeEventListener(REQUESTS_LIVE_EVENT, onLive)
       document.removeEventListener("visibilitychange", onVisible)
     }
-  }, [fetchAll, markRead])
+  }, [fetchAll])
+
+  // Seeing a tab reads its alerts: once the page is on screen, the unread notifications
+  // the open tab shows (Activity shows them all) are marked read, including ones that
+  // arrive live. Other tabs keep their red counts — and the sidebar badge — until opened.
+  const marking = useRef(new Set<string>())
+  useEffect(() => {
+    if (!pageVisible) return
+    const ids = notifications
+      .filter(
+        (n) =>
+          !n.read &&
+          !seenIds.has(n._id) &&
+          !marking.current.has(n._id) &&
+          (tab === "activity" || tabOf(n) === tab)
+      )
+      .map((n) => n._id)
+    if (ids.length === 0) return
+    ids.forEach((id) => marking.current.add(id))
+    api
+      .post("/api/requests/notifications/read", { ids })
+      .then(() => {
+        setSeenIds((prev) => new Set([...prev, ...ids]))
+        window.dispatchEvent(new Event("requests:updated"))
+      })
+      .catch(() => {
+        /* best-effort — retried on the next refresh */
+      })
+      .finally(() => ids.forEach((id) => marking.current.delete(id)))
+  }, [tab, notifications, seenIds, pageVisible])
+
+  // After jumping to a request from Activity: bring its card into view, ring it briefly.
+  useEffect(() => {
+    if (!focusReqId) return
+    document.getElementById(`req-${focusReqId}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+    const t = window.setTimeout(() => setFocusReqId(null), 1600)
+    return () => window.clearTimeout(t)
+  }, [focusReqId])
 
   const act = async (
     id: string,
@@ -568,38 +644,95 @@ export default function Requests() {
   const pendingIncoming = incoming.filter((r) => r.status === "pending")
   const pendingOutgoing = outgoing.filter((r) => r.status === "pending")
 
+  // New this visit = still unread, or read here during this visit.
+  const isNew = useCallback((n: Notification) => !n.read || seenIds.has(n._id), [seenIds])
+
+  // Tab alerts. With pending incoming decisions these add up to the sidebar badge
+  // (whose unread count leaves out "request_received" — those ARE the pending requests).
+  const unseenCount = (key: Tab) =>
+    notifications.filter((n) => !n.read && !seenIds.has(n._id) && tabOf(n) === key).length
+
+  // Requests a new notification points at, per tab — their cards get a "New"/"Updated" pill.
+  const newRequestIds = useMemo(() => {
+    const ids: Record<Tab, Set<string>> = { incoming: new Set(), sent: new Set(), activity: new Set() }
+    for (const n of notifications) {
+      if (n.relatedRequest && isNew(n)) ids[tabOf(n)].add(n.relatedRequest)
+    }
+    return ids
+  }, [notifications, isNew])
+
   // "Today" partitioning. A still-pending request stays visible even if older than
   // today — it's actionable and shouldn't hide behind "Show older"; only resolved
-  // history collapses. Activity items collapse purely by their date.
+  // history collapses. Activity items collapse purely by their date. Anything new
+  // stays visible too, so a tab's alert is never hidden behind "Show older".
   const todayLocal = getCurrentTargetDateString()
   const visibleIncoming = useMemo(
-    () => incoming.filter((r) => r.dateLocal === todayLocal || r.status === "pending"),
-    [incoming, todayLocal]
+    () =>
+      incoming.filter(
+        (r) => r.dateLocal === todayLocal || r.status === "pending" || newRequestIds.incoming.has(r._id)
+      ),
+    [incoming, todayLocal, newRequestIds]
   )
   const visibleOutgoing = useMemo(
-    () => outgoing.filter((r) => r.dateLocal === todayLocal || r.status === "pending"),
-    [outgoing, todayLocal]
+    () =>
+      outgoing.filter(
+        (r) => r.dateLocal === todayLocal || r.status === "pending" || newRequestIds.sent.has(r._id)
+      ),
+    [outgoing, todayLocal, newRequestIds]
   )
   const visibleNotifications = useMemo(
-    () => notifications.filter((n) => toLocalDateString(n.createdAt) === todayLocal),
-    [notifications, todayLocal]
+    () => notifications.filter((n) => toLocalDateString(n.createdAt) === todayLocal || isNew(n)),
+    [notifications, todayLocal, isNew]
   )
 
-  const tabButton = (key: Tab, label: string, count?: number) => (
+  // Where an Activity item leads: its request's card in Incoming/Sent, else the page the
+  // notification links to (a site's attendance for transferred in / out), else nowhere.
+  const activityTarget = (n: Notification): string | null => {
+    const t = tabOf(n)
+    if (t !== "activity" && n.relatedRequest) return `View in ${TAB_LABEL[t]}`
+    if (n.url && n.url !== "/requests") return "Open site"
+    return null
+  }
+
+  const openActivityItem = (n: Notification) => {
+    const t = tabOf(n)
+    if (t !== "activity" && n.relatedRequest) {
+      const id = n.relatedRequest
+      const [all, visible] = t === "incoming" ? [incoming, visibleIncoming] : [outgoing, visibleOutgoing]
+      if (all.some((r) => r._id === id) && !visible.some((r) => r._id === id)) {
+        setExpanded((e) => ({ ...e, [t]: true }))
+      }
+      selectTab(t)
+      setFocusReqId(id)
+      return
+    }
+    if (n.url && n.url !== "/requests") navigate(n.url)
+  }
+
+  /** `count` is informational (neutral pill); `alerts` is what needs attention (red, like the badge). */
+  const tabButton = (key: Tab, label: string, { count = 0, alerts = 0 }: { count?: number; alerts?: number } = {}) => (
     <button
-      onClick={() => setTab(key)}
+      onClick={() => selectTab(key)}
       className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2 ${
         tab === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
       }`}
     >
       {label}
-      {typeof count === "number" && count > 0 && (
+      {count > 0 && (
         <span
           className={`inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full text-[11px] font-semibold ${
             tab === key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-primary/10 text-primary"
           }`}
         >
           {count}
+        </span>
+      )}
+      {alerts > 0 && (
+        <span
+          aria-label={`${alerts} new`}
+          className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-semibold"
+        >
+          {alerts}
         </span>
       )}
     </button>
@@ -629,9 +762,9 @@ export default function Requests() {
       </Card>
 
       <div className="flex flex-wrap gap-2">
-        {tabButton("incoming", "Incoming", pendingIncoming.length)}
-        {tabButton("sent", "Sent", pendingOutgoing.length)}
-        {tabButton("activity", "Activity")}
+        {tabButton("incoming", "Incoming", { alerts: pendingIncoming.length })}
+        {tabButton("sent", "Sent", { count: pendingOutgoing.length, alerts: unseenCount("sent") })}
+        {tabButton("activity", "Activity", { alerts: unseenCount("activity") })}
       </div>
 
       <Card>
@@ -645,7 +778,12 @@ export default function Requests() {
               emptyIcon={Inbox}
               emptyText="No incoming requests."
               renderItem={(req) => (
-                <RequestCard key={req._id} req={req}>
+                <RequestCard
+                  key={req._id}
+                  req={req}
+                  highlight={newRequestIds.incoming.has(req._id) ? "New" : undefined}
+                  flash={focusReqId === req._id}
+                >
                   {req.status === "pending" ? (
                     <IncomingActions
                       req={req}
@@ -669,7 +807,12 @@ export default function Requests() {
               emptyIcon={Send}
               emptyText="You haven't sent any requests."
               renderItem={(req) => (
-                <RequestCard key={req._id} req={req}>
+                <RequestCard
+                  key={req._id}
+                  req={req}
+                  highlight={newRequestIds.sent.has(req._id) ? "Updated" : undefined}
+                  flash={focusReqId === req._id}
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <span
                       className="text-xs text-muted-foreground"
@@ -706,20 +849,48 @@ export default function Requests() {
               onToggle={() => toggleExpanded("activity")}
               emptyIcon={Bell}
               emptyText="No activity yet."
-              renderItem={(n) => (
-                <div key={n._id} className="rounded-xl border border-border bg-card p-4 shadow-sm">
-                  <div className="flex items-start gap-3">
+              renderItem={(n) => {
+                const fresh = isNew(n)
+                const target = activityTarget(n)
+                const cardCls = `block w-full text-left rounded-xl border p-4 shadow-sm ${
+                  fresh ? "border-primary/40 bg-primary/5" : "border-border bg-card"
+                }`
+                const content = (
+                  <span className="flex items-start gap-3">
                     <Bell className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <div className="font-medium text-sm text-foreground">{n.title}</div>
-                      {n.body && <div className="text-xs text-muted-foreground mt-0.5">{n.body}</div>}
-                      <div className="text-[11px] text-muted-foreground/70 mt-1">
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium text-sm text-foreground">{n.title}</span>
+                        {fresh && <NewPill />}
+                      </span>
+                      {n.body && <span className="block text-xs text-muted-foreground mt-0.5">{n.body}</span>}
+                      <span className="block text-[11px] text-muted-foreground/70 mt-1">
                         {new Date(n.createdAt).toLocaleString()}
-                      </div>
-                    </div>
+                      </span>
+                    </span>
+                    {target && (
+                      <span className="shrink-0 inline-flex items-center gap-0.5 text-xs font-medium text-primary whitespace-nowrap">
+                        {target}
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+                  </span>
+                )
+                return target ? (
+                  <button
+                    key={n._id}
+                    type="button"
+                    onClick={() => openActivityItem(n)}
+                    className={`${cardCls} transition-colors hover:border-primary/60 hover:bg-muted/40`}
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div key={n._id} className={cardCls}>
+                    {content}
                   </div>
-                </div>
-              )}
+                )
+              }}
             />
           )}
         </CardContent>

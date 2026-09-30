@@ -57,14 +57,23 @@ const workScheduleSchema = new mongoose.Schema(
     // per-session day offset (rawCheckIn/rawCheckOut + checkInNextDay/checkOutNextDay),
     // so no global business-day boundary hour exists any more.
 
-    // Duration of a single break in minutes.
-    // Total break deduction = computeAutoBreaks(rawHours, fullDayHours) * breakDurationMinutes / 60
-    // (one break per day; see attendanceMath.js). Set to 0 to disable break deductions entirely.
+    // Duration of the (single) daily break in minutes. A day deducts at most ONE break
+    // (MAX_BREAKS_PER_DAY in attendanceMath.js), so the deduction is 0 or this many
+    // minutes. Set to 0 to disable break deductions entirely.
     breakDurationMinutes: {
       type: Number,
       min: 0,
       max: 480,
       default: 60,
+    },
+
+    // Minimum RAW hours worked in a day before the automatic break is deducted.
+    // null → falls back to fullDayHours (resolveBreakMinHours in attendanceMath.js).
+    breakMinHours: {
+      type: Number,
+      min: 0,
+      max: 24,
+      default: null,
     },
 
     // Fallback "HH:mm" local time after which an open session that the

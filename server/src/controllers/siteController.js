@@ -22,6 +22,7 @@ import { notifySiteSupervisors } from '../utils/notify.js'
 import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js'
+import { buildSiteManpower } from '../utils/siteManpower.js'
 
 
 //Admin
@@ -1601,12 +1602,32 @@ export const instaAddEmployee = async (req, res) => {
         })
       }
 
+      // Already scheduled to move to / visit ANOTHER site tomorrow (e.g. its home sent them
+      // there): overwriting that slot would silently cancel it, so the other site's
+      // arrangement must be cancelled first. A pending removal or home job change is
+      // superseded below — the add is the newer, more specific plan for tomorrow.
+      if (
+        employee.scheduledEffectiveDate &&
+        employee.scheduledSiteId &&
+        employee.scheduledSiteId.toString() !== siteId.toString()
+      ) {
+        const otherSite = await siteModel.findById(employee.scheduledSiteId).select("siteName").session(session)
+        await session.abortTransaction()
+        session.endSession()
+        return res.status(409).json({
+          success: false,
+          message: `${employee.name} is already scheduled to ${employee.scheduledVisit ? "visit" : "move to"} ${otherSite?.siteName || "another site"} tomorrow. Cancel that first.`,
+        })
+      }
+
       employee.scheduledSiteId = siteId
       employee.scheduledJobId = currentJob || null
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
       // A leftover "leaving tomorrow" from the home site would make the cron apply the
       // removal first and silently discard this add — the add supersedes it.
       employee.scheduledRemoval = false
+      // An add is a move from tomorrow (not a one-day visit).
+      employee.scheduledVisit = false
       employee.scheduledBySiteId = siteId
 
       await employee.save({ session })
@@ -2818,6 +2839,15 @@ export const updateEmployeeJob = async (req, res) => {
     // On-site employee → job-only change (scheduledSiteId stays null). Incoming
     // scheduled-add → keep the pending arrival, just swap the scheduled job.
     if (deferred) {
+      // Turning a pending removal or move/visit away into a job-only change would silently
+      // cancel it (bulkSetEmployeeJob skips these rows for the same reason).
+      if (onSiteHere && (employee.scheduledRemoval || employee.scheduledSiteId)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(409).json({
+          message: "This employee already has a change scheduled for tomorrow. Cancel it first.",
+        });
+      }
       employee.scheduledSiteId = onSiteHere ? null : employee.scheduledSiteId;
       employee.scheduledJobId = jobId || null;
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
@@ -2913,6 +2943,7 @@ export const cancelScheduledAssignment = async (req, res) => {
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = null;
     employee.scheduledRemoval = false; // clears a "leaving tomorrow" (Undo)
+    employee.scheduledVisit = false;
     employee.scheduledBySiteId = null;
     await employee.save();
 
@@ -2953,7 +2984,18 @@ export const scheduleEmployeeRemoval = async (req, res) => {
       });
     }
 
+    // A pending move or visit to another site would be silently replaced by the removal
+    // (they'd end up on no site at all) — make the user cancel it first. A pending job
+    // change at this site is simply superseded.
+    if (employee.scheduledEffectiveDate && employee.scheduledSiteId) {
+      return res.status(409).json({
+        success: false,
+        message: "This employee already has a change scheduled for tomorrow. Cancel it first.",
+      });
+    }
+
     employee.scheduledRemoval = true;
+    employee.scheduledVisit = false;
     employee.scheduledSiteId = null;
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false);
@@ -2996,8 +3038,21 @@ export const scheduleEmployeeRemoval = async (req, res) => {
 // ---------------------------------------------------------------------------
 // The owner of an employee hands them to another site for the day, before saving
 // attendance. A push: no approval (you may freely give your own employee away),
-// the destination supervisor is only NOTIFIED. Requester picks today vs permanent.
+// the destination supervisor is only NOTIFIED. Requester picks today vs permanent, or —
+// from the Tomorrow tab — "scheduled" (permanent from tomorrow) vs "scheduled_visit"
+// (a one-day visit tomorrow, back home the day after).
 // requireSiteAccess (on :siteId) already confirms the caller owns the source site.
+const SEND_MODES = ["today", "permanent", "scheduled", "scheduled_visit"]
+
+// "(permanent)" / "(starts tomorrow)" … — the wording shared by the notifications, the
+// activity feed and the response, so all of them say the same thing about the send.
+function sendModeLabel(mode) {
+  if (mode === "permanent") return "permanent"
+  if (mode === "scheduled") return "permanent, starts tomorrow"
+  if (mode === "scheduled_visit") return "tomorrow only"
+  return "for today"
+}
+
 export const sendEmployeeToSite = async (req, res) => {
   const session = await mongoose.startSession()
   session.startTransaction()
@@ -3009,10 +3064,11 @@ export const sendEmployeeToSite = async (req, res) => {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ success: false, message: "siteId, empId, toSiteId and mode are required" })
     }
-    if (mode !== "today" && mode !== "permanent" && mode !== "scheduled") {
+    if (!SEND_MODES.includes(mode)) {
       await session.abortTransaction(); session.endSession()
-      return res.status(400).json({ success: false, message: "mode must be 'today', 'permanent' or 'scheduled'" })
+      return res.status(400).json({ success: false, message: `mode must be one of: ${SEND_MODES.join(", ")}` })
     }
+    const isScheduled = mode === "scheduled" || mode === "scheduled_visit"
     if (toSiteId.toString() === siteId.toString()) {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ success: false, message: "Destination must be a different site" })
@@ -3044,10 +3100,11 @@ export const sendEmployeeToSite = async (req, res) => {
     let superseded = []
     const sentNote = `they were sent to ${toSite.siteName} directly`
 
-    if (mode === "scheduled") {
-      // A move that takes effect at tomorrow's rollover (applyScheduledAssignments cron):
-      // the employee stays on this site's roster today and repoints to the destination at
-      // local midnight. Today's attendance is untouched, so no marked-today guard applies.
+    if (isScheduled) {
+      // Takes effect at tomorrow's rollover (applyScheduledAssignments cron): the employee
+      // stays on this site's roster today. "scheduled" repoints them to the destination at
+      // local midnight; "scheduled_visit" becomes tomorrow's one-day visit stash (home
+      // unchanged). Today's attendance is untouched, so no marked-today guard applies.
       // Don't stack it on top of another pending change — the outcome would be silently
       // overwritten — so require the existing schedule be cancelled first.
       if (employee.scheduledEffectiveDate) {
@@ -3061,6 +3118,7 @@ export const sendEmployeeToSite = async (req, res) => {
       employee.scheduledJobId = toJobId || null
       employee.scheduledEffectiveDate = combineFromOffset(getDateLocal(1), "00:00", false)
       employee.scheduledRemoval = false
+      employee.scheduledVisit = mode === "scheduled_visit"
       // This (sending) site scheduled it, so it can cancel it from its own roster.
       employee.scheduledBySiteId = siteId
       await employee.save({ session })
@@ -3151,10 +3209,8 @@ export const sendEmployeeToSite = async (req, res) => {
         {
           type: "transfer_departed",
           title: "Employee sent from your site",
-          body: `${employee.name} was sent to ${toSite?.siteName || "another site"} by ${departActor.actorName}${
-            mode === "permanent" ? " (permanent)" : mode === "scheduled" ? " (starts tomorrow)" : " for today"
-          }.`,
-          url: mode === "scheduled" ? `/site/${siteId}` : `/attendance/${siteId}`,
+          body: `${employee.name} was sent to ${toSite?.siteName || "another site"} by ${departActor.actorName} (${sendModeLabel(mode)}).`,
+          url: isScheduled ? `/site/${siteId}` : `/attendance/${siteId}`,
         },
         { exceptUserId: req.user.id }
       )
@@ -3169,16 +3225,10 @@ export const sendEmployeeToSite = async (req, res) => {
         {
           type: "transfer_arrived",
           title: "Employee sent to your site",
-          body: `${employee.name} was sent to your site${
-            mode === "permanent"
-              ? " (permanent)"
-              : mode === "scheduled"
-              ? " (starts tomorrow)"
-              : " for today"
-          }.`,
-          // A scheduled move shows on the destination's Tomorrow roster, not today's
+          body: `${employee.name} was sent to your site (${sendModeLabel(mode)}).`,
+          // A scheduled move/visit shows on the destination's Tomorrow roster, not today's
           // attendance — deep-link there; the same-day modes link to attendance.
-          url: mode === "scheduled" ? `/site/${toSiteId}` : `/attendance/${toSiteId}`,
+          url: isScheduled ? `/site/${toSiteId}` : `/attendance/${toSiteId}`,
         },
         { exceptUserId: req.user.id }
       )
@@ -3197,7 +3247,7 @@ export const sendEmployeeToSite = async (req, res) => {
         employeeName: employee.name,
         fromSiteId: siteId,
         toSiteId,
-        summary: `${sendActor.actorName} sent ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${mode === "permanent" ? "permanent" : mode === "scheduled" ? "starts tomorrow" : "for today"})`,
+        summary: `${sendActor.actorName} sent ${employee.name} from ${fromSiteDoc?.siteName || "their site"} to ${toSite?.siteName || "the site"} (${sendModeLabel(mode)})`,
       })
     } catch (e) {
       console.error("[send-employee] activity log failed:", e.message)
@@ -3209,7 +3259,9 @@ export const sendEmployeeToSite = async (req, res) => {
         mode === "permanent"
           ? "Employee moved to the destination site"
           : mode === "scheduled"
-          ? "Employee scheduled — starts tomorrow"
+          ? "Employee scheduled — moves permanently from tomorrow"
+          : mode === "scheduled_visit"
+          ? "Employee scheduled — visiting for tomorrow only"
           : "Employee sent for today",
     })
   } catch (error) {
@@ -3256,6 +3308,33 @@ export const getSiteActivity = async (req, res) => {
   }
 }
 
+// GET /api/site/:siteId/manpower — today's headcount for the site broken down by trade
+// (job title) and roster category, with each person's attendance state. Admin-only; the
+// Site Detail "Manpower" report views and exports it. See utils/siteManpower.js.
+export const getSiteManpower = async (req, res) => {
+  try {
+    const { siteId } = req.params
+    if (!mongoose.Types.ObjectId.isValid(siteId)) {
+      return res.status(400).json({ success: false, message: "Invalid site id" })
+    }
+
+    const site = await siteModel.findOne({ _id: siteId, isDeleted: { $ne: true } }, "siteName").lean()
+    if (!site) {
+      return res.status(404).json({ success: false, message: "Site not found" })
+    }
+
+    const report = await buildSiteManpower(siteId)
+
+    return res.status(200).json({
+      success: true,
+      data: { site: { _id: site._id, siteName: site.siteName }, ...report },
+    })
+  } catch (error) {
+    console.error("getSiteManpower error:", error)
+    return res.status(500).json({ success: false, message: "Failed to load manpower report" })
+  }
+}
+
 const siteController = {
     getSites,
     getSite,
@@ -3288,7 +3367,8 @@ const siteController = {
     cancelScheduledAssignment,
     scheduleEmployeeRemoval,
     sendEmployeeToSite,
-    getSiteActivity
+    getSiteActivity,
+    getSiteManpower
 }
 
 export default siteController;

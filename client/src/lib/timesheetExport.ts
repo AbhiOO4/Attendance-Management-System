@@ -13,7 +13,7 @@
 import ExcelJS from "exceljs"
 import { saveAs } from "file-saver"
 
-import { computeAutoBreaks } from "@/lib/attendanceUtils"
+import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
@@ -35,6 +35,7 @@ export interface TimesheetEmployeeMeta {
 
 interface WorkConfigLike {
   fullDayHours?: number | null
+  breakMinHours?: number | null
   breakDurationMinutes?: number | null
 }
 
@@ -51,6 +52,11 @@ export const getDisplayStatus = (record: AttendanceRecord): string => {
   // together are the single "Leave" field that replaced the old sick-leave column.
   if (record.isPaidLeave) {
     return "leave"
+  }
+  // Granted emergency leave — excused but unpaid (counts as absent, like sick leave).
+  // Outranks sick leave, per the server invariant (paid > emergency > sick > lop).
+  if (record.isEmergencyLeave) {
+    return "emergency"
   }
   if (record.isSickLeave) {
     return "sick"
@@ -127,8 +133,8 @@ export function computeTimesheetTotals(records: AttendanceRecord[]): TimesheetTo
       // Holidays (a weekly holiday like Friday, or a public holiday) are not
       // working days, so they count toward NEITHER present nor absent — only their
       // holiday hours are tracked. Approved PAID leave is likewise excluded from
-      // absent (it is a credited day, not an absence). Sick leave still counts as
-      // absent, mirroring the monthly report.
+      // absent (it is a credited day, not an absence). Sick and emergency leave still
+      // count as absent (excused but unpaid), mirroring the monthly report.
       if (record.isHoliday) {
         acc.holidayHours += record.holidayHours || 0
       } else if (record.isPaidLeave) {
@@ -193,7 +199,7 @@ export interface TimesheetSheetInput extends TimesheetEmployeeMeta {
   records: AttendanceRecord[]
   month: number
   year: number
-  fullDayHours: number
+  breakMinHours: number
   sortOrder?: "asc" | "desc"
   /** Pre-sanitized worksheet tab name. Defaults to "Attendance". */
   sheetName?: string
@@ -206,7 +212,7 @@ export function addTimesheetSheet(
   logoId: number | null,
   input: TimesheetSheetInput
 ): void {
-  const { month, year, fullDayHours } = input
+  const { month, year, breakMinHours } = input
   const sortOrder = input.sortOrder ?? "asc"
 
   const exportDays = buildExportDays(input.records, month, year, sortOrder)
@@ -461,13 +467,13 @@ export function addTimesheetSheet(
     sessions.forEach((session, sessionIndex) => {
       const breakCount =
         record.breaksTaken !== null && record.breaksTaken !== undefined
-          ? record.breaksTaken
+          ? clampBreaks(record.breaksTaken)
           : computeAutoBreaks(
               record.sessions.reduce(
                 (acc, s) => acc + (s.workedHours || 0),
                 0
               ),
-              fullDayHours
+              breakMinHours
             )
 
       const row = worksheet.addRow([
@@ -504,9 +510,11 @@ export function addTimesheetSheet(
             ? "Sick Leave"
             : getDisplayStatus(record) === "leave"
               ? "Annual Leave"
-              : getDisplayStatus(record) === "lop"
-                ? "LOP"
-                : getDisplayStatus(record)
+              : getDisplayStatus(record) === "emergency"
+                ? "Emergency Leave"
+                : getDisplayStatus(record) === "lop"
+                  ? "LOP"
+                  : getDisplayStatus(record)
           : "",
 
         // Remark (day-level): the LOP "Deduct … OMR" auto-remark or any manual
@@ -757,7 +765,7 @@ export async function exportSingleTimesheet(opts: {
 }): Promise<void> {
   const month = Number(opts.month)
   const year = Number(opts.year)
-  const fullDayHours = opts.workConfig?.fullDayHours ?? 8
+  const breakMinHours = resolveBreakMinHours(opts.workConfig)
 
   const workbook = new ExcelJS.Workbook()
   const logoId = await registerLogo(workbook)
@@ -769,7 +777,7 @@ export async function exportSingleTimesheet(opts: {
     records: opts.records,
     month,
     year,
-    fullDayHours,
+    breakMinHours,
     sortOrder: opts.sortOrder ?? "asc",
     sheetName: "Attendance",
   })
@@ -798,7 +806,7 @@ export async function exportBulkTimesheets(opts: {
 }): Promise<void> {
   const month = Number(opts.month)
   const year = Number(opts.year)
-  const fullDayHours = opts.workConfig?.fullDayHours ?? 8
+  const breakMinHours = resolveBreakMinHours(opts.workConfig)
 
   const workbook = new ExcelJS.Workbook()
   const logoId = await registerLogo(workbook)
@@ -818,7 +826,7 @@ export async function exportBulkTimesheets(opts: {
       records: emp.records,
       month,
       year,
-      fullDayHours,
+      breakMinHours,
       sortOrder: opts.sortOrder ?? "asc",
       sheetName,
     })

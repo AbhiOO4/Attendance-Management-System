@@ -45,16 +45,16 @@ interface SendToSiteDialogProps {
   employee: { _id: string; name: string } | null
   // Called after a successful send so the parent can refresh its roster.
   onSent: () => void
-  // Tomorrow-tab variant: schedule the move for the day rollover instead of a same-day
-  // handover. The today/permanent toggle is replaced by a "starts tomorrow" note and the
-  // request is sent with mode "scheduled".
+  // Tomorrow-tab variant: takes effect at the day rollover instead of today. The same
+  // two-way choice is offered for tomorrow — "Only tomorrow" (mode "scheduled_visit": a
+  // one-day visit, home unchanged) or "Permanent from tomorrow" (mode "scheduled").
   deferred?: boolean
 }
 
 // Source-initiated "Send to site": the owner hands their own employee to another site
-// for TODAY (a visit; home unchanged), PERMANENTLY, or — from the Tomorrow tab (deferred)
-// — SCHEDULED to move at the next day rollover. No approval — the destination supervisor
-// is only notified. Posts to POST /api/site/:siteId/send-employee.
+// for TODAY (a visit; home unchanged) or PERMANENTLY — or, from the Tomorrow tab (deferred),
+// the same choice starting TOMORROW. No approval — the destination supervisor is only
+// notified. Posts to POST /api/site/:siteId/send-employee.
 function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferred = false }: SendToSiteDialogProps) {
   const [sites, setSites] = useState<Site[]>([])
   const [loadingSites, setLoadingSites] = useState(false)
@@ -108,7 +108,8 @@ function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferr
         empId: employee._id,
         toSiteId: selectedSiteId,
         toJobId: selectedJobId || null,
-        mode: deferred ? "scheduled" : mode,
+        // "today" in this dialog is the one-day visit; from the Tomorrow tab it's tomorrow's.
+        mode: deferred ? (mode === "today" ? "scheduled_visit" : "scheduled") : mode,
       })
       toast.success(res.data?.message || "Employee sent")
       // Keep this site's unsaved attendance draft: when it next loads it drops the row of
@@ -139,7 +140,7 @@ function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferr
           </DialogTitle>
           <DialogDescription>
             {deferred
-              ? `Schedule ${employee?.name || "this employee"} to move to another site starting tomorrow. They stay on your roster today; the other supervisor is notified — no approval needed.`
+              ? `Send ${employee?.name || "this employee"} to another site from tomorrow. They stay on your roster today; the other supervisor is notified — no approval needed.`
               : `Hand ${employee?.name || "this employee"} to the site they belong at today. The other supervisor is notified — no approval needed.`}
           </DialogDescription>
         </DialogHeader>
@@ -202,44 +203,50 @@ function SendToSiteDialog({ open, onOpenChange, siteId, employee, onSent, deferr
           </Select>
         )}
 
-        {deferred ? (
-          <div className="rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground leading-snug">
-            <span className="font-semibold text-foreground">Starts tomorrow.</span>{" "}
-            They stay on your roster for the rest of today and move to the selected site at
-            the day rollover. Changed your mind? Use "Cancel move" on their row in your Today
-            roster before midnight.
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => setMode("today")}
-              className={`rounded-xl border p-3 text-left transition-colors ${
-                mode === "today"
-                  ? "border-primary bg-primary/5 ring-1 ring-primary/30"
-                  : "border-border bg-muted/30 hover:border-primary/20"
-              }`}
-            >
-              <div className="font-semibold text-sm text-foreground">For today</div>
-              <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
-                A visit — back on your roster tomorrow.
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("permanent")}
-              className={`rounded-xl border p-3 text-left transition-colors ${
-                mode === "permanent"
-                  ? "border-primary bg-primary/5 ring-1 ring-primary/30"
-                  : "border-border bg-muted/30 hover:border-primary/20"
-              }`}
-            >
-              <div className="font-semibold text-sm text-foreground">Permanent</div>
-              <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
-                Home site moves there from today.
-              </div>
-            </button>
-          </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setMode("today")}
+            className={`rounded-xl border p-3 text-left transition-colors ${
+              mode === "today"
+                ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                : "border-border bg-muted/30 hover:border-primary/20"
+            }`}
+          >
+            <div className="font-semibold text-sm text-foreground">
+              {deferred ? "Only tomorrow" : "For today"}
+            </div>
+            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+              {deferred
+                ? "A one-day visit — back on your roster the day after."
+                : "A visit — back on your roster tomorrow."}
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("permanent")}
+            className={`rounded-xl border p-3 text-left transition-colors ${
+              mode === "permanent"
+                ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                : "border-border bg-muted/30 hover:border-primary/20"
+            }`}
+          >
+            <div className="font-semibold text-sm text-foreground">
+              {deferred ? "Permanent from tomorrow" : "Permanent"}
+            </div>
+            <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+              {deferred
+                ? "Joins that site's roster and does not come back to yours."
+                : "Home site moves there from today."}
+            </div>
+          </button>
+        </div>
+
+        {deferred && (
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            They stay on your roster for the rest of today. Changed your mind? Use Cancel on
+            their row in your Today roster before midnight.
+          </p>
         )}
 
         <DialogFooter>

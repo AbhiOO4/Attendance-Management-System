@@ -39,6 +39,7 @@ export const updateWorkSchedule = async (req, res) => {
       weeklyHolidays,
       nightShiftCutoffHour,
       breakDurationMinutes,
+      breakMinHours,
       checkoutReminderTime,
       checkoutReminderGraceMinutes,
       checkoutRemarkGraceMinutes,
@@ -96,6 +97,22 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.breakDurationMinutes = breakDurationMinutes;
+    }
+
+    if (breakMinHours !== undefined) {
+      // null / "" resets to the fallback (fullDayHours); otherwise 0 < hours ≤ 24.
+      if (breakMinHours === null || breakMinHours === "") {
+        schedule.breakMinHours = null;
+      } else {
+        const hours = Number(breakMinHours);
+        if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
+          return res.status(400).json({
+            success: false,
+            message: "Break threshold must be more than 0 and at most 24 hours",
+          });
+        }
+        schedule.breakMinHours = hours;
+      }
     }
 
     if (checkoutReminderTime !== undefined) {

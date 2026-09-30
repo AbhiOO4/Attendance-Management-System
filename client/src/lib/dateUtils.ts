@@ -22,6 +22,9 @@ export type WorkConfig = {
   overtimeThreshold: number;
   weeklyHolidays: string[];
   breakDurationMinutes: number;
+  // Raw hours a day must reach before the automatic (single) break is deducted.
+  // null/absent → fullDayHours; resolve via resolveBreakMinHours in attendanceUtils.
+  breakMinHours?: number | null;
   // Minutes a check-out may run past the category default before a supervisor remark
   // is required on edit. Optional for older configs — callers fall back to a default.
   checkoutRemarkGraceMinutes?: number;
@@ -72,7 +75,14 @@ export function getCurrentTargetDateString(): string {
  * e.g., "Saturday, June 21, 2026"
  */
 export function formatCurrentDateLabel(): string {
-  const dateStr = getCurrentTargetDateString();
+  return formatFullDateLabel(getCurrentTargetDateString());
+}
+
+/**
+ * Same label for a given business day ("YYYY-MM-DD") — e.g. the day a page is pinned to,
+ * which after midnight is no longer the current date.
+ */
+export function formatFullDateLabel(dateStr: string): string {
   const date = new Date(dateStr + "T12:00:00"); // noon to avoid timezone edge
   return date.toLocaleDateString("en-IN", {
     weekday: "long",

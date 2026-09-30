@@ -76,9 +76,10 @@ const isWorkedSession = (s) => !!(s && s.checkIn && (Number(s.workedHours) || 0)
 // column, so no Docstatus is emitted — tick "Submit After Import" on the import screen so
 // payroll sees it (draft attendance is ignored by payroll).
 function erpAttendanceStatus(record, paidLeaveType) {
-  // Only PAID (annual) leave is "On Leave" — with a paid leave type. Sick leave and LOP
-  // are UNPAID absences in this app (sick still lowers attendance %; LOP is an unexcused
-  // absence), so both map to plain Absent with NO leave type, mirroring monthlyReport.
+  // Only PAID (annual) leave is "On Leave" — with a paid leave type. Sick leave, emergency
+  // leave and LOP are UNPAID absences in this app (sick/emergency are excused but still
+  // lower attendance %; LOP is an unexcused absence), so all map to plain Absent with NO
+  // leave type, mirroring monthlyReport.
   if (record.isPaidLeave) return { status: "On Leave", leaveType: paidLeaveType };
   if (record.status === "fullday") return { status: "Present", leaveType: "" };
   if (record.status === "halfday") return { status: "Half Day", leaveType: "" };

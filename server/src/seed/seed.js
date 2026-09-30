@@ -10,17 +10,24 @@ const url = `${process.env.MONGO_URI}`
 
 
 
-const connectDB = async () => {
+const connectDB = async (dbUrl = real_db_url) => {
+    if (!dbUrl) {
+        console.log('connection failed: no db url given')
+        process.exit(1)
+    }
     try{
-        await mongoose.connect(real_db_url)
-        console.log('connected to db')
+        await mongoose.connect(dbUrl)
+        // Name the target (never the credentials) so a live run is obvious in the log.
+        console.log(`connected to db "${mongoose.connection.name}" on ${mongoose.connection.host}`)
     }catch(error){
         console.log('connection failed', error)
         process.exit(1) //status code 1: exit with failiure
     }
 }
 
-connectDB()
+// Nothing connects on import any more. The one-off helpers below expect an open
+// connection, so run `await connectDB(real_db_url)` before calling them; the
+// recalculate* functions take the db url and connect themselves.
 
 import employeeModel from "../models/empModel.js"
 import userModel from "../models/userModel.js";
@@ -29,7 +36,7 @@ import siteModel from "../models/siteModel.js";
 import jobTitleModel from "../models/jobTitleModel.js";
 import Attendance from "../models/attendanceModel.js";
 import { toLocalTimeString } from "../utils/timeLocal.js";
-import { computeAttendanceTotals } from "../utils/attendanceMath.js";
+import { computeAttendanceTotals, MAX_BREAKS_PER_DAY } from "../utils/attendanceMath.js";
 import customHolidayModel from "../models/holidayModel.js";
 
 
@@ -224,6 +231,7 @@ async function createSuperAdmin (name, email, password) {
   }
 }
 
+// await connectDB(real_db_url)
 // seeWorkSchedule()
 // createAdmin('Abhi', 'abhi@gmail.com', "admin@2026", )
 // createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
@@ -262,81 +270,163 @@ const resyncEmployeeCollarType = async () => {
   }
 };
 
+// await connectDB(real_db_url)
 // resyncEmployeeCollarType()
 
-const recalculateExistingAttendance = async () => {
-  try {
-    const workConfig = await workModel.findOne({ type: "default" });
-    if (!workConfig) {
-      console.log("No default work config found.");
-      return;
-    }
+// ---------------------------------------------------------------------------
+// Attendance recalculation
+// ---------------------------------------------------------------------------
+// Re-derives each record's day totals (status, net hours, overtime, holiday hours)
+// from its stored sessions via computeAttendanceTotals. Run it after a change to the
+// hours formula or the work schedule. Session times are never touched.
+//
+// Writes use bulkWrite, NOT record.save(). The pre("save") hook re-derives every
+// session's rawCheckIn/rawCheckOut from its stored Dates using THIS process's
+// APP_TIMEZONE_OFFSET. So saving live (Oman, -240) records from a machine whose .env
+// says IST (-330) would shift every stored time. Only records whose totals actually
+// change are written, with timestamps off, so an open Site Attendance page doesn't get
+// a spurious RECORD_CHANGED on its next edit.
 
-    // Resolve holiday reasons the same way checkHolidayForDate does:
-    // a CustomHoliday doc wins ("public"), else a weeklyHolidays weekday match
-    // ("weekly"). Preload all custom holiday days for one lookup per record.
-    const weeklyHolidays = workConfig.weeklyHolidays || [];
-    const customHolidays = await customHolidayModel.find().select("date").lean();
-    const customHolidayDays = new Set(
-      customHolidays.map((h) => new Date(h.date).toISOString().slice(0, 10))
+// Strict "YYYY-MM-DD" → that business day's UTC midnight (how Attendance.date is
+// stored), or null. The round trip rejects impossible days like 2026-02-31.
+const parseBusinessDay = (value) => {
+  const text = String(value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const day = new Date(`${text}T00:00:00.000Z`);
+  return !isNaN(day) && day.toISOString().slice(0, 10) === text ? day : null;
+};
+
+// Recalculates every Attendance record matching `filter` on the CURRENT connection.
+// Returns { matched, updated }. Throws on failure; the callers own connect/exit.
+const recalculateAttendanceRecords = async (filter = {}) => {
+  const workConfig = await workModel.findOne({ type: "default" });
+  if (!workConfig) {
+    throw new Error("No default work config found.");
+  }
+
+  // Resolve holiday reasons the same way checkHolidayForDate does:
+  // a CustomHoliday doc wins ("public"), else a weeklyHolidays weekday match
+  // ("weekly"). Preload all custom holiday days for one lookup per record.
+  const weeklyHolidays = workConfig.weeklyHolidays || [];
+  const customHolidays = await customHolidayModel.find().select("date").lean();
+  const customHolidayDays = new Set(
+    customHolidays.map((h) => new Date(h.date).toISOString().slice(0, 10))
+  );
+
+  // Temporary workers get no holiday treatment — a holiday is a normal working
+  // day for them (normal hours + OT, no holiday-hours credit). Preload their ids
+  // so we can clear any holiday state left on their existing records.
+  const tempIds = new Set(
+    (await employeeModel.find({ employmentType: "temporary" }).select("_id").lean())
+      .map((e) => String(e._id))
+  );
+
+  const resolveHolidayReason = (record) => {
+    if (!record.isHoliday) return null;
+    const day = new Date(record.date);
+    if (customHolidayDays.has(day.toISOString().slice(0, 10))) return "public";
+    const dayName = day
+      .toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })
+      .toLowerCase();
+    if (weeklyHolidays.includes(dayName)) return "weekly";
+    // isHoliday=true with no matching source (e.g. a weekly holiday removed
+    // from config after the fact): treat as a declared public holiday.
+    return "public";
+  };
+
+  const records = await Attendance.find(filter)
+    .select("employee date sessions.workedHours breaksTaken isHoliday holidayReason totalWorkHours status overtimeHours holidayHours")
+    .lean();
+  console.log(`Found ${records.length} attendance records to recalculate.`);
+
+  const ops = [];
+  for (const record of records) {
+    // Calculate raw work hours from sessions
+    const rawHours = (record.sessions || []).reduce((total, session) => total + (session.workedHours || 0), 0);
+
+    const isTemp = tempIds.has(String(record.employee));
+    const holidayReason = isTemp ? null : resolveHolidayReason(record);
+    const isHoliday = isTemp ? false : Boolean(record.isHoliday);
+
+    const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
+      rawHours,
+      workConfig,
+      record.breaksTaken ?? null,
+      { isHoliday, reason: holidayReason }
     );
 
-    // Temporary workers get no holiday treatment — a holiday is a normal working
-    // day for them (normal hours + OT, no holiday-hours credit). Preload their ids
-    // so we can clear any holiday state left on their existing records.
-    const tempIds = new Set(
-      (await employeeModel.find({ employmentType: "temporary" }).select("_id").lean())
-        .map((e) => String(e._id))
-    );
-
-    const resolveHolidayReason = (record) => {
-      if (!record.isHoliday) return null;
-      const day = new Date(record.date);
-      if (customHolidayDays.has(day.toISOString().slice(0, 10))) return "public";
-      const dayName = day
-        .toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })
-        .toLowerCase();
-      if (weeklyHolidays.includes(dayName)) return "weekly";
-      // isHoliday=true with no matching source (e.g. a weekly holiday removed
-      // from config after the fact): treat as a declared public holiday.
-      return "public";
+    const next = {
+      isHoliday,
+      holidayReason,
+      totalWorkHours: netWorkHours,
+      status,
+      overtimeHours,
+      holidayHours,
     };
+    // A legacy 2+ break override is already clamped in the math above; store the
+    // clamped value too so the record agrees with its own totals.
+    if (record.breaksTaken > MAX_BREAKS_PER_DAY) next.breaksTaken = MAX_BREAKS_PER_DAY;
 
-    const records = await Attendance.find();
-    console.log(`Found ${records.length} attendance records to recalculate.`);
-
-    let updatedCount = 0;
-    for (const record of records) {
-      // Calculate raw work hours from sessions
-      const rawHours = record.sessions.reduce((total, session) => total + (session.workedHours || 0), 0);
-
-      const isTemp = tempIds.has(String(record.employee));
-      const holidayReason = isTemp ? null : resolveHolidayReason(record);
-      const isHoliday = isTemp ? false : record.isHoliday;
-
-      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
-        rawHours,
-        workConfig,
-        record.breaksTaken ?? null,
-        { isHoliday, reason: holidayReason }
-      );
-
-      record.isHoliday = isHoliday;
-      record.totalWorkHours = netWorkHours;
-      record.status = status;
-      record.overtimeHours = overtimeHours;
-      record.holidayReason = holidayReason;
-      record.holidayHours = holidayHours;
-      record.breaksTaken = record.breaksTaken ?? null;
-
-      await record.save();
-      updatedCount++;
+    const changed = Object.keys(next).some((key) => (record[key] ?? null) !== next[key]);
+    if (changed) {
+      ops.push({ updateOne: { filter: { _id: record._id }, update: { $set: next } } });
     }
+  }
 
-    console.log(`Successfully recalculated and saved ${updatedCount} records.`);
+  if (ops.length > 0) {
+    await Attendance.bulkWrite(ops, { ordered: false, timestamps: false });
+  }
+  return { matched: records.length, updated: ops.length };
+};
+
+// Every record in the database at `dbUrl`.
+const recalculateExistingAttendance = async (dbUrl) => {
+  await connectDB(dbUrl);
+  try {
+    const { matched, updated } = await recalculateAttendanceRecords();
+    console.log(`Recalculated ${matched} records; ${updated} changed and were saved.`);
+    await mongoose.disconnect();
     process.exit(0);
   } catch (error) {
     console.error("Error recalculating existing attendance:", error);
+    process.exit(1);
+  }
+};
+
+/**
+ * Recalculates the attendance records of business days `fromDate` to `toDate`,
+ * BOTH INCLUSIVE, in the database at `dbUrl`. Dates are "YYYY-MM-DD" business days
+ * (Attendance.date), so a night shift that ran past midnight is included with the
+ * day it started, and APP_TIMEZONE_OFFSET plays no part in picking records.
+ *
+ */
+
+
+const recalculateAttendanceInRange = async (dbUrl, fromDate, toDate) => {
+  const fromDay = parseBusinessDay(fromDate);
+  const toDay = parseBusinessDay(toDate);
+  if (!fromDay || !toDay) {
+    console.error(`from and to must be YYYY-MM-DD dates (got "${fromDate}", "${toDate}")`);
+    process.exit(1);
+  }
+  if (fromDay.getTime() > toDay.getTime()) {
+    console.error(`'from' (${fromDate}) must be on or before 'to' (${toDate})`);
+    process.exit(1);
+  }
+  // Half-open upper bound (the day after `to`) so the whole of `to` is in.
+  const dayAfterTo = new Date(toDay.getTime() + 24 * 60 * 60 * 1000);
+
+  await connectDB(dbUrl);
+  try {
+    console.log(`Recalculating attendance from ${fromDate} to ${toDate} (inclusive).`);
+    const { matched, updated } = await recalculateAttendanceRecords({
+      date: { $gte: fromDay, $lt: dayAfterTo },
+    });
+    console.log(`Recalculated ${matched} records; ${updated} changed and were saved.`);
+    await mongoose.disconnect();
+    process.exit(0);
+  } catch (error) {
+    console.error("Error recalculating attendance in range:", error);
     process.exit(1);
   }
 };
@@ -345,6 +435,6 @@ const recalculateExistingAttendance = async () => {
 // cutoff redesign — there is no business-day boundary hour to reconcile any more.
 
 
-recalculateExistingAttendance();
+// recalculateExistingAttendance(real_db_url);
 
-
+recalculateAttendanceInRange(real_db_url, "2026-09-01", "2026-09-30");

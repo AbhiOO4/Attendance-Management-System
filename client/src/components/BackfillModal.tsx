@@ -44,7 +44,13 @@ import {
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { isCrossMidnight, combineFromOffset, deriveOffsets, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
-import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import {
+  computeAutoBreaks,
+  computeHolidayHours,
+  MAX_BREAKS_PER_DAY,
+  resolveBreakMinHours,
+  type HolidayReason,
+} from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -114,6 +120,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      breakMinHours: resolveBreakMinHours(workConfig),
     }),
     [workConfig]
   )
@@ -243,8 +250,8 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   }, [sessions])
 
   const autoBreaks = useMemo(() => {
-    return computeAutoBreaks(rawHours, config.fullDayHours)
-  }, [rawHours, config.fullDayHours])
+    return computeAutoBreaks(rawHours, config.breakMinHours)
+  }, [rawHours, config.breakMinHours])
 
   const breaksApplied = useMemo(() => {
     return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
@@ -706,8 +713,9 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
                   <button
                     type="button"
-                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
-                    onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                    disabled={(breaksTaken ?? autoBreaks) >= MAX_BREAKS_PER_DAY}
+                    onClick={() => setBreaksTaken((prev) => Math.min(MAX_BREAKS_PER_DAY, (prev ?? autoBreaks) + 1))}
                   >+</button>
 
                   {breaksTaken !== null && (

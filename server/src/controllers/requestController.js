@@ -890,9 +890,11 @@ export const getSummary = async (req, res) => {
     const me = req.user
     const incoming = { status: "pending", ...(await incomingFilterFor(me)) }
 
+    // A "request_received" notification's request is already counted by pendingIncoming —
+    // counting both showed one new request as 2. The Requests page's tab alerts add up to this.
     const [pendingIncoming, unread] = await Promise.all([
       TransferRequest.countDocuments(incoming),
-      notificationModel.countDocuments({ user: me.id, read: false }),
+      notificationModel.countDocuments({ user: me.id, read: false, type: { $ne: "request_received" } }),
     ])
 
     return res.status(200).json({ success: true, data: { pendingIncoming, unread } })

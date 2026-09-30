@@ -2,7 +2,7 @@
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
-import { computeAutoBreaks } from "@/lib/attendanceUtils"
+import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 import {
   exportSingleTimesheet,
@@ -10,10 +10,18 @@ import {
   round2,
 } from "@/lib/timesheetExport"
 import { saveAs } from "file-saver"
+import { currentMonthYear, type MonthYear } from "@/lib/monthYear"
+import {
+  LEAVE_KINDS,
+  emptyLeaveCounts,
+  leaveKindOf,
+} from "@/lib/leaveComposition"
+import { cn } from "@/lib/utils"
 
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react"
 
@@ -27,6 +35,7 @@ import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
 import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
 import GrantLeaveDialog from "@/components/GrantLeaveDialog"
+import { MonthYearPicker } from "@/components/MonthYearPicker"
 
 import type {
   AttendanceRecord,
@@ -95,10 +104,13 @@ interface LeaveBalance {
   entitlement: number
   used: number
   remaining: number
+  // Emergency (unpaid, excused) leave days taken this year — informational, no allowance.
+  emergencyUsed?: number
 }
 
 interface LeaveGrant {
   _id: string
+  type?: "annual" | "emergency"
   fromDate: string
   toDate: string
   note?: string
@@ -112,24 +124,18 @@ interface LeaveGrant {
 // `round2` and `getDisplayStatus` now live in @/lib/timesheetExport (shared with
 // the bulk export) and are imported above.
 
+const dayWord = (n: number) => (Math.abs(n) === 1 ? "day" : "days")
+
 function EmployeeAttendanceDetail() {
   const { id } = useParams()
 
   const navigate = useNavigate()
 
-  const today = new Date()
-
-  const currentMonth =
-    today.getMonth() + 1
-
-  const currentYear =
-    today.getFullYear()
-
   const [employee, setEmployee] =
     useState<Employee | null>(null)
 
   const { config: workConfig } = useWorkConfig()
-  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const breakMinHours = resolveBreakMinHours(workConfig)
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
 
   // Supervisors view this timesheet read-only: no per-record edit, export stays.
@@ -150,11 +156,15 @@ function EmployeeAttendanceDetail() {
   const [editingRecord, setEditingRecord] =
     useState<AttendanceRecord | null>(null)
 
-  const [month, setMonth] =
-    useState(String(currentMonth))
+  // The timesheet month (app timezone), picked like on the Monthly Report.
+  const [period, setPeriod] =
+    useState<MonthYear>(currentMonthYear)
 
-  const [year, setYear] =
-    useState(String(currentYear))
+  const { month, year } = period
+
+  // Only the latest attendance request may update state — stepping months with
+  // the ‹ › arrows would otherwise let a slower, older response overwrite the newer.
+  const attendanceSeq = useRef(0)
 
   const [sortOrder, setSortOrder] =
     useState<"asc" | "desc">("asc")
@@ -185,6 +195,7 @@ function EmployeeAttendanceDetail() {
   }
 
   const fetchAttendance = async () => {
+    const seq = ++attendanceSeq.current
     try {
       setLoading(true)
 
@@ -198,8 +209,10 @@ function EmployeeAttendanceDetail() {
         }
       )
 
+      if (seq !== attendanceSeq.current) return
       setAttendance(res.data.data || [])
     } catch (error: any) {
+      if (seq !== attendanceSeq.current) return
       console.log(error)
 
       toast.error(
@@ -208,7 +221,7 @@ function EmployeeAttendanceDetail() {
           "Failed to fetch attendance"
       )
     } finally {
-      setLoading(false)
+      if (seq === attendanceSeq.current) setLoading(false)
     }
   }
 
@@ -329,29 +342,32 @@ function EmployeeAttendanceDetail() {
 
         acc.otHours += record.overtimeHours || 0
 
-        // Holidays (a weekly holiday like Friday, or a public holiday) are not
-        // working days, so they count toward NEITHER present nor absent — only
-        // their holiday hours are tracked. Being absent on a Friday is expected,
-        // not an absence. This mirrors the server monthly report, which skips
-        // holiday records entirely when tallying present/absent days.
         if (record.isHoliday) {
           acc.holidayHours += record.holidayHours || 0
         }
-        // Approved paid leave is a credited day — counted separately, never as
-        // an absence (mirrors the monthly report). Sick-leave days carry status
-        // "absent" and still fall into the absent bucket.
-        else if (record.isPaidLeave) {
-          acc.daysLeave += 1
-        }
-        // Half-days count as present; full/half are also tallied separately for the
-        // breakdown shown under Days Present.
-        else if (record.status === "fullday" || record.status === "halfday") {
+
+        // Each day counts in exactly one bucket — the one its Status badge below
+        // shows — so the summary always equals a count of the badges (the monthly
+        // report classifies days the same way).
+        const status = getDisplayStatus(record)
+        const leaveKind = leaveKindOf(status)
+
+        if (leaveKind) {
+          // Annual / emergency / sick / LOP — the Leave tile, never an absence.
+          acc.leave[leaveKind] += 1
+        } else if (status === "pending") {
+          // Checked in, no check-out yet: 0 hours only until it is closed.
+          acc.daysPending += 1
+        } else if (status === "fullday" || status === "halfday") {
+          // Present — holiday work included. Half-days count as present; full/half
+          // are also tallied for the breakdown under Days Present.
           acc.daysPresent += 1
-          if (record.status === "fullday") acc.daysFull += 1
+          if (status === "fullday") acc.daysFull += 1
           else acc.daysHalf += 1
-        } else {
+        } else if (status === "absent") {
           acc.daysAbsent += 1
         }
+        // "holiday" — a holiday not worked is a day off: counted nowhere.
 
         return acc
       },
@@ -363,10 +379,18 @@ function EmployeeAttendanceDetail() {
         daysFull: 0,
         daysHalf: 0,
         daysAbsent: 0,
-        daysLeave: 0,
+        daysPending: 0,
+        leave: emptyLeaveCounts(),
       }
     )
   }, [attendance])
+
+  // Leave-balance tiles: how much of the annual allowance is used (for the bar).
+  const annualUsedPct =
+    leaveBalance && leaveBalance.entitlement > 0
+      ? Math.min(100, (leaveBalance.used / leaveBalance.entitlement) * 100)
+      : 0
+  const emergencyUsed = leaveBalance?.emergencyUsed ?? 0
 
   const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
@@ -420,66 +444,11 @@ function EmployeeAttendanceDetail() {
               {/* FILTERS */}
               <div className="flex flex-wrap gap-3">
 
-                {/* MONTH */}
-                <Select
-                  value={month}
-                  onValueChange={setMonth}
-                >
-                  <SelectTrigger className="w-[140px]">
-                    <SelectValue placeholder="Month" />
-                  </SelectTrigger>
-
-                  <SelectContent>
-                    {Array.from(
-                      { length: 12 },
-                      (_, i) => (
-                        <SelectItem
-                          key={i + 1}
-                          value={String(i + 1)}
-                        >
-                          {new Date(
-                            0,
-                            i
-                          ).toLocaleString(
-                            "en-IN",
-                            {
-                              month: "long",
-                            }
-                          )}
-                        </SelectItem>
-                      )
-                    )}
-                  </SelectContent>
-                </Select>
-
-                {/* YEAR */}
-                <Select
-                  value={year}
-                  onValueChange={setYear}
-                >
-                  <SelectTrigger className="w-[120px]">
-                    <SelectValue placeholder="Year" />
-                  </SelectTrigger>
-
-                  <SelectContent>
-                    {Array.from(
-                      { length: 5 },
-                      (_, i) => {
-                        const yr =
-                          currentYear - i
-
-                        return (
-                          <SelectItem
-                            key={yr}
-                            value={String(yr)}
-                          >
-                            {yr}
-                          </SelectItem>
-                        )
-                      }
-                    )}
-                  </SelectContent>
-                </Select>
+                {/* MONTH + YEAR (same picker as the Monthly Report) */}
+                <MonthYearPicker
+                  value={period}
+                  onChange={(v) => v && setPeriod(v)}
+                />
 
                 {/* SORT */}
                 <Select
@@ -554,23 +523,73 @@ function EmployeeAttendanceDetail() {
                     onGranted={refreshAfterLeaveChange}
                   />
                 )}
+
+                {canWrite && employee && (
+                  <GrantLeaveDialog
+                    employeeId={employee._id}
+                    employeeName={employee.name}
+                    leaveType="emergency"
+                    onGranted={refreshAfterLeaveChange}
+                  />
+                )}
               </div>
             </div>
 
-            {/* ANNUAL LEAVE BALANCE (admin only) */}
+            {/* LEAVE BALANCE (admin only) — annual and emergency as two separate
+                tiles for the selected year, colored like the Status badges. */}
             {canWrite && leaveBalance && (
-              <div className="mt-2 rounded-lg border bg-muted/30 px-4 py-3 text-sm">
-                <span className="font-medium">Annual leave {leaveBalance.year}:</span>{" "}
-                <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
-                  {leaveBalance.remaining}
-                </span>{" "}
-                remaining
-                <span className="text-muted-foreground">
-                  {" "}· {leaveBalance.used} used of {leaveBalance.entitlement}
-                  {leaveBalance.override !== null
-                    ? " (custom entitlement)"
-                    : ""}
-                </span>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {/* Annual: paid, drawn from a yearly allowance */}
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      <span className="size-2 shrink-0 rounded-full bg-violet-500" />
+                      Annual leave {leaveBalance.year}
+                    </p>
+                    {leaveBalance.override !== null && (
+                      <Badge variant="outline" className="font-normal text-muted-foreground">
+                        Custom allowance
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="mt-2 text-2xl font-bold tabular-nums">
+                    {leaveBalance.remaining}{" "}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      {dayWord(leaveBalance.remaining)} left
+                    </span>
+                  </p>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-violet-500/15">
+                    <div
+                      className="h-full rounded-full bg-violet-500"
+                      style={{ width: `${annualUsedPct}%` }}
+                    />
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    {leaveBalance.used} of {leaveBalance.entitlement} used
+                  </p>
+                </div>
+
+                {/* Emergency: excused but unpaid, no allowance — just a count */}
+                <div className="rounded-lg border bg-muted/30 p-4">
+                  <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <span className="size-2 shrink-0 rounded-full bg-orange-500" />
+                    Emergency leave {leaveBalance.year}
+                  </p>
+                  <p
+                    className={cn(
+                      "mt-2 text-2xl font-bold tabular-nums",
+                      emergencyUsed > 0 && "text-orange-700 dark:text-orange-400"
+                    )}
+                  >
+                    {emergencyUsed}{" "}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      {dayWord(emergencyUsed)} taken
+                    </span>
+                  </p>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Unpaid · no yearly limit
+                  </p>
+                </div>
               </div>
             )}
           </CardContent>
@@ -580,7 +599,7 @@ function EmployeeAttendanceDetail() {
         {employee && (
           <Card>
             <CardContent className="p-6">
-              <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-6">
                 <div className="rounded-lg border p-4">
                   <p className="text-sm text-muted-foreground">
                     Regular Hours
@@ -618,15 +637,49 @@ function EmployeeAttendanceDetail() {
                   <p className="mt-1 text-2xl font-bold">
                     {totals.daysAbsent}
                   </p>
+                  <p className="text-xs text-muted-foreground">
+                    no leave or LOP recorded
+                  </p>
+                  {/* Open sessions are neither present nor absent until closed. */}
+                  {totals.daysPending > 0 && (
+                    <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                      + {totals.daysPending} pending check-out
+                    </p>
+                  )}
                 </div>
 
-                <div className="rounded-lg border p-4">
+                {/* LEAVE COMPOSITION — days of each kind, colored like the Status badges.
+                    Two columns wide so the four kinds fit side by side. */}
+                <div className="col-span-2 rounded-lg border p-4">
                   <p className="text-sm text-muted-foreground">
-                    Days on Leave
+                    Leave
                   </p>
-                  <p className="mt-1 text-2xl font-bold">
-                    {totals.daysLeave}
-                  </p>
+                  <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
+                    {LEAVE_KINDS.map((kind) => {
+                      const days = totals.leave[kind.key]
+                      return (
+                        <div
+                          key={kind.key}
+                          className="flex items-center justify-between gap-2"
+                        >
+                          <dt className="flex items-center gap-1.5 text-muted-foreground">
+                            <span className={cn("size-2 shrink-0 rounded-full", kind.dot)} />
+                            {kind.name}
+                          </dt>
+                          <dd
+                            className={cn(
+                              "tabular-nums",
+                              days > 0
+                                ? cn("font-semibold", kind.text)
+                                : "text-muted-foreground/60"
+                            )}
+                          >
+                            {days}
+                          </dd>
+                        </div>
+                      )
+                    })}
+                  </dl>
                 </div>
               </div>
             </CardContent>
@@ -799,18 +852,22 @@ function EmployeeAttendanceDetail() {
                                               ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
                                               : getDisplayStatus(record) === "leave"
                                                 ? "bg-violet-500/15 text-violet-700 dark:text-violet-400 hover:bg-violet-500/25 border-transparent"
-                                                : getDisplayStatus(record) === "lop"
-                                                  ? "bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/25 border-transparent"
-                                                  : ""
+                                                : getDisplayStatus(record) === "emergency"
+                                                  ? "bg-orange-500/15 text-orange-700 dark:text-orange-400 hover:bg-orange-500/25 border-transparent"
+                                                  : getDisplayStatus(record) === "lop"
+                                                    ? "bg-rose-500/15 text-rose-700 dark:text-rose-400 hover:bg-rose-500/25 border-transparent"
+                                                    : ""
                                       }
                                     >
                                       {getDisplayStatus(record) === "sick"
                                         ? "Sick Leave"
                                         : getDisplayStatus(record) === "leave"
                                           ? "Annual Leave"
-                                          : getDisplayStatus(record) === "lop"
-                                            ? "LOP"
-                                            : getDisplayStatus(record)}
+                                          : getDisplayStatus(record) === "emergency"
+                                            ? "Emergency Leave"
+                                            : getDisplayStatus(record) === "lop"
+                                              ? "LOP"
+                                              : getDisplayStatus(record)}
                                     </Badge>
                                   </TableCell>
 
@@ -855,8 +912,8 @@ function EmployeeAttendanceDetail() {
                                   >
                                     {(() => {
                                       const count = record.breaksTaken !== null && record.breaksTaken !== undefined
-                                        ? record.breaksTaken
-                                        : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours);
+                                        ? clampBreaks(record.breaksTaken)
+                                        : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours);
                                       const hrs = (count * breakDurationMinutes) / 60;
                                       return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
                                     })()}
@@ -880,16 +937,18 @@ function EmployeeAttendanceDetail() {
                                       }
                                       className="text-right"
                                     >
-                                      {/* A paid-leave day is locked; cancel the grant
-                                          (in Leave history below) to edit it. */}
+                                      {/* A granted leave day (annual or emergency) is locked;
+                                          cancel the grant (in Leave history below) to edit it. */}
                                       <Button
                                         size="icon"
                                         variant="outline"
-                                        disabled={!!record.isPaidLeave}
+                                        disabled={!!record.isPaidLeave || !!record.isEmergencyLeave}
                                         title={
                                           record.isPaidLeave
                                             ? "On annual leave — cancel the leave to edit"
-                                            : undefined
+                                            : record.isEmergencyLeave
+                                              ? "On emergency leave — cancel the leave to edit"
+                                              : undefined
                                         }
                                         onClick={() =>
                                           setEditingRecord(
@@ -952,6 +1011,7 @@ function EmployeeAttendanceDetail() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead>Type</TableHead>
                       <TableHead>Range</TableHead>
                       <TableHead className="text-right">Days</TableHead>
                       <TableHead>Note</TableHead>
@@ -970,6 +1030,9 @@ function EmployeeAttendanceDetail() {
                         })
                       return (
                         <TableRow key={leave._id}>
+                          <TableCell className="whitespace-nowrap">
+                            {leave.type === "emergency" ? "Emergency" : "Annual"}
+                          </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {fmt(leave.fromDate)} – {fmt(leave.toDate)}
                           </TableCell>

@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { computeAutoBreaks } from "@/lib/attendanceUtils"
+import { clampBreaks, computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, Fragment, memo } from "react"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
@@ -29,7 +29,7 @@ import {
   type RemoteRow,
   type SaveDraftResult,
 } from "@/lib/cloudDraft"
-import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatCurrentDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatFullDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -385,6 +385,16 @@ const clearCarryoverSessions = (
   )
 }
 
+// A roster member on a granted leave day today (annual = paid, emergency = unpaid/excused),
+// shown read-only in the "On leave today" panel instead of as a markable row.
+type OnLeaveEmployee = {
+  _id: string
+  name: string
+  employeeId: string
+  jobTitle: string
+  leaveType: "annual" | "emergency"
+}
+
 // Who belongs on today's draft and how a fresh row for them looks (see loadRosterContext).
 type RosterContext = {
   // False when the roster fetch failed (offline) — membership then can't be verified.
@@ -392,7 +402,7 @@ type RosterContext = {
   rosterEmployees: Employee[]
   leaveIds: Set<string>
   awayIds: Set<string>
-  onLeave: { _id: string; name: string; employeeId: string; jobTitle: string }[]
+  onLeave: OnLeaveEmployee[]
   buildRow: (emp: Employee) => DraftAttendanceRecord
 }
 
@@ -841,7 +851,7 @@ interface DraftRowProps {
   record: DraftAttendanceRecord
   siteId?: string
   breakDurationMinutes: number
-  fullDayHours: number
+  breakMinHours: number
   /** Overlap details when this row conflicts with another session, else null. */
   overlap: OverlapError | null
   /** True when this row was just cleared and can be undone. */
@@ -872,7 +882,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   record,
   siteId,
   breakDurationMinutes,
-  fullDayHours,
+  breakMinHours,
   overlap,
   showUndo,
   hasCarryover,
@@ -999,7 +1009,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
                 disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
                 onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
                   onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
                 }}
               >−</button>
@@ -1010,10 +1020,11 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               </span>
               <button
                 type="button"
-                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken >= MAX_BREAKS_PER_DAY}
                 onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
-                  onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
+                  onUpdateBreaks(record.employee._id, Math.min(MAX_BREAKS_PER_DAY, (record.breaksTaken ?? auto) + 1))
                 }}
               >+</button>
               {record.breaksTaken !== null && record.breaksTaken !== undefined && (
@@ -1076,7 +1087,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   record,
   siteId,
   breakDurationMinutes,
-  fullDayHours,
+  breakMinHours,
   overlap,
   showUndo,
   hasCarryover,
@@ -1197,7 +1208,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
                 className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
                 disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
                 onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
                   onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
                 }}
               >−</button>
@@ -1208,10 +1219,11 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
               </span>
               <button
                 type="button"
-                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken >= MAX_BREAKS_PER_DAY}
                 onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, fullDayHours)
-                  onUpdateBreaks(record.employee._id, (record.breaksTaken ?? auto) + 1)
+                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
+                  onUpdateBreaks(record.employee._id, Math.min(MAX_BREAKS_PER_DAY, (record.breaksTaken ?? auto) + 1))
                 }}
               >+</button>
               {record.breaksTaken !== null && record.breaksTaken !== undefined && (
@@ -1325,7 +1337,7 @@ function SiteAttendance() {
   // Admins/superadmins get a shortcut to the full site detail page; supervisors don't.
   const isAdmin = user?.role === "admin" || user?.role === "superadmin"
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
-  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const breakMinHours = resolveBreakMinHours(workConfig)
   // Minutes a check-out may run past the category default before an inline edit requires
   // a supervisor remark (see the remark prompt on inline save).
   const checkoutRemarkGraceMinutes = workConfig?.checkoutRemarkGraceMinutes ?? 15
@@ -1334,14 +1346,33 @@ function SiteAttendance() {
 
   const today = useMemo(() => getCurrentTargetDateString(), [])
 
-  const formattedDate = formatCurrentDateLabel()
+  // The header names the day this sheet is FOR — after midnight that is no longer the
+  // current date, and a live date over yesterday's rows made a missing person look absent.
+  const formattedDate = formatFullDateLabel(today)
 
   // The page is pinned to the business day it was opened on (`today`). A PWA left open past
-  // midnight would keep marking and transferring against yesterday's sheet, so as soon as the
-  // day has changed, say so and offer a reload (save anything pending for yesterday first).
+  // midnight would keep marking and transferring against yesterday's sheet. When the app is
+  // brought back after the day has changed, reload straight onto today's sheet if nothing on
+  // this one could be lost (it's saved, nothing is being edited or waiting to sync);
+  // otherwise — and on the background timer — say so and offer a reload.
   useEffect(() => {
-    const check = () => {
+    const check = (resumed: boolean) => {
       if (getCurrentTargetDateString() === today) return
+      const c = liveRef.current
+      const nothingToLose =
+        c.attendanceExists &&
+        !c.isDirty &&
+        !c.saving &&
+        !c.loading &&
+        !c.editingRowId &&
+        !c.editOpen &&
+        !c.transferModalOpen &&
+        !c.isEditingDefaults &&
+        !(c.cloudActive && c.syncPending > 0)
+      if (resumed && nothingToLose) {
+        window.location.reload()
+        return
+      }
       toast(
         (t) => (
           <span className="flex items-center gap-3 text-sm">
@@ -1360,15 +1391,18 @@ function SiteAttendance() {
         { id: "day-rollover", duration: Infinity }
       )
     }
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") check()
+    const onResume = () => {
+      if (document.visibilityState === "visible") check(true)
     }
-    document.addEventListener("visibilitychange", onVisibility)
-    window.addEventListener("focus", check)
-    const timer = window.setInterval(check, 60_000)
+    const onTimer = () => check(false)
+    document.addEventListener("visibilitychange", onResume)
+    window.addEventListener("focus", onResume)
+    window.addEventListener("pageshow", onResume)
+    const timer = window.setInterval(onTimer, 60_000)
     return () => {
-      document.removeEventListener("visibilitychange", onVisibility)
-      window.removeEventListener("focus", check)
+      document.removeEventListener("visibilitychange", onResume)
+      window.removeEventListener("focus", onResume)
+      window.removeEventListener("pageshow", onResume)
       window.clearInterval(timer)
     }
   }, [today])
@@ -1417,13 +1451,11 @@ function SiteAttendance() {
 
   const [draftAttendance, setDraftAttendance] = useState<DraftAttendanceRecord[]>([])
 
-  // Employees rostered here who are on APPROVED annual leave today. They are kept
-  // OUT of the editable draft (no default check-in is prefilled, nothing is
-  // submitted for them) and shown read-only in the "On leave today" panel — their
-  // leave record is locked until an admin cancels the grant. Shape: {_id,name,employeeId,jobTitle}.
-  const [onLeaveEmployees, setOnLeaveEmployees] = useState<
-    { _id: string; name: string; employeeId: string; jobTitle: string }[]
-  >([])
+  // Employees rostered here who are on a GRANTED leave day today (annual or emergency).
+  // They are kept OUT of the editable draft (no default check-in is prefilled, nothing
+  // is submitted for them) and shown read-only in the "On leave today" panel — their
+  // leave record is locked until an admin cancels the grant.
+  const [onLeaveEmployees, setOnLeaveEmployees] = useState<OnLeaveEmployee[]>([])
 
   // Draft persistence is debounced (see the sync effect further down) —
   // serializing the whole roster to localStorage on every keystroke caused
@@ -1979,27 +2011,34 @@ function SiteAttendance() {
       console.log(fetchErr)
     }
 
-    // Employees on APPROVED annual leave today. They must never get a prefilled,
-    // markable draft row (that would silently record hours on a leave day); they're
-    // shown read-only in the "On leave today" panel instead. Best-effort — an offline
-    // failure just leaves the set empty (the server still refuses to overwrite leave).
-    let leaveIds = new Set<string>()
+    // Employees on a GRANTED leave day today — annual (paid) or emergency (unpaid,
+    // excused). They must never get a prefilled, markable draft row (that would silently
+    // record hours on a leave day); they're shown read-only in the "On leave today" panel
+    // instead. Best-effort — an offline failure just leaves the set empty (the server
+    // still refuses to overwrite leave). The server's draft-roster guard
+    // (utils/draftRoster.js) excludes exactly this set.
+    const leaveTypeById = new Map<string, OnLeaveEmployee["leaveType"]>()
     try {
-      const leaveRes = await api.get<{ data: { employeeIds: string[] } }>(
-        "/api/attendance/leave/on-date",
-        { params: { date: activeToday } }
-      )
-      leaveIds = new Set((leaveRes.data?.data?.employeeIds || []).map(String))
+      const leaveRes = await api.get<{
+        data: {
+          employeeIds: string[]
+          leaves?: { employeeId: string; type: OnLeaveEmployee["leaveType"] }[]
+        }
+      }>("/api/attendance/leave/on-date", { params: { date: activeToday } })
+      for (const id of leaveRes.data?.data?.employeeIds || []) leaveTypeById.set(String(id), "annual")
+      for (const l of leaveRes.data?.data?.leaves || []) leaveTypeById.set(String(l.employeeId), l.type)
     } catch (leaveErr) {
       console.log(leaveErr)
     }
-    const onLeave = employeesList
+    const leaveIds = new Set(leaveTypeById.keys())
+    const onLeave: OnLeaveEmployee[] = employeesList
       .filter((emp) => leaveIds.has(String(emp._id)))
       .map((emp) => ({
         _id: emp._id,
         name: emp.name,
         employeeId: emp.employeeId,
         jobTitle: emp.jobTitle,
+        leaveType: leaveTypeById.get(String(emp._id)) ?? "annual",
       }))
 
     const isVisitingElsewhere = (emp: Employee) =>
@@ -2975,7 +3014,7 @@ function SiteAttendance() {
       checkIn: toTimeValue(session?.checkIn),
       checkOut: toTimeValue(session?.checkOut),
       isNightShift: session?.isNightShift ?? false,
-      breaksTaken: record.breaksTaken ?? null,
+      breaksTaken: clampBreaks(record.breaksTaken),
     })
   }
 
@@ -4833,14 +4872,14 @@ function SiteAttendance() {
         </Card>
       )}
 
-      {/* ON LEAVE TODAY — read-only. These roster members are on approved annual
-          leave, so they are kept out of the markable grid and their record is locked
-          (no check-in/out) until an admin cancels the leave grant. */}
+      {/* ON LEAVE TODAY — read-only. These roster members are on granted leave (annual
+          or emergency), so they are kept out of the markable grid and their record is
+          locked (no check-in/out) until an admin cancels the leave grant. */}
       {onLeaveEmployees.length > 0 && (
         <Card className="mb-4 gap-0 py-0 border-violet-300 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/10">
           <div className="px-4 py-3 space-y-2">
             <div className="flex items-center gap-2 text-sm font-semibold text-violet-800 dark:text-violet-300">
-              <span>On annual leave today</span>
+              <span>On leave today</span>
               <Badge
                 variant="secondary"
                 className="bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-200 border border-violet-300/60 dark:border-violet-700/40 text-[10px] px-1.5 py-0 h-4"
@@ -4849,7 +4888,7 @@ function SiteAttendance() {
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
-              These employees are on approved paid leave — no check-in/out is recorded and their day is locked. An admin can cancel the leave grant from the employee's page to re-enable marking.
+              These employees are on approved leave (annual or emergency) — no check-in/out is recorded and their day is locked. An admin can cancel the leave grant from the employee's page to re-enable marking.
             </p>
             <div className="flex flex-col gap-2">
               {onLeaveEmployees.map((emp) => (
@@ -4863,12 +4902,21 @@ function SiteAttendance() {
                       {emp.employeeId} • {emp.jobTitle}
                     </p>
                   </div>
-                  <Badge
-                    variant="secondary"
-                    className="shrink-0 bg-violet-500/15 text-violet-700 dark:text-violet-400 border-transparent"
-                  >
-                    Annual Leave
-                  </Badge>
+                  {emp.leaveType === "emergency" ? (
+                    <Badge
+                      variant="secondary"
+                      className="shrink-0 bg-orange-500/15 text-orange-700 dark:text-orange-400 border-transparent"
+                    >
+                      Emergency Leave
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant="secondary"
+                      className="shrink-0 bg-violet-500/15 text-violet-700 dark:text-violet-400 border-transparent"
+                    >
+                      Annual Leave
+                    </Badge>
+                  )}
                 </div>
               ))}
             </div>
@@ -5062,7 +5110,7 @@ function SiteAttendance() {
                                     const currentSessionHours = record.sessions[0]?.workedHours || 0
                                     const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                     const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
+                                    const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
                                     setInlineEdit((prev) => ({
                                       ...prev,
                                       breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
@@ -5076,15 +5124,16 @@ function SiteAttendance() {
                                 </span>
                                 <button
                                   type="button"
-                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                  disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken >= MAX_BREAKS_PER_DAY}
                                   onClick={() => {
                                     const currentSessionHours = record.sessions[0]?.workedHours || 0
                                     const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                     const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
+                                    const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
                                     setInlineEdit((prev) => ({
                                       ...prev,
-                                      breaksTaken: (prev.breaksTaken ?? auto) + 1
+                                      breaksTaken: Math.min(MAX_BREAKS_PER_DAY, (prev.breaksTaken ?? auto) + 1)
                                     }))
                                   }}
                                 >+</button>
@@ -5112,8 +5161,8 @@ function SiteAttendance() {
                                     );
                                   }
                                   const count = isAuto
-                                    ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
-                                    : record.breaksTaken;
+                                    ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours)
+                                    : clampBreaks(record.breaksTaken);
                                   return `${count}`;
                                 })()}
                               </span>
@@ -5520,7 +5569,7 @@ function SiteAttendance() {
                                           const currentSessionHours = record.sessions[0]?.workedHours || 0
                                           const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                           const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                          const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
+                                          const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
                                           setInlineEdit((prev) => ({
                                             ...prev,
                                             breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
@@ -5534,15 +5583,16 @@ function SiteAttendance() {
                                       </span>
                                       <button
                                         type="button"
-                                        className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors"
+                                        className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                                        disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken >= MAX_BREAKS_PER_DAY}
                                         onClick={() => {
                                           const currentSessionHours = record.sessions[0]?.workedHours || 0
                                           const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
                                           const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                          const auto = computeAutoBreaks(newTotalRawHours, fullDayHours)
+                                          const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
                                           setInlineEdit((prev) => ({
                                             ...prev,
-                                            breaksTaken: (prev.breaksTaken ?? auto) + 1
+                                            breaksTaken: Math.min(MAX_BREAKS_PER_DAY, (prev.breaksTaken ?? auto) + 1)
                                           }))
                                         }}
                                       >+</button>
@@ -5570,8 +5620,8 @@ function SiteAttendance() {
                                           );
                                         }
                                         const count = isAuto
-                                          ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours)
-                                          : record.breaksTaken;
+                                          ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours)
+                                          : clampBreaks(record.breaksTaken);
                                         return `${count}`;
                                       })()}
                                     </span>
@@ -5740,7 +5790,7 @@ function SiteAttendance() {
                       record={record}
                       siteId={id}
                       breakDurationMinutes={breakDurationMinutes}
-                      fullDayHours={fullDayHours}
+                      breakMinHours={breakMinHours}
                       hasCarryover={carryoverEmpIds.has(record.employee._id)}
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                       onOpenCarryover={handleOpenCarryover}
@@ -5782,7 +5832,7 @@ function SiteAttendance() {
                         record={record}
                         siteId={id}
                         breakDurationMinutes={breakDurationMinutes}
-                        fullDayHours={fullDayHours}
+                        breakMinHours={breakMinHours}
                         hasCarryover={carryoverEmpIds.has(record.employee._id)}
                       carryoverSiteName={carryoverAwaySiteByEmp.get(record.employee._id) ?? null}
                         onOpenCarryover={handleOpenCarryover}

@@ -113,6 +113,15 @@ const employeeSchema = new mongoose.Schema({
     default: false
   },
 
+  // A scheduled one-day VISIT ("Send to site → Only tomorrow") rather than a move:
+  // scheduledSiteId is the site they work at tomorrow, and at the rollover the cron turns
+  // it into that day's pendingTransfer* visit stash (home untouched), exactly like a
+  // same-day "For today" send. false = a scheduled move/add (permanent from tomorrow).
+  scheduledVisit: {
+    type: Boolean,
+    default: false
+  },
+
   // The site whose action created the pending scheduled* change (Send to site "starts
   // tomorrow", a deferred add, a Tomorrow-tab job change or removal). Lets that site
   // cancel its own scheduled change, and lets the cron skip a removal once the employee

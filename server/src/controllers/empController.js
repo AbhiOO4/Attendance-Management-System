@@ -134,7 +134,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledBySiteId"
+        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledVisit scheduledBySiteId"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
@@ -629,6 +629,7 @@ export const restoreEmployee = async (req, res) => {
     employee.scheduledJobId = null;
     employee.scheduledEffectiveDate = null;
     employee.scheduledRemoval = false;
+    employee.scheduledVisit = false;
     employee.scheduledBySiteId = null;
 
     await employee.save({ session });

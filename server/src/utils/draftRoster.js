@@ -1,7 +1,7 @@
 /**
  * Who belongs on a site's attendance DRAFT for a business day.
  *
- * The Site Attendance page builds its draft from `GET /api/employees?site=` plus the paid-leave
+ * The Site Attendance page builds its draft from `GET /api/employees?site=` plus the granted-leave
  * list, then filters it (client/src/pages/SiteAttendance.tsx → loadRosterContext). The submit
  * endpoint used to trust whatever list the client posted, so a draft loaded before a roster
  * change silently created no record for a newly-added employee (and a phantom one for someone
@@ -88,7 +88,7 @@ export async function findRecordedElsewhere({ employees, anchorSiteId, todayStr,
  * The employees a site's draft must contain on `dateStr` ("YYYY-MM-DD", the current business
  * day — recordedElsewhere is only meaningful for today). Mirrors the client:
  *   - active employees whose currentSite OR pendingTransferSiteId is this site;
- *   - minus anyone with approved paid leave that day;
+ *   - minus anyone on granted leave that day (annual or emergency);
  *   - home members, unless visiting another site today (stash) or recorded elsewhere today;
  *   - visitors to this site whose stash is dated today.
  *
@@ -113,7 +113,12 @@ export async function computeExpectedDraftRoster({ siteId, dateStr, session = nu
   const leaveIds = new Set(
     (
       await attendanceModel
-        .distinct("employee", { isPaidLeave: true, date: { $gte: dayStart, $lte: dayEnd } })
+        // Granted leave of either type (annual or emergency) — the same set the client
+        // excludes via GET /api/attendance/leave/on-date.
+        .distinct("employee", {
+          $or: [{ isPaidLeave: true }, { isEmergencyLeave: true }],
+          date: { $gte: dayStart, $lte: dayEnd },
+        })
         .session(session)
     ).map(String)
   )

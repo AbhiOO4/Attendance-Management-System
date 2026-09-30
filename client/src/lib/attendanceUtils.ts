@@ -6,16 +6,39 @@
 export type HolidayReason = "weekly" | "public" | null
 
 /**
- * Auto break count from a day's RAW (pre-deduction) worked hours. Mirror of the
- * server's computeAutoBreaks (server/src/utils/attendanceMath.js) — keep in sync.
- *
- * One break per day: the first break is earned once the day reaches a full day
- * (`fullDayHours`), and one further break is added for each ADDITIONAL two full
- * days worked. With a full day of 8h: <8h → 0, 8–23h → 1, 24h → 2, 40h → 3.
+ * A day carries at most ONE break, however long it runs. Mirror of the server's
+ * MAX_BREAKS_PER_DAY (server/src/utils/attendanceMath.js) — keep in sync.
  */
-export function computeAutoBreaks(rawHours: number, fullDayHours: number): number {
-  if (!(fullDayHours > 0) || rawHours < fullDayHours) return 0
-  return 1 + Math.floor((rawHours - fullDayHours) / (2 * fullDayHours))
+export const MAX_BREAKS_PER_DAY = 1
+
+/**
+ * Raw hours a day must reach before the automatic break is deducted: the configured
+ * `breakMinHours` when set, else `fullDayHours`. Mirror of the server's
+ * resolveBreakMinHours — keep in sync.
+ */
+export function resolveBreakMinHours(
+  cfg: { breakMinHours?: number | null; fullDayHours?: number | null } | null | undefined
+): number {
+  const configured = Number(cfg?.breakMinHours)
+  if (configured > 0) return configured
+  return Number(cfg?.fullDayHours) || 8
+}
+
+/**
+ * Auto break count from a day's RAW (pre-deduction) worked hours: one break once the
+ * day reaches `breakMinHours`, otherwise none. Mirror of the server's
+ * computeAutoBreaks — keep in sync.
+ */
+export function computeAutoBreaks(rawHours: number, breakMinHours: number): number {
+  return breakMinHours > 0 && rawHours >= breakMinHours ? 1 : 0
+}
+
+/** A stored/edited `breaksTaken` override clamped to 0–MAX_BREAKS_PER_DAY (null = auto). */
+export function clampBreaks(value: number): number
+export function clampBreaks(value: number | null | undefined): number | null
+export function clampBreaks(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  return Math.min(Math.max(value, 0), MAX_BREAKS_PER_DAY)
 }
 
 /**

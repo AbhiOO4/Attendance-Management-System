@@ -1,10 +1,12 @@
 import mongoose from "mongoose";
 
-// A single grant of annual PAID leave over a from–to range. This is the grant
-// LEDGER — the authoritative object for listing history and for cancelling a
-// grant exactly. The balance itself is NOT tracked here: "used" days are derived
-// by counting paid-leave attendance records (Attendance.isPaidLeave) per calendar
-// year, so this ledger and the attendance flags can never silently diverge.
+// A single leave grant over a from–to range — annual PAID leave or (unpaid, excused)
+// EMERGENCY leave, per `type`. This is the grant LEDGER — the authoritative object
+// for listing history and for cancelling a grant exactly. The annual balance itself
+// is NOT tracked here: "used" days are derived by counting paid-leave attendance
+// records (Attendance.isPaidLeave) per calendar year, so this ledger and the
+// attendance flags can never silently diverge. Emergency leave has no balance; its
+// days are flagged Attendance.isEmergencyLeave.
 //
 // `days` records every working day the grant actually marked (holidays and days
 // the employee already worked are skipped and never appear here), plus whether
@@ -39,6 +41,18 @@ const leaveSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: [true, "The admin granting leave must be recorded"],
+    },
+
+    // Which kind of leave this grant marks: "annual" → Attendance.isPaidLeave,
+    // "emergency" → Attendance.isEmergencyLeave. Grants made before emergency leave
+    // existed have no type stored and read back as "annual" via this default.
+    type: {
+      type: String,
+      enum: {
+        values: ["annual", "emergency"],
+        message: "{VALUE} is not a valid leave type",
+      },
+      default: "annual",
     },
 
     // The requested range as entered (inclusive). Both normalized to UTC midnight.

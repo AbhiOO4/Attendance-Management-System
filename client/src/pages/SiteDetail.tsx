@@ -29,6 +29,7 @@ import {
 
 import SiteRoster from "@/components/site/SiteRoster"
 import SiteActivityLog from "@/components/SiteActivityLog"
+import SiteManpowerReport from "@/components/site/SiteManpowerReport"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import { useAuth } from "@/context/AuthContext"
 
@@ -332,6 +333,7 @@ function SiteDetail() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                {id && <SiteManpowerReport siteId={id} className="rounded-lg" />}
                 {id && <SiteActivityLog siteId={id} date={getCurrentTargetDateString()} />}
                 {isSiteActive && (
                   <>

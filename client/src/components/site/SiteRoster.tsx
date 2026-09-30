@@ -110,6 +110,8 @@ interface Employee {
   // The site whose action created the pending scheduled change — lets THIS site cancel a
   // move it scheduled itself (Send to site → starts tomorrow).
   scheduledBySiteId?: string | null
+  // The scheduled change is a one-day visit tomorrow ("Only tomorrow"), not a move.
+  scheduledVisit?: boolean
   nationality?: "foreign" | "omani"
   collarType?: "skilled" | "staff"
   // "Only for today" visitor stash: their home stays at currentSite but they're marked
@@ -983,8 +985,8 @@ function SiteRoster({
       !isAwayToday(e)
     const canSendTomorrow =
       mode === "tomorrow" && info.onSiteToday && !info.hasSchedule
-    // A move away that THIS site scheduled (Send to site → starts tomorrow) can be undone
-    // here until midnight. A move another site scheduled is cancelled from that site.
+    // A move or visit away that THIS site scheduled (Send to site from the Tomorrow tab) can
+    // be undone here until midnight. One another site scheduled is cancelled from that site.
     const canCancelMove =
       mode === "today" && info.movingAway && refId(e.scheduledBySiteId) === siteId
 
@@ -1003,7 +1005,7 @@ function SiteRoster({
             ) : (
               <X className="mr-1 h-4 w-4" />
             )}
-            Cancel move
+            {e.scheduledVisit ? "Cancel visit" : "Cancel move"}
           </Button>
         )}
         {(canSend || canSendTomorrow) && (
@@ -1099,7 +1101,7 @@ function SiteRoster({
             variant="secondary"
             className="h-4 bg-sky-50 px-1.5 py-0 text-[10px] text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
           >
-            New
+            {e.scheduledVisit ? "Visiting — tomorrow only" : "New"}
           </Badge>
         )}
         {mode === "tomorrow" && !info.incoming && info.jobChangePending && (
@@ -1115,9 +1117,9 @@ function SiteRoster({
             variant="secondary"
             className="h-4 bg-amber-50 px-1.5 py-0 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
           >
-            {siteRefName(e.scheduledSiteId)
-              ? `Moving to ${siteRefName(e.scheduledSiteId)} tomorrow`
-              : "Moving tomorrow"}
+            {`${e.scheduledVisit ? "Visiting" : "Moving to"} ${
+              siteRefName(e.scheduledSiteId) || "another site"
+            } tomorrow`}
           </Badge>
         )}
         {mode === "today" && info.jobChangePending && (
@@ -1641,15 +1643,17 @@ function SiteRoster({
               <DialogHeader>
                 <DialogTitle className="text-xl font-bold">
                   {incoming
-                    ? "Cancel scheduled arrival?"
+                    ? scheduleToCancel?.scheduledVisit
+                      ? "Cancel tomorrow's visit?"
+                      : "Cancel scheduled arrival?"
                     : "Cancel scheduled job change?"}
                 </DialogTitle>
                 <DialogDescription className="pt-2 text-base">
                   {incoming ? (
                     <>
-                      <strong>{scheduleToCancel?.name}</strong> will no longer be
-                      added to this site tomorrow. You can schedule them again
-                      later.
+                      <strong>{scheduleToCancel?.name}</strong> will no longer
+                      {scheduleToCancel?.scheduledVisit ? " visit" : " be added to"} this
+                      site tomorrow. You can schedule them again later.
                     </>
                   ) : (
                     <>

@@ -54,7 +54,14 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, formatOffsetDayLabel, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
-import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import {
+  clampBreaks,
+  computeAutoBreaks,
+  computeHolidayHours,
+  MAX_BREAKS_PER_DAY,
+  resolveBreakMinHours,
+  type HolidayReason,
+} from "@/lib/attendanceUtils"
 import { categoryOf, defaultCheckOutFor, CHECKOUT_REMARK_GRACE_MINUTES, type CollarType, type Nationality } from "@/lib/rosterUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
@@ -180,6 +187,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      breakMinHours: resolveBreakMinHours(workConfig),
       checkoutRemarkGraceMinutes: workConfig?.checkoutRemarkGraceMinutes ?? CHECKOUT_REMARK_GRACE_MINUTES,
     }),
     [workConfig]
@@ -264,7 +272,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       const cloned = JSON.parse(JSON.stringify(attendance.sessions || []))
       setSessions(cloned)
       setInitialSessions(JSON.parse(JSON.stringify(attendance.sessions || [])))
-      const bt = attendance.breaksTaken ?? null
+      const bt = clampBreaks(attendance.breaksTaken)
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
       const rk = attendance.remark ?? ""
@@ -311,8 +319,8 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
   }, [sessions])
 
   const autoBreaks = useMemo(() => {
-    return computeAutoBreaks(rawHours, config.fullDayHours)
-  }, [rawHours, config.fullDayHours])
+    return computeAutoBreaks(rawHours, config.breakMinHours)
+  }, [rawHours, config.breakMinHours])
 
   const breaksApplied = useMemo(() => {
     return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
@@ -798,6 +806,14 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
           </div>
         </div>
 
+        {/* Site — names whose shift this is (and whose jobs the selector lists). Matters
+            most for a cross-site carryover, where the editor is opened against the open
+            shift's previous site rather than the page being viewed. */}
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground -mt-2">
+          <MapPin className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{session.siteName || site.siteName}</span>
+        </div>
+
         {/* Job selector */}
         <Select
           value={session.jobId || "not-assigned"}
@@ -969,8 +985,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
 
                   <button
                     type="button"
-                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
-                    onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                    disabled={(breaksTaken ?? autoBreaks) >= MAX_BREAKS_PER_DAY}
+                    onClick={() => setBreaksTaken((prev) => Math.min(MAX_BREAKS_PER_DAY, (prev ?? autoBreaks) + 1))}
                   >+</button>
 
                   {breaksTaken !== null && (

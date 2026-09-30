@@ -47,7 +47,7 @@ import {
   validateSessionTimesV2,
   formatOffsetDayLabel,
 } from "@/lib/dateUtils"
-import { computeAutoBreaks } from "@/lib/attendanceUtils"
+import { computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import type { MissingEmployee } from "@/components/BackfillModal"
 
@@ -104,6 +104,7 @@ function BulkBackfillModal({
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      breakMinHours: resolveBreakMinHours(workConfig),
     }),
     [workConfig]
   )
@@ -180,8 +181,8 @@ function BulkBackfillModal({
   )
 
   const autoBreaks = useMemo(
-    () => computeAutoBreaks(rawHours, config.fullDayHours),
-    [rawHours, config.fullDayHours]
+    () => computeAutoBreaks(rawHours, config.breakMinHours),
+    [rawHours, config.breakMinHours]
   )
   const breaksApplied = breaksTaken !== null ? breaksTaken : autoBreaks
 
@@ -471,8 +472,9 @@ function BulkBackfillModal({
                       </span>
                       <button
                         type="button"
-                        className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
-                        onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                        className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                        disabled={(breaksTaken ?? autoBreaks) >= MAX_BREAKS_PER_DAY}
+                        onClick={() => setBreaksTaken((prev) => Math.min(MAX_BREAKS_PER_DAY, (prev ?? autoBreaks) + 1))}
                       >
                         +
                       </button>

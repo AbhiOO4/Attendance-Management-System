@@ -52,7 +52,7 @@ import { Link, useNavigate } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
-import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, Search, Trash2, X } from "lucide-react"
+import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, Search, Siren, Trash2, X } from "lucide-react"
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
 interface Employee {
@@ -113,7 +113,7 @@ type UpdateInfo = {
 
 
 // Per-row action menu. Kept as its own component so each row owns the open state
-// of its Edit / Grant-leave / Delete dialogs. Deactivated rows only offer Restore.
+// of its Edit / Grant-leave / Grant-emergency-leave / Delete dialogs. Deactivated rows only offer Restore.
 // The dialogs are rendered as siblings of the menu (not nested inside the dropdown
 // content) and driven in controlled mode, so opening one from a menu item is clean.
 function EmployeeRowActions({
@@ -131,6 +131,7 @@ function EmployeeRowActions({
 }) {
   const [editOpen, setEditOpen] = useState(false)
   const [leaveOpen, setLeaveOpen] = useState(false)
+  const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   if (employee.isActive === false) {
@@ -150,10 +151,15 @@ function EmployeeRowActions({
           </Button>
         </DropdownMenuTrigger>
 
-        <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onSelect={() => setLeaveOpen(true)}>
             <CalendarPlus className="h-4 w-4" />
-            Grant Leave
+            Grant Annual Leave
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onSelect={() => setEmergencyOpen(true)}>
+            <Siren className="h-4 w-4" />
+            Grant Emergency Leave
           </DropdownMenuItem>
 
           <DropdownMenuItem onSelect={() => setEditOpen(true)}>
@@ -180,6 +186,17 @@ function EmployeeRowActions({
         onGranted={() => {}}
         open={leaveOpen}
         onOpenChange={setLeaveOpen}
+        hideTrigger
+      />
+
+      {/* GRANT EMERGENCY LEAVE (unpaid, excused) — controlled, triggerless */}
+      <GrantLeaveDialog
+        employeeId={employee._id}
+        employeeName={employee.name}
+        leaveType="emergency"
+        onGranted={() => {}}
+        open={emergencyOpen}
+        onOpenChange={setEmergencyOpen}
         hideTrigger
       />
 

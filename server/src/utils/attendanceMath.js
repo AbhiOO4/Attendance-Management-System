@@ -4,21 +4,35 @@
 // recalculation script in seed/seed.js. Any formula change here requires
 // re-running that recalculation script against existing records.
 
+// A day carries at most ONE break, however long it runs (a 24h shift still deducts
+// one). Applies to the auto count and to a supervisor's `breaksTaken` override alike.
+export const MAX_BREAKS_PER_DAY = 1;
+
 /**
- * Auto break count from a day's RAW (pre-deduction) worked hours.
+ * The raw hours a day must reach before the automatic break is deducted.
+ * `WorkSchedule.breakMinHours` when set (> 0); otherwise falls back to `fullDayHours`,
+ * which is also the fallback for `.lean()` reads and hand-built config objects.
  *
- * One break per day: the first break is earned once the day reaches a full day
- * (`fullDayHours`), and one further break is added for each ADDITIONAL two full
- * days worked. With a full day of 8h that means: <8h → 0, 8–23h → 1, 24h → 2,
- * 40h → 3. A supervisor may still override this via `breaksTaken`.
- *
- * @param {number} rawHours      Sum of all session workedHours
- * @param {number} fullDayHours  WorkSchedule.fullDayHours
- * @returns {number} whole number of breaks
+ * @param {object} workConfig  WorkSchedule document (breakMinHours?, fullDayHours)
+ * @returns {number}
  */
-export function computeAutoBreaks(rawHours, fullDayHours) {
-  if (!(fullDayHours > 0) || rawHours < fullDayHours) return 0;
-  return 1 + Math.floor((rawHours - fullDayHours) / (2 * fullDayHours));
+export function resolveBreakMinHours(workConfig) {
+  const configured = Number(workConfig?.breakMinHours);
+  if (configured > 0) return configured;
+  return Number(workConfig?.fullDayHours) || 0;
+}
+
+/**
+ * Auto break count from a day's RAW (pre-deduction) worked hours: one break once
+ * the day reaches `breakMinHours`, otherwise none — never more than one. A
+ * supervisor may still override this via `breaksTaken` (clamped to 0–1).
+ *
+ * @param {number} rawHours       Sum of all session workedHours
+ * @param {number} breakMinHours  resolveBreakMinHours(workConfig)
+ * @returns {0|1}
+ */
+export function computeAutoBreaks(rawHours, breakMinHours) {
+  return breakMinHours > 0 && rawHours >= breakMinHours ? 1 : 0;
 }
 
 /**
@@ -27,16 +41,16 @@ export function computeAutoBreaks(rawHours, fullDayHours) {
  *
  * Design rules:
  *  1. STATUS   — determined from RAW hours (break-agnostic) to prevent edge-case demotions.
- *  2. BREAKS   — one per day: first at fullDayHours, +1 per extra two full days
- *                (see computeAutoBreaks), unless supervisor overrides.
+ *  2. BREAKS   — 0 or 1 per day: one once raw hours reach breakMinHours (see
+ *                computeAutoBreaks); a supervisor override is clamped to MAX_BREAKS_PER_DAY.
  *  3. NET HRS  — raw minus total break deduction (never below 0).
  *  4. OVERTIME — calculated on NET hours against overtimeThreshold; forced to 0 on holidays.
  *  5. HOLIDAY  — any holiday (public or weekly) credits NET hours; 0 on a normal day.
  *
  * @param {number}      rawHours    Sum of all session workedHours
  * @param {object}      workConfig  WorkSchedule document (needs fullDayHours, halfDayHours,
- *                                  overtimeThreshold, breakDurationMinutes)
- * @param {number|null} breaksTaken null = auto; 0+ = supervisor override
+ *                                  overtimeThreshold, breakDurationMinutes, breakMinHours?)
+ * @param {number|null} breaksTaken null = auto; 0+ = supervisor override (clamped to 0–1)
  * @param {{isHoliday: boolean, reason: "weekly"|"public"|null}|null} holidayInfo
  *                                  The record's holiday state; null/false = normal day
  * @returns {{ netWorkHours, status, overtimeHours, breaksApplied, holidayHours }}
@@ -112,9 +126,9 @@ export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null
   else if (rawHours >= halfDayHours)  status = 'halfday';
 
   // STEP 2 – Number of breaks to apply
-  const autoBreaks = computeAutoBreaks(rawHours, fullDayHours);
+  const autoBreaks = computeAutoBreaks(rawHours, resolveBreakMinHours(workConfig));
   const breaksApplied = (breaksTaken !== null && breaksTaken !== undefined && breaksTaken >= 0)
-    ? breaksTaken
+    ? Math.min(breaksTaken, MAX_BREAKS_PER_DAY)
     : autoBreaks;
   const totalBreakHours = breaksApplied * breakDurationHours;
 

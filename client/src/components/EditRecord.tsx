@@ -52,7 +52,14 @@ import { api } from "@/lib/api"
 
 import toast from "react-hot-toast"
 import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffset, isNextDayInstant, formatOffsetDayLabel, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
-import { computeAutoBreaks, computeHolidayHours, type HolidayReason } from "@/lib/attendanceUtils"
+import {
+  clampBreaks,
+  computeAutoBreaks,
+  computeHolidayHours,
+  MAX_BREAKS_PER_DAY,
+  resolveBreakMinHours,
+  type HolidayReason,
+} from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 
 // --------------------------------------------------
@@ -180,6 +187,7 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
       halfDayHours: workConfig?.halfDayHours ?? 4,
       overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
       breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+      breakMinHours: resolveBreakMinHours(workConfig),
     }),
     [workConfig]
   )
@@ -266,7 +274,7 @@ const [sessionToDelete, setSessionToDelete] =
       const cloned = JSON.parse(JSON.stringify(record.sessions || []))
       setSessions(cloned)
       setInitialSessions(JSON.parse(JSON.stringify(record.sessions || [])))
-      const bt = record.breaksTaken ?? null
+      const bt = clampBreaks(record.breaksTaken)
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
       const sick = record.isSickLeave ?? false
@@ -347,8 +355,8 @@ const [sessionToDelete, setSessionToDelete] =
   }, [sessions])
 
   const autoBreaks = useMemo(() => {
-    return computeAutoBreaks(rawHours, config.fullDayHours)
-  }, [rawHours, config.fullDayHours])
+    return computeAutoBreaks(rawHours, config.breakMinHours)
+  }, [rawHours, config.breakMinHours])
 
   const breaksApplied = useMemo(() => {
     return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
@@ -1008,8 +1016,9 @@ const [sessionToDelete, setSessionToDelete] =
 
                   <button
                     type="button"
-                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors"
-                    onClick={() => setBreaksTaken((prev) => (prev ?? autoBreaks) + 1)}
+                    className="h-7 w-7 rounded-md border text-sm font-bold hover:bg-muted transition-colors disabled:opacity-40"
+                    disabled={(breaksTaken ?? autoBreaks) >= MAX_BREAKS_PER_DAY}
+                    onClick={() => setBreaksTaken((prev) => Math.min(MAX_BREAKS_PER_DAY, (prev ?? autoBreaks) + 1))}
                   >+</button>
 
                   {breaksTaken !== null && (

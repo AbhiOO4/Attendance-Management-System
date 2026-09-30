@@ -34,6 +34,9 @@ router.get('/reports/carryovers', authorizeRoles("admin", "supervisor"), require
 
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
+// The same hours report over any from–to span of business days (?from&to, YYYY-MM-DD, max a year).
+router.get('/reports/range', authorizeRoles("superadmin"), attendanceController.rangeReport)
+
 // ERPNext Data Import CSV export (?type=attendance|timesheet|ot-summary). Superadmin
 // only, matching the Monthly Report page this lives on.
 router.get('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), attendanceController.exportErpnext)

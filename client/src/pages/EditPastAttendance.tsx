@@ -1,5 +1,5 @@
 import { api } from "@/lib/api"
-import { computeAutoBreaks } from "@/lib/attendanceUtils"
+import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useEffect, useMemo, useState } from "react"
 import toast from "react-hot-toast"
@@ -134,6 +134,9 @@ export interface AttendanceRecord {
 
   isPaidLeave?: boolean
 
+  // Granted emergency leave — excused, unpaid, locked like paid leave.
+  isEmergencyLeave?: boolean
+
   remark?: string
 }
 
@@ -175,6 +178,9 @@ interface Filters {
 const getDisplayStatus = (record: AttendanceRecord) => {
   if (record.isPaidLeave) {
     return "leave"
+  }
+  if (record.isEmergencyLeave) {
+    return "emergency"
   }
   if (record.isSickLeave) {
     return "sick"
@@ -227,7 +233,7 @@ function EditPastAttendance() {
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
   const [isWeeklyHoliday, setIsWeeklyHoliday] = useState<boolean>(false)
   const { config: workConfig } = useWorkConfig()
-  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const breakMinHours = resolveBreakMinHours(workConfig)
   const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
 
 
@@ -886,12 +892,20 @@ function EditPastAttendance() {
                                               ? "bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25 border-transparent"
                                               : getDisplayStatus(record) === "sick"
                                                 ? "bg-sky-500/15 text-sky-700 dark:text-sky-400 hover:bg-sky-500/25 border-transparent"
-                                                : ""
+                                                : getDisplayStatus(record) === "leave"
+                                                  ? "bg-violet-500/15 text-violet-700 dark:text-violet-400 hover:bg-violet-500/25 border-transparent"
+                                                  : getDisplayStatus(record) === "emergency"
+                                                    ? "bg-orange-500/15 text-orange-700 dark:text-orange-400 hover:bg-orange-500/25 border-transparent"
+                                                    : ""
                                         }
                                       >
                                         {getDisplayStatus(record) === "sick"
                                           ? "Sick Leave"
-                                          : getDisplayStatus(record)}
+                                          : getDisplayStatus(record) === "leave"
+                                            ? "Annual Leave"
+                                            : getDisplayStatus(record) === "emergency"
+                                              ? "Emergency Leave"
+                                              : getDisplayStatus(record)}
                                       </Badge>
                                     </TableCell>
 
@@ -928,8 +942,8 @@ function EditPastAttendance() {
                                     >
                                        {(() => {
                                          const count = record.breaksTaken !== null && record.breaksTaken !== undefined
-                                           ? record.breaksTaken
-                                           : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), fullDayHours);
+                                           ? clampBreaks(record.breaksTaken)
+                                           : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours);
                                          const hrs = (count * breakDurationMinutes) / 60;
                                          return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
                                        })()}
@@ -941,9 +955,17 @@ function EditPastAttendance() {
                                       rowSpan={sessions.length}
                                       className="text-right"
                                     >
+                                      {/* A granted leave day (annual or emergency) is locked
+                                          server-side; cancel the grant from the employee's page. */}
                                       <Button
                                         size="icon"
                                         variant="outline"
+                                        disabled={!!record.isPaidLeave || !!record.isEmergencyLeave}
+                                        title={
+                                          record.isPaidLeave || record.isEmergencyLeave
+                                            ? "On approved leave — cancel the leave grant to edit"
+                                            : undefined
+                                        }
                                         onClick={() =>
                                           setEditingRecord(
                                             record

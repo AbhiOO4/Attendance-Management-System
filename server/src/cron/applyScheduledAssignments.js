@@ -4,6 +4,9 @@ import empModel from '../models/empModel.js';
 import jobModel from '../models/jobModel.js';
 import siteModel from '../models/siteModel.js';
 import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
+import { applyHandover } from '../utils/handover.js';
+import { touchSiteRosters } from '../utils/draftRoster.js';
+import { recordSiteActivity, SYSTEM_ACTOR } from '../utils/siteActivity.js';
 
 /**
  * Promote deferred ("from tomorrow") assignments once their effective date arrives.
@@ -25,12 +28,21 @@ import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js'
  * otherwise "leaving tomorrow" at the old site would un-assign them from the new one, or
  * a job-only change would hand them another site's job. A scheduled MOVE is kept as is.
  *
+ * A scheduled VISIT (scheduledVisit, "Send to site → Only tomorrow") does not move the
+ * home: at the rollover it becomes that day's pendingTransfer* visit stash — exactly what a
+ * same-day "For today" send writes — so the destination's draft shows them as a visitor,
+ * the home draft leaves them out, and the next day they're back on the home roster.
+ *
+ * Moves, visits, removals and every dropped change are written to the activity feed of
+ * each site involved (as "System"), so a supervisor can see what happened at midnight.
+ *
  * Idempotent and runs every minute (like the other crons), so a missed midnight or a
  * server restart still applies due changes on the next tick.
  */
 
 function clearSchedule(employee) {
   employee.scheduledRemoval = false;
+  employee.scheduledVisit = false;
   employee.scheduledSiteId = null;
   employee.scheduledJobId = null;
   employee.scheduledEffectiveDate = null;
@@ -45,11 +57,57 @@ function movedAwayFromScheduler(employee) {
 }
 
 async function dropSchedule(employee, session, reason) {
+  // The sites the dropped change concerned, captured before clearSchedule wipes them.
+  const event = {
+    type: 'scheduled_dropped',
+    reason,
+    fromSiteId: employee.currentSite || employee.scheduledBySiteId || null,
+    toSiteId: employee.scheduledSiteId || null,
+  };
   clearSchedule(employee);
   await employee.save({ session });
   await session.commitTransaction();
   session.endSession();
   console.log(`[ScheduledAssignments] Dropped schedule for employee ${employee._id} — ${reason}`);
+  return event;
+}
+
+async function siteNameOf(id) {
+  if (!id) return null;
+  const site = await siteModel.findById(id).select('siteName').lean();
+  return site?.siteName || null;
+}
+
+// Best-effort, after commit: one System line in the feed of every site the change touched.
+async function logScheduleEvent(employee, event) {
+  try {
+    const from = await siteNameOf(event.fromSiteId);
+    const to = await siteNameOf(event.toSiteId);
+    const name = employee.name;
+    let summary;
+    if (event.type === 'scheduled_dropped') {
+      summary = `Scheduled change for ${name} was not applied — ${event.reason}`;
+    } else if (event.kind === 'visit') {
+      summary = `${name} is visiting ${to || 'another site'} today (scheduled from ${from || 'their site'})`;
+    } else if (event.kind === 'move') {
+      summary = `${name} moved from ${from || 'no site'} to ${to || 'another site'} (scheduled)`;
+    } else {
+      summary = `${name} was removed from ${from || 'the site'} (scheduled)`;
+    }
+    const twoSites = !!(event.fromSiteId && event.toSiteId);
+    await recordSiteActivity({
+      type: event.type,
+      actor: SYSTEM_ACTOR,
+      employee: employee._id,
+      employeeName: name,
+      fromSiteId: twoSites ? event.fromSiteId : null,
+      toSiteId: twoSites ? event.toSiteId : null,
+      siteId: twoSites ? null : event.fromSiteId || event.toSiteId,
+      summary,
+    });
+  } catch (err) {
+    console.error('[ScheduledAssignments] activity log failed:', err.message);
+  }
 }
 
 export async function runApplyScheduledAssignments() {
@@ -80,9 +138,11 @@ export async function runApplyScheduledAssignments() {
         // which would otherwise read as a job-only change. Null the assignment now.
         if (employee.scheduledRemoval) {
           if (movedAwayFromScheduler(employee)) {
-            await dropSchedule(employee, session, 'removal skipped, employee has moved to another site');
+            const ev = await dropSchedule(employee, session, 'removal skipped, employee has moved to another site');
+            await logScheduleEvent(employee, ev);
             continue;
           }
+          const removedFrom = employee.currentSite;
 
           if (employee.currentJob) {
             await jobModel.findByIdAndUpdate(
@@ -106,6 +166,41 @@ export async function runApplyScheduledAssignments() {
           session.endSession();
 
           console.log(`[ScheduledAssignments] Applied removal for employee ${employee._id}`);
+          await logScheduleEvent(employee, { type: 'scheduled_applied', kind: 'removal', fromSiteId: removedFrom });
+          continue;
+        }
+
+        // Scheduled one-day visit: becomes today's pendingTransfer* stash; home untouched.
+        if (employee.scheduledVisit && employee.scheduledSiteId) {
+          const homeId = employee.currentSite;
+          const targetId = employee.scheduledSiteId;
+          const site = await siteModel.findById(targetId).session(session);
+          if (!isAssignableSite(site)) {
+            const ev = await dropSchedule(employee, session, 'the site they were to visit is no longer active');
+            await logScheduleEvent(employee, ev);
+            continue;
+          }
+          if (homeId && homeId.toString() === targetId.toString()) {
+            const ev = await dropSchedule(employee, session, 'they are already on that site');
+            await logScheduleEvent(employee, ev);
+            continue;
+          }
+          const jobId =
+            employee.scheduledJobId && (await findAssignableJob(employee.scheduledJobId, targetId, session))
+              ? employee.scheduledJobId
+              : null;
+
+          // Clear first — applyHandover saves the employee once, with the stash written.
+          clearSchedule(employee);
+          await applyHandover({ employee, toSiteId: targetId, toJobId: jobId, mode: 'today', session });
+          // Both rosters change for the new day: conflict with any submit in flight.
+          await touchSiteRosters([homeId, targetId], session);
+
+          await session.commitTransaction();
+          session.endSession();
+
+          console.log(`[ScheduledAssignments] Applied visit for employee ${employee._id}`);
+          await logScheduleEvent(employee, { type: 'scheduled_applied', kind: 'visit', fromSiteId: homeId, toSiteId: targetId });
           continue;
         }
 
@@ -115,12 +210,14 @@ export async function runApplyScheduledAssignments() {
         if (isMove) {
           const site = await siteModel.findById(employee.scheduledSiteId).session(session);
           if (!isAssignableSite(site)) {
-            await dropSchedule(employee, session, 'target site unavailable');
+            const ev = await dropSchedule(employee, session, 'the destination site is no longer active');
+            await logScheduleEvent(employee, ev);
             continue;
           }
         } else if (movedAwayFromScheduler(employee)) {
           // Job-only change scheduled by a site the employee has since left.
-          await dropSchedule(employee, session, 'job change skipped, employee has moved to another site');
+          const ev = await dropSchedule(employee, session, 'job change skipped, employee has moved to another site');
+          await logScheduleEvent(employee, ev);
           continue;
         }
 
@@ -131,13 +228,16 @@ export async function runApplyScheduledAssignments() {
         let newJobId = employee.scheduledJobId || null;
         if (newJobId && !(await findAssignableJob(newJobId, targetSiteId, session))) {
           if (!isMove) {
-            await dropSchedule(employee, session, 'scheduled job is not active at the current site');
+            const ev = await dropSchedule(employee, session, 'the scheduled job is no longer active');
+            await logScheduleEvent(employee, ev);
             continue;
           }
           newJobId = null;
         }
 
         const oldJobId = employee.currentJob;
+        const oldSiteId = employee.currentSite;
+        const newSiteId = employee.scheduledSiteId;
 
         // Pull from the old job's employees[] (unless it's the same job).
         if (oldJobId && (!newJobId || oldJobId.toString() !== newJobId.toString())) {
@@ -172,6 +272,10 @@ export async function runApplyScheduledAssignments() {
         session.endSession();
 
         console.log(`[ScheduledAssignments] Applied schedule for employee ${employee._id}`);
+        // A job-only change isn't logged — Tomorrow-tab bulk job edits would flood the feed.
+        if (isMove) {
+          await logScheduleEvent(employee, { type: 'scheduled_applied', kind: 'move', fromSiteId: oldSiteId, toSiteId: newSiteId });
+        }
       } catch (err) {
         await session.abortTransaction();
         session.endSession();

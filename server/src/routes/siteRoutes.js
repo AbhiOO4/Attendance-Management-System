@@ -19,6 +19,7 @@ router.get('/:siteId/employees', authorizeRoles("admin", "supervisor"), siteCont
 router.get('/job/:jobId/employees', authorizeRoles("admin", "supervisor"), siteController.getJobEmployees)
 router.get('/:siteId/free-employees', authorizeRoles("admin", "supervisor"), siteController.getUnassignedSiteEmployees)
 router.get('/:siteId/activity', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.getSiteActivity)
+router.get('/:siteId/manpower', authorizeRoles("admin"), siteController.getSiteManpower)
 router.post('/:siteId/check-pending', authorizeRoles("admin", "supervisor"), siteController.checkPending)
 
 // --- SUPERVISOR & ADMIN WRITE routes (restricted to assigned site for Supervisor) ---

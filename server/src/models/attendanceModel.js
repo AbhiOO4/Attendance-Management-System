@@ -178,6 +178,19 @@ const attendanceSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Marks the day as EMERGENCY leave — an EXCUSED but UNPAID absence (like sick
+    // leave), granted by an admin over a from–to range through the same leave
+    // endpoints as annual leave (Leave.type = "emergency"). It has no balance and is
+    // not a payable day: the record keeps status "absent", so the monthly report and
+    // the ERPNext export treat it like sick leave. Like paid leave, a granted day is
+    // LOCKED against marking until the grant is cancelled. Same invariant (pre-save
+    // hook): only valid when every session is empty. Precedence: paid > emergency >
+    // sick > lop.
+    isEmergencyLeave: {
+      type: Boolean,
+      default: false,
+    },
+
     // Marks the day as LOP (Loss of Pay) — an UNEXCUSED absence that carries a
     // monetary penalty (the sister of isSickLeave, which is an EXCUSED absence).
     // Like sick/paid leave it is a whole-day annotation on an otherwise-absent day
@@ -221,14 +234,18 @@ const attendanceSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Number of breaks the employee actually took.
-    // null  → auto-computed by computeAutoBreaks(rawHours, fullDayHours) via
-    //         computeAttendanceTotals (one break per day; see attendanceMath.js).
-    // 0+    → supervisor override (e.g. skipped one break out of two due).
+    // Number of breaks the employee actually took — 0 or 1 (a day has at most one).
+    // null  → auto-computed by computeAutoBreaks(rawHours, breakMinHours) via
+    //         computeAttendanceTotals (see attendanceMath.js).
+    // 0 / 1 → supervisor override (e.g. skipped the break).
+    // The setter clamps new writes to 1; it does not run on hydration, so a legacy
+    // stored 2+ is left as-is (computeAttendanceTotals clamps it when recomputed).
+    // No schema `max` for the same reason — it would fail those legacy docs' next save.
     breaksTaken: {
       type: Number,
       default: null,
       min: 0,
+      set: (v) => (v === null || v === undefined ? v : Math.min(v, 1)),
     },
 
     // Free-text supervisor remark for this day's record ("left early — family
@@ -270,6 +287,18 @@ attendanceSchema.pre("save", async function () {
     this.isSickLeave = false;
   }
 
+  // Emergency leave: same "no worked session" invariant. Paid leave outranks it, and
+  // it outranks sick leave (both are excused absences; the granted one wins).
+  if (this.isEmergencyLeave && hasFilledSession) {
+    this.isEmergencyLeave = false;
+  }
+  if (this.isPaidLeave && this.isEmergencyLeave) {
+    this.isEmergencyLeave = false;
+  }
+  if (this.isEmergencyLeave && this.isSickLeave) {
+    this.isSickLeave = false;
+  }
+
   // LOP (Loss of Pay) obeys the same "no worked session" invariant and is mutually
   // exclusive with both other leave annotations. Precedence is paid > sick > lop, so
   // a conflict clears LOP. The controller sets the counterpart to false explicitly on
@@ -277,7 +306,7 @@ attendanceSchema.pre("save", async function () {
   if (this.isLop && hasFilledSession) {
     this.isLop = false;
   }
-  if (this.isPaidLeave && this.isLop) {
+  if ((this.isPaidLeave || this.isEmergencyLeave) && this.isLop) {
     this.isLop = false;
   }
   if (this.isSickLeave && this.isLop) {

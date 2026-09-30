@@ -28,9 +28,13 @@ There is no root package.json — each is installed and run separately.
 
 There is no test suite. `server/src/seed/seed.js` is a scratch script (edit the
 commented calls at the bottom, then `node src/seed/seed.js`) used to seed
-users/work schedule and to recalculate all existing attendance after a
-config-formula change — it currently connects via a hardcoded empty `real_db_url`,
-so set that before running.
+users/work schedule and to recalculate attendance after a config-formula change.
+Nothing connects on import: the one-off seed helpers need `await connectDB(url)` first,
+while `recalculateAttendanceInRange(dbUrl, "YYYY-MM-DD", "YYYY-MM-DD")` (business days,
+both inclusive) and `recalculateExistingAttendance(dbUrl)` connect themselves. The
+recalc writes only the day-total fields via `bulkWrite` (timestamps off), never
+`record.save()`. The save hook re-derives session raw times from THIS machine's
+`APP_TIMEZONE_OFFSET`, which would corrupt live (Oman) records from an IST `.env`.
 
 ## Architecture
 
@@ -67,11 +71,22 @@ and never sees the token. Key pieces:
   Contains a `sessions[]` array (each session = one site's check-in/out, so an
   employee can work multiple sites in a day), plus derived `status`
   (fullday|halfday|absent), `totalWorkHours`, `overtimeHours`, `breaksTaken`,
-  `isHoliday`, `isSickLeave`, and night-shift fields. A pre-save hook enforces the
-  invariant that `isSickLeave` is only valid when no session has any check-in/out.
+  `isHoliday`, the leave flags `isPaidLeave` / `isEmergencyLeave` / `isSickLeave` /
+  `isLop`, and night-shift fields. A pre-save hook enforces the invariant that a leave
+  flag is only valid when no session has any check-in/out, and that they are mutually
+  exclusive (precedence paid > emergency > sick > lop).
+- **Leave** (`leaveModel.js`) — the grant ledger for range-granted leave: `type`
+  `annual` (PAID, draws on the yearly balance → `isPaidLeave`) or `emergency` (excused
+  but UNPAID like sick leave, no balance → `isEmergencyLeave`, counts as an absent day in
+  reports). Endpoints under `/api/attendance/leave/*` take `type`. A granted day of
+  either type is LOCKED: submit/bulk-edit skip it, edits 409, the crons skip it, and the
+  Site Attendance draft excludes it (`GET /leave/on-date`, mirrored by
+  `utils/draftRoster.js`). Grant/cancel run in `session.withTransaction` with strictly
+  SEQUENTIAL operations — never `Promise.all` on a transaction session (the driver
+  doesn't support it; it made grants fail intermittently with NoSuchTransaction).
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
   `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `weeklyHolidays`,
-  `breakDurationMinutes` (see Hours calculation §5). (The weekly-holiday award knobs
+  `breakDurationMinutes`, `breakMinHours` (see Hours calculation §2, §5). (The weekly-holiday award knobs
   `weeklyHolidayAwardEnabled` / `weeklyHolidayAwardHours` / `weeklyHolidayMinHours`,
   and the pay knobs `overtimeMultiplier` / `monthlyHoursDivisor`, were removed.)
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
@@ -89,12 +104,17 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 `server/src/utils/attendanceMath.js` is the single source of truth for the hours math
 (used by the controller, crons, default propagation, and the seed recalc script):
 1. **Status** is derived from RAW session hours (break-agnostic) to avoid demotions.
-2. **Breaks** are one-per-day — `computeAutoBreaks(rawHours, fullDayHours)`: the first
-   break is earned at a full day (`fullDayHours`), then +1 for each additional two full
-   days, i.e. `rawHours < fullDay ? 0 : 1 + floor((rawHours − fullDay) / (2·fullDay))`
-   (with a full day of 8h: <8h→0, 8–23h→1, 24h→2, 40h→3). Each worth
-   `breakDurationMinutes`, unless a supervisor overrides `breaksTaken`. The client
-   mirrors `computeAutoBreaks` in `client/src/lib/attendanceUtils.ts` — keep in sync.
+2. **Breaks** are 0 or 1 per day, NEVER more (`MAX_BREAKS_PER_DAY = 1`; a 24h shift
+   still deducts one). `computeAutoBreaks(rawHours, breakMinHours)` gives 1 once raw hours
+   reach the configurable `WorkSchedule.breakMinHours` (Configure → "Break After (hours)"),
+   else 0; `resolveBreakMinHours(workConfig)` falls back to `fullDayHours` when it is
+   null/unset (also covers `.lean()` reads and hand-built config objects). The break is
+   worth `breakDurationMinutes`. A supervisor `breaksTaken` override is clamped to 0–1 in
+   the math, and the Attendance schema setter clamps new writes (legacy stored 2+ values
+   are left alone — the cap was rolled out going-forward only, no recalc was run; old
+   records pick it up when next recomputed). The client mirrors `MAX_BREAKS_PER_DAY`,
+   `resolveBreakMinHours`, `computeAutoBreaks` and `clampBreaks` in
+   `client/src/lib/attendanceUtils.ts` — keep in sync.
 3. **Net hours** = raw − total break deduction (floored at 0).
 4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
 5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): any holiday,
@@ -111,7 +131,35 @@ and `monthlyHoursDivisor` were all removed). The monthly report (`monthlyReport`
 `halfDays`, `absentDays`, `attendancePercentage`, `overtimeHours`, `holidayHours`,
 and `totalOvertimeHours` (= `overtimeHours` + `holidayHours`, since OT and holiday
 hours were paid at the same rate). `payableDays` is still computed internally to
-derive `attendancePercentage` but is not returned.
+derive `attendancePercentage` but is not returned. It also returns the LEAVE
+COMPOSITION: `leaveDays` (annual/paid), `emergencyLeaveDays`, `sickLeaveDays`, `lopDays`
+— and `pendingDays`. DAY BUCKETS ARE MUTUALLY EXCLUSIVE and mirror the timesheet Status
+badge (client `getDisplayStatus`), so the employee page's tiles and the report both equal
+a count of badges: leave flag (annual > emergency > sick > lop, regardless of holiday) →
+`pendingDays` (status absent + an open session: checked in, no check-out — NOT absent)
+→ a holiday not worked is a day off (counted nowhere) → otherwise `fullDays` /
+`halfDays` / `absentDays` by status — HOLIDAY WORK INCLUDED in full/half. `absentDays`
+is therefore only "absent with no leave/LOP recorded". Paid vs unpaid is separate:
+payable days = full/half on working days + annual leave; holiday work earns payable
+credit only for TEMPORARY workers (their expected days include holidays), permanent
+staff are paid for it as holiday hours. The ERPNext CSV still exports sick/emergency/LOP
+as "Absent". The tally lives in `buildAttendanceReport(fromDay, toDay)`
+(inclusive UTC-midnight bounds; expected working days counted up to `getTodayLocal()`),
+shared by `GET /reports/monthly/:month/:year` and `GET /reports/range?from&to`
+(`rangeReport`, superadmin, strict `YYYY-MM-DD`, ≤ 366 days). The Reports page offers
+Month | Date range (`components/DateRangePicker.tsx`); ERPNext export stays per-month and
+is disabled in range mode. Leave-kind labels/colors are shared in
+`client/src/lib/leaveComposition.ts` (also used by the employee timesheet's Leave tile).
+
+**Site manpower report.** `GET /api/site/:siteId/manpower` (admin/superadmin) is TODAY's
+headcount for a site by trade (job title) and roster category, built by
+`server/src/utils/siteManpower.js`. People = the draft roster (`computeExpectedDraftRoster`)
+∪ anyone with a session at the site today ∪ home members on paid leave. Status per person:
+`leave`/`sick` (paid/sick leave) → `present` (a session here with a check-in) → `absent` (a
+session here, no check-in; includes LOP) → `notMarked` (no session here yet — everyone before
+the first save). The "Manpower" button on Site Detail (`components/site/SiteManpowerReport.tsx`)
+shows it and exports Excel/PDF via `client/src/lib/manpowerExport.ts` (exceljs / jsPDF loaded
+on demand). A midday transfer counts as present at both sites for the day.
 
 ### Time zones & night shifts (subtle — read carefully)
 All timestamps are stored in UTC but the app operates in a single configured

@@ -172,8 +172,8 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
     let fieldUpdatedCount = 0;
 
     for (const record of records) {
-      // Never fill anything on a sick-leave or approved paid-leave day.
-      if (transition === 'fill' && (record.isSickLeave || record.isPaidLeave)) continue;
+      // Never fill anything on a sick-leave or granted (paid or emergency) leave day.
+      if (transition === 'fill' && (record.isSickLeave || record.isPaidLeave || record.isEmergencyLeave)) continue;
 
       let recordModified = false;
 
@@ -364,6 +364,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
             halfDayHours,
             overtimeThreshold,
             breakDurationMinutes: (workConfig && workConfig.breakDurationMinutes) || 0,
+            breakMinHours: workConfig?.breakMinHours ?? null,
           },
           record.breaksTaken ?? null,
           { isHoliday: record.isHoliday, reason: record.holidayReason }
