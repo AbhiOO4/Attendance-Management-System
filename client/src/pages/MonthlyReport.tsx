@@ -71,6 +71,7 @@ interface ReportEmployee {
   employeeId: string
   jobTitle: string
   isActive?: boolean
+  employmentType?: "permanent" | "temporary"
   fullDays: number
   halfDays: number
   absentDays: number
@@ -105,6 +106,15 @@ const leaveCountsOf = (e: ReportEmployee): LeaveCounts => ({
 
 // The report covers one calendar month, or any from–to range of days.
 type PeriodMode = "month" | "range"
+
+// Which employees the report covers. A row without employmentType is permanent.
+type EmploymentFilter = "all" | "permanent" | "temporary"
+
+const EMPLOYMENT_FILTER_LABELS: Record<EmploymentFilter, string> = {
+  all: "All employees",
+  permanent: "Permanent",
+  temporary: "Temporary",
+}
 
 // --- Job Report types ---
 
@@ -151,6 +161,7 @@ function MonthlyAttendanceTab() {
   const [name, setName] = useState("")
   const [employeeId, setEmployeeId] = useState("")
   const [jobTitle, setJobTitle] = useState("")
+  const [employmentType, setEmploymentType] = useState<EmploymentFilter>("all")
   const [erpBusy, setErpBusy] = useState(false)
 
   // Client-side pagination for the display only. The full month stays in `reports`
@@ -192,8 +203,7 @@ function MonthlyAttendanceTab() {
     fetchReports()
   }, [mode, month, year, range.from, range.to])
 
-  // All employees, sorted (active first, then by name). This is the export set —
-  // Export always covers everyone, independent of the on-screen search.
+  // All employees, sorted (active first, then by name).
   const sortedAll = useMemo(() => {
     return [...reports].sort((a, b) => {
       const aActive = a.isActive !== false
@@ -204,10 +214,19 @@ function MonthlyAttendanceTab() {
     })
   }, [reports])
 
+  // The employment-type scope. This is the export set — Export follows the type
+  // filter but always covers everyone in it, independent of the on-screen search.
+  const scopedReports = useMemo(() => {
+    if (employmentType === "all") return sortedAll
+    return sortedAll.filter(
+      (e) => (e.employmentType ?? "permanent") === employmentType
+    )
+  }, [sortedAll, employmentType])
+
   // Search-filtered view (drives the table + summary). Filtering a sorted list
   // preserves order.
   const filteredReports = useMemo(() => {
-    return sortedAll.filter((employee) => {
+    return scopedReports.filter((employee) => {
       const matchesName = employee.employeeName
         .toLowerCase()
         .includes(name.toLowerCase())
@@ -219,7 +238,7 @@ function MonthlyAttendanceTab() {
         .includes(jobTitle.toLowerCase())
       return matchesName && matchesEmployeeId && matchesJobTitle
     })
-  }, [sortedAll, name, employeeId, jobTitle])
+  }, [scopedReports, name, employeeId, jobTitle])
 
   // Pagination math. "all" collapses to a single page of the full filtered list.
   const showAll = pageSize === "all"
@@ -235,7 +254,7 @@ function MonthlyAttendanceTab() {
   // Reset to page 1 whenever the filtered set or page size changes.
   useEffect(() => {
     setCurrentPage(1)
-  }, [name, employeeId, jobTitle, pageSize, mode, month, year, range.from, range.to])
+  }, [name, employeeId, jobTitle, employmentType, pageSize, mode, month, year, range.from, range.to])
 
   // Guard against landing past the last page if the data shrinks.
   useEffect(() => {
@@ -270,9 +289,10 @@ function MonthlyAttendanceTab() {
   }, [filteredReports])
 
   function exportToExcel() {
-    // Always export every employee for the period, regardless of the active search.
-    if (sortedAll.length === 0) return
-    const formattedData = sortedAll.map((employee, index) => {
+    // Export every employee of the selected type for the period, regardless of the
+    // active search.
+    if (scopedReports.length === 0) return
+    const formattedData = scopedReports.map((employee, index) => {
       const leave = leaveCountsOf(employee)
       return {
         "Sl No": index + 1,
@@ -309,11 +329,12 @@ function MonthlyAttendanceTab() {
     const fileData = new Blob([excelBuffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
     })
+    const typeSuffix = employmentType === "all" ? "" : `-${employmentType}`
     saveAs(
       fileData,
       mode === "month"
-        ? `monthly-report-${month}-${year}.xlsx`
-        : `attendance-report-${range.from}_to_${range.to}.xlsx`
+        ? `monthly-report-${month}-${year}${typeSuffix}.xlsx`
+        : `attendance-report-${range.from}_to_${range.to}${typeSuffix}.xlsx`
     )
   }
 
@@ -355,6 +376,24 @@ function MonthlyAttendanceTab() {
         ) : (
           <DateRangePicker value={range} onChange={setRange} />
         )}
+
+        <Select
+          value={employmentType}
+          onValueChange={(v) => setEmploymentType(v as EmploymentFilter)}
+        >
+          <SelectTrigger className="w-[150px]" aria-label="Employment type">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(EMPLOYMENT_FILTER_LABELS) as EmploymentFilter[]).map(
+              (key) => (
+                <SelectItem key={key} value={key}>
+                  {EMPLOYMENT_FILTER_LABELS[key]}
+                </SelectItem>
+              )
+            )}
+          </SelectContent>
+        </Select>
 
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -400,7 +439,7 @@ function MonthlyAttendanceTab() {
             variant="outline"
             size="sm"
             onClick={exportToExcel}
-            disabled={sortedAll.length === 0}
+            disabled={scopedReports.length === 0}
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             Export all
@@ -458,17 +497,24 @@ function MonthlyAttendanceTab() {
             {daysInRange(range)} {daysInRange(range) === 1 ? "day" : "days"}
           </span>
         )}
-        <span>
-          {filteredReports.length === sortedAll.length ? (
-            <>
-              <span className="font-medium text-foreground">{sortedAll.length}</span> employees
-            </>
-          ) : (
-            <>
-              <span className="font-medium text-foreground">{filteredReports.length}</span> of{" "}
-              {sortedAll.length} employees
-            </>
+        <span className="flex items-center gap-2">
+          {employmentType !== "all" && (
+            <Badge variant="secondary">
+              {EMPLOYMENT_FILTER_LABELS[employmentType]}
+            </Badge>
           )}
+          <span>
+            {filteredReports.length === scopedReports.length ? (
+              <>
+                <span className="font-medium text-foreground">{scopedReports.length}</span> employees
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-foreground">{filteredReports.length}</span> of{" "}
+                {scopedReports.length} employees
+              </>
+            )}
+          </span>
         </span>
         <span>
           OT <span className="font-medium text-foreground">{totals.overtimeHours.toFixed(2)}</span>h

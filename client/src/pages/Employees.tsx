@@ -52,7 +52,7 @@ import { Link, useNavigate } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
-import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, Search, Siren, Trash2, X } from "lucide-react"
+import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, RotateCcw, Search, Siren, Trash2, X } from "lucide-react"
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
 interface Employee {
@@ -562,6 +562,12 @@ function Employees() {
     }
   }
 
+  const filtersActive =
+    filters.search !== "" ||
+    filters.site !== "" ||
+    filters.status !== "active" ||
+    filters.employmentType !== ""
+
   const pageIds = employees.map((e) => e._id)
   const allPageSelected =
     pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
@@ -607,11 +613,12 @@ function Employees() {
         </div>
       </div>
 
-      {/* FILTER SECTION */}
+      {/* FILTER SECTION: one row on desktop (search grows, selects keep fixed
+          widths); search above three equal selects on tablet; stacked on mobile. */}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center">
         {/* SEARCH: one box matching name, employee ID and job title at once. */}
-        <div className="relative sm:col-span-2">
+        <div className="relative md:max-w-md md:flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="pl-9"
@@ -627,6 +634,7 @@ function Employees() {
           />
         </div>
 
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 md:flex md:items-center md:gap-2">
         {/* SITE FILTER */}
 
         <Select
@@ -639,7 +647,7 @@ function Employees() {
             })
           }
         >
-          <SelectTrigger>
+          <SelectTrigger className="w-full md:w-[200px]" aria-label="Site">
             <SelectValue placeholder="Select Site" />
           </SelectTrigger>
 
@@ -673,7 +681,7 @@ function Employees() {
             })
           }
         >
-          <SelectTrigger>
+          <SelectTrigger className="w-full md:w-[150px]" aria-label="Status">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
 
@@ -696,7 +704,7 @@ function Employees() {
             })
           }
         >
-          <SelectTrigger>
+          <SelectTrigger className="w-full md:w-[150px]" aria-label="Employment type">
             <SelectValue placeholder="Employment Type" />
           </SelectTrigger>
 
@@ -706,6 +714,29 @@ function Employees() {
             <SelectItem value="temporary">Temporary</SelectItem>
           </SelectContent>
         </Select>
+        </div>
+
+        {/* CLEAR: back to the defaults (keeps the page size). */}
+        {filtersActive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-start md:self-auto"
+            onClick={() =>
+              setFilters({
+                ...filters,
+                search: "",
+                site: "",
+                status: "active",
+                employmentType: "",
+                page: 1,
+              })
+            }
+          >
+            <RotateCcw className="mr-1 h-3 w-3" />
+            Clear
+          </Button>
+        )}
       </div>
 
       {/* BULK EXPORT ACTION BAR */}

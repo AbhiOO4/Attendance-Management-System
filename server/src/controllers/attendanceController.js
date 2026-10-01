@@ -732,6 +732,8 @@ async function buildAttendanceReport(fromDay, toDay) {
         employeeId: employee.employeeId,
         jobTitle: employee.jobTitle,
         isActive: employee.isActive !== false,
+        // Anything not temporary is permanent (same rule as the job report's filter).
+        employmentType: isTemporary ? "temporary" : "permanent",
 
         fullDays,
         halfDays,
