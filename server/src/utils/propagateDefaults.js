@@ -39,7 +39,7 @@ import {
 import { hasSessionOverlap } from './sessionOverlap.js';
 import { computeAttendanceTotals } from './attendanceMath.js';
 import { getEmployeeIdsByCategory } from './collar.js';
-import { FIELD_META } from './rosterFields.js';
+import { FIELD_META, CATEGORY_LABELS } from './rosterFields.js';
 import { buildAuditRow, recordAttendanceAuditBatch } from './attendanceAudit.js';
 import { buildSiteActivityRow, recordSiteActivityBatch } from './siteActivity.js';
 
@@ -112,8 +112,8 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
   let totalUpdated = 0;
   const allSkipped = [];
 
-  // Activity trail (check-OUT changes only): a per-record edit-log row and a per-employee
-  // site-feed row for each record a default change actually rewrites. Best-effort, written
+  // Activity trail (check-OUT changes only): a per-record edit-log row for each record a
+  // default change actually rewrites, plus one site-feed summary row per field. Best-effort, written
   // once at the end so the propagation itself never depends on the logging succeeding.
   const auditRows = [];
   const activityRows = [];
@@ -386,14 +386,16 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
       }
     }
 
-    // Site feed: a single summary row for this field's change (not one per record).
+    // Site feed: a single summary row for this field's change (not one per record), named
+    // by category so it pairs with the `default_changed` row updateSite logs.
     if (!isCheckIn && fieldUpdatedCount > 0) {
+      const categoryLabel = `${CATEGORY_LABELS[FIELD_META[field].category]}${isNight ? ' night shift' : ''}`;
       activityRows.push(
         buildSiteActivityRow({
           type: 'default_propagated',
           actor,
           siteId: site._id,
-          summary: `${changeSummary} · ${fieldUpdatedCount} record${fieldUpdatedCount === 1 ? '' : 's'}`,
+          summary: `${categoryLabel}: ${changeSummary} · ${fieldUpdatedCount} record${fieldUpdatedCount === 1 ? '' : 's'}`,
           dateLocal: targetDateStr,
         })
       );

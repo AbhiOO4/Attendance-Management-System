@@ -19,7 +19,12 @@ import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
 import { touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
-import { recordSiteActivity, resolveActor } from '../utils/siteActivity.js'
+import {
+  recordSiteActivity,
+  recordSiteActivityBatch,
+  buildDefaultChangeRows,
+  resolveActor,
+} from '../utils/siteActivity.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js'
 import { buildSiteManpower } from '../utils/siteManpower.js'
@@ -2668,36 +2673,48 @@ export const updateSite = async (req, res) => {
 
     await site.save();
 
+    // The defaults now in effect (incoming values over the previous ones).
+    const newDefaults = {
+      defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : prevDefaults.defaultCheckIn,
+      defaultCheckOut: defaultCheckOut !== undefined ? defaultCheckOut : prevDefaults.defaultCheckOut,
+      nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : prevDefaults.nightDefaultCheckIn,
+      nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : prevDefaults.nightDefaultCheckOut,
+      staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : prevDefaults.staffDefaultCheckIn,
+      staffDefaultCheckOut: staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : prevDefaults.staffDefaultCheckOut,
+      staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : prevDefaults.staffNightDefaultCheckIn,
+      staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : prevDefaults.staffNightDefaultCheckOut,
+      omaniDefaultCheckIn: omaniDefaultCheckIn !== undefined ? omaniDefaultCheckIn : prevDefaults.omaniDefaultCheckIn,
+      omaniDefaultCheckOut: omaniDefaultCheckOut !== undefined ? omaniDefaultCheckOut : prevDefaults.omaniDefaultCheckOut,
+      omaniNightDefaultCheckIn: omaniNightDefaultCheckIn !== undefined ? omaniNightDefaultCheckIn : prevDefaults.omaniNightDefaultCheckIn,
+      omaniNightDefaultCheckOut: omaniNightDefaultCheckOut !== undefined ? omaniNightDefaultCheckOut : prevDefaults.omaniNightDefaultCheckOut,
+      omaniStaffDefaultCheckIn: omaniStaffDefaultCheckIn !== undefined ? omaniStaffDefaultCheckIn : prevDefaults.omaniStaffDefaultCheckIn,
+      omaniStaffDefaultCheckOut: omaniStaffDefaultCheckOut !== undefined ? omaniStaffDefaultCheckOut : prevDefaults.omaniStaffDefaultCheckOut,
+      omaniStaffNightDefaultCheckIn: omaniStaffNightDefaultCheckIn !== undefined ? omaniStaffNightDefaultCheckIn : prevDefaults.omaniStaffNightDefaultCheckIn,
+      omaniStaffNightDefaultCheckOut: omaniStaffNightDefaultCheckOut !== undefined ? omaniStaffNightDefaultCheckOut : prevDefaults.omaniStaffNightDefaultCheckOut,
+    };
+
+    // Site feed: one row per category whose default check-in/out times changed, attributed
+    // to whoever changed them (supervisor or admin). The actor is resolved only when a
+    // default actually changed, and reused for the propagation trail below.
+    const defaultsChanged = Object.keys(prevDefaults).some(
+      (f) => (prevDefaults[f] || '') !== (newDefaults[f] || '')
+    );
+    const actor = defaultsChanged ? await resolveActor(req) : null;
+    if (defaultsChanged) {
+      await recordSiteActivityBatch(
+        buildDefaultChangeRows({ siteId: site._id, actor, prevDefaults, newDefaults })
+      );
+    }
+
     // Propagate changes to today's attendance records if requested
     if (updateTodayRecords) {
-      const newDefaults = {
-        defaultCheckIn: defaultCheckIn !== undefined ? defaultCheckIn : prevDefaults.defaultCheckIn,
-        defaultCheckOut: defaultCheckOut !== undefined ? defaultCheckOut : prevDefaults.defaultCheckOut,
-        nightDefaultCheckIn: nightDefaultCheckIn !== undefined ? nightDefaultCheckIn : prevDefaults.nightDefaultCheckIn,
-        nightDefaultCheckOut: nightDefaultCheckOut !== undefined ? nightDefaultCheckOut : prevDefaults.nightDefaultCheckOut,
-        staffDefaultCheckIn: staffDefaultCheckIn !== undefined ? staffDefaultCheckIn : prevDefaults.staffDefaultCheckIn,
-        staffDefaultCheckOut: staffDefaultCheckOut !== undefined ? staffDefaultCheckOut : prevDefaults.staffDefaultCheckOut,
-        staffNightDefaultCheckIn: staffNightDefaultCheckIn !== undefined ? staffNightDefaultCheckIn : prevDefaults.staffNightDefaultCheckIn,
-        staffNightDefaultCheckOut: staffNightDefaultCheckOut !== undefined ? staffNightDefaultCheckOut : prevDefaults.staffNightDefaultCheckOut,
-        omaniDefaultCheckIn: omaniDefaultCheckIn !== undefined ? omaniDefaultCheckIn : prevDefaults.omaniDefaultCheckIn,
-        omaniDefaultCheckOut: omaniDefaultCheckOut !== undefined ? omaniDefaultCheckOut : prevDefaults.omaniDefaultCheckOut,
-        omaniNightDefaultCheckIn: omaniNightDefaultCheckIn !== undefined ? omaniNightDefaultCheckIn : prevDefaults.omaniNightDefaultCheckIn,
-        omaniNightDefaultCheckOut: omaniNightDefaultCheckOut !== undefined ? omaniNightDefaultCheckOut : prevDefaults.omaniNightDefaultCheckOut,
-        omaniStaffDefaultCheckIn: omaniStaffDefaultCheckIn !== undefined ? omaniStaffDefaultCheckIn : prevDefaults.omaniStaffDefaultCheckIn,
-        omaniStaffDefaultCheckOut: omaniStaffDefaultCheckOut !== undefined ? omaniStaffDefaultCheckOut : prevDefaults.omaniStaffDefaultCheckOut,
-        omaniStaffNightDefaultCheckIn: omaniStaffNightDefaultCheckIn !== undefined ? omaniStaffNightDefaultCheckIn : prevDefaults.omaniStaffNightDefaultCheckIn,
-        omaniStaffNightDefaultCheckOut: omaniStaffNightDefaultCheckOut !== undefined ? omaniStaffNightDefaultCheckOut : prevDefaults.omaniStaffNightDefaultCheckOut,
-      };
-
       try {
-        // Attribute the propagation trail to the admin who changed the default.
-        const propagationActor = await resolveActor(req);
         const propagation = await propagateDefaultChanges(
           site,
           prevDefaults,
           newDefaults,
           workConfig,
-          propagationActor
+          actor
         );
 
         return res.status(200).json({

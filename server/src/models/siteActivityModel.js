@@ -72,8 +72,9 @@ const siteActivitySchema = new mongoose.Schema(
         "scheduled_removal", // deferred removal scheduled for a future day
         "scheduled_applied", // the midnight cron applied a scheduled move / visit / removal
         "scheduled_dropped", // the midnight cron skipped a scheduled change (reason in summary)
-        "auto_checkout", // the system cron auto-closed an open shift
-        "default_propagated", // a site default-time change was applied to a record
+        "auto_checkout", // the system cron auto-closed one category's open shifts (one row per run)
+        "default_propagated", // a site default-time change was applied to existing records
+        "default_changed", // a category's default check-in/out times were changed
       ],
       required: true,
     },

@@ -16,6 +16,7 @@ import { getEmployeeIdsByCategory } from '../utils/collar.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { recordAttendanceAudit, SYSTEM_ACTOR } from '../utils/attendanceAudit.js';
 import { buildSiteActivityRow, recordSiteActivityBatch } from '../utils/siteActivity.js';
+import { CATEGORY_LABELS } from '../utils/rosterFields.js';
 
 /**
  * Fill checkOut for a SINGLE roster category's open sessions across a set of sites on a
@@ -27,31 +28,33 @@ import { buildSiteActivityRow, recordSiteActivityBatch } from '../utils/siteActi
  *  - checkOutField : Site field holding this category's default check-out ("HH:mm").
  *  - isNight       : night-type mode — check-out is the next morning (run vs yesterday).
  *  - employeeIds   : this category's employee _id set.
+ *  - category      : this category's key (labels the site-activity row).
  */
 async function processSites(sites, dateStr, opts, workConfig) {
-  const { checkOutField, isNight = false, employeeIds = [] } = opts;
+  const { checkOutField, isNight = false, employeeIds = [], category } = opts;
   if (employeeIds.length === 0) return;
 
   const recordDate = new Date(dateStr);
   recordDate.setUTCHours(0, 0, 0, 0);
 
-  // Per-employee site-feed rows for the whole run, inserted once at the end.
+  // Site-feed rows for the whole run (at most one per site), inserted once at the end.
   const activityRows = [];
 
   for (const site of sites) {
-    try {
-      const checkOutTimeStr = site[checkOutField];
-      if (!checkOutTimeStr) continue;
+    const checkOutTimeStr = site[checkOutField];
+    if (!checkOutTimeStr) continue;
 
+    // Records closed at this site (declared outside the try so a mid-site error still
+    // logs the ones already saved).
+    let updatedCount = 0;
+
+    try {
       // Records for this date with a session at this site, scoped to this category.
-      // Employee name is populated for the site-activity feed's per-employee row.
       const records = await Attendance.find({
         date: recordDate,
         'sessions.siteId': site._id,
         employee: { $in: employeeIds },
-      }).populate('employee', 'name');
-
-      let updatedCount = 0;
+      });
 
       for (const record of records) {
         let recordModified = false;
@@ -146,19 +149,6 @@ async function processSites(sites, dateStr, opts, workConfig) {
             type: "auto_checkout",
             summary: `Auto checked-out by system at ${checkOutTimeStr}`,
           });
-
-          // --- Site feed: one per-employee movement row (batched after the run) ---
-          activityRows.push(
-            buildSiteActivityRow({
-              type: "auto_checkout",
-              actor: SYSTEM_ACTOR,
-              employee: record.employee?._id ?? record.employee,
-              employeeName: record.employee?.name || "",
-              siteId: site._id,
-              summary: `Auto checked-out at ${checkOutTimeStr}`,
-              dateLocal: dateStr,
-            })
-          );
         }
       }
 
@@ -171,6 +161,20 @@ async function processSites(sites, dateStr, opts, workConfig) {
       console.error(
         `[AutoCheckOut] Error processing site "${site.siteName}":`,
         siteError
+      );
+    }
+
+    // --- Site feed: ONE row for this category's run at this site, not one per employee
+    // (each record's own history keeps its individual auto_checkout entry). ---
+    if (updatedCount > 0) {
+      activityRows.push(
+        buildSiteActivityRow({
+          type: "auto_checkout",
+          actor: SYSTEM_ACTOR,
+          siteId: site._id,
+          summary: `${CATEGORY_LABELS[category] || 'Employees'}${isNight ? ' night shift' : ''} auto checked-out at ${checkOutTimeStr} · ${updatedCount} employee${updatedCount === 1 ? '' : 's'}`,
+          dateLocal: dateStr,
+        })
       );
     }
   }
@@ -232,7 +236,7 @@ async function runAutoCheckOut() {
       await processSites(
         sites,
         m.when === 'today' ? todayStr : yesterdayStr,
-        { checkOutField: m.field, isNight: m.isNight, employeeIds: cats[m.cat] },
+        { checkOutField: m.field, isNight: m.isNight, employeeIds: cats[m.cat], category: m.cat },
         workConfig
       );
     }

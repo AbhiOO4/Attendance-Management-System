@@ -37,6 +37,25 @@ export const FIELD_META = {
   omaniStaffNightDefaultCheckOut: { category: 'omaniStaff', night: true,  checkIn: false },
 };
 
+// Display names for the four categories, used in site-activity log lines. Mirrors
+// CATEGORY_LABELS in the client's lib/rosterUtils.ts (the defaults editor's headings).
+export const CATEGORY_LABELS = {
+  foreignSkilled: 'Skilled Labour',
+  foreignStaff: 'Staff',
+  omaniSkilled: 'Omani Labour',
+  omaniStaff: 'Omani Staff',
+};
+
+/**
+ * A default-time field's shift + endpoint for log lines, e.g. "day check-in",
+ * "night check-out". Unknown fields come back as-is.
+ */
+export function defaultFieldLabel(field) {
+  const meta = FIELD_META[field];
+  if (!meta) return field;
+  return `${meta.night ? 'night' : 'day'} ${meta.checkIn ? 'check-in' : 'check-out'}`;
+}
+
 // Reverse lookup: `${category}|${night}` -> the Site check-out field for that
 // category and shift type. Built once from FIELD_META so it can never drift.
 const CHECKOUT_FIELD_BY_CATEGORY = Object.entries(FIELD_META).reduce(

@@ -9,6 +9,7 @@
  */
 import siteActivityModel from "../models/siteActivityModel.js"
 import { getTodayLocal } from "./timeLocal.js"
+import { FIELD_META, CATEGORY_LABELS, defaultFieldLabel } from "./rosterFields.js"
 
 export { resolveActor, SYSTEM_ACTOR } from "./attendanceAudit.js"
 
@@ -75,6 +76,38 @@ export async function recordSiteActivity({
   } catch (err) {
     console.error("[siteActivity] failed to record:", err.message)
   }
+}
+
+/**
+ * One `default_changed` row per roster category whose default times differ between
+ * prevDefaults and newDefaults (both keyed by the Site field names in FIELD_META), listing
+ * every changed field — e.g. "Skilled Labour default times changed: day check-in 07:00 →
+ * 08:00, night check-out cleared (was 06:00)". Unchanged categories get no row.
+ */
+export function buildDefaultChangeRows({ siteId, actor, prevDefaults, newDefaults }) {
+  const partsByCategory = new Map()
+  for (const [field, meta] of Object.entries(FIELD_META)) {
+    const oldVal = prevDefaults[field] || ""
+    const newVal = newDefaults[field] || ""
+    if (oldVal === newVal) continue
+    const label = defaultFieldLabel(field)
+    const part =
+      oldVal && newVal
+        ? `${label} ${oldVal} → ${newVal}`
+        : newVal
+          ? `${label} set to ${newVal}`
+          : `${label} cleared (was ${oldVal})`
+    if (!partsByCategory.has(meta.category)) partsByCategory.set(meta.category, [])
+    partsByCategory.get(meta.category).push(part)
+  }
+  return [...partsByCategory].map(([category, parts]) =>
+    buildSiteActivityRow({
+      type: "default_changed",
+      actor,
+      siteId,
+      summary: `${CATEGORY_LABELS[category]} default times changed: ${parts.join(", ")}`,
+    })
+  )
 }
 
 /** Best-effort batch write for bulk paths. `rows` = buildSiteActivityRow(...) outputs. */

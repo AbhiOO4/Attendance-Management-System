@@ -1,7 +1,8 @@
 // SiteActivityLog.tsx
 //
 // A per-site, per-day activity feed (employee movements): transfer requests sent/decided,
-// direct/permanent transfers, send-to-site pushes, and add/remove events. A button in the
+// direct/permanent transfers, send-to-site pushes, add/remove events, per-category default
+// time changes and the system's per-category auto check-outs. A button in the
 // Site Attendance / Site Detail header opens a dialog that fetches
 // GET /api/site/:siteId/activity?date=YYYY-MM-DD on open and lists the day's events, newest
 // first. A transfer shows in both the source and destination site's feed (server-side).
@@ -90,7 +91,7 @@ export default function SiteActivityLog({ siteId, date, className }: Props) {
           <div className="py-6 text-sm text-destructive">{error}</div>
         ) : entries.length === 0 ? (
           <div className="py-6 text-sm text-muted-foreground">
-            No employee movements recorded for this day.
+            No activity recorded for this day.
           </div>
         ) : (
           <ul className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto pr-1">
