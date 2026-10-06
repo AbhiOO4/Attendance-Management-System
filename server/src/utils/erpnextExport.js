@@ -32,6 +32,10 @@ export const DEFAULT_ACTIVITY_TYPE = "Construction";
 // Fallback ERPNext Leave Type for PAID (annual) leave — the only leave that maps to
 // "On Leave". Overridden by WorkSchedule.erpPaidLeaveType; must exist in ERPNext.
 const DEFAULT_PAID_LEAVE_TYPE = "Annual Leave";
+// ERPNext Leave Type stamped on "Half Day" rows so the missing half is counted as LWP
+// (a custom script on the client's ERPNext overrides the default half-day handling).
+// Must match the Leave Type master exactly.
+const HALF_DAY_LEAVE_TYPE = "Leave Without Pay";
 
 // --------------------------------------------------------------------------
 // CSV primitives
@@ -79,24 +83,33 @@ function erpAttendanceStatus(record, paidLeaveType) {
   // Only PAID (annual) leave is "On Leave" — with a paid leave type. Sick leave, emergency
   // leave and LOP are UNPAID absences in this app (sick/emergency are excused but still
   // lower attendance %; LOP is an unexcused absence), so all map to plain Absent with NO
-  // leave type, mirroring monthlyReport.
+  // leave type, mirroring monthlyReport. A Half Day carries the LWP leave type so ERPNext
+  // deducts the missing half as Leave Without Pay.
   if (record.isPaidLeave) return { status: "On Leave", leaveType: paidLeaveType };
   if (record.status === "fullday") return { status: "Present", leaveType: "" };
-  if (record.status === "halfday") return { status: "Half Day", leaveType: "" };
+  if (record.status === "halfday") return { status: "Half Day", leaveType: HALF_DAY_LEAVE_TYPE };
   return { status: "Absent", leaveType: "" };
 }
 
 export function buildAttendanceCsv(
   records,
-  { companyName = DEFAULT_COMPANY, overtimeType = "", paidLeaveType = "" } = {}
+  {
+    companyName = DEFAULT_COMPANY,
+    overtimeType = "",
+    paidLeaveType = "",
+    standardWorkingHours = 8,
+  } = {}
 ) {
   const plt = (paidLeaveType && String(paidLeaveType).trim()) || DEFAULT_PAID_LEAVE_TYPE;
+  // Standard Working Hours = WorkSchedule.fullDayHours — company-wide, same on every row.
+  const stdHours = round2(standardWorkingHours);
   const header = [
     "ID",
     "Employee",
     "Attendance Date",
     "Status",
     "Working Hours",
+    "Standard Working Hours",
     "Company",
     "Leave Type",
     "Overtime Type",
@@ -138,6 +151,7 @@ export function buildAttendanceCsv(
       businessDayString(record.date),
       status,
       round2(record.totalWorkHours || 0),
+      stdHours,
       companyName,
       leaveType,
       hasOt ? overtimeType : "",

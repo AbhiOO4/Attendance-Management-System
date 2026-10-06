@@ -6725,13 +6725,19 @@ export const exportErpnext = async (req, res) => {
     const overtimeActivityType = workConfig?.erpOvertimeActivityType || "";
     const overtimeType = workConfig?.erpOvertimeType || "";
     const paidLeaveType = workConfig?.erpPaidLeaveType || "";
+    const standardWorkingHours = workConfig?.fullDayHours ?? 8;
     const pad2 = (n) => String(n).padStart(2, "0");
     const stamp = `${yearNum}-${pad2(monthNum)}`;
 
     let built;
     let filename;
     if (type === "attendance") {
-      built = buildAttendanceCsv(records, { companyName, overtimeType, paidLeaveType });
+      built = buildAttendanceCsv(records, {
+        companyName,
+        overtimeType,
+        paidLeaveType,
+        standardWorkingHours,
+      });
       filename = `erpnext-attendance-${stamp}.csv`;
     } else if (type === "timesheet") {
       built = buildTimesheetCsv(records, { companyName, activityType, overtimeActivityType });
