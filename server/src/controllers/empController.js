@@ -135,7 +135,7 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledVisit scheduledBySiteId"
+        "_id name employeeId companyId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledVisit scheduledBySiteId"
       )
       .populate("currentJob", "name") // 👈 add this
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
@@ -241,6 +241,11 @@ export const addEmployee = async (req, res) => {
       req.body.annualLeaveEntitlement = Number.isFinite(n) && n >= 0 ? n : null;
     }
 
+    // Optional company ID: blank → null (the partial unique index ignores nulls).
+    if (req.body.companyId !== undefined) {
+      req.body.companyId = req.body.companyId || null;
+    }
+
     const newEmployee = new empModel(req.body);
     const savedEmp = await newEmployee.save({ session });
 
@@ -301,7 +306,9 @@ export const addEmployee = async (req, res) => {
     session.endSession();
     if (error.code === 11000) {
       return res.status(409).json({
-        message: "Conflict: Employee ID already exists in the system."
+        message: error.keyPattern?.companyId
+          ? "Conflict: Company ID already exists in the system."
+          : "Conflict: Employee ID already exists in the system."
       });
     }
     res.status(500).json({ message: "Internal server error" });
@@ -416,6 +423,11 @@ export const editEmployee = async (req, res) => {
       }
     }
 
+    // Optional company ID: blank → null (clears it). Omitted → left untouched.
+    if (req.body.companyId !== undefined) {
+      req.body.companyId = req.body.companyId || null;
+    }
+
     // Site/job assignment is managed through the site-detail / hired-workers flows,
     // not this edit form. Only reconcile currentSite/currentJob when the request
     // explicitly includes currentSite — otherwise leave them untouched (an absent
@@ -500,7 +512,9 @@ export const editEmployee = async (req, res) => {
     console.log(error);
     if (error.code === 11000) {
       return res.status(409).json({
-        message: "Conflict: Employee ID already exists in the system."
+        message: error.keyPattern?.companyId
+          ? "Conflict: Company ID already exists in the system."
+          : "Conflict: Employee ID already exists in the system."
       });
     }
 

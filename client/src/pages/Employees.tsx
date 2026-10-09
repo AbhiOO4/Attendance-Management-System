@@ -65,6 +65,7 @@ interface Employee {
   user?: string | null
   employmentType: 'permanent' | 'temporary'
   nationality?: 'foreign' | 'omani'
+  companyId?: string | null
   isActive?: boolean
 }
 
@@ -100,6 +101,7 @@ type NewEmployee = {
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
   annualLeaveEntitlement?: number | null
+  companyId?: string | null
 }
 
 type UpdateInfo = {
@@ -109,6 +111,7 @@ type UpdateInfo = {
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
   annualLeaveEntitlement?: number | null
+  companyId?: string | null
 }
 
 
@@ -124,7 +127,7 @@ function EmployeeRowActions({
   onRestore,
 }: {
   employee: Employee
-  onEdit: (id: string, updateInfo: UpdateInfo) => Promise<void>
+  onEdit: (id: string, updateInfo: UpdateInfo) => Promise<boolean>
   onRemove: (id: string) => void
   onPermanentlyDelete: (id: string) => void
   onRestore: (id: string) => void
@@ -353,6 +356,7 @@ function Employees() {
       await api.post('/api/employees', newEmployee)
       toast.success("Employee added successfully")
       fetchEmployees()
+      return true
     }catch(error){
       console.log(error)
       if (axios.isAxiosError(error)) {
@@ -362,6 +366,7 @@ function Employees() {
     } else {
       toast.error("Something went wrong")
     }
+      return false
     }
   }
 
@@ -415,9 +420,15 @@ function Employees() {
       toast.success("Employee updated successfully")
 
       fetchEmployees()
+      return true
     } catch (error) {
-      toast.error("Couldn't update employee")
+      // Surface the server's reason (e.g. a duplicate Employee/Company ID).
+      toast.error(
+        (axios.isAxiosError(error) && error.response?.data?.message) ||
+          "Couldn't update employee"
+      )
       console.log(error)
+      return false
     }
   }
 
@@ -530,6 +541,7 @@ function Employees() {
           name: meta?.name ?? fallback?.name ?? "",
           employeeId: meta?.employeeId ?? fallback?.employeeId ?? "",
           jobTitle: meta?.jobTitle ?? fallback?.jobTitle ?? "",
+          companyId: meta?.companyId ?? null,
           records,
         }
       })
@@ -866,6 +878,10 @@ function Employees() {
               </TableHead>
 
               <TableHead className="hidden md:table-cell">
+                Company ID
+              </TableHead>
+
+              <TableHead className="hidden md:table-cell">
                 Job Title
               </TableHead>
 
@@ -929,6 +945,9 @@ function Employees() {
                       {/* Mobile-only: fold Employee ID + Job Title under the name */}
                       <div className="flex flex-col gap-0.5 text-xs text-muted-foreground md:hidden">
                         <span>ID: {employee.employeeId}</span>
+                        {employee.companyId && (
+                          <span>Company ID: {employee.companyId}</span>
+                        )}
                         <span>{employee.jobTitle}</span>
                       </div>
                     </div>
@@ -936,6 +955,12 @@ function Employees() {
 
                   <TableCell className="hidden md:table-cell">
                     {employee.employeeId}
+                  </TableCell>
+
+                  <TableCell className="hidden md:table-cell">
+                    {employee.companyId || (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </TableCell>
 
                   <TableCell className="hidden md:table-cell">
@@ -967,7 +992,7 @@ function Employees() {
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={5 + (selectionMode ? 1 : 0) + (canWrite ? 1 : 0)}
+                  colSpan={6 + (selectionMode ? 1 : 0) + (canWrite ? 1 : 0)}
                   className="text-center py-6"
                 >
                   No employees found

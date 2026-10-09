@@ -1,5 +1,7 @@
 import Joi from 'joi'
 
+// Company ID: letters/digits in hyphen-separated groups (e.g. "NGDP-105").
+export const COMPANY_ID_RE = /^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$/
 
 const employeeSchema = Joi.object({
   name: Joi.string().trim().required()
@@ -10,6 +12,13 @@ const employeeSchema = Joi.object({
   employeeId: Joi.string().trim().uppercase().required()
     .messages({
       'string.empty': 'Employee ID is required'
+    }),
+
+  // Optional, unique when set ('' / null → none). Must be declared here or Joi
+  // rejects the key and `req.body = value` strips it before the controller.
+  companyId: Joi.string().trim().uppercase().pattern(COMPANY_ID_RE).allow('', null).optional()
+    .messages({
+      'string.pattern.base': 'Company ID may only contain letters, numbers and hyphens'
     }),
 
   jobTitle: Joi.string().trim().required()

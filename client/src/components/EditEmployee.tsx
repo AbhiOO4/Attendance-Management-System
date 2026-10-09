@@ -25,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
+import { COMPANY_ID_RE } from "@/lib/utils"
 
 interface Employee {
   _id: string
@@ -33,6 +34,7 @@ interface Employee {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality?: 'foreign' | 'omani'
+  companyId?: string | null
 }
 
 type UpdateInfo = {
@@ -43,6 +45,8 @@ type UpdateInfo = {
   nationality: 'foreign' | 'omani'
   // null → clear the per-employee override (fall back to the global default).
   annualLeaveEntitlement?: number | null
+  // null → clear the company ID.
+  companyId?: string | null
 }
 
 type JobTitle = {
@@ -53,7 +57,8 @@ type JobTitle = {
 interface Props {
   employee: Employee
 
-  onSave: ( id: string, updateInfo: UpdateInfo ) => Promise<void>
+  // Resolves true on success; the dialog stays open (keeping the input) otherwise.
+  onSave: ( id: string, updateInfo: UpdateInfo ) => Promise<boolean>
 
   // Optional controlled mode: pass open/onOpenChange to drive the dialog from a
   // parent (e.g. a kebab menu item) and hideTrigger to drop the built-in button.
@@ -87,6 +92,9 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
   // "use the global default". Loaded from the full employee doc when the dialog opens.
   const [entitlement, setEntitlement] = useState<string>("")
 
+  // Optional company ID, blank = none (clears it on save).
+  const [companyId, setCompanyId] = useState<string>(employee.companyId ?? "")
+
   const fetchTitles = async () => {
     try {
       const res = await api.get<JobTitle[]>(
@@ -114,11 +122,21 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
       return
     }
 
+    const trimmedCompanyId = companyId.trim()
+    if (trimmedCompanyId && !COMPANY_ID_RE.test(trimmedCompanyId)) {
+      toast.error("Company ID may only contain letters, numbers and hyphens")
+      return
+    }
+
     const trimmed = entitlement.trim()
     const annualLeaveEntitlement = trimmed === "" ? null : Number(trimmed)
 
-    await onSave(employee._id, { ...formData, annualLeaveEntitlement })
-    setOpen(false)
+    const ok = await onSave(employee._id, {
+      ...formData,
+      annualLeaveEntitlement,
+      companyId: trimmedCompanyId || null,
+    })
+    if (ok) setOpen(false)
   }
 
   useEffect(() => {
@@ -132,12 +150,15 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
         employmentType: employee.employmentType || "permanent",
         nationality: employee.nationality || "foreign",
       })
-      // The list row doesn't carry the entitlement — fetch the full doc for it.
+      setCompanyId(employee.companyId ?? "")
+      // The list row doesn't carry the entitlement — fetch the full doc for it
+      // (and the freshest company ID).
       api
         .get(`/api/employees/${employee._id}`)
         .then((res) => {
           const v = res.data?.annualLeaveEntitlement
           setEntitlement(v === null || v === undefined ? "" : String(v))
+          setCompanyId(res.data?.companyId ?? "")
         })
         .catch(() => setEntitlement(""))
     }
@@ -181,6 +202,12 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
                 employeeId: e.target.value,
               })
             }
+          />
+
+          <Input
+            placeholder="Company ID (optional, e.g. NGDP-105)"
+            value={companyId}
+            onChange={(e) => setCompanyId(e.target.value)}
           />
 
           <SearchableSelect

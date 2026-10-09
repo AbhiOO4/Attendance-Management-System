@@ -24,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
+import { COMPANY_ID_RE } from "@/lib/utils"
 
 type NewEmployee = {
   name: string
@@ -33,6 +34,8 @@ type NewEmployee = {
   nationality: 'foreign' | 'omani'
   // Optional per-employee annual-leave override; omitted → global default.
   annualLeaveEntitlement?: number | null
+  // Optional, unique company ID; null → none.
+  companyId?: string | null
 }
 
 type JobTitle = {
@@ -41,7 +44,8 @@ type JobTitle = {
 }
 
 interface Props {
-  onAdd: ( newEmployee: NewEmployee ) => Promise<void>
+  // Resolves true on success; the dialog stays open (keeping the input) otherwise.
+  onAdd: ( newEmployee: NewEmployee ) => Promise<boolean>
 }
 
 function AddEmployee({ onAdd }: Props) {
@@ -53,6 +57,9 @@ function AddEmployee({ onAdd }: Props) {
 
   // Optional annual-leave override, blank = use global default.
   const [entitlement, setEntitlement] = useState<string>("")
+
+  // Optional company ID, blank = none.
+  const [companyId, setCompanyId] = useState<string>("")
 
   const fetchTitles = async () => {
     try {
@@ -81,10 +88,21 @@ function AddEmployee({ onAdd }: Props) {
       return
     }
 
+    const trimmedCompanyId = companyId.trim()
+    if (trimmedCompanyId && !COMPANY_ID_RE.test(trimmedCompanyId)) {
+      toast.error("Company ID may only contain letters, numbers and hyphens")
+      return
+    }
+
     const trimmed = entitlement.trim()
     const annualLeaveEntitlement = trimmed === "" ? null : Number(trimmed)
 
-    await onAdd({ ...formData, annualLeaveEntitlement })
+    const ok = await onAdd({
+      ...formData,
+      annualLeaveEntitlement,
+      companyId: trimmedCompanyId || null,
+    })
+    if (!ok) return
 
     setFormData({
       name: "",
@@ -94,6 +112,7 @@ function AddEmployee({ onAdd }: Props) {
       nationality: "foreign",
     })
     setEntitlement("")
+    setCompanyId("")
 
     setOpen(false)
   }
@@ -140,6 +159,12 @@ function AddEmployee({ onAdd }: Props) {
                 employeeId: e.target.value,
               })
             }
+          />
+
+          <Input
+            placeholder="Company ID (optional, e.g. NGDP-105)"
+            value={companyId}
+            onChange={(e) => setCompanyId(e.target.value)}
           />
 
           <SearchableSelect

@@ -82,6 +82,8 @@ interface Employee {
 
   jobTitle: string
 
+  companyId?: string | null
+
   currentSite: string | null
 
   currentJob: string | null

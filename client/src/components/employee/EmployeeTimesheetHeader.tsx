@@ -44,6 +44,7 @@ export interface TimesheetEmployee {
   name: string
   employeeId: string
   jobTitle: string
+  companyId?: string | null
   isActive: boolean
 }
 
@@ -131,6 +132,15 @@ export default function EmployeeTimesheetHeader({
               <Badge variant="outline" className="font-mono font-normal">
                 {employee.employeeId}
               </Badge>
+              {employee.companyId && (
+                <Badge
+                  variant="outline"
+                  className="font-mono font-normal"
+                  title="Company ID"
+                >
+                  {employee.companyId}
+                </Badge>
+              )}
               <span>{employee.jobTitle}</span>
             </p>
           </div>

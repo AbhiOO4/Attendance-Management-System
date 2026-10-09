@@ -31,6 +31,7 @@ export interface TimesheetEmployeeMeta {
   name?: string | null
   employeeId?: string | null
   jobTitle?: string | null
+  companyId?: string | null
 }
 
 interface WorkConfigLike {
@@ -340,6 +341,8 @@ export function addTimesheetSheet(
     })} ${year}`
   )
 
+  addInfoRow("Company ID:", input.companyId || "-", "", "")
+
   worksheet.addRow([])
 
   // --------------------------
@@ -393,9 +396,9 @@ export function addTimesheetSheet(
   // DATA ROWS
   // --------------------------
 
-  // Row layout above is deterministic: 1 company, 2 subtitle, 3 blank, 4-5 info,
-  // 6 blank, 7 header — so data begins at row 8 for every sheet.
-  let currentRow = 8
+  // Row layout above is deterministic: 1 company, 2 subtitle, 3 blank, 4-6 info,
+  // 7 blank, 8 header — so data begins at row 9 for every sheet.
+  let currentRow = 9
 
   exportDays.forEach(({ date, record }, index) => {
     const shortDate =
@@ -774,6 +777,7 @@ export async function exportSingleTimesheet(opts: {
     name: opts.employee?.name,
     employeeId: opts.employee?.employeeId,
     jobTitle: opts.employee?.jobTitle,
+    companyId: opts.employee?.companyId,
     records: opts.records,
     month,
     year,
@@ -823,6 +827,7 @@ export async function exportBulkTimesheets(opts: {
       name: emp.name,
       employeeId: emp.employeeId,
       jobTitle: emp.jobTitle,
+      companyId: emp.companyId,
       records: emp.records,
       month,
       year,

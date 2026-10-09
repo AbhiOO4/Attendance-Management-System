@@ -17,6 +17,16 @@ const employeeSchema = new mongoose.Schema({
     index: true
   },
 
+  // Optional company-issued ID (e.g. "NGDP-105"): letters, digits and hyphens,
+  // uppercased. Unique only when set — see the partial index below, which keeps
+  // the many employees without one (null) from colliding.
+  companyId: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    default: null
+  },
+
   jobTitle: {
     type: String,
     required: [true, 'Job title is required'],
@@ -180,5 +190,10 @@ const employeeSchema = new mongoose.Schema({
 employeeSchema.index({ currentJob: 1 });
 
 employeeSchema.index({ currentSite: 1 });
+
+employeeSchema.index(
+  { companyId: 1 },
+  { unique: true, partialFilterExpression: { companyId: { $type: "string" } } }
+);
 
 export default mongoose.model('Employee', employeeSchema);
