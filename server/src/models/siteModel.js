@@ -25,6 +25,13 @@ const siteSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // The hidden "Drivers" pool (utils/driverPool.js): the lock/defaults/activity anchor for
+  // the Drivers Attendance sheet. Driver sessions carry siteId = this pool and a job from any
+  // real site. Never listed, never an assignment destination. Exactly one, created on boot.
+  isDriverPool: {
+    type: Boolean,
+    default: false
+  },
   isDeleted: {
     type: Boolean,
     default: false

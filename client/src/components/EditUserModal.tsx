@@ -14,14 +14,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-
 interface UserType {
   _id: string
   name: string
@@ -86,8 +78,7 @@ function EditUserModal({
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
-  
-  const [assignedSite, setAssignedSite] = useState("")
+
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
@@ -96,7 +87,6 @@ function EditUserModal({
   useEffect(() => {
     if (user) {
       setEmail(user.email)
-      setAssignedSite(user.assignedSite || "")
       setPassword("")
       setConfirmPassword("")
     }
@@ -111,17 +101,13 @@ function EditUserModal({
     (!hasTypedPassword || (password.length >= 6 && isPasswordMatch))
 
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
+  const isDriverSupervisor = user?.role === 'driverSupervisor'
 
-  // Only offer live sites (plus the currently-assigned one, so its value still
-  // renders even if it was since deactivated/completed).
-  const assignableSites = sites.filter(
-    (s) =>
-      (s.isActive !== false && !s.isCompleted && !s.isDeleted) ||
-      s._id === user?.assignedSite
-  )
-
-  const siteChanged =
-    !isAdmin && !!user && assignedSite !== (user.assignedSite || "")
+  // Site access is read-only: it mirrors the linked employee's permanent site and
+  // changes only when that employee is permanently moved or removed.
+  const accessSiteName = user?.assignedSite
+    ? sites.find((s) => s._id === user.assignedSite)?.siteName || "Assigned"
+    : null
 
   const handleUpdate = async () => {
     if (!user || !canUpdate) return
@@ -131,16 +117,9 @@ function EditUserModal({
 
       const payload: {
         email: string
-        assignedSite?: string
         password?: string
       } = {
         email,
-      }
-
-      // Only send the site when it actually changed — the server treats a resent
-      // unchanged value as a no-op, but this keeps the intent (and its side effects) explicit.
-      if (siteChanged) {
-        payload.assignedSite = assignedSite
       }
 
       if (hasTypedPassword) {
@@ -173,7 +152,7 @@ function EditUserModal({
           </div>
           <div>
             <DialogTitle className="text-xl font-bold">
-              Edit {user?.role === 'superadmin' ? 'Super Admin' : user?.role === 'admin' ? 'Admin' : 'Supervisor'}
+              Edit {user?.role === 'superadmin' ? 'Super Admin' : user?.role === 'admin' ? 'Admin' : isDriverSupervisor ? 'Driver Supervisor' : 'Supervisor'}
             </DialogTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
               Modify account credentials and system configuration.
@@ -221,36 +200,26 @@ function EditUserModal({
             </div>
           </div>
 
-          {/* Assigned Site field for supervisors only */}
-          {!isAdmin && (
+          {isDriverSupervisor && (
             <div className="grid gap-1.5">
-              <Label className="text-sm font-medium">Assigned Site</Label>
-              <Select
-                value={assignedSite}
-                onValueChange={setAssignedSite}
-              >
-                <SelectTrigger className="bg-background/50">
-                  <SelectValue placeholder="Select site" />
-                </SelectTrigger>
+              <Label className="text-sm font-medium">Access</Label>
+              <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm">
+                Drivers Attendance (all drivers with no site)
+              </div>
+            </div>
+          )}
 
-                <SelectContent>
-                  {assignableSites.map((site) => (
-                    <SelectItem
-                      key={site._id}
-                      value={site._id}
-                    >
-                      {site.siteName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {siteChanged && (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  This changes the supervisor's site access immediately. It does not
-                  move their worker/roster record — that stays where it is.
-                </div>
-              )}
+          {/* Site access (supervisors only) — read-only, follows the linked employee */}
+          {!isAdmin && !isDriverSupervisor && (
+            <div className="grid gap-1.5">
+              <Label className="text-sm font-medium">Site Access</Label>
+              <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm">
+                {accessSiteName ?? <span className="text-muted-foreground">Unassigned</span>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Follows this supervisor's employee record. It changes only when the employee
+                is permanently moved to another site (or removed) — temporary visits don't change it.
+              </p>
             </div>
           )}
 

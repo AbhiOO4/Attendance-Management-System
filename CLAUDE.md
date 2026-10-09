@@ -127,29 +127,39 @@ Any change to this formula requires re-running the recalculation script in
 **No pay/money logic.** There is no per-employee salary, no OT rate and no pay
 pricing (the old `server/src/utils/payMath.js`, `monthlySalary`, `overtimeMultiplier`
 and `monthlyHoursDivisor` were all removed). The monthly report (`monthlyReport` in
-`attendanceController.js`) is an HOURS report: per employee it returns `fullDays`,
-`halfDays`, `absentDays`, `attendancePercentage`, `overtimeHours`, `holidayHours`,
-and `totalOvertimeHours` (= `overtimeHours` + `holidayHours`, since OT and holiday
-hours were paid at the same rate). `payableDays` is still computed internally to
-derive `attendancePercentage` but is not returned. It also returns the LEAVE
-COMPOSITION: `leaveDays` (annual/paid), `emergencyLeaveDays`, `sickLeaveDays`, `lopDays`
-— and `pendingDays`. DAY BUCKETS ARE MUTUALLY EXCLUSIVE and mirror the timesheet Status
-badge (client `getDisplayStatus`), so the employee page's tiles and the report both equal
-a count of badges: leave flag (annual > emergency > sick > lop, regardless of holiday) →
-`pendingDays` (status absent + an open session: checked in, no check-out — NOT absent)
-→ a holiday not worked is a day off (counted nowhere) → otherwise `fullDays` /
-`halfDays` / `absentDays` by status — HOLIDAY WORK INCLUDED in full/half. `absentDays`
-is therefore only "absent with no leave/LOP recorded". Paid vs unpaid is separate:
-payable days = full/half on working days + annual leave; holiday work earns payable
-credit only for TEMPORARY workers (their expected days include holidays), permanent
-staff are paid for it as holiday hours. The ERPNext CSV still exports sick/emergency/LOP
-as "Absent". The tally lives in `buildAttendanceReport(fromDay, toDay)`
-(inclusive UTC-midnight bounds; expected working days counted up to `getTodayLocal()`),
-shared by `GET /reports/monthly/:month/:year` and `GET /reports/range?from&to`
+`attendanceController.js`) is an hours + PAYMENT-DAYS report, built to be cross-checked
+against the ERPNext salary slip. Every day is classified by `classifyPayrollDay(record)`
+(`server/src/utils/payrollDay.js`) — the SAME function the ERPNext Attendance CSV
+(`erpAttendanceStatus`) uses, so the two cannot drift; the client mirrors it in
+`client/src/lib/payrollDay.ts` (employee timesheet tiles) — keep in sync. Kinds, in order:
+`holiday` (any `isHoliday` record, worked or not — never deducted, in NO day bucket; a day
+off is paid and holiday work is paid as `holidayHours`, which the CSV sends as overtime) →
+`annual` (paid leave, `leaveDays`, "On Leave") → `full` → `half` ("Half Day" + LWP) →
+`absent` with a reason: emergency > sick > lop > none ("none" includes a PENDING day —
+checked in, no check-out — which the CSV also sends as Absent). Per employee it returns
+`workingDays` (EVERY calendar day of the span, holidays included, the whole span — like
+ERPNext "Include holidays in Total no. of Working Days"), `paymentDays` = workingDays −
+`absentDays` − 0.5 × `halfDays`, `absentDays` = `noReasonAbsentDays` + `emergencyLeaveDays`
++ `sickLeaveDays` + `lopDays` (ALL unpaid days; annual leave is never in it), `pendingDays`
+(subset of no-reason, flagged so it's closed before export), `fullDays`, `unmarkedDays`
+(days up to today with NO record, holidays excluded except for temporaries, from the
+employee's `createdAt`, active only — counted as PAID, matching ERPNext's default
+"Consider Unmarked Attendance As: Present"; a warning only), `attendancePercentage` =
+paymentDays ÷ workingDays, and `overtimeHours`, `holidayHours`, `totalOvertimeHours`
+(= OT + holiday hours, paid at the same rate). Known slip differences: ERPNext prorates
+working days from the joining/relieving date (AMS has no joining date), and temporary
+workers have no ERPNext slip. A WORKED holiday goes into the ERPNext Attendance CSV as
+"Present" with `holidayHours` as the Actual Overtime Duration (needs `erpOvertimeType`; the
+Overtime Slip only reads Present rows); unworked holidays stay skipped. The tally lives in
+`buildAttendanceReport(fromDay, toDay)` (inclusive UTC-midnight bounds), shared by
+`GET /reports/monthly/:month/:year` and `GET /reports/range?from&to`
 (`rangeReport`, superadmin, strict `YYYY-MM-DD`, ≤ 366 days). The Reports page offers
 Month | Date range (`components/DateRangePicker.tsx`); ERPNext export stays per-month and
-is disabled in range mode. Leave-kind labels/colors are shared in
-`client/src/lib/leaveComposition.ts` (also used by the employee timesheet's Leave tile).
+is disabled in range mode. It writes two files (Attendance, Timesheet — no OT summary) for
+the employees ticked in the table or everyone the page's filters list:
+`POST /reports/erpnext/:month/:year { type, employeeIds }` (Mongo ids; report rows carry `_id`).
+Absent-reason and annual-leave labels/colors are shared in `client/src/lib/leaveComposition.ts`
+(`ABSENT_REASONS`, `ANNUAL_LEAVE`; also used by the employee timesheet's tiles).
 
 **Site manpower report.** `GET /api/site/:siteId/manpower` (admin/superadmin) is TODAY's
 headcount for a site by trade (job title) and roster category, built by

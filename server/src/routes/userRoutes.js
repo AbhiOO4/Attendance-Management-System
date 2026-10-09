@@ -1,6 +1,6 @@
 import express from 'express'
 import userModel from '../models/userModel.js'
-import { getMe, getUsers, login, logout, updateUser, addAdmin, addSuperadmin, promoteToSuperadmin, demoLogin, deleteUser } from '../controllers/userController.js'
+import { getMe, getUsers, login, logout, updateUser, addAdmin, addSuperadmin, addDriverSupervisor, promoteToSuperadmin, demoLogin, deleteUser } from '../controllers/userController.js'
 import { getVapidPublicKey, savePushSubscription, deletePushSubscription } from '../controllers/pushController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles } from '../middlewares/rbac.js'
@@ -32,6 +32,8 @@ router.patch('/update/:userId',authorizeRoles('superadmin'), updateUser )
 router.post('/admin', authorizeRoles('superadmin'), addAdmin)
 
 router.post('/superadmin', authorizeRoles('superadmin'), addSuperadmin)
+
+router.post('/driver-supervisor', authorizeRoles('superadmin'), addDriverSupervisor)
 
 router.patch('/promote/:userId', authorizeRoles('superadmin'), promoteToSuperadmin)
 

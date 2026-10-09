@@ -11,6 +11,12 @@ export const requireAdmin = (req, res, next) => {
   next()
 }
 
+// Roles confined to their User.assignedSite (a supervisor's site; a driverSupervisor's
+// drivers pool). Inline scope checks use this instead of `role === "supervisor"` so a
+// driverSupervisor never falls into the unrestricted admin branch.
+export const SITE_SCOPED_ROLES = ["supervisor", "driverSupervisor"]
+export const isSiteScopedRole = (role) => SITE_SCOPED_ROLES.includes(role)
+
 export const authorizeRoles = (...roles) => {
   return (req, res, next) => {
     const userRole = req.user.role;

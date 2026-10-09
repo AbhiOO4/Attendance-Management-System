@@ -84,7 +84,10 @@ import {
   ChevronDown,
   History,
   Building2,
+  MessageSquare,
 } from "lucide-react"
+import JobPicker from "@/components/drivers/JobPicker"
+import RemarkDialog from "@/components/drivers/RemarkDialog"
 
 import {
   DropdownMenu,
@@ -133,6 +136,9 @@ interface Employee {
   // (a visit whose pendingTransfer* stash was consumed when the visited site saved).
   // The durable signal that a home member is out today — dropped from this site's draft.
   recordedElsewhereToday?: { siteId: string; siteName: string | null } | null
+  // Drivers sheet only (GET /api/drivers/roster): the job of the driver's most recent
+  // drivers-sheet session, still assignable — prefills the draft row's job.
+  lastJob?: Job | null
 }
 
 // Source site of an inbound transfer, shown as the "Transferred from" badge.
@@ -145,6 +151,9 @@ interface EmployeesResponse {
 interface Job {
   _id: string
   name: string
+  // Drivers sheet: a session's job can be at any site, so it also carries its code + site.
+  jobCode?: string | null
+  site?: { _id: string; siteName: string } | null
 }
 
 interface Site {
@@ -152,6 +161,8 @@ interface Site {
   siteName: string
   locationDetails: string
   isActive: boolean
+  // The hidden Drivers pool (server utils/driverPool.js) — the drivers sheet's anchor.
+  isDriverPool?: boolean
   jobs: Job[]
   defaultCheckIn?: string
   defaultCheckOut?: string
@@ -183,6 +194,9 @@ export interface AttendanceSession {
   siteName?: string | null
 
   jobId: string | null,
+
+  // Drivers sheet only: the session's job resolved for display (code, name, site).
+  job?: Job | null
 
   checkIn: string | null
 
@@ -281,6 +295,10 @@ interface DraftSession {
   // auto-initialized check-in from one the supervisor actually entered. Any manual edit to
   // the check-in clears it.
   checkInAutoInit?: boolean
+  // Drivers sheet: true once the supervisor picked this session's job (so a roster refresh
+  // never swaps it back to the prefilled one), and whether the job is the driver's last used.
+  jobPicked?: boolean
+  jobFromLast?: boolean
 }
 //siteId, date, isHoliday are common fields
 interface DraftAttendanceRecord {
@@ -430,7 +448,12 @@ const refreshRowMetadata = (
     jobId: fresh.jobId,
     transferredFrom: fresh.transferredFrom,
     sessions: rec.sessions.map((s, i) =>
-      i === 0 && freshSession ? { ...s, siteId: freshSession.siteId, job: freshSession.job } : s
+      i === 0 && freshSession
+        ? s.jobPicked
+          // A job the supervisor picked (drivers sheet) is their entry, not roster metadata.
+          ? { ...s, siteId: freshSession.siteId }
+          : { ...s, siteId: freshSession.siteId, job: freshSession.job, jobFromLast: freshSession.jobFromLast }
+        : s
     ),
   }
   // Keep identity when nothing changed so memoized rows don't re-render on every refresh.
@@ -497,7 +520,11 @@ const mergeDraftWithRoster = (
       !opts.overrides?.has(id) &&
       opts.prevDerived?.get(id) === serializeEditable(editableOf(rec))
     if (untouched && !carryoverJustClosed) {
-      const rederived = { ...rec, sessions: fresh.sessions, breaksTaken: fresh.breaksTaken, isSickLeave: fresh.isSickLeave }
+      // Re-derive times/flags, but keep a job the supervisor picked (drivers sheet).
+      const sessions = fresh.sessions.map((fs, i) =>
+        rec.sessions[i]?.jobPicked ? { ...fs, job: rec.sessions[i].job, jobPicked: true, jobFromLast: false } : fs
+      )
+      const rederived = { ...rec, sessions, breaksTaken: fresh.breaksTaken, isSickLeave: fresh.isSickLeave }
       if (serializeEditable(editableOf(rederived)) !== serializeEditable(editableOf(rec))) row = rederived
     }
     kept.push(refreshRowMetadata(row, fresh))
@@ -679,6 +706,7 @@ function RowActionsMenu({
   showHistory = true,
   attendanceId = null,
   employeeName = "",
+  onRemark,
 }: {
   isSick: boolean
   onToggleSick: () => void
@@ -700,6 +728,8 @@ function RowActionsMenu({
   showHistory?: boolean
   attendanceId?: string | null
   employeeName?: string
+  /** When set, a "Remark" item opens the record's remark editor (drivers sheet). */
+  onRemark?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -825,9 +855,22 @@ function RowActionsMenu({
             Transfer
           </DropdownMenuItem>
         )}
+        {onRemark && (
+          <DropdownMenuItem
+            disabled={!attendanceId}
+            onSelect={(e) => {
+              e.preventDefault()
+              setOpen(false)
+              if (attendanceId) onRemark()
+            }}
+          >
+            <MessageSquare className="mr-2 h-4 w-4" />
+            Remark
+          </DropdownMenuItem>
+        )}
         {showHistory && (
           <>
-            {(showSick || showLop || showTransfer) && <DropdownMenuSeparator />}
+            {(showSick || showLop || showTransfer || !!onRemark) && <DropdownMenuSeparator />}
             <DropdownMenuItem
               disabled={!attendanceId}
               title={!attendanceId ? "Save attendance first" : undefined}
@@ -870,6 +913,50 @@ interface DraftRowProps {
   onUpdateBreaks: (employeeId: string, value: number | null) => void
   onClearSession: (employeeId: string, sessionIndex: number) => void
   onUndoClear: () => void
+  /** Drivers sheet: the row's single session is logged against a job picked from any site. */
+  driverJobs?: boolean
+  onPickJob?: (employeeId: string, sessionIndex: number, job: Job) => void
+}
+
+// Search text of a drivers-sheet session job (code, name, site).
+const sessionJobText = (job?: Job | null) =>
+  job ? `${job.jobCode ?? ""} ${job.name} ${job.site?.siteName ?? ""}`.toLowerCase() : ""
+
+/** Drivers sheet saved row: a session's job (code · name over its site), read-only. */
+const SavedJobLabel = ({ job }: { job: Job | null }) =>
+  job ? (
+    <div className="flex min-w-0 flex-col leading-tight">
+      <span className="truncate text-sm font-medium">{[job.jobCode, job.name].filter(Boolean).join(" · ")}</span>
+      <span className="truncate text-[11px] text-muted-foreground">{job.site?.siteName ?? ""}</span>
+    </div>
+  ) : (
+    <span className="text-sm text-muted-foreground">No job</span>
+  )
+
+/** Drivers sheet draft: the session's job picker. Red when the session has times but no job. */
+const DraftJobCell = ({
+  record,
+  disabled,
+  onPickJob,
+}: {
+  record: DraftAttendanceRecord
+  disabled: boolean
+  onPickJob?: DraftRowProps["onPickJob"]
+}) => {
+  const session = record.sessions[0]
+  const missing = isSessionNonEmpty(session) && !session.job
+  return (
+    <div className="space-y-1">
+      <JobPicker
+        value={session.job}
+        invalid={missing}
+        disabled={disabled}
+        showLastUsed={!!session.jobFromLast && !session.jobPicked}
+        onChange={(job) => onPickJob?.(record.employee._id, 0, job)}
+      />
+      {missing && <p className="text-[11px] text-red-600 dark:text-red-400">Pick the job this session was for.</p>}
+    </div>
+  )
 }
 
 /**
@@ -894,6 +981,8 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   onUpdateBreaks,
   onClearSession,
   onUndoClear,
+  driverJobs,
+  onPickJob,
 }: DraftRowProps) {
   const session = record.sessions[0]
 
@@ -959,6 +1048,10 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               Check out yesterday's shift
             </Button>
           </div>
+        )}
+
+        {driverJobs && (
+          <DraftJobCell record={record} disabled={!!record.isSickLeave || !!hasCarryover} onPickJob={onPickJob} />
         )}
 
         <Input
@@ -1099,6 +1192,8 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   onUpdateBreaks,
   onClearSession,
   onUndoClear,
+  driverJobs,
+  onPickJob,
 }: DraftRowProps) {
   const session = record.sessions[0]
 
@@ -1147,6 +1242,12 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
             ) : null}
           </div>
         </TableCell>
+
+        {driverJobs && (
+          <TableCell className="min-w-[240px] max-w-[320px]">
+            <DraftJobCell record={record} disabled={!!record.isSickLeave || !!hasCarryover} onPickJob={onPickJob} />
+          </TableCell>
+        )}
 
         <TableCell>
           <Input
@@ -1321,8 +1422,21 @@ const EmptyState = () => (
   </div>
 )
 
-function SiteAttendance() {
-  const {id} = useParams()
+type SiteAttendanceProps = {
+  /** Site to mark instead of the route's :id (the Drivers page passes the hidden pool). */
+  siteIdOverride?: string
+  /**
+   * "drivers": the Drivers Attendance sheet — roster = drivers with no site, each session
+   * logged against a job from any site, Foreign/Omani categories, no transfers, remark in
+   * the kebab, on-device draft only. Server side: utils/driverPool.js.
+   */
+  variant?: "site" | "drivers"
+}
+
+function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProps = {}) {
+  const params = useParams()
+  const id = siteIdOverride ?? params.id
+  const isDrivers = variant === "drivers"
 
   const navigate = useNavigate()
 
@@ -1534,7 +1648,7 @@ function SiteAttendance() {
   // mid-edit — except that the server switch turning OFF stops syncing at once (kill switch);
   // the on-device draft, kept up to date all along, carries on from there.
   const [cloudMode, setCloudMode] = useState(false)
-  const cloudActive = cloudMode && features.cloudDraft && !attendanceExists
+  const cloudActive = cloudMode && features.cloudDraft && !attendanceExists && !isDrivers
   // The shared draft was on when the page loaded and has since been switched off.
   const [cloudSwitchedOff, setCloudSwitchedOff] = useState(false)
   const cloudOffNotice = (cloudSwitchedOff || (cloudMode && !features.cloudDraft)) && !attendanceExists
@@ -1557,6 +1671,9 @@ function SiteAttendance() {
   const [selectedRecord, setSelectedRecord] =
     useState<AttendanceRecord | null>(null)
 
+  // Drivers sheet: the saved row whose remark is being edited (kebab → Remark).
+  const [remarkRecord, setRemarkRecord] = useState<AttendanceRecord | null>(null)
+
   const [editOpen, setEditOpen] =
     useState(false)
 
@@ -1565,7 +1682,7 @@ function SiteAttendance() {
     useState<string | null>(null)
 
   const [inlineEdit, setInlineEdit] =
-    useState<{ checkIn: string; checkOut: string; isNightShift: boolean; breaksTaken: number | null }>({
+    useState<{ checkIn: string; checkOut: string; isNightShift: boolean; breaksTaken: number | null; job?: Job | null }>({
       checkIn: "",
       checkOut: "",
       isNightShift: false,
@@ -1735,6 +1852,8 @@ function SiteAttendance() {
           : record
       )
     )
+    // Drivers sheet: the raw doc carries job ids only — reload so the Job column names them.
+    if (isDrivers) void fetchAttendance(today, { silent: true })
   }
 
   // Where a "leave" / Back action should land: the ACTUAL previous page, not a
@@ -1897,6 +2016,16 @@ function SiteAttendance() {
   // without explicit collarType/nationality resolve to foreignSkilled (older data).
   const [collarTab, setCollarTab] = useState<CollarTab>("all")
 
+  // The drivers sheet has two categories, by nationality only: Foreign drivers sit in the
+  // foreignSkilled tab and Omani in omaniSkilled (the pool's staff defaults mirror skilled).
+  const tabCategoryOf = useCallback(
+    (collarType?: CollarType, nationality?: Nationality): RosterCategory =>
+      isDrivers ? (nationality === "omani" ? "omaniSkilled" : "foreignSkilled") : categoryOf(collarType, nationality),
+    [isDrivers]
+  )
+  const tabLabelOf = (key: RosterCategory) =>
+    isDrivers ? (CATEGORY_IS_FOREIGN[key] ? "Foreign" : "Omani") : CATEGORY_LABELS[key]
+
   // A fresh draft row for `emp` at `siteData`: the category day-default check-in (blank for an
   // employee still on yesterday's shift), or a visitor's carried check-in and per-visit job.
   // Pure given its inputs — also used to re-derive the defaults after an Edit-defaults save.
@@ -1933,7 +2062,11 @@ function SiteAttendance() {
       // A cross-site visitor works this site's job for the day (pendingTransferJobId),
       // not their home currentJob — so their session's job (and thus job-hours
       // attribution) records the visited site's job. Non-visitors keep currentJob.
-      const sessionJob = hasPendingTransfer
+      // Drivers sheet: the job is picked per day from any site; it starts on the driver's
+      // last-used job (or blank for a new driver, who must pick one before saving).
+      const sessionJob = isDrivers
+        ? emp.lastJob ?? null
+        : hasPendingTransfer
         ? emp.pendingTransferJobId || null
         : emp.currentJob
       return {
@@ -1966,6 +2099,7 @@ function SiteAttendance() {
             // Auto-initialized only when the check-in is the category day default
             // (not a carryover blank and not a transfer's own check-in).
             checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
+            ...(isDrivers ? { jobPicked: false, jobFromLast: !!emp.lastJob } : {}),
           },
         ],
 
@@ -2002,9 +2136,13 @@ function SiteAttendance() {
     // cached draft must then be restored as-is rather than pruned against it.
     let rosterLoaded = false
     try {
-      const res = await api.get<EmployeesResponse>("/api/employees", {
-        params: { site: id },
-      })
+      // Drivers sheet: the roster is the drivers (no site, title contains "driver"), from a
+      // dedicated endpoint in the same shape — mirrored by the server's draftRoster pool branch.
+      const res = isDrivers
+        ? await api.get<EmployeesResponse>("/api/drivers/roster")
+        : await api.get<EmployeesResponse>("/api/employees", {
+            params: { site: id },
+          })
       employeesList = res.data.employees
       rosterLoaded = true
     } catch (fetchErr) {
@@ -2041,8 +2179,12 @@ function SiteAttendance() {
         leaveType: leaveTypeById.get(String(emp._id)) ?? "annual",
       }))
 
+    // Home members: on a site, its employees; on the drivers sheet, every listed driver.
+    const isHomeMember = (emp: Employee) =>
+      isDrivers || String(emp.currentSite) === String(siteData._id)
+
     const isVisitingElsewhere = (emp: Employee) =>
-      String(emp.currentSite) === String(siteData._id) &&
+      isHomeMember(emp) &&
       !!emp.pendingTransferSiteId &&
       String(emp.pendingTransferSiteId) !== String(siteData._id) &&
       !!emp.pendingTransferDate &&
@@ -2066,7 +2208,7 @@ function SiteAttendance() {
     const rosterEmployees = employeesList.filter((emp) => {
       // On approved leave today → excluded from the editable draft entirely.
       if (leaveIds.has(String(emp._id))) return false
-      if (String(emp.currentSite) === String(siteData._id)) return !isAwayToday(emp)
+      if (isHomeMember(emp)) return !isAwayToday(emp)
       return (
         !!emp.pendingTransferSiteId &&
         String(emp.pendingTransferSiteId) === String(siteData._id) &&
@@ -2819,6 +2961,13 @@ function SiteAttendance() {
 
   const handleSubmit = async () => {
     if (submittingRef.current) return
+    // Drivers sheet: every session with a time must name its job (the server refuses it too).
+    if (isDrivers && driverRowsMissingJob > 0) {
+      toast.error(
+        `${driverRowsMissingJob} driver session${driverRowsMissingJob === 1 ? "" : "s"} need${driverRowsMissingJob === 1 ? "s" : ""} a job before saving.`
+      )
+      return
+    }
     submittingRef.current = true
     const cloud = liveRef.current.cloudActive
     try {
@@ -3015,6 +3164,8 @@ function SiteAttendance() {
       checkOut: toTimeValue(session?.checkOut),
       isNightShift: session?.isNightShift ?? false,
       breaksTaken: clampBreaks(record.breaksTaken),
+      // Drivers sheet: the session's job is editable inline too.
+      job: session?.job ?? null,
     })
   }
 
@@ -3059,6 +3210,12 @@ function SiteAttendance() {
     }
     setInlineEditError(null);
 
+    // Drivers sheet: a session with a time must name its job.
+    if (isDrivers && (checkIn || checkOut) && !inlineEdit.job) {
+      setInlineEditError("Pick the job this session was for");
+      return;
+    }
+
     // A check-out past the category default needs a justification remark — collect it
     // via the popup before saving (prefilled with any existing note so it isn't clobbered).
     if (inlineNeedsRemark(record)) {
@@ -3091,7 +3248,7 @@ function SiteAttendance() {
           {
             _id: existing?._id,
             siteId: existing?.siteId ?? site?._id,
-            jobId: existing?.jobId ?? null,
+            jobId: isDrivers ? inlineEdit.job?._id ?? null : existing?.jobId ?? null,
             checkIn: combineFromOffset(record.date, checkIn || null, checkInNextDay),
             checkOut: combineFromOffset(record.date, checkOut || null, checkOutNextDay),
             checkInNextDay,
@@ -3279,6 +3436,29 @@ function SiteAttendance() {
 
     setIsDirty(true)
   }, [calculateHours])
+
+  // Drivers sheet: draft sessions with a time but no job — Save is held until each has one.
+  const driverRowsMissingJob = isDrivers
+    ? draftAttendance.reduce(
+        (n, rec) => n + rec.sessions.filter((s) => isSessionNonEmpty(s) && !s.job).length,
+        0
+      )
+    : 0
+
+  // Drivers sheet: the job a draft session was for (any site). Marked as picked so a roster
+  // refresh never swaps it back to the prefilled last-used job.
+  const pickDraftJob = useCallback((employeeId: string, sessionIndex: number, job: Job) => {
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== employeeId) return record
+        const sessions = record.sessions.map((s, i) =>
+          i === sessionIndex ? { ...s, job, jobPicked: true, jobFromLast: false } : s
+        )
+        return { ...record, sessions, jobId: sessionIndex === 0 ? job._id : record.jobId }
+      })
+    )
+    setIsDirty(true)
+  }, [])
 
   // Saved record: toggle sick leave via the backend, which validates against
   // the full cross-site record. A filled session anywhere → 400 + toast.
@@ -3861,16 +4041,17 @@ function SiteAttendance() {
         !query ||
         record.employee.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
-        record.jobTitle.toLowerCase().includes(query)
+        record.jobTitle.toLowerCase().includes(query) ||
+        (isDrivers && record.sessions.some((s) => sessionJobText(s.job).includes(query)))
       return (
-        (collarTab === 'all' || categoryOf(record.collarType, record.nationality) === collarTab) &&
+        (collarTab === 'all' || tabCategoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
         matchesQuery
       )
     })
     // Float transferred-in employees to the top (stable: preserves order otherwise).
     .sort((a, b) => Number(!!b.transferredFrom) - Number(!!a.transferredFrom))
-  }, [draftAttendance, categoryFilter, deferredSearchQuery, collarTab])
+  }, [draftAttendance, categoryFilter, deferredSearchQuery, collarTab, isDrivers, tabCategoryOf])
 
   const filteredAttendance = useMemo(() => {
     const query = deferredSearchQuery.trim().toLowerCase()
@@ -3882,16 +4063,17 @@ function SiteAttendance() {
         !query ||
         record.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
-        record.jobTitle.toLowerCase().includes(query)
+        record.jobTitle.toLowerCase().includes(query) ||
+        (isDrivers && record.sessions.some((s) => sessionJobText(s.job).includes(query)))
       return (
-        (collarTab === 'all' || categoryOf(record.collarType, record.nationality) === collarTab) &&
+        (collarTab === 'all' || tabCategoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
         matchesQuery
       )
     })
     // Float transferred-in employees to the top (stable: preserves order otherwise).
     .sort((a, b) => Number(!!b.transferredFrom) - Number(!!a.transferredFrom))
-  }, [attendance, categoryFilter, deferredSearchQuery, collarTab])
+  }, [attendance, categoryFilter, deferredSearchQuery, collarTab, isDrivers, tabCategoryOf])
 
   // Counts per category (unaffected by name/id/title filters) for the tabs.
   const collarCounts = useMemo(() => {
@@ -3900,10 +4082,10 @@ function SiteAttendance() {
       foreignSkilled: 0, foreignStaff: 0, omaniSkilled: 0, omaniStaff: 0,
     }
     for (const r of source) {
-      counts[categoryOf(r.collarType, r.nationality)]++
+      counts[tabCategoryOf(r.collarType, r.nationality)]++
     }
     return counts
-  }, [attendanceExists, attendance, draftAttendance])
+  }, [attendanceExists, attendance, draftAttendance, tabCategoryOf])
 
   // Stats source is nationality/collar-agnostic; both the per-tab and global tallies
   // reuse this shape (an employee can be assigned to both day AND night on the same day,
@@ -3930,9 +4112,9 @@ function SiteAttendance() {
     return computeSiteStats(
       collarTab === 'all'
         ? source
-        : source.filter((rec) => categoryOf(rec.collarType, rec.nationality) === collarTab)
+        : source.filter((rec) => tabCategoryOf(rec.collarType, rec.nationality) === collarTab)
     )
-  }, [attendanceExists, attendance, draftAttendance, collarTab, computeSiteStats])
+  }, [attendanceExists, attendance, draftAttendance, collarTab, computeSiteStats, tabCategoryOf])
 
   // Site-wide attendance statistics across ALL four categories (the top-of-page summary).
   const globalStats = useMemo(() => {
@@ -4164,7 +4346,9 @@ function SiteAttendance() {
       } else {
         await Promise.all([
           checkHolidayStatus(calculatedDate),
-          initializeAttendanceFromEmployees(siteData, carryoverIds, features.cloudDraft),
+          // The drivers sheet keeps its draft on-device: the shared draft rows don't carry the
+          // per-session job a driver row edits.
+          initializeAttendanceFromEmployees(siteData, carryoverIds, features.cloudDraft && !isDrivers),
         ])
       }
       lastRefreshAtRef.current = Date.now()
@@ -4312,17 +4496,21 @@ function SiteAttendance() {
 
             <div className="flex items-start gap-3">
 
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={handleBackNavigation}
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
+              {/* A driver supervisor lands here — there is no page to go back to. */}
+              {!(isDrivers && user?.role === "driverSupervisor") && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleBackNavigation}
+                  aria-label="Back"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+              )}
 
               <div>
                 <CardTitle className="flex items-center gap-2.5 flex-wrap">
-                  <span>{site?.siteName}</span>
+                  <span>{isDrivers ? "Drivers Attendance" : site?.siteName}</span>
                   <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
                     {stats.totalPresent} / {stats.totalAssigned} Present
                   </span>
@@ -4338,7 +4526,7 @@ function SiteAttendance() {
                     )}
                   >
                     {collarTab !== "all" && CATEGORY_IS_FOREIGN[collarTab] && <Plane className="h-3 w-3" />}
-                    {collarTab === "all" ? "All" : CATEGORY_LABELS[collarTab]}
+                    {collarTab === "all" ? "All" : tabLabelOf(collarTab)}
                   </Badge>
                 </CardTitle>
 
@@ -4347,7 +4535,11 @@ function SiteAttendance() {
                   {formattedDate}
                 </p>
 
-                {site?.locationDetails && (
+                {isDrivers ? (
+                  <p className="text-sm text-muted-foreground">
+                    Drivers with no site · each session is logged against a job from any site
+                  </p>
+                ) : site?.locationDetails && (
                   <p className="text-sm text-muted-foreground">
                     {site.locationDetails}
                   </p>
@@ -4378,7 +4570,7 @@ function SiteAttendance() {
 
             <div className="grid grid-cols-1 gap-2">
 
-              {isAdmin && id && (
+              {isAdmin && id && !isDrivers && (
                 <Button
                   variant="outline"
                   onClick={() => navigate(`/site/${id}`)}
@@ -4403,6 +4595,11 @@ function SiteAttendance() {
                     "Save Attendance"
                   )}
                 </Button>
+              )}
+              {!attendanceExists && driverRowsMissingJob > 0 && (
+                <p className="text-center text-[11px] text-amber-700 dark:text-amber-400">
+                  {driverRowsMissingJob} session{driverRowsMissingJob === 1 ? "" : "s"} need{driverRowsMissingJob === 1 ? "s" : ""} a job before saving
+                </p>
               )}
 
               {/* Shared draft status: edits autosave for every supervisor on this site. */}
@@ -4438,12 +4635,15 @@ function SiteAttendance() {
       <Card className="rounded-2xl border bg-card shadow-sm">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between px-4 py-3 sm:px-5 sm:py-4">
 
-          {/* Sections: Skilled + Staff */}
+          {/* Sections: Skilled + Staff (drivers sheet: Foreign + Omani) */}
           <div className="flex flex-col gap-3 sm:flex-row sm:gap-6 min-w-0">
 
-            {/* Skilled */}
+            {/* Skilled (drivers: Foreign) */}
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Skilled</p>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5 flex items-center gap-1">
+                {isDrivers && <Plane className="h-3 w-3" />}
+                {isDrivers ? "Foreign drivers" : "Skilled"}
+              </p>
               <div className="flex flex-col gap-1">
                 {[
                   { label: "Day", cin: site?.defaultCheckIn, cout: site?.defaultCheckOut },
@@ -4467,14 +4667,20 @@ function SiteAttendance() {
             <div className="hidden sm:block w-px bg-border" />
             <div className="block sm:hidden h-px bg-border" />
 
-            {/* Staff */}
+            {/* Staff (drivers: Omani) */}
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Staff</p>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">{isDrivers ? "Omani drivers" : "Staff"}</p>
               <div className="flex flex-col gap-1">
-                {[
-                  { label: "Day", cin: site?.staffDefaultCheckIn, cout: site?.staffDefaultCheckOut },
-                  { label: "Night", cin: site?.staffNightDefaultCheckIn, cout: site?.staffNightDefaultCheckOut },
-                ].map((s) => (
+                {(isDrivers
+                  ? [
+                      { label: "Day", cin: site?.omaniDefaultCheckIn, cout: site?.omaniDefaultCheckOut },
+                      { label: "Night", cin: site?.omaniNightDefaultCheckIn, cout: site?.omaniNightDefaultCheckOut },
+                    ]
+                  : [
+                      { label: "Day", cin: site?.staffDefaultCheckIn, cout: site?.staffDefaultCheckOut },
+                      { label: "Night", cin: site?.staffNightDefaultCheckIn, cout: site?.staffNightDefaultCheckOut },
+                    ]
+                ).map((s) => (
                   <div key={s.label} className="flex items-center gap-2 text-sm">
                     <span className="w-10 text-[11px] text-muted-foreground">{s.label}</span>
                     <span className="tabular-nums text-foreground font-medium">
@@ -4534,8 +4740,9 @@ function SiteAttendance() {
               Default Shift Times
             </DialogTitle>
             <DialogDescription>
-              Used to pre-fill check-in and auto-fill check-out. Each category
-              (✈️ foreign / Omani, skilled / staff) has its own day &amp; night times.
+              {isDrivers
+                ? "Used to pre-fill check-in and auto-fill check-out. Foreign and Omani drivers each have their own day & night times."
+                : "Used to pre-fill check-in and auto-fill check-out. Each category (✈️ foreign / Omani, skilled / staff) has its own day & night times."}
             </DialogDescription>
           </DialogHeader>
 
@@ -4573,7 +4780,25 @@ function SiteAttendance() {
                     { label: "Night", inVal: editOmaniStaffNightDefaultCheckIn, setIn: setEditOmaniStaffNightDefaultCheckIn, outVal: editOmaniStaffNightDefaultCheckOut, setOut: setEditOmaniStaffNightDefaultCheckOut },
                   ],
                 },
-              ]) as { key: RosterCategory; label: string; foreign: boolean; staff: boolean; rows: { label: string; inVal: string; setIn: (v: string) => void; outVal: string; setOut: (v: string) => void }[] }[]).map((sec) => {
+              ]) as { key: RosterCategory; label: string; foreign: boolean; staff: boolean; rows: { label: string; inVal: string; setIn: (v: string) => void; outVal: string; setOut: (v: string) => void }[] }[])
+                // Drivers sheet: two tiles (Foreign / Omani). Each edit also writes the staff
+                // twin, so the pool's 16 fields stay mirrored (as the server enforces) and the
+                // draft's per-category default propagation agrees with what gets saved.
+                .flatMap((sec, _i, all) => {
+                  if (!isDrivers) return [sec]
+                  if (sec.staff) return []
+                  const twin = all.find((t) => t.staff && t.foreign === sec.foreign)!
+                  return [{
+                    ...sec,
+                    label: sec.foreign ? "Foreign drivers" : "Omani drivers",
+                    rows: sec.rows.map((r, ri) => ({
+                      ...r,
+                      setIn: (v: string) => { r.setIn(v); twin.rows[ri].setIn(v) },
+                      setOut: (v: string) => { r.setOut(v); twin.rows[ri].setOut(v) },
+                    })),
+                  }]
+                })
+                .map((sec) => {
                 return (
                   <div key={sec.key} className="rounded-xl border border-border bg-muted/[0.04] p-3">
                     <div className="flex items-center gap-1.5 mb-2.5">
@@ -4754,7 +4979,12 @@ function SiteAttendance() {
             { key: "foreignStaff", label: "Staff", count: collarCounts.foreignStaff, foreign: true },
             { key: "omaniSkilled", label: "Omani Labour", count: collarCounts.omaniSkilled, foreign: false },
             { key: "omaniStaff", label: "Omani Staff", count: collarCounts.omaniStaff, foreign: false },
-          ]) as { key: CollarTab; label: string; count: number; foreign: boolean }[]).map((tab) => {
+          ]) as { key: CollarTab; label: string; count: number; foreign: boolean }[])
+            // Drivers sheet: All / Foreign / Omani (tabCategoryOf files every driver under a
+            // skilled key, so the staff tabs are always empty there).
+            .filter((tab) => !isDrivers || (tab.key !== "foreignStaff" && tab.key !== "omaniStaff"))
+            .map((tab) => (isDrivers && tab.key !== "all" ? { ...tab, label: tabLabelOf(tab.key as RosterCategory) } : tab))
+            .map((tab) => {
             const isActive = collarTab === tab.key
             return (
               <button
@@ -4843,7 +5073,7 @@ function SiteAttendance() {
                     <div className="flex shrink-0 items-center gap-1.5">
                       {/* Transfer a night shift still running past midnight — only for a shift
                           at THIS site (an away carryover belongs to that other site). */}
-                      {!awaySiteName && (
+                      {!awaySiteName && !isDrivers && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -5073,7 +5303,8 @@ function SiteAttendance() {
                                 lopDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
                                 lopDisabledReason="Only available when the employee has no check-in today"
                                 onToggleLop={() => toggleSavedLop(record)}
-                                showTransfer
+                                showTransfer={!isDrivers}
+                                onRemark={isDrivers ? () => setRemarkRecord(record) : undefined}
                                 transferDisabled={!!transferBlockReason(record)}
                                 transferDisabledReason={transferBlockReason(record) ?? undefined}
                                 onTransfer={() => handleTransferClick(record)}
@@ -5083,6 +5314,25 @@ function SiteAttendance() {
                             )}
                           </div>
                         </div>
+
+                        {/* Drivers sheet: each session's job (any site). */}
+                        {isDrivers && (
+                          <div className="space-y-1.5">
+                            {isEditing ? (
+                              <JobPicker
+                                value={inlineEdit.job ?? null}
+                                invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
+                                onChange={(job) => setInlineEdit((prev) => ({ ...prev, job }))}
+                              />
+                            ) : (
+                              (record.sessions.length ? record.sessions : [null]).map((s, i) => (
+                                <div key={s?._id ?? i} className="rounded-md border bg-muted/20 px-2.5 py-1.5">
+                                  <SavedJobLabel job={s?.job ?? null} />
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        )}
 
                         <div>
                           <span className="font-medium">
@@ -5384,6 +5634,7 @@ function SiteAttendance() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Employee</TableHead>
+                      {isDrivers && <TableHead>Job (any site)</TableHead>}
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
@@ -5465,6 +5716,21 @@ function SiteAttendance() {
                                       <AbsentIndicator />
                                     ) : null}
                                   </div>
+                                </TableCell>
+                              )}
+
+                              {/* JOB (drivers sheet: any site's job, per session) */}
+                              {isDrivers && (
+                                <TableCell className="min-w-[220px] max-w-[300px]">
+                                  {isEditing && sessionIndex === 0 ? (
+                                    <JobPicker
+                                      value={inlineEdit.job ?? null}
+                                      invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
+                                      onChange={(job) => setInlineEdit((prev) => ({ ...prev, job }))}
+                                    />
+                                  ) : (
+                                    <SavedJobLabel job={session?.job ?? null} />
+                                  )}
                                 </TableCell>
                               )}
 
@@ -5731,7 +5997,8 @@ function SiteAttendance() {
                                         lopDisabled={record.sessions.some(s => s.checkIn || s.checkOut)}
                                         lopDisabledReason="Only available when the employee has no check-in today"
                                         onToggleLop={() => toggleSavedLop(record)}
-                                        showTransfer
+                                        showTransfer={!isDrivers}
+                                        onRemark={isDrivers ? () => setRemarkRecord(record) : undefined}
                                         transferDisabled={!!transferBlockReason(record)}
                                         transferDisabledReason={transferBlockReason(record) ?? undefined}
                                         onTransfer={() => handleTransferClick(record)}
@@ -5802,6 +6069,8 @@ function SiteAttendance() {
                       onUpdateBreaks={updateDraftBreaksTaken}
                       onClearSession={clearDraftSession}
                       onUndoClear={undoClearDraftSession}
+                      driverJobs={isDrivers}
+                      onPickJob={pickDraftJob}
                     />
                   ))}
                 </div>
@@ -5814,6 +6083,7 @@ function SiteAttendance() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Employee</TableHead>
+                      {isDrivers && <TableHead>Job (any site)</TableHead>}
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
@@ -5844,6 +6114,8 @@ function SiteAttendance() {
                         onUpdateBreaks={updateDraftBreaksTaken}
                         onClearSession={clearDraftSession}
                         onUndoClear={undoClearDraftSession}
+                        driverJobs={isDrivers}
+                        onPickJob={pickDraftJob}
                       />
                     ))}
 
@@ -5857,6 +6129,20 @@ function SiteAttendance() {
 
         </CardContent>
       </Card>
+      {isDrivers && (
+        <RemarkDialog
+          key={remarkRecord?.attendanceId ?? "none"}
+          open={!!remarkRecord}
+          onOpenChange={(o) => !o && setRemarkRecord(null)}
+          attendanceId={remarkRecord?.attendanceId ?? null}
+          employeeName={remarkRecord?.name ?? ""}
+          initialRemark={remarkRecord?.remark ?? ""}
+          onSaved={(remark) => {
+            const target = remarkRecord?.attendanceId
+            setAttendance((prev) => prev.map((r) => (r.attendanceId === target ? { ...r, remark } : r)))
+          }}
+        />
+      )}
       <EditSiteRecord
         open={editOpen}
         onClose={() => {
@@ -6035,5 +6321,8 @@ function SiteAttendanceRoute() {
   const { id } = useParams()
   return <SiteAttendance key={id} />
 }
+
+// The Drivers Attendance page reuses this sheet with variant="drivers" (pages/DriversAttendance).
+export { SiteAttendance }
 
 export default SiteAttendanceRoute

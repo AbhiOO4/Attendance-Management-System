@@ -8,6 +8,7 @@
 import notificationModel from "../models/notificationModel.js"
 import userModel from "../models/userModel.js"
 import { sendPushToUser } from "./webPush.js"
+import { SITE_SCOPED_ROLES } from "../middlewares/rbac.js"
 
 /**
  * Persist an in-app notification for one user and fan a web push to their
@@ -47,7 +48,7 @@ export async function notifyAdmins(payload) {
 export async function findSiteSupervisors(siteId) {
   if (!siteId) return []
   return userModel
-    .find({ assignedSite: siteId, role: "supervisor" })
+    .find({ assignedSite: siteId, role: { $in: SITE_SCOPED_ROLES } })
     .select("_id name")
 }
 

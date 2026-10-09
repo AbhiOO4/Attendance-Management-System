@@ -10,7 +10,7 @@ router.use(verifyToken)
 
 // --- READ-ONLY routes (accessible by both Admin and Supervisor globally) ---
 router.get('/', authorizeRoles("admin", "supervisor"), siteController.getSites)
-router.get('/:id', authorizeRoles("admin", "supervisor"), siteController.getSite)
+router.get('/:id', authorizeRoles("admin", "supervisor", "driverSupervisor"), siteController.getSite)
 router.get('/:siteId/site-data', authorizeRoles("admin", "supervisor"), siteController.siteManHoursAndDays)
 router.get('/job/:jobId', authorizeRoles("admin", "supervisor"), siteController.getJob)
 router.get('/:jobId/job-data', authorizeRoles("admin", "supervisor"), siteController.jobManHoursAndDays)
@@ -18,9 +18,9 @@ router.get('/:siteId/Jobs', authorizeRoles("admin", "supervisor"), siteControlle
 router.get('/:siteId/employees', authorizeRoles("admin", "supervisor"), siteController.getAvailableEmployeesForSite)
 router.get('/job/:jobId/employees', authorizeRoles("admin", "supervisor"), siteController.getJobEmployees)
 router.get('/:siteId/free-employees', authorizeRoles("admin", "supervisor"), siteController.getUnassignedSiteEmployees)
-router.get('/:siteId/activity', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.getSiteActivity)
+router.get('/:siteId/activity', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, siteController.getSiteActivity)
 router.get('/:siteId/manpower', authorizeRoles("admin"), siteController.getSiteManpower)
-router.post('/:siteId/check-pending', authorizeRoles("admin", "supervisor"), siteController.checkPending)
+router.post('/:siteId/check-pending', authorizeRoles("admin", "supervisor", "driverSupervisor"), siteController.checkPending)
 
 // --- SUPERVISOR & ADMIN WRITE routes (restricted to assigned site for Supervisor) ---
 router.post('/:siteId/insta-add-employee', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.instaAddEmployee)
@@ -45,6 +45,6 @@ router.post('/job/:jobId/add-employee', authorizeRoles("admin"), siteController.
 router.patch('/:siteId/employees/job', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.bulkSetEmployeeJob)
 router.patch('/:siteId/employee/:employeeId/job', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.updateEmployeeJob)
 router.delete('/:siteId/employee/:employeeId/scheduled', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.cancelScheduledAssignment)
-router.patch('/:siteId', authorizeRoles("admin", "supervisor"), requireSiteAccess, siteController.updateSite)
+router.patch('/:siteId', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, siteController.updateSite)
 
 export default router

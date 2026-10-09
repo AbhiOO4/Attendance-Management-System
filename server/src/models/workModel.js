@@ -145,9 +145,9 @@ const workScheduleSchema = new mongoose.Schema(
     },
 
     // ERPNext Overtime Type (a master) stamped on Attendance rows that carry overtime,
-    // alongside actual_overtime_duration = the day's OT hours. Empty → OT is left off the
-    // Attendance export (it still appears in the OT/holiday summary file). Set this to a
-    // valid Overtime Type from your ERPNext to feed OT into payroll from the same import.
+    // alongside actual_overtime_duration = the day's OT hours (a worked holiday's holiday
+    // hours). Empty → OT and worked holidays are left off the Attendance export. Set this
+    // to a valid Overtime Type from your ERPNext to feed OT into payroll from the same import.
     erpOvertimeType: {
       type: String,
       trim: true,

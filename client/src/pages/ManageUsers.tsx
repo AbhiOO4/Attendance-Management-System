@@ -4,7 +4,7 @@ import toast from "react-hot-toast"
 import { useAuth } from "@/context/AuthContext"
 
 import EditUserModal from "@/components/EditUserModal.tsx"
-import AddAdminModal from "@/components/AddAdminModal.tsx"
+import AddUserDialog from "@/components/AddUserDialog.tsx"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -46,7 +46,9 @@ import {
   Mail,
   User,
   Trash2,
-  Building2
+  Building2,
+  Truck,
+  UserPlus
 } from "lucide-react"
 
 interface User {
@@ -73,8 +75,10 @@ function ManageUsers() {
   const [siteFilter, setSiteFilter] = useState<string>("all")
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [open, setOpen] = useState(false)
-  // Which kind of account the Add modal is creating (null = closed).
-  const [addUserRole, setAddUserRole] = useState<"admin" | "superadmin" | null>(null)
+  // The single Add user dialog (role picked inside it).
+  const [addUserOpen, setAddUserOpen] = useState(false)
+  // Re-keyed on every open so the dialog starts blank.
+  const [addUserKey, setAddUserKey] = useState(0)
 
   // Single lifted Delete Dialog (role gate is at the route level: superadmin only).
   const [userToDelete, setUserToDelete] = useState<User | null>(null)
@@ -144,6 +148,20 @@ function ManageUsers() {
   const admins = useMemo(() => {
     return users.filter((user) => user.role === "admin")
   }, [users])
+
+  const driverSupervisors = useMemo(() => {
+    return users.filter((user) => user.role === "driverSupervisor")
+  }, [users])
+
+  const filteredDriverSupervisors = useMemo(() => {
+    const searchValue = search.toLowerCase()
+    return driverSupervisors.filter(
+      (user) =>
+        user.name.toLowerCase().includes(searchValue) ||
+        (user.employeeId && user.employeeId.toLowerCase().includes(searchValue)) ||
+        user.email.toLowerCase().includes(searchValue)
+    )
+  }, [driverSupervisors, search])
 
   const superadmins = useMemo(() => {
     return users.filter((user) => user.role === "superadmin")
@@ -241,19 +259,14 @@ function ManageUsers() {
           </Select>
 
           <Button
-            variant="outline"
-            onClick={() => setAddUserRole("admin")}
+            onClick={() => {
+              setAddUserKey((k) => k + 1)
+              setAddUserOpen(true)
+            }}
             className="w-full sm:w-auto inline-flex items-center gap-1.5"
           >
-            Add Admin
-          </Button>
-
-          <Button
-            onClick={() => setAddUserRole("superadmin")}
-            className="w-full sm:w-auto inline-flex items-center gap-1.5"
-          >
-            <ShieldPlus className="h-4 w-4" />
-            Add Superadmin
+            <UserPlus className="h-4 w-4" />
+            Add user
           </Button>
         </div>
       </div>
@@ -417,6 +430,78 @@ function ManageUsers() {
       </div>
 
       {/* Admin Users Table Section */}
+      {/* Driver Supervisors — mark the Drivers Attendance sheet; no site */}
+      <div className="space-y-3 pt-4">
+        <h2 className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
+          <Truck className="h-5 w-5" />
+          <span>Driver Supervisors</span>
+          <Badge variant="outline" className="text-xs font-normal">{filteredDriverSupervisors.length}</Badge>
+        </h2>
+        <div className="border rounded-xl bg-card shadow-sm overflow-x-auto">
+          <Table>
+            <TableHeader className="bg-muted/40">
+              <TableRow>
+                <TableHead className="font-semibold text-foreground">Name</TableHead>
+                <TableHead className="font-semibold text-foreground">Employee ID</TableHead>
+                <TableHead className="font-semibold text-foreground">Access</TableHead>
+                <TableHead className="font-semibold text-foreground">Email</TableHead>
+                <TableHead className="font-semibold text-foreground text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredDriverSupervisors.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-20 text-center text-sm text-muted-foreground">
+                    No driver supervisors yet — use Add user.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredDriverSupervisors.map((user) => (
+                  <TableRow key={user._id} className="transition-colors hover:bg-muted/30">
+                    <TableCell className="font-medium text-foreground py-3.5">{user.name}</TableCell>
+                    <TableCell className="font-mono text-sm text-foreground">{user.employeeId || "—"}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="font-medium px-2.5 py-0.5">Drivers (no site)</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      <div className="flex items-center gap-1.5">
+                        <Mail className="h-3.5 w-3.5 text-muted-foreground/50" />
+                        <span>{user.email}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right py-3.5">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setOpen(true)
+                          }}
+                          className="inline-flex items-center gap-1.5"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="inline-flex items-center gap-1.5"
+                          onClick={() => setUserToDelete(user)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
       <div className="space-y-3 pt-4">
         <h2 className="text-xl font-semibold tracking-tight text-foreground flex items-center gap-2">
           <span>Administrators</span>
@@ -604,10 +689,10 @@ function ManageUsers() {
         onSuccess={fetchUsers}
       />
 
-      <AddAdminModal
-        open={addUserRole !== null}
-        role={addUserRole ?? "admin"}
-        onClose={() => setAddUserRole(null)}
+      <AddUserDialog
+        key={addUserKey}
+        open={addUserOpen}
+        onClose={() => setAddUserOpen(false)}
         onSuccess={fetchUsers}
       />
 

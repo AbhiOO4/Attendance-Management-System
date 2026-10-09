@@ -12,6 +12,7 @@ import { resolveCollarType } from '../utils/collar.js'
 import { getTodayLocal } from '../utils/timeLocal.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { findRecordedElsewhere } from '../utils/draftRoster.js'
+import { syncSupervisorScope } from '../utils/supervisorScope.js'
 
 //Admin
 
@@ -419,9 +420,11 @@ export const editEmployee = async (req, res) => {
     // not this edit form. Only reconcile currentSite/currentJob when the request
     // explicitly includes currentSite — otherwise leave them untouched (an absent
     // field must never be read as "clear the assignment").
+    let siteChanged = false;
     if (currentSite !== undefined) {
       const prevSite = existingEmployee.currentSite?.toString() || null;
       const newSite = currentSite || null;
+      siteChanged = prevSite !== newSite;
 
       const prevJob = existingEmployee.currentJob?.toString() || null;
       // If site cleared, job must also be null; otherwise use what was sent
@@ -472,12 +475,16 @@ export const editEmployee = async (req, res) => {
     );
 
     if (employee.user) {
-      // Keep the linked supervisor account's name/ID in step. Their assignedSite (auth
-      // scope) is admin-owned in Manage Users and never follows a roster/site change.
+      // Keep the linked supervisor account's name/ID in step.
       await userModel.findByIdAndUpdate(employee.user, {
         name,
         employeeId,
       }, { session });
+    }
+    // An edit that re-homes the employee is a permanent move: their supervisor
+    // account's site access follows it (cleared when the site is cleared).
+    if (siteChanged) {
+      await syncSupervisorScope(employee, session);
     }
 
     await session.commitTransaction();
@@ -1017,6 +1024,7 @@ export const assignTempWorker = async (req, res) => {
 
     employee.currentSite = siteId;
     await employee.save({ session });
+    await syncSupervisorScope(employee, session);
 
     // Handle locked/submitted daily attendance check. Use the app-timezone business day
     // (see addEmployee): raw UTC midnight would resolve to the previous day in the
@@ -1112,6 +1120,7 @@ export const releaseTempWorker = async (req, res) => {
     employee.currentSite = null;
     employee.currentJob = null;
     await employee.save({ session });
+    await syncSupervisorScope(employee, session);
 
     // Handle today's attendance record & session cleanup. App-timezone business day
     // (see addEmployee) — raw UTC midnight would look up the wrong day in the early-morning

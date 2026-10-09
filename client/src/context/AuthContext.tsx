@@ -11,7 +11,8 @@ import { api } from "@/lib/api"
 export type User = {
   _id: string
   name: string
-  role: "admin" | "supervisor" | "superadmin"
+  // driverSupervisor: marks the Drivers Attendance sheet only (assignedSite = the hidden pool).
+  role: "admin" | "supervisor" | "superadmin" | "driverSupervisor"
   assignedSite: string | null
 }
 
@@ -50,7 +51,8 @@ const data = raw as {
   if (
     data.role !== "admin" &&
     data.role !== "supervisor" &&
-    data.role !== "superadmin"
+    data.role !== "superadmin" &&
+    data.role !== "driverSupervisor"
   ) {
     return null
   }

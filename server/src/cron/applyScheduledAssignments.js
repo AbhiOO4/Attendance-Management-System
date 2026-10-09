@@ -6,6 +6,7 @@ import siteModel from '../models/siteModel.js';
 import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
 import { applyHandover } from '../utils/handover.js';
 import { touchSiteRosters } from '../utils/draftRoster.js';
+import { syncSupervisorScope } from '../utils/supervisorScope.js';
 import { recordSiteActivity, SYSTEM_ACTOR } from '../utils/siteActivity.js';
 
 /**
@@ -152,15 +153,13 @@ export async function runApplyScheduledAssignments() {
             );
           }
 
-          // NOTE: a supervisor's User.assignedSite (auth scope) is decoupled and
-          // admin-owned — a scheduled WORKER-record removal deliberately does not
-          // touch it. Site deactivation/soft-delete is what clears auth scope.
-
           employee.currentSite = null;
           employee.currentJob = null;
           clearSchedule(employee);
 
           await employee.save({ session });
+          // A permanent removal clears a linked supervisor's site access too.
+          await syncSupervisorScope(employee, session);
 
           await session.commitTransaction();
           session.endSession();
@@ -261,12 +260,13 @@ export async function runApplyScheduledAssignments() {
           );
         }
 
-        // NOTE: a WORKER-record move never changes a supervisor's User.assignedSite
-        // (auth scope) — the two are decoupled and assignedSite is admin-owned.
-
         clearSchedule(employee);
 
         await employee.save({ session });
+        // A permanent site move carries a linked supervisor's site access with it.
+        if (isMove) {
+          await syncSupervisorScope(employee, session);
+        }
 
         await session.commitTransaction();
         session.endSession();

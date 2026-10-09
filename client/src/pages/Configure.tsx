@@ -878,7 +878,7 @@ export default function Configure() {
                 <Field
                   id="cfg-erp-ot-type"
                   label="ERPNext Overtime Type"
-                  hint="Must match an Overtime Type in ERPNext. When set, overtime hours are written onto each Attendance row (actual_overtime_duration) so payroll can consume them. Leave blank to omit OT from the Attendance export (it still appears in the OT summary file)."
+                  hint="Must match an Overtime Type in ERPNext. When set, overtime hours are written onto each Attendance row (actual_overtime_duration) so payroll can consume them. Worked holidays are written the same way, with their holiday hours. Leave blank to omit overtime (and worked-holiday hours) from the Attendance export."
                 >
                   <Input
                     id="cfg-erp-ot-type"

@@ -14,6 +14,7 @@
 import empModel from "../models/empModel.js"
 import attendanceModel from "../models/attendanceModel.js"
 import siteModel from "../models/siteModel.js"
+import { driverEmployeeFilter, isDriverPool } from "./driverPool.js"
 
 /**
  * Serialize a draft submit against roster moves touching the same site. Transactions don't
@@ -91,15 +92,23 @@ export async function findRecordedElsewhere({ employees, anchorSiteId, todayStr,
  *   - minus anyone on granted leave that day (annual or emergency);
  *   - home members, unless visiting another site today (stash) or recorded elsewhere today;
  *   - visitors to this site whose stash is dated today.
+ * For the hidden drivers pool the home members are the drivers (driverEmployeeFilter), with the
+ * same leave / visiting / recorded-elsewhere exclusions; mirrors GET /api/drivers/roster + the
+ * client's drivers variant of loadRosterContext.
  *
  * Returns Map<employeeId, { _id, name, employeeId }>.
  */
 export async function computeExpectedDraftRoster({ siteId, dateStr, session = null }) {
   const site = String(siteId)
+  // The hidden drivers pool: its "home members" are the drivers (no site, title contains
+  // "driver"), not employees whose currentSite is the pool. Nobody visits the pool.
+  const driverPool = await isDriverPool(siteId, session)
 
   const employees = await empModel
     .find(
-      { isActive: true, $or: [{ currentSite: siteId }, { pendingTransferSiteId: siteId }] },
+      driverPool
+        ? driverEmployeeFilter()
+        : { isActive: true, $or: [{ currentSite: siteId }, { pendingTransferSiteId: siteId }] },
       "_id name employeeId currentSite pendingTransferSiteId pendingTransferDate"
     )
     .session(session)
@@ -131,7 +140,7 @@ export async function computeExpectedDraftRoster({ siteId, dateStr, session = nu
     const pendingSite = refIdOf(emp.pendingTransferSiteId)
     const stashIsToday = dayStrOf(emp.pendingTransferDate) === dateStr
 
-    if (refIdOf(emp.currentSite) === site) {
+    if (driverPool || refIdOf(emp.currentSite) === site) {
       const visitingElsewhere = !!pendingSite && pendingSite !== site && stashIsToday
       if (visitingElsewhere || elsewhere.has(id)) continue
     } else if (!(pendingSite === site && stashIsToday)) {

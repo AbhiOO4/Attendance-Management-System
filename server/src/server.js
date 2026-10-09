@@ -37,6 +37,7 @@ import { startApplyScheduledAssignmentsCron } from './cron/applyScheduledAssignm
 import { startCheckoutReminderCron } from './cron/checkoutReminder.js'
 import { startExpireTransferRequestsCron } from './cron/expireTransferRequests.js'
 import { startRealtimeWatchers } from './utils/realtime.js'
+import { ensureDriverPool } from './utils/driverPool.js'
 // Transfer requests are no longer escalated: every admin sees every request in their
 // Requests inbox (requestController.incomingFilterFor), so nothing can sit unseen.
 // Night check-in is now pre-filled when a night shift is assigned (see
@@ -50,6 +51,7 @@ import attendanceRoutes from '../src/routes/attendanceRoutes.js'
 import siteRoutes from '../src/routes/siteRoutes.js'
 import configRoutes from '../src/routes/configRoutes.js'
 import requestRoutes from '../src/routes/requestRoutes.js'
+import driverRoutes from '../src/routes/driverRoutes.js'
 
 app.use(cookieParser())
 
@@ -67,6 +69,7 @@ app.use('/api/attendance', attendanceRoutes)
 app.use('/api/site', siteRoutes)
 app.use('/api/config', configRoutes)
 app.use('/api/requests', requestRoutes)
+app.use('/api/drivers', driverRoutes)
 
 
 
@@ -97,6 +100,7 @@ const initializePermanentSite = async () => {
 
 connectDB().then(async () => {
     await initializePermanentSite();
+    await ensureDriverPool();
     startAutoCheckOutCron();
     startApplyScheduledAssignmentsCron();
     startCheckoutReminderCron();

@@ -23,6 +23,7 @@ import {
   Settings,
   ShieldCheck,
   Inbox,
+  Truck,
   type LucideIcon,
 } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -68,6 +69,10 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Site", path: "/site", icon: Building2 },
   { name: "Requests", path: "/requests", icon: Inbox },
   { name: "Configure", path: "/configure", icon: Settings },
+]
+
+const DRIVER_SUPERVISOR_NAV_ITEMS: NavItem[] = [
+  { name: "Drivers Attendance", path: "/drivers-attendance", icon: Truck },
 ]
 
 function getSupervisorNavItems(
@@ -158,17 +163,24 @@ export default function SidebarLayout() {
       return getSupervisorNavItems(user.assignedSite)
     }
 
+    // A driver supervisor marks the Drivers Attendance sheet only.
+    if (user.role === "driverSupervisor") {
+      return DRIVER_SUPERVISOR_NAV_ITEMS
+    }
+
     return []
   }, [user])
 
   // Live stream of request changes (lib/requestsLive.ts) — one per signed-in tab,
   // kept across user-object refreshes. The badge below and the Requests page listen
   // for its REQUESTS_LIVE_EVENT.
+  // Driver supervisors have no Requests page, so they skip the stream and the badge poll.
   const userId = user?._id
+  const usesRequests = !!user && user.role !== "driverSupervisor"
   useEffect(() => {
-    if (!userId) return
+    if (!userId || !usesRequests) return
     return startRequestsLive()
-  }, [userId])
+  }, [userId, usesRequests])
 
   // Requests nav badge: pending incoming decisions + unread notifications (a cheap
   // indexed count). Refetched the moment the live stream reports a change, on tab
@@ -177,7 +189,7 @@ export default function SidebarLayout() {
   const [requestsCount, setRequestsCount] = useState(0)
 
   useEffect(() => {
-    if (!user) return
+    if (!user || user.role === "driverSupervisor") return
     let cancelled = false
 
     const fetchSummary = async () => {

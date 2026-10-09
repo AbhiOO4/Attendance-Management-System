@@ -6,10 +6,11 @@ import jobModel from "../models/jobModel.js"
  * live: not soft-deleted, active, and not marked completed. Centralised here so
  * every path that moves an employee or supervisor onto a site agrees on the rule
  * (deferred add, cross-site transfer, scheduled-assignment cron, and the
- * supervisor reassignment flow).
+ * supervisor reassignment flow). The hidden drivers pool (utils/driverPool.js) is never a
+ * destination — nobody is moved INTO it; drivers are marked there while having no site.
  */
 export function isAssignableSite(site) {
-  return !!site && !site.isDeleted && site.isActive === true && !site.isCompleted
+  return !!site && !site.isDeleted && site.isActive === true && !site.isCompleted && !site.isDriverPool
 }
 
 /**

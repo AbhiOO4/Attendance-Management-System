@@ -15,6 +15,7 @@ import workModel from '../models/workModel.js';
 import { getTodayLocal } from '../utils/timeLocal.js';
 import { findForgottenSessionsBySite } from '../utils/openSessionAudit.js';
 import { sendPushToUser, isPushConfigured } from '../utils/webPush.js';
+import { SITE_SCOPED_ROLES } from '../middlewares/rbac.js';
 
 const MAX_PER_DAY = 3;
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
@@ -56,7 +57,8 @@ export async function runCheckoutReminder() {
     // --- Supervisors: one notification per assigned site with forgotten sessions.
     const supervisors = await userModel
       .find({
-        role: 'supervisor',
+        // Driver supervisors cover the hidden drivers pool (utils/driverPool.js).
+        role: { $in: SITE_SCOPED_ROLES },
         assignedSite: { $in: sites.map((s) => s.siteId) },
         'pushSubscriptions.0': { $exists: true },
       })
@@ -71,7 +73,7 @@ export async function runCheckoutReminder() {
       const delivered = await sendPushToUser(sup, {
         title: 'Unclosed attendance',
         body: `${n} employee${n === 1 ? '' : 's'} still need${n === 1 ? 's' : ''} a check-out at ${group.siteName}.`,
-        url: `/attendance/${group.siteId}`,
+        url: sup.role === 'driverSupervisor' ? '/drivers-attendance' : `/attendance/${group.siteId}`,
         tag: 'checkout-reminder',
       });
       if (delivered > 0) await recordSend(sup, todayStr);

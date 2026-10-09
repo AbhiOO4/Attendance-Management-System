@@ -16,7 +16,8 @@ import { recordNetFactor } from '../utils/manHours.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal, isWithinCarryoverWindow } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
-import { buildAttendanceCsv, buildTimesheetCsv, buildOtSummaryCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
+import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
+import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
@@ -29,6 +30,8 @@ import { recordSiteActivity } from '../utils/siteActivity.js';
 import { computeExpectedDraftRoster, touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js';
 import AttendanceDraftRow from '../models/attendanceDraftRowModel.js';
 import { isCloudDraftEnabled } from '../utils/features.js';
+import { isDriverPool, findDriverJob, getDriverPoolId, driverEmployeeFilter, isDriverEmployee } from '../utils/driverPool.js';
+import { isSiteScopedRole } from '../middlewares/rbac.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
 // "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
@@ -567,7 +570,7 @@ const WEEKDAY_NAMES = [
 // `toDay` are UTC midnights (how Attendance.date is stored). Shared by the monthly
 // report and the date-range report. Returns null when the work schedule is missing.
 async function buildAttendanceReport(fromDay, toDay) {
-  const [employees, attendances, workConfig] =
+  const [employees, attendances, workConfig, customHolidays] =
     await Promise.all([
       empModel.find({}).lean(),
 
@@ -579,25 +582,38 @@ async function buildAttendanceReport(fromDay, toDay) {
       }).lean(),
 
       workModel.findOne({ type: "default" }).lean(),
+
+      customHolidayModel.find({
+        date: {
+          $gte: fromDay,
+          $lte: new Date(toDay.getTime() + 86400000 - 1),
+        },
+      }).lean(),
     ]);
 
   if (!workConfig) return null;
 
-  // Expected working days count only up to today's business day — a span reaching
-  // past today (e.g. the current month) is judged on the days so far.
+  // Working days = EVERY calendar day of the span, holidays included — like ERPNext's
+  // "Include holidays in Total no. of Working Days" — and the whole span, not just the
+  // days so far, so a month's figure is the one its salary slip will show.
+  const spanDays = eachUtcDay(fromDay, toDay);
+  const workingDays = spanDays.length;
+
+  // Unmarked days (no record at all) are only checked up to today's business day.
   const today = normalizeUtcDay(getTodayLocal());
-  const lastCountedDay =
-    toDay.getTime() < today.getTime() ? toDay : today;
-  const countedDays = eachUtcDay(fromDay, lastCountedDay);
-
   const weeklyHolidays = workConfig.weeklyHolidays || [];
-  const expectedWorkingDays = countedDays.filter(
-    (day) => !weeklyHolidays.includes(WEEKDAY_NAMES[day.getUTCDay()])
-  ).length;
-
-  // Temporary workers have no days off — holidays are ordinary working days for
-  // them — so every calendar day counts as an expected working day.
-  const expectedWorkingDaysAllDays = countedDays.length;
+  const publicHolidayKeys = new Set(
+    customHolidays.map((holiday) => utcDayKey(holiday.date))
+  );
+  const pastDays = spanDays
+    .filter((day) => day.getTime() <= today.getTime())
+    .map((day) => ({
+      key: utcDayKey(day),
+      time: day.getTime(),
+      isHoliday:
+        weeklyHolidays.includes(WEEKDAY_NAMES[day.getUTCDay()]) ||
+        publicHolidayKeys.has(utcDayKey(day)),
+    }));
 
   const attendanceMap = new Map();
 
@@ -628,106 +644,87 @@ async function buildAttendanceReport(fromDay, toDay) {
       let halfDays = 0;
       let overtimeHours = 0;
       let holidayHours = 0;
-      let payableDays = 0;
-      let absentDays = 0;
       let leaveDays = 0;
+      let noReasonAbsentDays = 0;
       let emergencyLeaveDays = 0;
       let sickLeaveDays = 0;
       let lopDays = 0;
       let pendingDays = 0;
 
-      // Temporary workers have no days off: their expected days include holidays
-      // (see expectedWorkingDaysAllDays), so their holiday work is payable too.
+      // Temporary workers have no days off: their records are never holidays, so a
+      // holiday they don't work is an absence like any other day.
       const isTemporary = employee.employmentType === "temporary";
 
-      // Every record lands in exactly ONE day bucket, the same one as the Status
-      // badge the timesheet shows for it (client getDisplayStatus): annual /
-      // emergency / sick / LOP leave, pending (checked in, no check-out yet), a
-      // day off (holiday, not worked), or its status — fullday / halfday / absent.
+      // Every record is classified exactly as the ERPNext Attendance CSV classifies it
+      // (classifyPayrollDay), so Payment Days here equals the salary slip's.
       for (const record of records) {
-        // Approved PAID leave: counts as a payable/present day (so attendance %
-        // is not hurt) and is surfaced separately as leaveDays. Leave records are
-        // non-holiday working days by construction, so this is checked first.
-        if (record.isPaidLeave) {
-          leaveDays += 1;
-          payableDays += 1;
-          continue;
-        }
-
-        // Leave composition: the unpaid kinds, by flag (precedence emergency > sick >
-        // lop, the model's invariant) and regardless of holiday, so the counts match
-        // the Status shown per day on the timesheet. Each is its own bucket — never
-        // also counted in absentDays, which is left for absences with no reason
-        // recorded. Not payable. A leave flag only exists on a record with no
-        // check-in/out, so skipping the rest of the loop loses no hours.
-        if (record.isEmergencyLeave) {
-          emergencyLeaveDays += 1;
-          continue;
-        }
-        if (record.isSickLeave) {
-          sickLeaveDays += 1;
-          continue;
-        }
-        if (record.isLop) {
-          lopDays += 1;
-          continue;
-        }
-
         // Hours: a holiday's net worked hours are tracked as holidayHours (overtime
         // is already forced to 0 upstream on holidays); a working day adds its OT.
         if (record.isHoliday) {
-          holidayHours +=
-            record.holidayHours || 0;
+          holidayHours += record.holidayHours || 0;
         } else {
-          overtimeHours +=
-            record.overtimeHours || 0;
+          overtimeHours += record.overtimeHours || 0;
         }
 
-        // Worked days — holiday work included, since the person was present. For
-        // permanent staff a holiday isn't an expected working day, so holiday work
-        // earns no payable day (it is paid as holiday hours); temporary workers'
-        // holiday work does.
-        if (record.status === "fullday") {
-          fullDays += 1;
-          if (!record.isHoliday || isTemporary) payableDays += 1;
-          continue;
+        const day = classifyPayrollDay(record);
+        if (day.kind === "annual") leaveDays += 1;
+        else if (day.kind === "full") fullDays += 1;
+        else if (day.kind === "half") halfDays += 1;
+        else if (day.kind === "absent") {
+          if (day.reason === "emergency") emergencyLeaveDays += 1;
+          else if (day.reason === "sick") sickLeaveDays += 1;
+          else if (day.reason === "lop") lopDays += 1;
+          else {
+            noReasonAbsentDays += 1;
+            // Checked in, no check-out yet: counted as absent, flagged so it can be
+            // closed before the export.
+            if (hasOpenSession(record)) pendingDays += 1;
+          }
         }
+        // "holiday" — a paid day off, or holiday work paid as holiday hours: no day bucket.
+      }
 
-        if (record.status === "halfday") {
-          halfDays += 1;
-          if (!record.isHoliday || isTemporary) payableDays += 0.5;
-          continue;
-        }
+      // The unpaid days: everything ERPNext receives as "Absent".
+      const absentDays =
+        noReasonAbsentDays + emergencyLeaveDays + sickLeaveDays + lopDays;
 
-        // Not worked (status absent). An open session — checked in, no check-out
-        // yet — is pending, not an absence: it has 0 hours only until closed.
-        const hasOpenSession = (record.sessions || []).some(
-          (session) => session && session.checkIn && !session.checkOut
+      // A half day deducts half a day (ERPNext: Half Day + Leave Without Pay).
+      const paymentDays = Math.max(
+        workingDays - absentDays - 0.5 * halfDays,
+        0
+      );
+
+      // Days so far with no record at all — not in the ERPNext CSV, so ERPNext treats
+      // them per its "Consider Unmarked Attendance As" setting (default Present, which
+      // is how Payment Days counts them). Surfaced as a warning only. Counted from the
+      // day the employee was added, and not for inactive employees; holidays are days
+      // off except for temporary workers.
+      let unmarkedDays = 0;
+      if (employee.isActive !== false) {
+        const addedOn = employee.createdAt
+          ? normalizeUtcDay(employee.createdAt).getTime()
+          : 0;
+        const recordedKeys = new Set(
+          records.map((record) => utcDayKey(record.date))
         );
-        if (hasOpenSession) {
-          pendingDays += 1;
-          continue;
+        for (const day of pastDays) {
+          if (day.time < addedOn) continue;
+          if (day.isHoliday && !isTemporary) continue;
+          if (!recordedKeys.has(day.key)) unmarkedDays += 1;
         }
-
-        // A holiday not worked is a day off, not an absence.
-        if (record.isHoliday) continue;
-
-        absentDays += 1;
       }
 
       // OT and holiday hours are paid at the same rate, so they combine into a
       // single "total OT" figure for reporting.
       const totalOvertimeHours = overtimeHours + holidayHours;
 
-      const expected = isTemporary
-        ? expectedWorkingDaysAllDays
-        : expectedWorkingDays;
-
-      const attendancePercentage = expected > 0
-        ? Math.min((payableDays / expected) * 100, 100)
+      const attendancePercentage = workingDays > 0
+        ? (paymentDays / workingDays) * 100
         : 0;
 
       return {
+        // Mongo id — the Reports page sends these to pick employees for the ERPNext export.
+        _id: employee._id,
         employeeName: employee.name,
         employeeId: employee.employeeId,
         jobTitle: employee.jobTitle,
@@ -735,14 +732,21 @@ async function buildAttendanceReport(fromDay, toDay) {
         // Anything not temporary is permanent (same rule as the job report's filter).
         employmentType: isTemporary ? "temporary" : "permanent",
 
+        workingDays,
+        paymentDays: round(paymentDays),
         fullDays,
         halfDays,
+        // Total unpaid absence, and its composition.
         absentDays,
-        pendingDays,
-        leaveDays,
+        noReasonAbsentDays,
         emergencyLeaveDays,
         sickLeaveDays,
         lopDays,
+        // Subset of noReasonAbsentDays: open check-ins.
+        pendingDays,
+        // Annual (paid) leave — never in absentDays.
+        leaveDays,
+        unmarkedDays,
 
         attendancePercentage: round(
           attendancePercentage
@@ -1698,6 +1702,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     const auditActor = await resolveActor(req);
     const auditRows = [];
 
+    // Drivers sheet (the hidden pool site): every session stays on the pool and, once it has a
+    // time, must name the job it was for — any active job at a live site.
+    const driverSheet = await isDriverPool(siteId, session);
+
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
     // -----------------------------
@@ -1819,13 +1827,23 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           manuallyCleared = false,
         } = sessionObj
 
-        const finalSiteId = sessionSiteId || siteId
+        const finalSiteId = driverSheet ? siteId : (sessionSiteId || siteId)
 
         const { checkInNextDay, checkOutNextDay } = resolvedOffsets[sessionIndex]
 
         const boundsError = validateSessionTimesV2(checkIn, checkOut, checkInNextDay, checkOutNextDay);
         if (boundsError) {
           throwValidationError(400, boundsError);
+        }
+
+        if (driverSheet && (checkIn || checkOut)) {
+          const driverJob = job?._id ? await findDriverJob(job._id, session) : null;
+          if (!driverJob) {
+            throwValidationError(
+              400,
+              `Pick the job ${employee?.name || "this driver"}'s session was for${job?._id ? " (the selected job is no longer active)" : ""}`
+            );
+          }
         }
 
         const checkInDate = checkIn ? combineFromOffset(date, checkIn, checkInNextDay) : null
@@ -2008,7 +2026,10 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.crossedMidnight = hasCrossedMidnight
       attendanceDoc.shiftType = hasCrossedMidnight ? "night" : "day"
       attendanceDoc.siteId = siteId
-      attendanceDoc.jobId = jobId || null
+      // Drivers: the record's job is the first job their sheet session names.
+      attendanceDoc.jobId = driverSheet
+        ? (updatedSessions.find((s) => s.jobId)?.jobId || null)
+        : (jobId || null)
       attendanceDoc.markedBy = markedBy
 
       await attendanceDoc.save({ session })
@@ -2170,6 +2191,11 @@ export const getSiteAttendance = async (req, res) => {
         success: false,
         message: "date and siteId are required",
       })
+    }
+
+    // A driver supervisor reads the drivers sheet only.
+    if (req.user.role === "driverSupervisor" && String(siteId) !== (await getDriverPoolId())) {
+      return res.status(403).json({ success: false, message: "Forbidden: Access denied to this site" })
     }
 
     const queryDate = new Date(date)
@@ -2431,6 +2457,26 @@ export const getSiteAttendance = async (req, res) => {
       }
     }
 
+    // Drivers sheet: a session's job can be at any site, so name it (code, job, site) for
+    // the saved sheet's Job column.
+    if (await isDriverPool(siteObjectId)) {
+      const jobIds = [...new Set(result.flatMap((r) => r.sessions.map((s) => s.jobId).filter(Boolean)).map(String))]
+      if (jobIds.length) {
+        const jobs = await Job.find({ _id: { $in: jobIds } }, "name jobCode site")
+          .populate("site", "siteName")
+          .lean()
+        const jobById = new Map(
+          jobs.map((j) => [
+            String(j._id),
+            { _id: String(j._id), name: j.name, jobCode: j.jobCode || null, site: j.site ? { _id: String(j.site._id), siteName: j.site.siteName } : null },
+          ])
+        )
+        for (const row of result) {
+          for (const s of row.sessions) s.job = s.jobId ? jobById.get(String(s.jobId)) || null : null
+        }
+      }
+    }
+
     // Day-level holiday flag comes from the date itself, not from an employee's
     // record — temporary workers now store isHoliday:false even on a holiday, so a
     // temp row sorting first must not hide the banner.
@@ -2491,9 +2537,10 @@ export const getSiteCarryovers = async (req, res) => {
 
     // Employees rostered at this site today (home roster). A row exists on the board
     // for these; the carryover badge hangs on that row all day.
-    const rosterEmployees = await Employee.find({
-      currentSite: siteObjectId,
-    }).select("_id")
+    // The drivers pool's roster is the drivers (no site), not employees homed on it.
+    const rosterEmployees = await Employee.find(
+      (await isDriverPool(siteObjectId)) ? driverEmployeeFilter() : { currentSite: siteObjectId }
+    ).select("_id")
 
     const rosterIds = rosterEmployees.map((e) => e._id)
     if (rosterIds.length === 0) {
@@ -2643,7 +2690,7 @@ export const getAttendanceRecords = async (req, res) => {
     // -----------------------------
     // Site filter
     // -----------------------------
-    if (req.user.role === 'supervisor') {
+    if (isSiteScopedRole(req.user.role)) {
       const user = await userModel.findById(req.user.id);
       attendanceFilter.siteId = user?.assignedSite || null;
     } else if (site) {
@@ -3157,7 +3204,7 @@ export const updateAttendance = async (req, res) => {
       rawCheckOut: s.rawCheckOut,
     }));
 
-    if (req.user.role === 'supervisor') {
+    if (isSiteScopedRole(req.user.role)) {
       const user = await userModel.findById(req.user.id);
       // Check against the specific site being edited (siteId), not the doc's
       // primary/original site — a multi-site record can have sessions across
@@ -3228,6 +3275,19 @@ export const updateAttendance = async (req, res) => {
             success: false,
             message: boundsError,
           });
+        }
+      }
+
+      // Drivers sheet: each of the pool's sessions with a time must name a live job (any site).
+      if (siteId && (await isDriverPool(siteId))) {
+        for (const s of sessions) {
+          if (String(s.siteId) !== String(siteId) || (!s.checkIn && !s.checkOut)) continue;
+          if (!(await findDriverJob(s.jobId))) {
+            return res.status(400).json({
+              success: false,
+              message: "Pick an active job for every driver session",
+            });
+          }
         }
       }
 
@@ -4047,7 +4107,7 @@ export const getAttendanceById = async (req, res) => {
     const { attendanceId } = req.params
     const { siteId } = req.query
 
-    if (req.user.role === 'supervisor') {
+    if (isSiteScopedRole(req.user.role)) {
       const user = await userModel.findById(req.user.id);
       const record = await Attendance.findById(attendanceId);
       // Check against the specific site the caller is viewing (siteId), not
@@ -4362,7 +4422,7 @@ export const addSessionToAttendance = async (
       })
     }
 
-    if (req.user.role === 'supervisor') {
+    if (isSiteScopedRole(req.user.role)) {
       const user = await userModel.findById(req.user.id);
       // Check against the NEW session's own site, not the doc's primary
       // site — this session may belong to a different site than whichever
@@ -6084,7 +6144,7 @@ const getEmployeeDaySessions = async (req, res) => {
 const authorizeRecordAccess = async (attendanceId, reqUser) => {
   const record = await Attendance.findById(attendanceId);
   if (!record) return { ok: false, status: 404, message: "Attendance record not found" };
-  if (reqUser.role === "supervisor") {
+  if (isSiteScopedRole(reqUser.role)) {
     const user = await userModel.findById(reqUser.id).select("assignedSite");
     const assigned = user?.assignedSite?.toString();
     const sitesOnRecord = new Set(
@@ -6387,6 +6447,10 @@ export const grantLeave = async (req, res) => {
       // Attendance requires a siteId. Use the employee's current site, falling back
       // to the auto-created permanent site so leave works for anyone not on a site.
       let siteId = employee.currentSite;
+      // Drivers' leave sits on the drivers pool, so it shows on the Drivers sheet.
+      if (!siteId && isDriverEmployee(employee)) {
+        siteId = await getDriverPoolId(session);
+      }
       if (!siteId) {
         const permanentSite = await siteModel.findOne({ isPermanent: true }).select("_id").session(session);
         siteId = permanentSite?._id || null;
@@ -6680,14 +6744,16 @@ export const getEmployeesOnLeaveForDate = async (req, res) => {
   }
 };
 
-// GET /api/attendance/reports/erpnext/:month/:year?type=attendance|timesheet|ot-summary
-// Streams one ERPNext Data Import CSV for the month. The app holds no rates, so every
-// file carries hours + status only; ERPNext supplies rates from its own masters. See
-// utils/erpnextExport.js for the row shapes and the pro-rata break handling.
+// POST /api/attendance/reports/erpnext/:month/:year  { type, employeeIds? }
+// GET  /api/attendance/employee/:employeeId/erpnext/:month/:year?type=
+// Streams one ERPNext Data Import CSV (type attendance|timesheet) for the month. The app
+// holds no rates, so every file carries hours + status only; ERPNext supplies rates from
+// its own masters. See utils/erpnextExport.js for the row shapes and the pro-rata break
+// handling.
 export const exportErpnext = async (req, res) => {
   try {
     const { month, year } = req.params;
-    const type = String(req.query.type || "attendance").toLowerCase();
+    const type = String(req.body?.type || req.query.type || "attendance").toLowerCase();
 
     const monthNum = Number(month);
     const yearNum = Number(year);
@@ -6698,15 +6764,25 @@ export const exportErpnext = async (req, res) => {
     const startDate = new Date(yearNum, monthNum - 1, 1);
     const endDate = new Date(yearNum, monthNum, 1);
 
-    // Optional single-employee scope (the per-employee route or ?employeeId=). The
-    // employee detail page passes the employee's Mongo _id. Absent → whole roster.
+    // Optional employee scope, as Mongo _ids: one employee (the per-employee route or
+    // ?employeeId=, from the employee detail page) or a list in the body (`employeeIds`,
+    // the employees picked on the Reports page). Absent → whole roster.
     const empId = req.params.employeeId || req.query.employeeId;
+    const employeeIds = req.body?.employeeIds;
     const filter = { date: { $gte: startDate, $lt: endDate } };
     if (empId) {
       if (!mongoose.isValidObjectId(empId)) {
         return res.status(400).json({ success: false, message: "Invalid employeeId" });
       }
       filter.employee = empId;
+    } else if (employeeIds !== undefined) {
+      if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+        return res.status(400).json({ success: false, message: "Select at least one employee" });
+      }
+      if (!employeeIds.every((id) => mongoose.isValidObjectId(id))) {
+        return res.status(400).json({ success: false, message: "Invalid employeeId" });
+      }
+      filter.employee = { $in: employeeIds };
     }
 
     const [attendances, workConfig] = await Promise.all([
@@ -6742,13 +6818,10 @@ export const exportErpnext = async (req, res) => {
     } else if (type === "timesheet") {
       built = buildTimesheetCsv(records, { companyName, activityType, overtimeActivityType });
       filename = `erpnext-timesheet-${stamp}.csv`;
-    } else if (type === "ot-summary") {
-      built = buildOtSummaryCsv(records, { monthLabel: stamp });
-      filename = `erpnext-ot-holiday-${stamp}.csv`;
     } else {
       return res.status(400).json({
         success: false,
-        message: "type must be one of: attendance, timesheet, ot-summary",
+        message: "type must be one of: attendance, timesheet",
       });
     }
 

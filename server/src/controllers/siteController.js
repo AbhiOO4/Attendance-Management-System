@@ -17,6 +17,9 @@ import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js'
 import TransferRequest from '../models/transferRequestModel.js'
 import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
+import { syncSupervisorScope } from '../utils/supervisorScope.js'
+import { isDriverPool, mirrorPoolDefaultsInBody } from '../utils/driverPool.js'
+import { isSiteScopedRole } from '../middlewares/rbac.js'
 import { touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
 import {
@@ -35,7 +38,8 @@ import { buildSiteManpower } from '../utils/siteManpower.js'
 export const getSites = async (req, res) => {
     try{
         const { siteName, isActive, date } = req.query
-        let filter  = { isDeleted: { $ne: true } }
+        // The hidden drivers pool is never listed with the sites (utils/driverPool.js).
+        let filter  = { isDeleted: { $ne: true }, isDriverPool: { $ne: true } }
         if (siteName) {
             filter.siteName = { $regex: `^${escapeRegExp(siteName)}`, $options: "i" };
         }
@@ -245,6 +249,7 @@ export const assignEmployee = async (req , res) => {
         }
         employee.currentSite = siteId
         const saved = await employee.save()
+        await syncSupervisorScope(saved)
 
         // --- Site activity: employee added to this site (best-effort) ---
         try {
@@ -338,6 +343,8 @@ export const removeEmployee = async (req, res) => {
       employee.currentSite = null;
       employee.currentJob = null;
       const saved = await employee.save({ session });
+      // A permanent removal clears a linked supervisor's site access too.
+      await syncSupervisorScope(saved, session);
 
       if (deleteAttendance) {
         await stripTodaySession();
@@ -1159,7 +1166,7 @@ export const deactivateSite = async (req, res) => {
       });
     }
 
-    if (site.isPermanent) {
+    if (site.isPermanent || site.isDriverPool) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({
@@ -1892,14 +1899,17 @@ export const instaAddEmployee = async (req, res) => {
 
     // onlyForToday: carry the session (pendingTransfer* above) but leave the employee's
     // home untouched — no currentSite/currentJob move and no job-membership change. They
-    // return to their home roster tomorrow. A supervisor's User.assignedSite (auth scope) is
-    // admin-owned and never follows a roster move, permanent or not.
+    // return to their home roster tomorrow. A linked supervisor's User.assignedSite (auth
+    // scope) follows a permanent move only.
     if (!onlyForToday) {
       employee.currentSite = siteId
       employee.currentJob = currentJob || null
     }
 
     await employee.save({ session })
+    if (!onlyForToday) {
+      await syncSupervisorScope(employee, session)
+    }
 
     if (!onlyForToday && oldJobId) {
       await jobModel.findByIdAndUpdate(
@@ -2384,6 +2394,12 @@ export const deleteSite = async (req, res) => {
       });
     }
 
+    if (site.isDriverPool) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: "The drivers pool cannot be deleted" });
+    }
+
     // Set site as soft-deleted
     site.isDeleted = true;
     site.isActive = false;
@@ -2513,6 +2529,13 @@ export const deleteJob = async (req, res) => {
 export const updateSite = async (req, res) => {
   try {
     const { siteId } = req.params;
+    // The drivers pool has two categories (Foreign / Omani): keep each staff default equal to
+    // its skilled twin so every category-keyed default reader agrees. Its flags never change.
+    if (await isDriverPool(siteId)) {
+      mirrorPoolDefaultsInBody(req.body);
+      delete req.body.isCompleted;
+      delete req.body.locationDetails;
+    }
     const {
       locationDetails,
       isCompleted,
@@ -2541,7 +2564,7 @@ export const updateSite = async (req, res) => {
     }
 
     // Supervisor site-access check: supervisors can only update their assigned site
-    if (req.user.role === 'supervisor') {
+    if (isSiteScopedRole(req.user.role)) {
       const user = await userModel.findById(req.user.id);
       if (!user || !user.assignedSite || user.assignedSite.toString() !== siteId.toString()) {
         return res.status(403).json({ message: "Forbidden: Access denied to this site" });

@@ -13,33 +13,34 @@ router.use(verifyToken)
 
 // --- Specific routes FIRST (must come before /:attendanceId wildcard) ---
 
-router.post('/submit', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.siteFirstSubmitAttendance)
+router.post('/submit', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, attendanceController.siteFirstSubmitAttendance)
 
 // Shared cloud draft of a site's unsubmitted day (404 while CLOUD_DRAFT_ENABLED is off).
-router.get('/draft', authorizeRoles("admin", "supervisor"), requireSiteAccess, draftController.getDraft)
+router.get('/draft', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, draftController.getDraft)
 
-router.put('/draft/rows', authorizeRoles("admin", "supervisor"), requireSiteAccess, draftController.saveDraftRows)
+router.put('/draft/rows', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, draftController.saveDraftRows)
 
 router.get('/dashboard', authorizeRoles("admin", "supervisor"), attendanceController.getSummary)
 
 router.get('/dashboard/active-sites', authorizeRoles("admin", "supervisor"), attendanceController.getActiveSitesOverview)
 
-router.get('/reports/daily', authorizeRoles("admin", "supervisor"), attendanceController.getSiteAttendance)
+router.get('/reports/daily', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.getSiteAttendance)
 
 // Employee-scoped carryover fetch: the prior-day open shifts of the employees rostered
 // at this site TODAY, wherever those shifts physically live (the "follow the employee"
 // flow). Site-scoped by the queried siteId, so requireSiteAccess confines a supervisor
 // to their own site.
-router.get('/reports/carryovers', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getSiteCarryovers)
+router.get('/reports/carryovers', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, attendanceController.getSiteCarryovers)
 
 router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
 
 // The same hours report over any from–to span of business days (?from&to, YYYY-MM-DD, max a year).
 router.get('/reports/range', authorizeRoles("superadmin"), attendanceController.rangeReport)
 
-// ERPNext Data Import CSV export (?type=attendance|timesheet|ot-summary). Superadmin
-// only, matching the Monthly Report page this lives on.
-router.get('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), attendanceController.exportErpnext)
+// ERPNext Data Import CSV export. Body { type: attendance|timesheet, employeeIds? } —
+// POST because the picked employee list can outgrow a query string. Superadmin only,
+// matching the Monthly Report page this lives on.
+router.post('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), attendanceController.exportErpnext)
 
 // Per-employee ERPNext export (same CSVs, scoped to one employee for easier testing).
 // admin + superadmin — lives on the employee detail page. Bulk route above stays superadmin.
@@ -53,7 +54,7 @@ router.get('/leave/preview', authorizeRoles("admin"), attendanceController.previ
 
 // Read-only leave lookup for a date — supervisors need it to lock leave rows on the
 // Site Attendance page (declared before the /:attendanceId wildcard).
-router.get('/leave/on-date', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeesOnLeaveForDate)
+router.get('/leave/on-date', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.getEmployeesOnLeaveForDate)
 
 router.get('/leave/employee/:employeeId', authorizeRoles("admin"), attendanceController.listEmployeeLeaves)
 
@@ -82,9 +83,9 @@ router.post('/backfill/bulk', authorizeRoles("admin"), attendanceController.bulk
 router.post('/bulk-checkout', authorizeRoles("admin"), attendanceController.bulkCheckout)
 
 // Night shift bulk assignment
-router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.getNightShiftCandidates)
+router.get('/night-shift/candidates', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, attendanceController.getNightShiftCandidates)
 
-router.post('/night-shift/assign', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.assignNightShift)
+router.post('/night-shift/assign', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, attendanceController.assignNightShift)
 
 // Employee transfer between sites. Not using requireSiteAccess since it only
 // validates a single siteId; access is checked manually against fromSiteId
@@ -100,18 +101,18 @@ router.patch('/unlock', authorizeRoles("admin"), attendanceController.unlockAtte
 
 router.patch('/update/set-holiday', authorizeRoles("admin"), attendanceController.toggleHolidayStatus)
 
-router.patch('/update/:attendanceId', authorizeRoles("admin", "supervisor"), attendanceController.updateAttendance)
+router.patch('/update/:attendanceId', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.updateAttendance)
 
 router.post('/:attendanceId/sessions', authorizeRoles("admin", "supervisor"), attendanceController.addSessionToAttendance)
 
 // Per-record edit log + supervisor remark. Site-scope for supervisors is enforced inside
 // the controller (the param is an attendance id, not a site id, so requireSiteAccess can't).
-router.get('/:attendanceId/history', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceHistory)
+router.get('/:attendanceId/history', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.getAttendanceHistory)
 
-router.patch('/:attendanceId/remark', authorizeRoles("admin", "supervisor"), attendanceController.updateAttendanceRemark)
+router.patch('/:attendanceId/remark', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.updateAttendanceRemark)
 
 // --- Wildcard route LAST ---
-router.get('/:attendanceId', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceById)
+router.get('/:attendanceId', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.getAttendanceById)
 
 export default router
 

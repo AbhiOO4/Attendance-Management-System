@@ -255,8 +255,8 @@ function InstaAddEmployees() {
     const [overlapError, setOverlapError] = useState<OverlapError | null>(null)
 
     // Instant add only: ON = carry a session for today without moving the employee's home
-    // site (a one-day visit); OFF (default) = permanently move them here. A supervisor's own
-    // site access (Manage Users) never follows either way.
+    // site (a one-day visit); OFF (default) = permanently move them here. A linked
+    // supervisor's site access follows the permanent move only.
     const [onlyForToday, setOnlyForToday] = useState(false)
 
     // Instant add only: the employee's existing sessions at OTHER sites today.

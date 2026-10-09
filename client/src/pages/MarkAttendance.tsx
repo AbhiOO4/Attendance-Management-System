@@ -9,7 +9,7 @@ import { Loader2, MapPin } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Link } from "react-router-dom"
-import { Pencil } from "lucide-react"
+import { Pencil, Truck } from "lucide-react"
 
 type Site = {
   _id: string
@@ -101,12 +101,21 @@ function MarkAttendance() {
             </p>
           </div>
 
-          <Button asChild variant="outline" >
-            <Link to="/attendance/edit">
-              <Pencil className="mr-2 h-4 w-4" />
-              Edit Past Attendance
-            </Link>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {/* Drivers have no site: their sheet lives outside the site cards below. */}
+            <Button asChild variant="outline">
+              <Link to="/drivers-attendance">
+                <Truck className="mr-2 h-4 w-4" />
+                Drivers Attendance
+              </Link>
+            </Button>
+            <Button asChild variant="outline" >
+              <Link to="/attendance/edit">
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Past Attendance
+              </Link>
+            </Button>
+          </div>
         </div>
 
         {sites.length === 0 ? (

@@ -5,7 +5,8 @@
 // the returned CSV. Two exports, one shared "hours + status only" philosophy (the app
 // holds NO rates; ERPNext supplies them from its own masters):
 //
-//   1. Attendance  → drives Salary Slip payment-days (Payroll Based On = Attendance).
+//   1. Attendance  → drives Salary Slip payment-days (Payroll Based On = Attendance) and
+//                    the Overtime Slip (OT duration; worked holidays carry holiday hours).
 //   2. Timesheet   → drives per-job (Project) salary-cost roll-up. `Project` = jobCode
 //                    ("Job Order"); Site is NOT a cost dimension here.
 //
@@ -17,6 +18,7 @@
 
 import { toLocalDateString, toLocalTimeString } from "./timeLocal.js";
 import { allocateSessionNetHours, allocateProRata } from "./attendanceMath.js";
+import { classifyPayrollDay } from "./payrollDay.js";
 
 // --------------------------------------------------------------------------
 // Tunables. Defaults; the controller overrides company/activity from WorkSchedule
@@ -66,6 +68,17 @@ function localDateTimeString(instant) {
   return `${toLocalDateString(instant)} ${toLocalTimeString(instant)}:00`;
 }
 
+// Same, but keeps the seconds (rounded to the nearest second). For a time-log start that is
+// derived from a previous log's end: ERPNext computes To Time = From Time + Hrs to the second,
+// so truncating to the minute would start the next log up to 59s BEFORE the previous one ends
+// and ERPNext rejects the import as an overlap. The APP offset is whole minutes, so the UTC
+// seconds are the local seconds.
+function localDateTimeStringExact(instant) {
+  const d = new Date(Math.round(new Date(instant).getTime() / 1000) * 1000);
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${toLocalDateString(d)} ${toLocalTimeString(d)}:${ss}`;
+}
+
 // A session that actually contributes worked time (a closed session with positive
 // hours). Open sessions (check-in, no check-out) carry 0 hours and are excluded.
 const isWorkedSession = (s) => !!(s && s.checkIn && (Number(s.workedHours) || 0) > 0);
@@ -76,19 +89,30 @@ const isWorkedSession = (s) => !!(s && s.checkIn && (Number(s.workedHours) || 0)
 // One row per employee per day. Status drives payment-days; Working Hours = the day's
 // NET total (record.totalWorkHours). Holiday-with-no-work days are skipped — ERPNext
 // owns its own Holiday List, so emitting them as attendance would double-count.
+// A WORKED holiday is emitted as "Present" with its holidayHours as the overtime
+// duration: holiday hours are paid at the OT rate, and ERPNext's Overtime Slip only
+// collects submitted, Present attendance with an Overtime Type (Half Day is ignored).
 // Attendance is a submittable doctype, but Frappe Data Import can't set docstatus via a
 // column, so no Docstatus is emitted — tick "Submit After Import" on the import screen so
 // payroll sees it (draft attendance is ignored by payroll).
+// Non-holiday records only (the caller handles holidays). The day's kind comes from
+// classifyPayrollDay — the same classification the Payment Days report counts.
 function erpAttendanceStatus(record, paidLeaveType) {
   // Only PAID (annual) leave is "On Leave" — with a paid leave type. Sick leave, emergency
-  // leave and LOP are UNPAID absences in this app (sick/emergency are excused but still
-  // lower attendance %; LOP is an unexcused absence), so all map to plain Absent with NO
-  // leave type, mirroring monthlyReport. A Half Day carries the LWP leave type so ERPNext
-  // deducts the missing half as Leave Without Pay.
-  if (record.isPaidLeave) return { status: "On Leave", leaveType: paidLeaveType };
-  if (record.status === "fullday") return { status: "Present", leaveType: "" };
-  if (record.status === "halfday") return { status: "Half Day", leaveType: HALF_DAY_LEAVE_TYPE };
-  return { status: "Absent", leaveType: "" };
+  // leave and LOP are UNPAID absences in this app (sick/emergency are excused; LOP is an
+  // unexcused absence), so all map to plain Absent with NO leave type, as does a pending
+  // day (open check-in). A Half Day carries the LWP leave type so ERPNext deducts the
+  // missing half as Leave Without Pay.
+  switch (classifyPayrollDay(record).kind) {
+    case "annual":
+      return { status: "On Leave", leaveType: paidLeaveType };
+    case "full":
+      return { status: "Present", leaveType: "" };
+    case "half":
+      return { status: "Half Day", leaveType: HALF_DAY_LEAVE_TYPE };
+    default:
+      return { status: "Absent", leaveType: "" };
+  }
 }
 
 export function buildAttendanceCsv(
@@ -123,13 +147,33 @@ export function buildAttendanceCsv(
   const rows = [];
   let skippedHolidays = 0;
   let otRows = 0;
+  let holidayOtRows = 0;
 
   for (const record of sorted) {
-    // Skip ALL holidays (worked or not) — ERPNext's own Holiday List owns holiday pay,
-    // and the app never counts a holiday as a payable day (see monthlyReport). Any hours
-    // worked on a holiday still reach ERPNext via the Timesheet + the OT/holiday summary.
     if (record.isHoliday) {
-      skippedHolidays++;
+      // Worked holiday → Present + holidayHours as OT (overtimeHours is 0 on holidays
+      // upstream, so the two never double-count). Always Present, even for a short
+      // shift: a Half Day row is dropped by the Overtime Slip and would carry LWP.
+      // Days off — and worked holidays when no Overtime Type is configured, which the
+      // Overtime Slip would ignore anyway — are skipped: ERPNext's Holiday List owns them.
+      const holidayHours = Number(record.holidayHours) || 0;
+      if (holidayHours > 0 && overtimeType) {
+        holidayOtRows++;
+        rows.push([
+          "",
+          record.employee.employeeId,
+          businessDayString(record.date),
+          "Present",
+          round2(record.totalWorkHours || 0),
+          stdHours,
+          companyName,
+          "",
+          overtimeType,
+          round2(holidayHours),
+        ]);
+      } else {
+        skippedHolidays++;
+      }
       continue;
     }
 
@@ -161,7 +205,7 @@ export function buildAttendanceCsv(
 
   return {
     csv: toCsv(header, rows),
-    meta: { rows: rows.length, skippedHolidays, otRows },
+    meta: { rows: rows.length, skippedHolidays, otRows, holidayOtRows },
   };
 }
 
@@ -191,7 +235,9 @@ export function buildAttendanceCsv(
 // time-logs — the regular hours under `activityType` and the overtime hours under
 // `overtimeActivityType` — so ERPNext can cost OT at a premium (its own Activity Cost per
 // employee). OT is a DAY-level figure (record.overtimeHours), so it is spread across the
-// day's sessions pro-rata by net hours. The OT log is placed as the shift's TAIL
+// day's sessions pro-rata by net hours. HOLIDAY hours (record.holidayHours) are paid at the
+// OT rate too, so a worked holiday goes entirely under `overtimeActivityType` — matching the
+// Attendance CSV, which sends them as overtime duration. The OT log is placed as the shift's TAIL
 // (From = check-in + regular hours) so the two contiguous logs never overlap in ERPNext.
 // With no OT type configured, a session stays a single net-hours line (unchanged).
 export function buildTimesheetCsv(
@@ -248,8 +294,11 @@ export function buildTimesheetCsv(
 
     const employeeId = record.employee.employeeId;
     const nets = allocateSessionNetHours(worked, record.totalWorkHours || 0);
+    // Hours paid at the OT rate: overtime on a normal day, the whole holiday credit on a
+    // worked holiday (overtimeHours is 0 on holidays upstream, so the two never stack).
+    const premiumHours = (Number(record.overtimeHours) || 0) + (Number(record.holidayHours) || 0);
     const ots = splitOt
-      ? allocateProRata(nets, record.overtimeHours || 0)
+      ? allocateProRata(nets, premiumHours)
       : nets.map(() => 0);
 
     worked.forEach((session, i) => {
@@ -267,8 +316,10 @@ export function buildTimesheetCsv(
         // Regular portion first, then OT as the tail so the two logs are contiguous
         // (To Time = From + Hours) and never overlap within the Timesheet.
         if (regH > 0) addLine(employeeId, jobCode, activityType, from, regH);
-        const otFrom = localDateTimeString(
-          new Date(new Date(session.checkIn).getTime() + regH * 3600 * 1000)
+        // Exact to the second: regH is 2dp, so regH*3600 is a whole number of seconds and the
+        // tail starts precisely where the regular log ends (From + Hrs), not a few seconds early.
+        const otFrom = localDateTimeStringExact(
+          new Date(new Date(session.checkIn).getTime() + Math.round(regH * 3600) * 1000)
         );
         addLine(employeeId, jobCode, overtimeActivityType, otFrom, otH);
       } else {
@@ -316,43 +367,4 @@ export function buildTimesheetCsv(
   }
 
   return { csv: toCsv(header, rows), meta: { rows: rows.length, skippedNoJob } };
-}
-
-// --------------------------------------------------------------------------
-// 3. OT & holiday hours summary (optional, informational)
-// --------------------------------------------------------------------------
-// Not a direct ERPNext doctype import — a per-employee monthly total of overtime and
-// holiday hours, for the client to turn into Additional Salary lines in ERPNext (which
-// is where the OT rate lives; the app has none). OT is already 0 on holidays upstream,
-// so the two buckets never double-count.
-export function buildOtSummaryCsv(records, { monthLabel = "" } = {}) {
-  const header = [
-    "Employee",
-    "Employee Name",
-    "Month",
-    "Overtime Hours",
-    "Holiday Hours",
-  ];
-
-  const byEmployee = new Map();
-  for (const record of records) {
-    const key = record.employee.employeeId;
-    if (!byEmployee.has(key)) {
-      byEmployee.set(key, {
-        employeeId: key,
-        name: record.employee.name || "",
-        ot: 0,
-        holiday: 0,
-      });
-    }
-    const agg = byEmployee.get(key);
-    agg.ot += Number(record.overtimeHours) || 0;
-    agg.holiday += Number(record.holidayHours) || 0;
-  }
-
-  const rows = [...byEmployee.values()]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((e) => [e.employeeId, e.name, monthLabel, round2(e.ot), round2(e.holiday)]);
-
-  return { csv: toCsv(header, rows), meta: { rows: rows.length } };
 }

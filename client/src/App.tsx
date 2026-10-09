@@ -19,6 +19,7 @@ const SiteDetail = lazy(() => import("./pages/SiteDetail"))
 
 const MarkAttendance = lazy(() => import("./pages/MarkAttendance"))
 const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
+const DriversAttendance = lazy(() => import("./pages/DriversAttendance"))
 const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
 const MissingEmployees = lazy(() => import("./pages/MissingEmployees"))
 
@@ -82,7 +83,7 @@ function App() {
       {/* PROTECTED LAYOUT */}
       <Route
         element={
-          <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
+          <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor", "driverSupervisor"]}>
             <SidebarLayout />
           </ProtectedRoute>
         }
@@ -204,6 +205,16 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
               <SiteAttendance />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Drivers Attendance — drivers with no site, sessions against any job */}
+        <Route
+          path="drivers-attendance"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "driverSupervisor"]}>
+              <DriversAttendance />
             </ProtectedRoute>
           }
         />

@@ -25,7 +25,9 @@ const userSchema = new mongoose.Schema({
 
   role: {
     type: String,
-    enum: ['admin', 'supervisor', 'superadmin'],
+    // driverSupervisor: marks the Drivers Attendance sheet only. assignedSite is pinned to
+    // the hidden drivers pool site (utils/driverPool.js), so requireSiteAccess scopes it.
+    enum: ['admin', 'supervisor', 'superadmin', 'driverSupervisor'],
     default: 'supervisor'
   },
 

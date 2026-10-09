@@ -1,5 +1,6 @@
 import Employee from '../models/empModel.js';
 import { getDateLocal } from './timeLocal.js';
+import { isDriverPool, isDriverEmployee } from './driverPool.js';
 
 /**
  * Cross-site carryover access exception for supervisors.
@@ -40,8 +41,11 @@ export async function supervisorMayCloseCarryover(record, assignedSite, siteId) 
   if (recordDateStr >= getDateLocal(0)) return false;
 
   // (3) The employee must now be on the supervisor's roster (home site === their site).
-  const employee = await Employee.findById(record.employee).select('currentSite');
-  if (!employee || !employee.currentSite) return false;
+  // For a driver supervisor (assignedSite = the drivers pool) the roster is the drivers.
+  const employee = await Employee.findById(record.employee).select('currentSite jobTitle isActive');
+  if (!employee) return false;
+  if (await isDriverPool(assignedSite)) return isDriverEmployee(employee);
+  if (!employee.currentSite) return false;
 
   return employee.currentSite.toString() === assignedSite.toString();
 }

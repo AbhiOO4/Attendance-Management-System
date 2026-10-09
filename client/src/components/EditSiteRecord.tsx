@@ -64,6 +64,8 @@ import {
 } from "@/lib/attendanceUtils"
 import { categoryOf, defaultCheckOutFor, CHECKOUT_REMARK_GRACE_MINUTES, type CollarType, type Nationality } from "@/lib/rosterUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
+import JobPicker from "@/components/drivers/JobPicker"
+import { useDriverJobIndex } from "@/lib/driverJobs"
 
 // --------------------------------------------------
 // TYPES
@@ -80,6 +82,8 @@ interface Site {
   locationDetails: string
   isActive: boolean
   jobs: Job[]
+  // The hidden Drivers pool: each session's job is picked from ANY site (JobPicker).
+  isDriverPool?: boolean
   // Per-category day/night default check-out times (used to gate the over-default
   // remark). Delivered on the full site doc (GET /api/site/:id).
   defaultCheckOut?: string
@@ -173,6 +177,11 @@ interface EditSiteRecordProps {
 // --------------------------------------------------
 
 function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale }: EditSiteRecordProps) {
+  // Drivers sheet: sessions are logged against a job from any site, so the job is a
+  // searchable cross-site picker, a new session starts without one, and each session with a
+  // time must name a job before saving. Adding a second job happens only here (after save).
+  const anyJob = !!site?.isDriverPool
+  const driverJobIndex = useDriverJobIndex(open && anyJob)
   const [, setOverlapInfo] = useState<any>(null)
   const [overlapSessionIds, setOverlapSessionIds] = useState<string[]>([])
   const [record, setRecord] = useState<AttendanceRecord | null>(null)
@@ -489,7 +498,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       {
         siteId: site._id,
         siteName: site.siteName,
-        jobId: record.jobId || null,
+        jobId: anyJob ? null : record.jobId || null,
         checkIn: null,
         checkOut: null,
         workedHours: 0,
@@ -590,6 +599,15 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         return
       }
       setSessionErrors({})
+
+      // Drivers sheet: every session with a time names the job it was for.
+      if (
+        anyJob &&
+        sessions.some((s) => String(s.siteId) === String(site._id) && (s.checkIn || s.checkOut) && !s.jobId)
+      ) {
+        toast.error("Pick the job for every driver session.")
+        return
+      }
 
       // A check-out past the category default needs a justification remark.
       if (remarkMissing) {
@@ -809,12 +827,25 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         {/* Site — names whose shift this is (and whose jobs the selector lists). Matters
             most for a cross-site carryover, where the editor is opened against the open
             shift's previous site rather than the page being viewed. */}
+        {!anyJob && (
         <div className="flex items-center gap-1.5 text-sm text-muted-foreground -mt-2">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{session.siteName || site.siteName}</span>
         </div>
+        )}
 
-        {/* Job selector */}
+        {/* Job selector (drivers sheet: any site's job) */}
+        {anyJob ? (
+          <JobPicker
+            value={
+              session.jobId
+                ? driverJobIndex.get(String(session.jobId)) ?? { _id: String(session.jobId), name: session.jobName || "Job" }
+                : null
+            }
+            invalid={!!(session.checkIn || session.checkOut) && !session.jobId}
+            onChange={(job) => updateSessionField(globalIndex, "jobId", job._id)}
+          />
+        ) : (
         <Select
           value={session.jobId || "not-assigned"}
           onValueChange={(value) =>
@@ -831,6 +862,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             ))}
           </SelectContent>
         </Select>
+        )}
 
         {/* Time inputs */}
         <div className="grid grid-cols-2 gap-3">

@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { Checkbox } from "@/components/ui/checkbox"
 import { MonthYearPicker } from "@/components/MonthYearPicker"
 import { DateRangePicker } from "@/components/DateRangePicker"
 import {
@@ -27,9 +28,10 @@ import {
   type MonthYear,
 } from "@/lib/monthYear"
 import {
-  LEAVE_KINDS,
-  emptyLeaveCounts,
-  type LeaveCounts,
+  ABSENT_REASONS,
+  ANNUAL_LEAVE,
+  emptyAbsentCounts,
+  type AbsentCounts,
 } from "@/lib/leaveComposition"
 import { cn } from "@/lib/utils"
 import {
@@ -57,7 +59,10 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import toast from "react-hot-toast"
 
@@ -67,23 +72,33 @@ const round2 = (n: number) => Math.round(n * 100) / 100
 // --- Monthly Attendance types ---
 
 interface ReportEmployee {
+  // Mongo id — what the ERPNext export takes to pick employees.
+  _id: string
   employeeName: string
   employeeId: string
   jobTitle: string
   isActive?: boolean
   employmentType?: "permanent" | "temporary"
+  // Payroll view, classified exactly like the ERPNext Attendance CSV: every calendar
+  // day of the period is a working day; paymentDays = workingDays − absentDays − 0.5 ×
+  // halfDays (the figure on the ERPNext salary slip).
+  workingDays: number
+  paymentDays: number
   fullDays: number
   halfDays: number
+  // Every unpaid day, and its composition (the four add up to absentDays).
   absentDays: number
-  // Checked in, no check-out yet — neither present nor absent until closed.
-  pendingDays: number
-  // Leave composition. leaveDays is annual (paid) leave; the other three are unpaid.
-  // All four are separate from absentDays, which only counts absences with no leave
-  // or LOP recorded.
-  leaveDays: number
+  noReasonAbsentDays: number
   emergencyLeaveDays: number
   sickLeaveDays: number
   lopDays: number
+  // Subset of noReasonAbsentDays: checked in, no check-out yet.
+  pendingDays: number
+  // Annual (paid) leave — never part of absentDays.
+  leaveDays: number
+  // Days so far with no record at all (counted as paid; a warning only).
+  unmarkedDays: number
+  // paymentDays ÷ workingDays.
   attendancePercentage: number
   overtimeHours: number
   holidayHours: number
@@ -96,9 +111,9 @@ interface AttendanceReportResponse {
   report: ReportEmployee[]
 }
 
-// A report row's leave composition, keyed like LEAVE_KINDS.
-const leaveCountsOf = (e: ReportEmployee): LeaveCounts => ({
-  annual: e.leaveDays || 0,
+// A report row's absent-day composition, keyed like ABSENT_REASONS.
+const absentCountsOf = (e: ReportEmployee): AbsentCounts => ({
+  none: e.noReasonAbsentDays || 0,
   emergency: e.emergencyLeaveDays || 0,
   sick: e.sickLeaveDays || 0,
   lop: e.lopDays || 0,
@@ -115,6 +130,14 @@ const EMPLOYMENT_FILTER_LABELS: Record<EmploymentFilter, string> = {
   permanent: "Permanent",
   temporary: "Temporary",
 }
+
+// The ERPNext Data Import files (rates live in ERPNext; these carry hours + status).
+const ERP_FILES = [
+  { type: "attendance", label: "Attendance (payroll)" },
+  { type: "timesheet", label: "Timesheet (job cost)" },
+] as const
+
+type ErpFile = (typeof ERP_FILES)[number]
 
 // --- Job Report types ---
 
@@ -163,6 +186,11 @@ function MonthlyAttendanceTab() {
   const [jobTitle, setJobTitle] = useState("")
   const [employmentType, setEmploymentType] = useState<EmploymentFilter>("all")
   const [erpBusy, setErpBusy] = useState(false)
+
+  // Employees ticked for the ERPNext export, by Mongo _id. Deliberately kept across
+  // searches, filter and month changes, so specific people can be gathered from several
+  // searches (and exported for more than one month).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
 
   // Client-side pagination for the display only. The full month stays in `reports`
   // so search spans everyone and Export always covers the whole roster.
@@ -240,6 +268,23 @@ function MonthlyAttendanceTab() {
     })
   }, [scopedReports, name, employeeId, jobTitle])
 
+  const filtersActive =
+    employmentType !== "all" || !!name || !!employeeId || !!jobTitle
+
+  // The ticked employees still in the report (ids that dropped out are ignored), and
+  // how many of them the current filters hide.
+  const selectedReports = useMemo(
+    () => sortedAll.filter((e) => selectedIds.has(e._id)),
+    [sortedAll, selectedIds]
+  )
+  const hiddenSelectedCount =
+    selectedReports.length -
+    filteredReports.filter((e) => selectedIds.has(e._id)).length
+
+  // Selection only feeds the ERPNext export, which is per month.
+  const selectable = mode === "month"
+  const columnCount = 12 + ABSENT_REASONS.length + (selectable ? 1 : 0)
+
   // Pagination math. "all" collapses to a single page of the full filtered list.
   const showAll = pageSize === "all"
   const perPage = showAll ? filteredReports.length || 1 : Number(pageSize)
@@ -261,26 +306,55 @@ function MonthlyAttendanceTab() {
     if (currentPage > totalPages) setCurrentPage(totalPages)
   }, [currentPage, totalPages])
 
+  // The header checkbox ticks/unticks the rows on the current page.
+  const pageSelectedCount = pagedReports.filter((e) =>
+    selectedIds.has(e._id)
+  ).length
+  const allPageSelected =
+    pagedReports.length > 0 && pageSelectedCount === pagedReports.length
+
+  function togglePage() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const e of pagedReports) {
+        if (allPageSelected) next.delete(e._id)
+        else next.add(e._id)
+      }
+      return next
+    })
+  }
+
+  function toggleOne(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const totals = useMemo(() => {
     return filteredReports.reduce(
       (acc, e) => {
-        acc.fullDays += e.fullDays
         acc.halfDays += e.halfDays
         acc.absentDays += e.absentDays
         acc.pendingDays += e.pendingDays || 0
-        const leave = leaveCountsOf(e)
-        for (const kind of LEAVE_KINDS) acc.leave[kind.key] += leave[kind.key]
+        acc.unmarkedDays += e.unmarkedDays || 0
+        acc.annualDays += e.leaveDays || 0
+        const absent = absentCountsOf(e)
+        for (const reason of ABSENT_REASONS) acc.absent[reason.key] += absent[reason.key]
         acc.overtimeHours += e.overtimeHours
         acc.holidayHours += e.holidayHours
         acc.totalOvertimeHours += e.totalOvertimeHours
         return acc
       },
       {
-        fullDays: 0,
         halfDays: 0,
         absentDays: 0,
         pendingDays: 0,
-        leave: emptyLeaveCounts(),
+        unmarkedDays: 0,
+        annualDays: 0,
+        absent: emptyAbsentCounts(),
         overtimeHours: 0,
         holidayHours: 0,
         totalOvertimeHours: 0,
@@ -288,12 +362,15 @@ function MonthlyAttendanceTab() {
     )
   }, [filteredReports])
 
+  // Every calendar day of the period (holidays included) — the same for every row.
+  const workingDays = reports[0]?.workingDays ?? 0
+
   function exportToExcel() {
     // Export every employee of the selected type for the period, regardless of the
     // active search.
     if (scopedReports.length === 0) return
     const formattedData = scopedReports.map((employee, index) => {
-      const leave = leaveCountsOf(employee)
+      const absent = absentCountsOf(employee)
       return {
         "Sl No": index + 1,
         "Employee Name":
@@ -301,14 +378,18 @@ function MonthlyAttendanceTab() {
           (employee.isActive === false ? " (Inactive)" : ""),
         "Employee ID": employee.employeeId,
         "Job Title": employee.jobTitle,
+        "Working Days": employee.workingDays,
+        "Payment Days": employee.paymentDays,
         "Full Days": employee.fullDays,
         "Half Days": employee.halfDays,
         "Absent Days": employee.absentDays,
-        "Pending Days": employee.pendingDays || 0,
-        // Leave composition: "Annual Leave", "Emergency Leave", "Sick Leave", "LOP".
+        // Absent composition: "Absent (no reason)", "Emergency Leave", "Sick Leave", "LOP".
         ...Object.fromEntries(
-          LEAVE_KINDS.map((kind) => [kind.label, leave[kind.key]])
+          ABSENT_REASONS.map((reason) => [reason.label, absent[reason.key]])
         ),
+        "Pending Check-outs (in no reason)": employee.pendingDays || 0,
+        [ANNUAL_LEAVE.label]: employee.leaveDays || 0,
+        "Unmarked Days": employee.unmarkedDays || 0,
         "Attendance %": employee.attendancePercentage,
         "OT Hours": employee.overtimeHours,
         "Holiday Hours": employee.holidayHours,
@@ -338,23 +419,31 @@ function MonthlyAttendanceTab() {
     )
   }
 
-  // Download one ERPNext Data Import CSV for the selected month. The server streams the
-  // file (hours + status only — rates live in ERPNext); we just save the blob.
-  async function downloadErp(
-    type: "attendance" | "timesheet" | "ot-summary",
-    label: string
-  ) {
+  // Download one ERPNext Data Import CSV for the selected month, covering `employees`.
+  // The server streams the file (hours + status only — rates live in ERPNext); we just
+  // save the blob.
+  async function downloadErp(file: ErpFile, employees: ReportEmployee[]) {
+    if (employees.length === 0) return
     try {
       setErpBusy(true)
-      const res = await api.get(
+      const res = await api.post(
         `/api/attendance/reports/erpnext/${month}/${year}`,
-        { params: { type }, responseType: "blob" }
+        { type: file.type, employeeIds: employees.map((e) => e._id) },
+        { responseType: "blob" }
       )
-      const mm = String(month).padStart(2, "0")
-      saveAs(res.data as Blob, `erpnext-${type}-${year}-${mm}.csv`)
+      const stamp = `${year}-${String(month).padStart(2, "0")}`
+      // One employee is named like the employee page's export; the whole roster keeps
+      // the plain name.
+      const filename =
+        employees.length === 1
+          ? `erpnext-${file.type}-${employees[0].employeeId}-${stamp}.csv`
+          : employees.length === sortedAll.length
+            ? `erpnext-${file.type}-${stamp}.csv`
+            : `erpnext-${file.type}-${stamp}-${employees.length}-employees.csv`
+      saveAs(res.data as Blob, filename)
     } catch (error) {
       console.error(error)
-      toast.error(`Failed to export ${label}`)
+      toast.error(`Failed to export ${file.label}`)
     } finally {
       setErpBusy(false)
     }
@@ -466,22 +555,28 @@ function MonthlyAttendanceTab() {
                   Export for ERPNext
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => downloadErp("attendance", "Attendance (payroll)")}
-                >
-                  Attendance (payroll)
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => downloadErp("timesheet", "Timesheet (job cost)")}
-                >
-                  Timesheet (job cost)
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => downloadErp("ot-summary", "OT & Holiday summary")}
-                >
-                  OT &amp; Holiday summary
-                </DropdownMenuItem>
+              {/* Each file goes out for the ticked employees, or for everyone the
+                  page's filters (type + search boxes) currently list. */}
+              <DropdownMenuContent align="end" className="w-56">
+                {ERP_FILES.map((file, i) => (
+                  <DropdownMenuGroup key={file.type}>
+                    {i > 0 && <DropdownMenuSeparator />}
+                    <DropdownMenuLabel>{file.label}</DropdownMenuLabel>
+                    <DropdownMenuItem
+                      disabled={selectedReports.length === 0}
+                      onClick={() => downloadErp(file, selectedReports)}
+                    >
+                      Selected employees ({selectedReports.length})
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={filteredReports.length === 0}
+                      onClick={() => downloadErp(file, filteredReports)}
+                    >
+                      {filtersActive ? "All matching filters" : "All employees"} (
+                      {filteredReports.length})
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                ))}
               </DropdownMenuContent>
             </DropdownMenu>
           </span>
@@ -516,6 +611,11 @@ function MonthlyAttendanceTab() {
             )}
           </span>
         </span>
+        {workingDays > 0 && (
+          <span title="Every calendar day of the period, holidays included">
+            Working days <span className="font-medium text-foreground">{workingDays}</span>
+          </span>
+        )}
         <span>
           OT <span className="font-medium text-foreground">{totals.overtimeHours.toFixed(2)}</span>h
         </span>
@@ -525,23 +625,64 @@ function MonthlyAttendanceTab() {
         <span>
           Total OT <span className="font-medium text-foreground">{totals.totalOvertimeHours.toFixed(2)}</span>h
         </span>
-        {/* Leave composition across the listed employees */}
+        {/* Absent composition + paid leave across the listed employees */}
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>Leave</span>
-          {LEAVE_KINDS.map((kind) => (
-            <span key={kind.key} className="inline-flex items-center gap-1.5">
-              <span className={cn("size-2 rounded-full", kind.dot)} />
-              {kind.name}
+          <span>
+            Absent{" "}
+            <span className="font-medium text-foreground tabular-nums">
+              {totals.absentDays}
+            </span>
+          </span>
+          {ABSENT_REASONS.map((reason) => (
+            <span key={reason.key} className="inline-flex items-center gap-1.5">
+              <span className={cn("size-2 rounded-full", reason.dot)} />
+              {reason.name}
               <span className="font-medium text-foreground tabular-nums">
-                {totals.leave[kind.key]}
+                {totals.absent[reason.key]}
               </span>
             </span>
           ))}
         </span>
-        {/* Open sessions someone still has to close */}
+        <span className="inline-flex items-center gap-1.5">
+          <span className={cn("size-2 rounded-full", ANNUAL_LEAVE.dot)} />
+          {ANNUAL_LEAVE.label} (paid)
+          <span className="font-medium text-foreground tabular-nums">
+            {totals.annualDays}
+          </span>
+        </span>
+        {/* Open check-ins: counted as absent (no reason) — and exported to ERPNext as
+            Absent — until someone closes them. */}
         {totals.pendingDays > 0 && (
           <span className="font-medium text-amber-700 dark:text-amber-400">
             {totals.pendingDays} pending check-out
+            {totals.pendingDays === 1 ? "" : "s"} counted as absent
+          </span>
+        )}
+        {/* Days with no record at all: not in the ERPNext file, counted as paid. */}
+        {totals.unmarkedDays > 0 && (
+          <span
+            className="font-medium text-amber-700 dark:text-amber-400"
+            title="Days so far with no attendance record (holidays excluded). They aren't in the ERPNext file, so Payment Days counts them as paid — like ERPNext's default for unmarked attendance."
+          >
+            {totals.unmarkedDays} unmarked day{totals.unmarkedDays === 1 ? "" : "s"}
+          </span>
+        )}
+        {/* Employees ticked for the ERPNext export */}
+        {selectable && selectedReports.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span>
+              <span className="font-medium text-foreground">{selectedReports.length}</span>{" "}
+              selected
+              {hiddenSelectedCount > 0 && ` (${hiddenSelectedCount} hidden by filters)`}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear
+            </Button>
           </span>
         )}
       </div>
@@ -552,49 +693,83 @@ function MonthlyAttendanceTab() {
         <Table>
           <TableHeader className="bg-background">
             <TableRow>
+              {selectable && (
+                <TableHead rowSpan={2} className="w-8 pr-0">
+                  <Checkbox
+                    checked={
+                      allPageSelected
+                        ? true
+                        : pageSelectedCount > 0
+                          ? "indeterminate"
+                          : false
+                    }
+                    onCheckedChange={togglePage}
+                    disabled={loading || pagedReports.length === 0}
+                    aria-label="Select all on this page"
+                  />
+                </TableHead>
+              )}
               <TableHead rowSpan={2} className="w-10">#</TableHead>
               <TableHead rowSpan={2}>Employee</TableHead>
               <TableHead rowSpan={2}>ID</TableHead>
               <TableHead rowSpan={2}>Job</TableHead>
-              <TableHead rowSpan={2} className="text-right">Full</TableHead>
-              <TableHead rowSpan={2} className="text-right">Half</TableHead>
               <TableHead
                 rowSpan={2}
                 className="text-right"
-                title="Absent with no leave or LOP recorded"
+                title={`Working days (${workingDays}, every calendar day) − absent days − 0.5 × half days. Matches the ERPNext salary slip's Payment Days.`}
+              >
+                Payment Days
+              </TableHead>
+              <TableHead
+                rowSpan={2}
+                className="text-right"
+                title="Half days — each deducts 0.5 of a day"
+              >
+                Half
+              </TableHead>
+              <TableHead
+                rowSpan={2}
+                className="text-right"
+                title="Every unpaid day: no reason + emergency + sick + LOP (what ERPNext receives as Absent)"
               >
                 Absent
               </TableHead>
               <TableHead
-                rowSpan={2}
-                className="text-right"
-                title="Checked in but no check-out yet — neither present nor absent until the check-out is entered"
-              >
-                Pending
-              </TableHead>
-              <TableHead
-                colSpan={LEAVE_KINDS.length}
+                colSpan={ABSENT_REASONS.length}
                 className="h-7 border-x text-center text-xs text-muted-foreground"
               >
-                Leave
+                Absent breakdown
               </TableHead>
-              <TableHead rowSpan={2} className="text-right">%</TableHead>
+              <TableHead
+                rowSpan={2}
+                className="text-right"
+                title="Annual leave — paid, not an absence"
+              >
+                {ANNUAL_LEAVE.short}
+              </TableHead>
+              <TableHead
+                rowSpan={2}
+                className="text-right"
+                title="Payment days ÷ working days"
+              >
+                %
+              </TableHead>
               <TableHead rowSpan={2} className="text-right">OT</TableHead>
               <TableHead rowSpan={2} className="text-right">Holiday</TableHead>
               <TableHead rowSpan={2} className="text-right">Total OT</TableHead>
             </TableRow>
             <TableRow>
-              {LEAVE_KINDS.map((kind, i) => (
+              {ABSENT_REASONS.map((reason, i) => (
                 <TableHead
-                  key={kind.key}
-                  title={kind.label}
+                  key={reason.key}
+                  title={reason.label}
                   className={cn(
                     "h-7 px-1.5 text-right text-xs",
                     i === 0 && "border-l",
-                    i === LEAVE_KINDS.length - 1 && "border-r"
+                    i === ABSENT_REASONS.length - 1 && "border-r"
                   )}
                 >
-                  {kind.short}
+                  {reason.short}
                 </TableHead>
               ))}
             </TableRow>
@@ -602,28 +777,39 @@ function MonthlyAttendanceTab() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={12 + LEAVE_KINDS.length} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={columnCount} className="text-center h-24 text-muted-foreground">
                   Loading...
                 </TableCell>
               </TableRow>
             ) : filteredReports.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12 + LEAVE_KINDS.length} className="text-center h-24 text-muted-foreground">
+                <TableCell colSpan={columnCount} className="text-center h-24 text-muted-foreground">
                   No data found
                 </TableCell>
               </TableRow>
             ) : (
               pagedReports.map((employee, index) => {
-                const leave = leaveCountsOf(employee)
+                const absent = absentCountsOf(employee)
+                const isSelected = selectedIds.has(employee._id)
                 return (
                   <TableRow
                     key={employee.employeeId}
+                    data-state={selectable && isSelected ? "selected" : undefined}
                     className={
                       employee.isActive === false
                         ? "opacity-50"
                         : ""
                     }
                   >
+                    {selectable && (
+                      <TableCell className="w-8 pr-0">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => toggleOne(employee._id)}
+                          aria-label={`Select ${employee.employeeName}`}
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="text-muted-foreground">
                       {startIndex + index + 1}
                     </TableCell>
@@ -640,34 +826,54 @@ function MonthlyAttendanceTab() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{employee.employeeId}</TableCell>
                     <TableCell className="capitalize whitespace-normal">{employee.jobTitle}</TableCell>
-                    <TableCell className="text-right">{employee.fullDays}</TableCell>
-                    <TableCell className="text-right">{employee.halfDays}</TableCell>
-                    <TableCell className="text-right">{employee.absentDays}</TableCell>
-                    <TableCell
-                      className={cn(
-                        "text-right tabular-nums",
-                        employee.pendingDays > 0
-                          ? "font-medium text-amber-700 dark:text-amber-400"
-                          : "text-muted-foreground/60"
+                    <TableCell className="text-right font-medium tabular-nums">
+                      {employee.paymentDays}
+                      {/* Days with no record are counted as paid — flag them. */}
+                      {employee.unmarkedDays > 0 && (
+                        <span
+                          className="ml-1 text-xs font-normal text-amber-700 dark:text-amber-400"
+                          title={`${employee.unmarkedDays} day(s) with no attendance record, counted as paid`}
+                        >
+                          ({employee.unmarkedDays} unmarked)
+                        </span>
                       )}
-                    >
-                      {employee.pendingDays || 0}
                     </TableCell>
-                    {LEAVE_KINDS.map((kind, i) => (
+                    <TableCell className="text-right tabular-nums">{employee.halfDays}</TableCell>
+                    <TableCell className="text-right tabular-nums">{employee.absentDays}</TableCell>
+                    {ABSENT_REASONS.map((reason, i) => (
                       <TableCell
-                        key={kind.key}
+                        key={reason.key}
                         className={cn(
                           "px-1.5 text-right tabular-nums",
                           i === 0 && "border-l",
-                          i === LEAVE_KINDS.length - 1 && "border-r",
-                          leave[kind.key] > 0
-                            ? cn("font-medium", kind.text)
+                          i === ABSENT_REASONS.length - 1 && "border-r",
+                          absent[reason.key] > 0
+                            ? cn("font-medium", reason.text)
                             : "text-muted-foreground/60"
                         )}
                       >
-                        {leave[kind.key]}
+                        {absent[reason.key]}
+                        {/* Open check-ins sit in "no reason" until closed. */}
+                        {reason.key === "none" && employee.pendingDays > 0 && (
+                          <span
+                            className="ml-0.5 text-xs text-amber-700 dark:text-amber-400"
+                            title={`incl. ${employee.pendingDays} pending check-out(s)`}
+                          >
+                            *
+                          </span>
+                        )}
                       </TableCell>
                     ))}
+                    <TableCell
+                      className={cn(
+                        "text-right tabular-nums",
+                        employee.leaveDays > 0
+                          ? cn("font-medium", ANNUAL_LEAVE.text)
+                          : "text-muted-foreground/60"
+                      )}
+                    >
+                      {employee.leaveDays || 0}
+                    </TableCell>
                     <TableCell className="text-right">{employee.attendancePercentage}%</TableCell>
                     <TableCell className="text-right">{employee.overtimeHours}</TableCell>
                     <TableCell className="text-right">{employee.holidayHours}</TableCell>

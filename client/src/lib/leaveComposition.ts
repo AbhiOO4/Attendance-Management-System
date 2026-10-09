@@ -1,17 +1,15 @@
-// The four kinds of leave in a "leave composition" — shown per employee on the
-// Monthly Report and on the employee timesheet. The colors match the per-day Status
-// badges on the timesheet (EmployeeDetailAttendance), so a kind reads the same
-// everywhere. Annual leave is paid; the other three are unpaid.
+// Labels and colors for the payroll day buckets shown on the Monthly Report and the
+// employee timesheet: annual leave (PAID, never an absence) and the composition of
+// ABSENT days (all unpaid — what ERPNext receives as "Absent"). The colors match the
+// per-day Status badges on the timesheet (EmployeeDetailAttendance), so a kind reads
+// the same everywhere. Which bucket a record lands in: lib/payrollDay.ts.
 
-export type LeaveKind = "annual" | "emergency" | "sick" | "lop"
+import type { AbsentReason } from "@/lib/payrollDay"
 
-export type LeaveCounts = Record<LeaveKind, number>
-
-export const LEAVE_KINDS: {
-  key: LeaveKind
+interface DayKindStyle {
   /** Full name, e.g. for an Excel column. */
   label: string
-  /** Kind name without "Leave", for a legend. */
+  /** Short name for a legend or breakdown list. */
   name: string
   /** Compact name for a table header. */
   short: string
@@ -19,14 +17,28 @@ export const LEAVE_KINDS: {
   text: string
   /** Background color for a legend dot. */
   dot: string
-}[] = [
+}
+
+/** Annual leave — paid, kept apart from the absent days. */
+export const ANNUAL_LEAVE: DayKindStyle = {
+  label: "Annual Leave",
+  name: "Annual",
+  short: "Annual",
+  text: "text-violet-700 dark:text-violet-400",
+  dot: "bg-violet-500",
+}
+
+export type AbsentCounts = Record<AbsentReason, number>
+
+/** The reasons an absent day was recorded with, in display order. */
+export const ABSENT_REASONS: ({ key: AbsentReason } & DayKindStyle)[] = [
   {
-    key: "annual",
-    label: "Annual Leave",
-    name: "Annual",
-    short: "Annual",
-    text: "text-violet-700 dark:text-violet-400",
-    dot: "bg-violet-500",
+    key: "none",
+    label: "Absent (no reason)",
+    name: "No reason",
+    short: "None",
+    text: "text-destructive",
+    dot: "bg-destructive",
   },
   {
     key: "emergency",
@@ -54,25 +66,9 @@ export const LEAVE_KINDS: {
   },
 ]
 
-export const emptyLeaveCounts = (): LeaveCounts => ({
-  annual: 0,
+export const emptyAbsentCounts = (): AbsentCounts => ({
+  none: 0,
   emergency: 0,
   sick: 0,
   lop: 0,
 })
-
-/** The leave kind behind a timesheet Status (from getDisplayStatus), or null. */
-export function leaveKindOf(displayStatus: string): LeaveKind | null {
-  switch (displayStatus) {
-    case "leave":
-      return "annual"
-    case "emergency":
-      return "emergency"
-    case "sick":
-      return "sick"
-    case "lop":
-      return "lop"
-    default:
-      return null
-  }
-}

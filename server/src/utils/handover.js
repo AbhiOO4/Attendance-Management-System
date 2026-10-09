@@ -9,9 +9,8 @@
  *                      A fresh session → null carried check-in, so the destination
  *                      draft uses its category default check-in.
  *   mode 'permanent' — the home moves: repoint currentSite/currentJob and fix job
- *                      membership. This is the WORKER record only; a supervisor's
- *                      User.assignedSite (auth scope) is decoupled and admin-owned,
- *                      so it is deliberately NOT touched here.
+ *                      membership. A linked supervisor's User.assignedSite (auth
+ *                      scope) follows the permanent move (syncSupervisorScope).
  *
  * Runs inside the caller's mongoose session (a transaction). Does NOT notify — the
  * caller sends the arrival notification AFTER commit.
@@ -24,6 +23,7 @@ import { recordAttendanceAudit } from "./attendanceAudit.js"
 import { getTodayLocal, combineFromOffset, toLocalDateString } from "./timeLocal.js"
 import { categoryForEmployee } from "./collar.js"
 import { dayCheckInFieldFor } from "./rosterFields.js"
+import { syncSupervisorScope } from "./supervisorScope.js"
 
 // App-timezone business-day midnight — the anchor every attendance record and the
 // pendingTransferDate stash use. Raw UTC midnight would resolve to the previous day in
@@ -55,6 +55,7 @@ export async function applyHandover({ employee, toSiteId, toJobId = null, mode, 
   if (toJobId) {
     await jobModel.findByIdAndUpdate(toJobId, { $addToSet: { employees: employee._id } }, { session })
   }
+  await syncSupervisorScope(employee, session)
 }
 
 /**
@@ -105,8 +106,8 @@ export async function assertNotMovedOn({ doc, fromSiteId, toSiteId, carriedCheck
  * pendingTransfer* stash is ALSO written so that site's roster-built draft surfaces the
  * visitor as an editable row; its submit reconciles the pushed session in place (same-site
  * sessions are replaced, not duplicated). For a permanent move (!onlyForToday) the home
- * repoints (currentSite/currentJob + Job.employees[]). A supervisor's User.assignedSite
- * (auth scope) is admin-owned and never follows the move.
+ * repoints (currentSite/currentJob + Job.employees[]) and a linked supervisor's
+ * User.assignedSite (auth scope) follows it; an only-for-today move leaves both alone.
  *
  * Runs inside the caller's mongoose transaction. Throws Error with a `.status` for
  * the caller to surface. Returns { pending } — true when the destination's draft will also
@@ -236,6 +237,9 @@ export async function placeMiddayArrival({
 
   if (!onlyForToday && jobId) {
     await jobModel.findByIdAndUpdate(jobId, { $addToSet: { employees: employee._id } }, { session })
+  }
+  if (!onlyForToday) {
+    await syncSupervisorScope(employee, session)
   }
 
   return { pending: stashWritten }

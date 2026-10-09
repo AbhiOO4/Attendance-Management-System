@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge"
 
 type Props = {
   children: React.ReactNode
-  allowedRoles: ("admin" | "supervisor" | "superadmin")[]
+  allowedRoles: ("admin" | "supervisor" | "superadmin" | "driverSupervisor")[]
 }
 
 export default function ProtectedRoute({
@@ -27,7 +27,8 @@ export default function ProtectedRoute({
   }
 
   if (!allowedRoles.includes(user.role)) {
-    return <Navigate to="/dashboard" replace />
+    // A driver supervisor has one page; everyone else falls back to the dashboard.
+    return <Navigate to={user.role === "driverSupervisor" ? "/drivers-attendance" : "/dashboard"} replace />
   }
 
   return children

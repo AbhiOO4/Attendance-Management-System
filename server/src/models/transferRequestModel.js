@@ -22,8 +22,8 @@ import mongoose from "mongoose"
  *                   are untouched (back home tomorrow). Applied via the pendingTransfer*
  *                   stash on the employee (empModel.js), same rails as transferEmployee.
  *   - "permanent" → the employee's home moves to the destination going forward
- *                   (currentSite/currentJob repoint + job membership). A supervisor's
- *                   User.assignedSite (auth scope) is admin-owned and never follows.
+ *                   (currentSite/currentJob repoint + job membership). A linked
+ *                   supervisor's User.assignedSite (auth scope) follows the move.
  *
  * `carriedCheckIn` is set only for a "push": the source check-out snapshotted at
  * request time, replayed as the destination check-in when the request is accepted
