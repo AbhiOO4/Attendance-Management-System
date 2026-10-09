@@ -72,8 +72,10 @@ function SiteDetail() {
   // page, …) rather than a hardcoded destination; otherwise it falls back to the list.
   const canGoBackRef = useRef(false)
   useEffect(() => {
-    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
-    canGoBackRef.current = idx > 0
+    // An entry pushed outside React Router can leave `idx` missing or NaN; then trust the
+    // browser's own history length rather than assuming this is the first page.
+    const idx = (window.history.state as { idx?: number } | null)?.idx
+    canGoBackRef.current = Number.isFinite(idx) ? (idx as number) > 0 : window.history.length > 1
   }, [])
 
   const { user } = useAuth()

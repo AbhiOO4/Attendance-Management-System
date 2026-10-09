@@ -123,7 +123,7 @@ export const getSites = async (req, res) => {
 export const getSite = async (req, res) => {
     try{
         const { id } = req.params
-        const site = await siteModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("jobs", "name isActive isDeleted isCompleted")
+        const site = await siteModel.findOne({ _id: id, isDeleted: { $ne: true } }).populate("jobs", "name jobCode isActive isDeleted isCompleted")
         if (!site) {
             return res.status(404).json({message: "Site not found"})
         }

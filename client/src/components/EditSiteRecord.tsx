@@ -719,7 +719,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       <div
         key={session._id || `other-${globalIndex}`}
         className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
-          hasOverlap ? "border-red-400 bg-red-50 dark:bg-red-950/20" : "bg-muted/30"
+          hasOverlap ? "border-red-400 bg-red-50 dark:bg-red-950/20" : "bg-zinc-50 border-zinc-300 dark:bg-muted/30 dark:border-border"
         }`}
       >
         <div className="flex-1 min-w-0">
@@ -773,10 +773,11 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
     return (
       <div
         key={session._id || globalIndex}
-        className={`rounded-xl border p-4 space-y-4 ${
+        className={`rounded-xl border p-3 space-y-3 sm:p-4 sm:space-y-4 ${
           (hasOverlap || hasError)
             ? "border-red-400 bg-red-50 dark:bg-red-950/20"
-            : "bg-background"
+            // Light mode: a white card with a firm edge on the dialog's grey body.
+            : "bg-white border-zinc-300 shadow-sm dark:bg-background dark:border-border"
         }`}
       >
         {/* Session header */}
@@ -799,11 +800,11 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
 
           <div className="flex items-center gap-1.5">
             {lastClearedSession && lastClearedSession.index === globalIndex && !session.checkIn && !session.checkOut ? (
-              <Button variant="ghost" size="sm" className="h-8 text-xs gap-1" onClick={undoClearModalSession}>
+              <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 sm:h-8" onClick={undoClearModalSession}>
                 <Undo className="h-3.5 w-3.5" /> Undo
               </Button>
             ) : (session.checkIn || session.checkOut) ? (
-              <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => clearModalSession(globalIndex)}>
+              <Button variant="ghost" size="sm" className="h-7 text-xs sm:h-8" onClick={() => clearModalSession(globalIndex)}>
                 Absent
               </Button>
             ) : null}
@@ -812,7 +813,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                className="h-7 w-7 text-muted-foreground hover:text-destructive sm:h-8 sm:w-8"
                 onClick={() => {
                   setSessionToDelete(globalIndex)
                   setDeleteDialogOpen(true)
@@ -828,7 +829,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             most for a cross-site carryover, where the editor is opened against the open
             shift's previous site rather than the page being viewed. */}
         {!anyJob && (
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground -mt-2">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground -mt-1.5 sm:text-sm sm:-mt-2">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{session.siteName || site.siteName}</span>
         </div>
@@ -844,6 +845,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             }
             invalid={!!(session.checkIn || session.checkOut) && !session.jobId}
             onChange={(job) => updateSessionField(globalIndex, "jobId", job._id)}
+            className="h-10 sm:h-11"
           />
         ) : (
         <Select
@@ -852,7 +854,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             updateSessionField(globalIndex, "jobId", value === "not-assigned" ? null : value)
           }
         >
-          <SelectTrigger className="w-full h-10 text-sm">
+          <SelectTrigger className="w-full h-9 text-sm sm:h-10">
             <SelectValue placeholder="Select job" />
           </SelectTrigger>
           <SelectContent position="popper" sideOffset={4}>
@@ -865,11 +867,11 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         )}
 
         {/* Time inputs */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3">
+          <div className="space-y-1 sm:space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">Check In</label>
             <Input
-              className="h-10 text-sm"
+              className="h-9 text-sm sm:h-10"
               type="time"
               value={toTimeValue(session.checkIn)}
               onChange={(e) => updateSessionField(globalIndex, "checkIn", e.target.value)}
@@ -891,10 +893,10 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
               </button>
             )}
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1 sm:space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">Check Out</label>
             <Input
-              className="h-10 text-sm"
+              className="h-9 text-sm sm:h-10"
               type="time"
               value={toTimeValue(session.checkOut)}
               onChange={(e) => updateSessionField(globalIndex, "checkOut", e.target.value)}
@@ -919,7 +921,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         </div>
 
         {/* Worked hours */}
-        <div className="flex items-center justify-between text-sm pt-1">
+        <div className="flex items-center justify-between text-sm sm:pt-1">
           <span className="text-muted-foreground">Worked</span>
           <span className="font-semibold">{session.workedHours} hrs</span>
         </div>
@@ -940,9 +942,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       <DialogContent className="!w-[95vw] !max-w-[540px] h-[90vh] max-h-[90vh] overflow-hidden p-0 flex flex-col rounded-2xl">
 
         {/* HEADER */}
-        <div className="border-b px-5 py-4 sm:px-6">
+        <div className="border-b px-4 py-3 sm:px-6 sm:py-4">
           <DialogHeader>
-            <DialogTitle className="text-lg font-semibold">Edit Attendance</DialogTitle>
+            <DialogTitle className="text-base font-semibold sm:text-lg">Edit Attendance</DialogTitle>
           </DialogHeader>
 
           {/* Employee info — compact inline */}
@@ -959,7 +961,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         </div>
 
         {/* BODY */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 sm:px-6 space-y-5">
+        <div className="flex-1 overflow-y-auto bg-zinc-100 px-4 py-3 space-y-4 sm:px-6 sm:py-4 sm:space-y-5 dark:bg-transparent">
 
           {/* OTHER-SITE SESSIONS (read-only, compact) */}
           {otherSiteSessions.length > 0 && (
@@ -990,7 +992,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             <Button
               variant="outline"
               onClick={addSession}
-              className="w-full border-dashed h-9 text-sm mt-2"
+              className="w-full border-dashed border-zinc-400 bg-white h-9 text-sm mt-2 dark:border-border dark:bg-transparent"
             >
               <Plus className="mr-2 h-3.5 w-3.5" />
               Add Session
@@ -998,7 +1000,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
           </div>
 
           {/* BREAKS + SUMMARY — compact */}
-          <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+          <div className="rounded-xl border border-zinc-300 bg-white shadow-sm p-3 space-y-2 sm:p-4 sm:space-y-3 dark:border-border dark:bg-muted/20 dark:shadow-none">
             {/* Breaks */}
             {config.breakDurationMinutes > 0 && (
               <div className="flex items-center justify-between gap-2">
@@ -1036,12 +1038,12 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
             {/* Hours summary */}
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Total Work Hours</span>
-              <span className="text-lg font-bold">{totalWorkHours} hrs</span>
+              <span className="text-base font-bold sm:text-lg">{totalWorkHours} hrs</span>
             </div>
             {overtimeHours > 0 && (
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Overtime</span>
-                <span className="text-lg font-bold">{overtimeHours} hrs</span>
+                <span className="text-base font-bold sm:text-lg">{overtimeHours} hrs</span>
               </div>
             )}
             {record?.isHoliday && (
@@ -1055,7 +1057,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
                     {record.holidayReason === "weekly" ? "Weekly" : "Public"}
                   </Badge>
                 </span>
-                <span className="text-lg font-bold">{holidayHours} hrs</span>
+                <span className="text-base font-bold sm:text-lg">{holidayHours} hrs</span>
               </div>
             )}
           </div>
@@ -1087,7 +1089,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         </div>
 
         {/* FOOTER */}
-        <div className="border-t px-5 py-3 sm:px-6 flex justify-end gap-2">
+        <div className="border-t px-4 py-3 sm:px-6 flex justify-end gap-2">
           <Button variant="outline" size="sm" onClick={handleManualClose}>
             Cancel
           </Button>

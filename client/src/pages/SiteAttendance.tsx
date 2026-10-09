@@ -87,6 +87,7 @@ import {
   MessageSquare,
 } from "lucide-react"
 import JobPicker from "@/components/drivers/JobPicker"
+import type { SiteJobs } from "@/lib/driverJobs"
 import RemarkDialog from "@/components/drivers/RemarkDialog"
 
 import {
@@ -154,6 +155,10 @@ interface Job {
   // Drivers sheet: a session's job can be at any site, so it also carries its code + site.
   jobCode?: string | null
   site?: { _id: string; siteName: string } | null
+  // A site's own job list (GET /api/site/:id) also carries its state flags.
+  isActive?: boolean
+  isDeleted?: boolean
+  isCompleted?: boolean
 }
 
 interface Site {
@@ -915,7 +920,94 @@ interface DraftRowProps {
   onUndoClear: () => void
   /** Drivers sheet: the row's single session is logged against a job picked from any site. */
   driverJobs?: boolean
+  /** Site sheet (mobile card): the session's job can be picked from this site's own jobs. */
+  siteJobs?: SiteJobs[]
   onPickJob?: (employeeId: string, sessionIndex: number, job: Job) => void
+}
+
+// --- Mobile record card pieces (draft + saved, both sheets) ---
+// Light mode: white cards with a firm edge on a grey panel, so each record reads as its own
+// block; dark mode keeps the plain list and its usual border.
+const RECORD_LIST_CLASS = "md:hidden space-y-3 -mx-3 rounded-xl bg-zinc-200/70 p-3 dark:mx-0 dark:bg-transparent dark:p-0"
+const RECORD_CARD_CLASS = "gap-0 py-0 overflow-hidden bg-white border-zinc-300 shadow-sm dark:bg-card dark:border-border"
+const RECORD_STRIP_CLASS = "flex items-center justify-between gap-3 border-b bg-muted/60 px-3 py-2.5"
+const RECORD_FOOTER_CLASS = "flex items-center justify-between gap-3 border-t border-dashed pt-2 text-sm"
+
+/** Net hours shown on a card: raw hours less the day's break deduction, never below 0. */
+const netHoursOf = (rawHours: number, breaks: number, breakDurationMinutes: number) =>
+  Number(Math.max(0, rawHours - (breaks * breakDurationMinutes) / 60).toFixed(2))
+
+/** A session's job as a compact code chip (code, else the job name) over its times. */
+const JobChip = ({ job, emptyLabel }: { job: Job | null | undefined; emptyLabel?: string }) => {
+  const text = job ? job.jobCode || job.name : emptyLabel
+  if (!text) return null
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-full items-center truncate rounded border px-1.5 py-px font-mono text-[11px] font-semibold",
+        job ? "bg-muted text-foreground/80" : "border-dashed text-muted-foreground"
+      )}
+      title={job ? [job.jobCode, job.name].filter(Boolean).join(" · ") : undefined}
+    >
+      {text}
+    </span>
+  )
+}
+
+const NightTag = () => (
+  <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-px text-[11px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+    <Moon className="h-3 w-3" />
+    Night
+  </span>
+)
+
+/** Read-only check-in / check-out value with a small label, for saved sessions. */
+const TimeBox = ({ label, value }: { label: string; value: string }) => (
+  <div className="flex h-9 items-center justify-between rounded-md border bg-background px-2.5 text-sm tabular-nums">
+    <span className="text-[11px] text-muted-foreground">{label}</span>
+    <span className={value ? "" : "text-muted-foreground"}>{value || "--:--"}</span>
+  </div>
+)
+
+/** The −/+ break override control (Auto = derived from the hours). */
+const BreakStepper = ({
+  value,
+  autoCount,
+  onChange,
+}: {
+  value: number | null | undefined
+  autoCount: number
+  onChange: (value: number | null) => void
+}) => {
+  const overridden = value !== null && value !== undefined
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        aria-label="Fewer breaks"
+        className="h-7 w-7 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+        disabled={overridden && value <= 0}
+        onClick={() => onChange(Math.max(0, (value ?? autoCount) - 1))}
+      >−</button>
+      <span className="min-w-[36px] text-center text-xs font-semibold">{overridden ? value : "Auto"}</span>
+      <button
+        type="button"
+        aria-label="More breaks"
+        className="h-7 w-7 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
+        disabled={overridden && value >= MAX_BREAKS_PER_DAY}
+        onClick={() => onChange(Math.min(MAX_BREAKS_PER_DAY, (value ?? autoCount) + 1))}
+      >+</button>
+      {overridden && (
+        <button
+          type="button"
+          className="ml-0.5 text-xs text-muted-foreground hover:text-foreground"
+          onClick={() => onChange(null)}
+          title="Reset to auto"
+          aria-label="Reset breaks to auto"
+        >✕</button>
+      )}
+    </div>
+  )
 }
 
 // Search text of a drivers-sheet session job (code, name, site).
@@ -933,25 +1025,36 @@ const SavedJobLabel = ({ job }: { job: Job | null }) =>
     <span className="text-sm text-muted-foreground">No job</span>
   )
 
-/** Drivers sheet draft: the session's job picker. Red when the session has times but no job. */
+/**
+ * Draft session's job picker. Drivers sheet: any site's job, red when the session has times
+ * but no job. Site sheet (`siteJobs`): this site's jobs only, and a job is optional there.
+ */
 const DraftJobCell = ({
   record,
   disabled,
   onPickJob,
+  siteJobs,
 }: {
   record: DraftAttendanceRecord
   disabled: boolean
   onPickJob?: DraftRowProps["onPickJob"]
+  siteJobs?: SiteJobs[]
 }) => {
   const session = record.sessions[0]
-  const missing = isSessionNonEmpty(session) && !session.job
+  const missing = !siteJobs && isSessionNonEmpty(session) && !session.job
+  // The roster's job carries only its name; show it with its code from the site's list.
+  const listed = siteJobs && session.job
+    ? siteJobs[0]?.jobs.find((j) => j._id === session.job?._id)
+    : undefined
+  const value = listed && session.job ? { ...session.job, jobCode: listed.jobCode } : session.job
   return (
     <div className="space-y-1">
       <JobPicker
-        value={session.job}
+        value={value}
         invalid={missing}
         disabled={disabled}
-        showLastUsed={!!session.jobFromLast && !session.jobPicked}
+        sites={siteJobs}
+        showLastUsed={!siteJobs && !!session.jobFromLast && !session.jobPicked}
         onChange={(job) => onPickJob?.(record.employee._id, 0, job)}
       />
       {missing && <p className="text-[11px] text-red-600 dark:text-red-400">Pick the job this session was for.</p>}
@@ -982,24 +1085,23 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   onClearSession,
   onUndoClear,
   driverJobs,
+  siteJobs,
   onPickJob,
 }: DraftRowProps) {
   const session = record.sessions[0]
+  const inputsLocked = !!record.isSickLeave || !!hasCarryover
+  const autoBreaks = computeAutoBreaks(session?.workedHours || 0, breakMinHours)
+  const breaks = record.breaksTaken ?? autoBreaks
+  const isNight = !!(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift)))
 
   return (
     <Card
-      className={
-        overlap
-          ? "border-red-500"
-          : ""
-      }
+      className={cn(RECORD_CARD_CLASS, overlap && "border-red-500 dark:border-red-500")}
     >
-      <CardContent className="space-y-4 pt-4">
-
-        <div className="flex items-center justify-between gap-4">
-          <div>
+      <div className={RECORD_STRIP_CLASS}>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <p className="font-medium">
+              <p className="font-semibold">
                 {record.employee.name}
               </p>
               {record.employee.user && (
@@ -1020,7 +1122,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
               {editedBy && <EditedElsewhereBadge by={editedBy} />}
             </div>
 
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {record.employeeId} • {record.jobTitle}
             </p>
           </div>
@@ -1031,8 +1133,9 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
             {/* No kebab in draft — Sick Leave / LOP / Transfer are only available on a
                 SAVED row, where the record carries the full cross-site session list. */}
           </div>
-        </div>
+      </div>
 
+      <CardContent className="space-y-2.5 px-3 py-3">
         {hasCarryover && (
           <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-2.5 space-y-2 dark:border-amber-800/50 dark:bg-amber-950/20">
             <p className="text-[11px] text-amber-800 dark:text-amber-300">
@@ -1050,95 +1153,70 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
           </div>
         )}
 
-        {driverJobs && (
-          <DraftJobCell record={record} disabled={!!record.isSickLeave || !!hasCarryover} onPickJob={onPickJob} />
+        {(driverJobs || siteJobs) && (
+          <DraftJobCell record={record} disabled={inputsLocked} onPickJob={onPickJob} siteJobs={driverJobs ? undefined : siteJobs} />
         )}
 
-        <Input
-          type="time"
-          value={session.checkIn}
-          disabled={!!record.isSickLeave || !!hasCarryover}
-          onChange={(e) =>
-            onUpdateSession(
-              record.employee._id,
-              0,
-              "checkIn",
-              e.target.value
-            )
-          }
-        />
+        {isNight && <NightTag />}
 
-        <Input
-          type="time"
-          value={session.checkOut}
-          disabled={!!record.isSickLeave || !!hasCarryover}
-          onChange={(e) =>
-            onUpdateSession(
-              record.employee._id,
-              0,
-              "checkOut",
-              e.target.value
-            )
-          }
-        />
-
-        <div className="text-sm font-medium flex items-center gap-1.5">
-          <span>Shift:</span>
-          {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(session.checkIn, session.checkOut, session.isNightShift))) ? (
-            <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-              🌙 Night
-            </span>
-          ) : (
-            <span className="text-muted-foreground">☀️ Day</span>
-          )}
+        <div className="space-y-2">
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Check in</span>
+            <Input
+              type="time"
+              value={session.checkIn}
+              disabled={inputsLocked}
+              onChange={(e) =>
+                onUpdateSession(
+                  record.employee._id,
+                  0,
+                  "checkIn",
+                  e.target.value
+                )
+              }
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Check out</span>
+            <Input
+              type="time"
+              value={session.checkOut}
+              disabled={inputsLocked}
+              onChange={(e) =>
+                onUpdateSession(
+                  record.employee._id,
+                  0,
+                  "checkOut",
+                  e.target.value
+                )
+              }
+            />
+          </label>
         </div>
 
-        {breakDurationMinutes > 0 && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="font-medium">Breaks:</span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken <= 0}
-                onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
-                  onUpdateBreaks(record.employee._id, Math.max(0, (record.breaksTaken ?? auto) - 1))
-                }}
-              >−</button>
-              <span className="min-w-[40px] text-center text-xs">
-                {record.breaksTaken !== null && record.breaksTaken !== undefined
-                  ? record.breaksTaken
-                  : "Auto"}
-              </span>
-              <button
-                type="button"
-                className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                disabled={record.breaksTaken !== null && record.breaksTaken !== undefined && record.breaksTaken >= MAX_BREAKS_PER_DAY}
-                onClick={() => {
-                  const auto = computeAutoBreaks(record.sessions[0]?.workedHours || 0, breakMinHours)
-                  onUpdateBreaks(record.employee._id, Math.min(MAX_BREAKS_PER_DAY, (record.breaksTaken ?? auto) + 1))
-                }}
-              >+</button>
-              {record.breaksTaken !== null && record.breaksTaken !== undefined && (
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground hover:text-foreground ml-1"
-                  onClick={() => onUpdateBreaks(record.employee._id, null)}
-                  title="Reset to auto"
-                >✕</button>
-              )}
-            </div>
-          </div>
-        )}
-
+        <div className={RECORD_FOOTER_CLASS}>
+          <span>
+            <span className="text-muted-foreground">Net hours</span>{" "}
+            <strong className="font-semibold">{netHoursOf(session.workedHours || 0, breaks, breakDurationMinutes)}</strong>
+          </span>
+          {breakDurationMinutes > 0 && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">Breaks</span>
+              <BreakStepper
+                value={record.breaksTaken}
+                autoCount={autoBreaks}
+                onChange={(value) => onUpdateBreaks(record.employee._id, value)}
+              />
+            </span>
+          )}
+        </div>
 
         {showUndo ? (
           <div className="flex justify-start">
             <Button
               variant="outline"
               size="sm"
-              className="w-28 mt-2 flex items-center justify-center gap-1.5 px-3.5 h-8 text-xs font-medium"
+              className="w-28 flex items-center justify-center gap-1.5 px-3.5 h-8 text-xs font-medium"
               onClick={onUndoClear}
             >
               <Undo className="h-4 w-4" />
@@ -1150,7 +1228,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
             <Button
               variant="outline"
               size="sm"
-              className="w-28 mt-2 px-3.5 h-8 text-xs font-medium"
+              className="w-28 px-3.5 h-8 text-xs font-medium"
               onClick={() => onClearSession(record.employee._id, 0)}
             >
               Absent
@@ -1457,6 +1535,16 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
   const checkoutRemarkGraceMinutes = workConfig?.checkoutRemarkGraceMinutes ?? 15
 
   const [site, setSite] = useState<Site | null>(null)
+
+  // Site sheet draft: the jobs a session can be logged against — this site's live jobs only
+  // (the server re-checks a picked job on submit). Stable identity for the memoized rows.
+  const siteJobs = useMemo<SiteJobs[] | undefined>(() => {
+    if (!site || site.isDriverPool) return undefined
+    const jobs = (site.jobs || [])
+      .filter((j) => j && !j.isDeleted && j.isActive !== false && !j.isCompleted)
+      .map((j) => ({ _id: j._id, name: j.name, jobCode: j.jobCode ?? null }))
+    return [{ _id: site._id, siteName: site.siteName, jobs }]
+  }, [site])
 
   const today = useMemo(() => getCurrentTargetDateString(), [])
 
@@ -4224,15 +4312,19 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     // push a TAGGED duplicate of this page so a Back press fires popstate (which
     // we catch to raise the leave dialog) instead of navigating away outright.
     // The __guard tag lets goBackOrFallback recognise the duplicate on top and
-    // step back OVER it to reach the real previous page.
-    const GUARD_STATE = { __guard: true }
+    // step back OVER it to reach the real previous page. It KEEPS React Router's own
+    // state (idx/key): without `idx`, the next navigate() from here numbers the new entry
+    // NaN, and pages that decide "can I go back?" from it (Site Details) fall back to their
+    // list instead of returning here.
+    const pushGuard = () =>
+      window.history.pushState({ ...(window.history.state ?? {}), __guard: true }, "", window.location.pathname)
 
     const handlePopState = () => {
       setShowLeaveDialog(true)
-      window.history.pushState(GUARD_STATE, "", window.location.pathname)
+      pushGuard()
     }
 
-    window.history.pushState(GUARD_STATE, "", window.location.pathname)
+    pushGuard()
     window.addEventListener("popstate", handlePopState)
 
     return () => {
@@ -4535,11 +4627,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                   {formattedDate}
                 </p>
 
-                {isDrivers ? (
-                  <p className="text-sm text-muted-foreground">
-                    Drivers with no site · each session is logged against a job from any site
-                  </p>
-                ) : site?.locationDetails && (
+                {!isDrivers && site?.locationDetails && (
                   <p className="text-sm text-muted-foreground">
                     {site.locationDetails}
                   </p>
@@ -5231,31 +5319,57 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
               <>
               {/* MOBILE */}
               {isMobileView && (
-              <div className="space-y-3 md:hidden">
+              <div className={RECORD_LIST_CLASS}>
                 {filteredAttendance.map((record) => {
                   const isEditing =
                     editingRowId === record.attendanceId
 
                   const complete = isRecordComplete(record)
 
+                  const hasCarryover = carryoverEmpIds.has(record.employee)
+
+                  // Breaks are day-level: auto from the day's raw hours, or the override.
+                  const savedAutoBreaks = computeAutoBreaks(
+                    record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0),
+                    breakMinHours
+                  )
+                  const savedBreaksPending =
+                    (record.breaksTaken === null || record.breaksTaken === undefined) && hasOpenSession(record)
+                  const savedBreaks = savedBreaksPending
+                    ? 0
+                    : record.breaksTaken === null || record.breaksTaken === undefined
+                      ? savedAutoBreaks
+                      : clampBreaks(record.breaksTaken)
+
+                  // Inline edit: the edited session replaces sessions[0] in the day's raw hours.
+                  const editRawHours = isEditing
+                    ? calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
+                    : 0
+                  const editAutoBreaks = isEditing
+                    ? computeAutoBreaks(
+                        (record.totalRawHours || 0) - (record.sessions[0]?.workedHours || 0) + editRawHours,
+                        breakMinHours
+                      )
+                    : 0
+                  const editNight = !!(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)))
+
                   return (
                     <Card
                       key={record.attendanceId}
-                      className={
+                      className={cn(
+                        RECORD_CARD_CLASS,
                         (isOverlapRow(record.employee) || (isEditing && !!inlineEditError))
-                          ? "border-red-500 bg-red-50/50 dark:bg-red-950/10"
+                          ? "border-red-500 dark:border-red-500 bg-red-50/50 dark:bg-red-950/10"
                           : skippedEmployeeIds.has(record.employeeId)
-                            ? "border-amber-500 bg-amber-50/50 dark:bg-amber-950/10"
-                            : ""
-                      }
+                            ? "border-amber-500 dark:border-amber-500 bg-amber-50/50 dark:bg-amber-950/10"
+                            : isEditing && "border-primary/60 dark:border-primary/60"
+                      )}
                       title={skippedEmployeeIds.has(record.employeeId) ? skippedReasons.get(record.employeeId) || '' : undefined}
                     >
-                      <CardContent className="pt-4 space-y-3">
-
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
+                      <div className={RECORD_STRIP_CLASS}>
+                          <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-medium">
+                              <p className="font-semibold">
                                 {record.name}
                               </p>
                               {record.user && (
@@ -5274,16 +5388,16 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                               {record.outgoing && (
                                 <OutgoingTransferBadge outgoing={record.outgoing} />
                               )}
-                              {carryoverEmpIds.has(record.employee) && (
+                              {hasCarryover && (
                                 <CarryoverBadge siteName={carryoverAwaySiteByEmp.get(record.employee) ?? null} onClick={() => handleOpenCarryover(record.employee)} />
                               )}
                             </div>
 
-                            <p className="text-sm text-muted-foreground">
+                            <p className="text-xs text-muted-foreground">
                               {record.employeeId} • {record.jobTitle}
                             </p>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-1 shrink-0">
                             {record.isLop ? (
                               <LopBadge />
                             ) : record.isSickLeave ? (
@@ -5291,6 +5405,20 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                             ) : isEmployeeAbsent(record.sessions, id) ? (
                               <AbsentIndicator />
                             ) : null}
+                            {/* Edit: the dialog (edit + add) once a session is complete, else
+                                inline. A carryover's only action is closing yesterday first. */}
+                            {!isEditing && !hasCarryover && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                aria-label={`Edit ${record.name}`}
+                                title={complete ? "Edit / add sessions" : "Edit"}
+                                onClick={() => (complete ? openEditRecord(record) : startInlineEdit(record))}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
                             {!isEditing && (
                               <RowActionsMenu
                                 isSick={!!record.isSickLeave}
@@ -5313,171 +5441,85 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                               />
                             )}
                           </div>
-                        </div>
+                      </div>
 
-                        {/* Drivers sheet: each session's job (any site). */}
-                        {isDrivers && (
-                          <div className="space-y-1.5">
-                            {isEditing ? (
+                      <CardContent className="space-y-2.5 px-3 py-3">
+                        {isEditing ? (
+                          <div className="space-y-2.5">
+                            {/* Drivers pick the session's job (any site); a site shows its job. */}
+                            {isDrivers ? (
                               <JobPicker
                                 value={inlineEdit.job ?? null}
                                 invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
                                 onChange={(job) => setInlineEdit((prev) => ({ ...prev, job }))}
+                                className="h-10"
                               />
-                            ) : (
-                              (record.sessions.length ? record.sessions : [null]).map((s, i) => (
-                                <div key={s?._id ?? i} className="rounded-md border bg-muted/20 px-2.5 py-1.5">
-                                  <SavedJobLabel job={s?.job ?? null} />
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        )}
-
-                        <div>
-                          <span className="font-medium">
-                            Hours:
-                          </span>{" "}
-                          {isEditing
-                            ? calculateHours(
-                                inlineEdit.checkIn,
-                                inlineEdit.checkOut,
-                                inlineEdit.isNightShift
-                              )
-                            : getSiteWorkedHours(record)}
-                        </div>
-
-                        {breakDurationMinutes > 0 && (
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">Breaks:</span>
-                            {isEditing ? (
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                                  disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken <= 0}
-                                  onClick={() => {
-                                    const currentSessionHours = record.sessions[0]?.workedHours || 0
-                                    const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
-                                    const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
-                                    setInlineEdit((prev) => ({
-                                      ...prev,
-                                      breaksTaken: Math.max(0, (prev.breaksTaken ?? auto) - 1)
-                                    }))
-                                  }}
-                                >−</button>
-                                <span className="text-xs">
-                                  {inlineEdit.breaksTaken !== null
-                                    ? inlineEdit.breaksTaken
-                                    : "Auto"}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="h-6 w-6 rounded border text-xs font-bold hover:bg-muted transition-colors disabled:opacity-40"
-                                  disabled={inlineEdit.breaksTaken !== null && inlineEdit.breaksTaken >= MAX_BREAKS_PER_DAY}
-                                  onClick={() => {
-                                    const currentSessionHours = record.sessions[0]?.workedHours || 0
-                                    const otherSessionsHours = (record.totalRawHours || 0) - currentSessionHours
-                                    const newTotalRawHours = otherSessionsHours + calculateHours(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift)
-                                    const auto = computeAutoBreaks(newTotalRawHours, breakMinHours)
-                                    setInlineEdit((prev) => ({
-                                      ...prev,
-                                      breaksTaken: Math.min(MAX_BREAKS_PER_DAY, (prev.breaksTaken ?? auto) + 1)
-                                    }))
-                                  }}
-                                >+</button>
-                                {inlineEdit.breaksTaken !== null && (
-                                  <button
-                                    type="button"
-                                    className="text-[10px] text-muted-foreground hover:text-foreground ml-1"
-                                    onClick={() => setInlineEdit((prev) => ({ ...prev, breaksTaken: null }))}
-                                    title="Reset to auto"
-                                  >✕</button>
-                                )}
+                            ) : null}
+                            {(!isDrivers && record.sessions[0]?.job) || editNight ? (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {!isDrivers && <JobChip job={record.sessions[0]?.job} />}
+                                {editNight && <NightTag />}
                               </div>
-                            ) : (
-                              <span className="text-xs">
-                                {(() => {
-                                  const isAuto = record.breaksTaken === null || record.breaksTaken === undefined;
-                                  if (isAuto && hasOpenSession(record)) {
-                                    return (
-                                      <span
-                                        className="italic text-muted-foreground"
-                                        title="Auto-calculated once the session is checked out"
-                                      >
-                                        Auto
-                                      </span>
-                                    );
-                                  }
-                                  const count = isAuto
-                                    ? computeAutoBreaks(record.totalRawHours ?? record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours)
-                                    : clampBreaks(record.breaksTaken);
-                                  return `${count}`;
-                                })()}
+                            ) : null}
+
+                            <div className="space-y-2">
+                              <label className="space-y-1">
+                                <span className="text-[11px] font-medium text-muted-foreground">Check in</span>
+                                <Input
+                                  type="time"
+                                  value={inlineEdit.checkIn}
+                                  onChange={(e) => {
+                                    const val = e.target.value
+                                    // Cutoff-free: crosses midnight iff the check-out reads
+                                    // earlier than the check-in.
+                                    const { checkOutNextDay } = deriveOffsets(val, inlineEdit.checkOut)
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      checkIn: val,
+                                      isNightShift: checkOutNextDay,
+                                    }))
+                                  }}
+                                />
+                              </label>
+                              <label className="space-y-1">
+                                <span className="text-[11px] font-medium text-muted-foreground">Check out</span>
+                                <Input
+                                  type="time"
+                                  value={inlineEdit.checkOut}
+                                  onChange={(e) => {
+                                    const val = e.target.value
+                                    const { checkOutNextDay } = deriveOffsets(inlineEdit.checkIn, val)
+                                    setInlineEdit((prev) => ({
+                                      ...prev,
+                                      checkOut: val,
+                                      isNightShift: checkOutNextDay,
+                                    }))
+                                  }}
+                                />
+                              </label>
+                            </div>
+
+                            <div className={RECORD_FOOTER_CLASS}>
+                              <span>
+                                <span className="text-muted-foreground">Net hours</span>{" "}
+                                <strong className="font-semibold">
+                                  {netHoursOf(editRawHours, inlineEdit.breaksTaken ?? editAutoBreaks, breakDurationMinutes)}
+                                </strong>
                               </span>
-                            )}
-                          </div>
-                        )}
-
-
-                        {isEditing ? (
-                          <div className="space-y-3">
-                             <div className="space-y-1">
-                              <p className="text-sm font-medium">
-                                Check In
-                              </p>
-
-                              <Input
-                                type="time"
-                                value={inlineEdit.checkIn}
-                               onChange={(e) => {
-                                  const val = e.target.value
-                                  // Cutoff-free: crosses midnight iff the check-out reads
-                                  // earlier than the check-in.
-                                  const { checkOutNextDay } = deriveOffsets(val, inlineEdit.checkOut)
-                                  setInlineEdit((prev) => ({
-                                    ...prev,
-                                    checkIn: val,
-                                    isNightShift: checkOutNextDay,
-                                  }))
-                                }}
-                              />
-                            </div>
-
-                            <div className="space-y-1">
-                              <p className="text-sm font-medium">
-                                Check Out
-                              </p>
-
-                              <Input
-                                type="time"
-                                value={inlineEdit.checkOut}
-                                onChange={(e) => {
-                                  const val = e.target.value
-                                  const { checkOutNextDay } = deriveOffsets(inlineEdit.checkIn, val)
-                                  setInlineEdit((prev) => ({
-                                    ...prev,
-                                    checkOut: val,
-                                    isNightShift: checkOutNextDay,
-                                  }))
-                                }}
-                              />
-                            </div>
-
-                            <div className="text-sm mt-2 font-medium flex items-center gap-1.5">
-                              <span>Shift:</span>
-                              {(inlineEdit.isNightShift || (inlineEdit.checkIn && inlineEdit.checkOut && isCrossMidnight(inlineEdit.checkIn, inlineEdit.checkOut, inlineEdit.isNightShift))) ? (
-                                <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-                                  🌙 Night
+                              {breakDurationMinutes > 0 && (
+                                <span className="flex items-center gap-1.5">
+                                  <span className="text-muted-foreground">Breaks</span>
+                                  <BreakStepper
+                                    value={inlineEdit.breaksTaken}
+                                    autoCount={editAutoBreaks}
+                                    onChange={(value) => setInlineEdit((prev) => ({ ...prev, breaksTaken: value }))}
+                                  />
                                 </span>
-                              ) : (
-                                <span className="text-muted-foreground">☀️ Day</span>
                               )}
                             </div>
 
                             {inlineEditError && (
-                              <div className="text-red-500 text-xs mt-1 font-medium max-w-xs">
+                              <div className="text-red-500 text-xs font-medium max-w-xs">
                                 {inlineEditError}
                               </div>
                             )}
@@ -5529,81 +5571,61 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                           </div>
                         ) : (
                           <>
-                            <div className="space-y-3">
-                              {record.sessions.map((session, idx) => (
-                                <div key={session._id || idx} className="space-y-2 border-t pt-2 first:border-t-0 first:pt-0">
-                                  {record.sessions.length > 1 && (
-                                    <p className="text-xs font-semibold text-muted-foreground">
-                                      Session #{idx + 1}
-                                    </p>
+                            {/* One block per session: its job code over In / Out. Drivers always
+                                name the job (any site); a site shows it when the session has one. */}
+                            {record.sessions.map((session, idx) => {
+                              const night = !!(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift)))
+                              const showChip = isDrivers || !!session.job
+                              return (
+                                <div key={session._id || idx} className="space-y-1">
+                                  {(showChip || night) && (
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      {showChip && <JobChip job={session.job} emptyLabel="No job" />}
+                                      {night && <NightTag />}
+                                    </div>
                                   )}
-                                  <div className="grid grid-cols-2 gap-3">
-                                    <div className="space-y-1">
-                                      <p className="text-sm font-medium">
-                                        Check In
-                                      </p>
-                                      <Input
-                                        type="time"
-                                        readOnly
-                                        value={toTimeValue(session.checkIn)}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <p className="text-sm font-medium">
-                                        Check Out
-                                      </p>
-                                      <Input
-                                        type="time"
-                                        readOnly
-                                        value={toTimeValue(session.checkOut)}
-                                      />
-                                    </div>
-                                  </div>
-                                  <div className="text-sm font-medium flex items-center gap-1.5 mt-1">
-                                    <span>Shift:</span>
-                                    {(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift))) ? (
-                                      <span className="inline-flex items-center gap-1 text-indigo-600 font-medium">
-                                        🌙 Night
-                                      </span>
-                                    ) : (
-                                      <span className="text-muted-foreground">☀️ Day</span>
-                                    )}
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <TimeBox label="In" value={toTimeValue(session.checkIn)} />
+                                    <TimeBox label="Out" value={toTimeValue(session.checkOut)} />
                                   </div>
                                 </div>
-                              ))}
+                              )
+                            })}
+
+                            <div className={RECORD_FOOTER_CLASS}>
+                              <span>
+                                <span className="text-muted-foreground">Net hours</span>{" "}
+                                <strong className="font-semibold">
+                                  {netHoursOf(getSiteWorkedHours(record), savedBreaks, breakDurationMinutes)}
+                                </strong>
+                              </span>
+                              {breakDurationMinutes > 0 && (
+                                <span>
+                                  <span className="text-muted-foreground">Breaks</span>{" "}
+                                  {savedBreaksPending ? (
+                                    <span
+                                      className="italic text-muted-foreground"
+                                      title="Auto-calculated once the session is checked out"
+                                    >
+                                      Auto
+                                    </span>
+                                  ) : (
+                                    <strong className="font-semibold">{savedBreaks}</strong>
+                                  )}
+                                </span>
+                              )}
                             </div>
 
-                            {carryoverEmpIds.has(record.employee) ? (
+                            {hasCarryover && (
                               // Carryover takes over the row's primary action: closing
                               // yesterday's shift is the only thing to do here until done.
                               <Button
                                 variant="outline"
-                                className="border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200"
+                                className="w-full border-amber-300 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:border-amber-800/60 dark:text-amber-300 dark:hover:bg-amber-950/30 dark:hover:text-amber-200"
                                 onClick={() => handleOpenCarryover(record.employee)}
                               >
                                 <Clock3 className="h-4 w-4 mr-2" />
                                 Check out yesterday
-                              </Button>
-                            ) : complete ? (
-                              <Button
-                                variant="outline"
-                                onClick={() =>
-                                  openEditRecord(record)
-                                }
-                              >
-                                <Pencil className="h-4 w-4 mr-2" />
-                                <Plus className="h-4 w-4 mr-2" />
-                                Edit / Add
-                              </Button>
-                            ) : (
-                              <Button
-                                variant="outline"
-                                onClick={() =>
-                                  startInlineEdit(record)
-                                }
-                              >
-                                <Pencil className="h-4 w-4 mr-2" />
-                                Edit
                               </Button>
                             )}
                           </>
@@ -6050,7 +6072,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
               <>
                 {/* MOBILE */}
                 {isMobileView && (
-                <div className="space-y-3 md:hidden">
+                <div className={RECORD_LIST_CLASS}>
                   {filteredDraftAttendance.map((record) => (
                     <DraftAttendanceMobileCard
                       key={record.employee._id}
@@ -6070,6 +6092,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                       onClearSession={clearDraftSession}
                       onUndoClear={undoClearDraftSession}
                       driverJobs={isDrivers}
+                      siteJobs={isDrivers ? undefined : siteJobs}
                       onPickJob={pickDraftJob}
                     />
                   ))}

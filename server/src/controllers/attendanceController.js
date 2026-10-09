@@ -1825,6 +1825,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           checkIn,
           checkOut,
           manuallyCleared = false,
+          jobPicked = false,
         } = sessionObj
 
         const finalSiteId = driverSheet ? siteId : (sessionSiteId || siteId)
@@ -1844,6 +1845,15 @@ export const siteFirstSubmitAttendance = async (req, res) => {
               `Pick the job ${employee?.name || "this driver"}'s session was for${job?._id ? " (the selected job is no longer active)" : ""}`
             );
           }
+        }
+
+        // Site sheet: a job the supervisor PICKED in the draft must be an active job of this
+        // site. Only picked jobs are checked, so a stale roster job never blocks a submit.
+        if (!driverSheet && jobPicked && job?._id && !(await findAssignableJob(job._id, siteId, session))) {
+          throwValidationError(
+            400,
+            `The job picked for ${employee?.name || "this employee"} is no longer active at this site`
+          );
         }
 
         const checkInDate = checkIn ? combineFromOffset(date, checkIn, checkInNextDay) : null
@@ -2457,9 +2467,9 @@ export const getSiteAttendance = async (req, res) => {
       }
     }
 
-    // Drivers sheet: a session's job can be at any site, so name it (code, job, site) for
-    // the saved sheet's Job column.
-    if (await isDriverPool(siteObjectId)) {
+    // Name each session's job (code, job, site): the saved cards show its code above the
+    // times, and on the drivers sheet the job can be at any site.
+    {
       const jobIds = [...new Set(result.flatMap((r) => r.sessions.map((s) => s.jobId).filter(Boolean)).map(String))]
       if (jobIds.length) {
         const jobs = await Job.find({ _id: { $in: jobIds } }, "name jobCode site")

@@ -16,7 +16,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 /**
  * Searchable job combobox for the Drivers Attendance sheet: every active job at every live
  * site, grouped by site, with the driver's last-used job shown first. `invalid` paints the
- * trigger red (a session with times but no job can't be saved).
+ * trigger red (a session with times but no job can't be saved). Pass `sites` to scope it to
+ * a fixed list instead (the Site sheet draft: that site's own jobs) — nothing is fetched then.
  */
 export default function JobPicker({
   value,
@@ -25,6 +26,7 @@ export default function JobPicker({
   invalid = false,
   disabled = false,
   showLastUsed = false,
+  sites: scopedSites,
   className,
 }: {
   value: DriverJob | null
@@ -33,17 +35,19 @@ export default function JobPicker({
   invalid?: boolean
   disabled?: boolean
   showLastUsed?: boolean
+  sites?: SiteJobs[]
   className?: string
 }) {
   const [open, setOpen] = useState(false)
-  const [sites, setSites] = useState<SiteJobs[]>(cachedDriverJobs() ?? [])
+  const [loadedSites, setSites] = useState<SiteJobs[]>(cachedDriverJobs() ?? [])
+  const sites = scopedSites ?? loadedSites
   const [loading, setLoading] = useState(false)
 
   // Load (or refresh from the shared cache) whenever the list is opened.
   const openChange = (o: boolean) => {
     if (disabled) return
     setOpen(o)
-    if (!o) return
+    if (!o || scopedSites) return
     setLoading(!cachedDriverJobs())
     loadDriverJobs()
       .then(setSites)
@@ -79,7 +83,7 @@ export default function JobPicker({
               {value ? jobLabel(value) : "Choose job"}
             </span>
             <span className="truncate text-[11px] text-muted-foreground">
-              {value?.site?.siteName || "Any site"}
+              {value?.site?.siteName || (scopedSites ? scopedSites[0]?.siteName : "Any site")}
             </span>
           </span>
           {value && showLastUsed && (
@@ -98,7 +102,7 @@ export default function JobPicker({
         collisionPadding={12}
       >
         <Command>
-          <CommandInput placeholder="Search job code, job or site…" className="text-xs sm:text-sm" />
+          <CommandInput placeholder={scopedSites ? "Search job code or job…" : "Search job code, job or site…"} className="text-xs sm:text-sm" />
           <CommandList className="max-h-[min(50vh,280px)] sm:max-h-[320px]">
             <CommandEmpty className="py-4 text-xs sm:py-6 sm:text-sm">
               {loading ? "Loading jobs…" : "No job matches that search."}
