@@ -1,2 +1,4 @@
 node_modules/
 .env
+# Real employee data for one-off seed scripts
+src/seed/*.data.json
