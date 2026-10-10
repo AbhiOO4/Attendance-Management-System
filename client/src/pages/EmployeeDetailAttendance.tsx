@@ -118,6 +118,11 @@ function EmployeeAttendanceDetail() {
   const [attendance, setAttendance] =
     useState<AttendanceRecord[]>([])
 
+  // Days before today with no record this month, and whether the work schedule's
+  // countUnmarkedAsAbsent deducts them — counted by the server exactly like the
+  // Monthly Report, so Payment Days here matches the employee's row there.
+  const [unmarked, setUnmarked] = useState({ days: 0, asAbsent: true })
+
   const [loading, setLoading] =
     useState(false)
 
@@ -179,6 +184,10 @@ function EmployeeAttendanceDetail() {
 
       if (seq !== attendanceSeq.current) return
       setAttendance(res.data.data || [])
+      setUnmarked({
+        days: res.data.payroll?.unmarkedDays ?? 0,
+        asAbsent: res.data.payroll?.unmarkedAsAbsent !== false,
+      })
     } catch (error: any) {
       if (seq !== attendanceSeq.current) return
       console.log(error)
@@ -340,6 +349,9 @@ function EmployeeAttendanceDetail() {
         absent: emptyAbsentCounts(),
       }
     )
+    // Days with no record have nothing to classify; when the work schedule counts them
+    // as absent they are plain absences (no reason), like on the Monthly Report.
+    if (unmarked.asAbsent) sums.absent.none += unmarked.days
     // Working days = every calendar day of the month, holidays included.
     const workingDays = new Date(Date.UTC(year, month, 0)).getUTCDate()
     const daysAbsent = ABSENT_REASONS.reduce(
@@ -348,11 +360,13 @@ function EmployeeAttendanceDetail() {
     )
     return {
       ...sums,
+      daysUnmarked: unmarked.days,
+      unmarkedAsAbsent: unmarked.asAbsent,
       workingDays,
       daysAbsent,
       paymentDays: paymentDaysOf(workingDays, daysAbsent, sums.daysHalf),
     }
-  }, [attendance, month, year])
+  }, [attendance, unmarked, month, year])
 
 
   const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {

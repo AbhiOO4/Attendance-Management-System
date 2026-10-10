@@ -10,6 +10,10 @@
 //   half    — a half day: deducts 0.5 of a day.
 //   absent  — deducts a whole day; `reason` is the leave flag or "none" (a plain absence,
 //             including a pending day — checked in, no check-out yet).
+//
+// Unmarked days (no record at all) have nothing to classify: the server counts them
+// (utils/unmarkedDays.js) and WorkSchedule.countUnmarkedAsAbsent decides whether they
+// join the "none" absences — see the Monthly Report and the employee timesheet.
 
 export type AbsentReason = "none" | "emergency" | "sick" | "lop"
 

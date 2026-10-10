@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   X,
   Loader2,
@@ -71,6 +72,9 @@ type WorkSchedule = {
   erpOvertimeActivityType: string;
   erpOvertimeType: string;
   erpPaidLeaveType: string;
+  // Mirrors ERPNext "Consider Unmarked Attendance As": true = Absent (deducted from
+  // Payment Days in the report + timesheet), false = Present (paid).
+  countUnmarkedAsAbsent: boolean;
 };
 
 type Holiday = {
@@ -123,7 +127,7 @@ const SECTIONS: Record<SectionId, SettingsSection> = {
   erp: {
     id: "erp",
     title: "ERPNext Export",
-    description: "Labels written into the ERPNext import files. Each must match its name in ERPNext.",
+    description: "Labels for the ERPNext import files, and how days with no record count toward Payment Days.",
     icon: FileSpreadsheet,
     fields: [
       "erpCompanyName",
@@ -131,6 +135,7 @@ const SECTIONS: Record<SectionId, SettingsSection> = {
       "erpOvertimeActivityType",
       "erpOvertimeType",
       "erpPaidLeaveType",
+      "countUnmarkedAsAbsent",
     ],
   },
 };
@@ -151,6 +156,8 @@ const sameValue = (a: unknown, b: unknown) => {
 const normalizeSchedule = (data: WorkSchedule): WorkSchedule => ({
   ...data,
   breakMinHours: data.breakMinHours ?? data.fullDayHours,
+  // Config docs that predate the field are ON (the server reads it the same way).
+  countUnmarkedAsAbsent: data.countUnmarkedAsAbsent !== false,
 });
 
 const pickFields = (src: WorkSchedule, fields: (keyof WorkSchedule)[]) =>
@@ -271,6 +278,7 @@ export default function Configure() {
     erpOvertimeActivityType: "",
     erpOvertimeType: "",
     erpPaidLeaveType: "Annual Leave",
+    countUnmarkedAsAbsent: true,
   });
   const [saved, setSaved] = useState<WorkSchedule | null>(null);
   const [scheduleLoadFailed, setScheduleLoadFailed] = useState(false);
@@ -544,7 +552,7 @@ export default function Configure() {
             .join(", ") || "No weekly off days",
         checkout: `Reminder ${saved.checkoutReminderTime || "off"} · Remark after ${saved.checkoutRemarkGraceMinutes ?? 15} min over default`,
         leave: `${saved.annualLeaveDefaultDays ?? 0} days/year · LOP deduct ${saved.lopDeductionAmount ?? 3.5} OMR`,
-        erp: saved.erpCompanyName || "Company name not set",
+        erp: `${saved.erpCompanyName || "Company name not set"} · Unmarked days = ${saved.countUnmarkedAsAbsent === false ? "Present" : "Absent"}`,
       }
     : {
         hours: "Loading…",
@@ -900,6 +908,27 @@ export default function Configure() {
                     onChange={(e) => setField("erpPaidLeaveType", e.target.value)}
                   />
                 </Field>
+
+                {/* Unmarked days never reach the ERPNext file, so ERPNext applies its own
+                    rule to them — this mirrors it so the report's Payment Days match the slip. */}
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-4 md:col-span-2">
+                  <div className="space-y-1">
+                    <label htmlFor="cfg-unmarked-absent" className="text-sm font-medium">
+                      Count unmarked days as absent
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Match ERPNext Payroll Settings → "Consider Unmarked Attendance As". On (Absent):
+                      days with no attendance record — up to yesterday, holidays excluded — are
+                      deducted from Payment Days in the monthly report and the employee timesheet.
+                      Off (Present): they count as paid.
+                    </p>
+                  </div>
+                  <Switch
+                    id="cfg-unmarked-absent"
+                    checked={schedule.countUnmarkedAsAbsent}
+                    onCheckedChange={(checked) => setField("countUnmarkedAsAbsent", checked)}
+                  />
+                </div>
               </div>
             )}
           </Accordion>

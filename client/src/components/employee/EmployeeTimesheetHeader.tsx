@@ -67,6 +67,9 @@ export interface TimesheetTotals {
   daysHalf: number
   daysAnnual: number
   daysPending: number
+  // Days before today with no record; in absent.none when unmarkedAsAbsent.
+  daysUnmarked: number
+  unmarkedAsAbsent: boolean
   absent: AbsentCounts
   workingDays: number
   daysAbsent: number
@@ -240,6 +243,12 @@ export default function EmployeeTimesheetHeader({
                 </span>
               </>
             }
+            // Days with no record counted as paid (work schedule set to "Present").
+            sub={
+              !totals.unmarkedAsAbsent && totals.daysUnmarked > 0
+                ? `incl. ${totals.daysUnmarked} unmarked (paid)`
+                : undefined
+            }
           />
 
           <AbsentCell totals={totals} />
@@ -345,6 +354,15 @@ function AbsentCell({ totals }: { totals: TimesheetTotals }) {
         {totals.daysPending > 0 && (
           <p className="mt-0.5 text-[11px] font-medium leading-tight text-amber-700 dark:text-amber-400">
             incl. {totals.daysPending} pending
+          </p>
+        )}
+        {/* Days with no record, when the work schedule counts them as absent. */}
+        {totals.unmarkedAsAbsent && totals.daysUnmarked > 0 && (
+          <p
+            className="mt-0.5 text-[11px] font-medium leading-tight text-amber-700 dark:text-amber-400"
+            title="Days before today with no attendance record (holidays excluded), counted as absent — Configure → ERPNext Export"
+          >
+            incl. {totals.daysUnmarked} unmarked
           </p>
         )}
       </div>

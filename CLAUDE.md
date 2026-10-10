@@ -142,9 +142,12 @@ ERPNext "Include holidays in Total no. of Working Days"), `paymentDays` = workin
 `absentDays` − 0.5 × `halfDays`, `absentDays` = `noReasonAbsentDays` + `emergencyLeaveDays`
 + `sickLeaveDays` + `lopDays` (ALL unpaid days; annual leave is never in it), `pendingDays`
 (subset of no-reason, flagged so it's closed before export), `fullDays`, `unmarkedDays`
-(days up to today with NO record, holidays excluded except for temporaries, from the
-employee's `createdAt`, active only — counted as PAID, matching ERPNext's default
-"Consider Unmarked Attendance As: Present"; a warning only), `attendancePercentage` =
+(days BEFORE today with NO record, holidays excluded except for temporaries, from the
+employee's `createdAt`, active only — `utils/unmarkedDays.js`, shared with the employee
+timesheet endpoint's `payroll` field). `WorkSchedule.countUnmarkedAsAbsent` (Configure →
+ERPNext Export, default ON, read as `!== false`) mirrors ERPNext "Consider Unmarked
+Attendance As": ON = Absent → they are added to `noReasonAbsentDays` (so to `absentDays`);
+OFF = Present → counted as paid. Responses carry `unmarkedAsAbsent`), `attendancePercentage` =
 paymentDays ÷ workingDays, and `overtimeHours`, `holidayHours`, `totalOvertimeHours`
 (= OT + holiday hours, paid at the same rate). Known slip differences: ERPNext prorates
 working days from the joining/relieving date (AMS has no joining date), and temporary

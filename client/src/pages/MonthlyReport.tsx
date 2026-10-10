@@ -6,6 +6,8 @@ import {
   RotateCcw,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
+  FileSpreadsheet,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import * as XLSX from "xlsx"
@@ -30,7 +32,6 @@ import {
 import {
   ABSENT_REASONS,
   ANNUAL_LEAVE,
-  emptyAbsentCounts,
   type AbsentCounts,
 } from "@/lib/leaveComposition"
 import { cn } from "@/lib/utils"
@@ -64,6 +65,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import toast from "react-hot-toast"
 
 // Round to 2 decimals (avoids float artifacts when summing rounded hours).
@@ -96,7 +102,8 @@ interface ReportEmployee {
   pendingDays: number
   // Annual (paid) leave — never part of absentDays.
   leaveDays: number
-  // Days so far with no record at all (counted as paid; a warning only).
+  // Days before today with no record at all. Part of noReasonAbsentDays when the
+  // response's unmarkedAsAbsent is set (Configure → ERPNext), otherwise counted as paid.
   unmarkedDays: number
   // paymentDays ÷ workingDays.
   attendancePercentage: number
@@ -109,6 +116,8 @@ interface ReportEmployee {
 interface AttendanceReportResponse {
   success: boolean
   report: ReportEmployee[]
+  // WorkSchedule.countUnmarkedAsAbsent: unmarked days are already in absentDays.
+  unmarkedAsAbsent?: boolean
 }
 
 // A report row's absent-day composition, keyed like ABSENT_REASONS.
@@ -181,16 +190,21 @@ function MonthlyAttendanceTab() {
   const { month, year } = period
   const [loading, setLoading] = useState(false)
   const [reports, setReports] = useState<ReportEmployee[]>([])
-  const [name, setName] = useState("")
-  const [employeeId, setEmployeeId] = useState("")
-  const [jobTitle, setJobTitle] = useState("")
+  const [unmarkedAsAbsent, setUnmarkedAsAbsent] = useState(true)
+  // One box matching name, employee ID and job title (like the Employees page).
+  const [search, setSearch] = useState("")
   const [employmentType, setEmploymentType] = useState<EmploymentFilter>("all")
   const [erpBusy, setErpBusy] = useState(false)
 
-  // Employees ticked for the ERPNext export, by Mongo _id. Deliberately kept across
-  // searches, filter and month changes, so specific people can be gathered from several
-  // searches (and exported for more than one month).
+  // Employees ticked for export (spreadsheet + ERPNext), by Mongo _id. Every export
+  // covers exactly these. Deliberately kept across searches, filter and period changes,
+  // so specific people can be gathered from several searches (and exported for more than
+  // one month).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  // The "select employees first" hint on the muted Actions button — opened by a click
+  // too (not just hover), so it also works on touch screens.
+  const [actionsHintOpen, setActionsHintOpen] = useState(false)
+  const actionsHintTimer = useRef<number | undefined>(undefined)
 
   // Client-side pagination for the display only. The full month stays in `reports`
   // so search spans everyone and Export always covers the whole roster.
@@ -218,6 +232,7 @@ function MonthlyAttendanceTab() {
             )
       if (seq !== requestSeq.current) return
       setReports(res.data.report || [])
+      setUnmarkedAsAbsent(res.data.unmarkedAsAbsent !== false)
     } catch (error) {
       if (seq !== requestSeq.current) return
       console.log(error)
@@ -242,8 +257,7 @@ function MonthlyAttendanceTab() {
     })
   }, [reports])
 
-  // The employment-type scope. This is the export set — Export follows the type
-  // filter but always covers everyone in it, independent of the on-screen search.
+  // The employment-type scope (the summary's "of N employees").
   const scopedReports = useMemo(() => {
     if (employmentType === "all") return sortedAll
     return sortedAll.filter(
@@ -252,24 +266,18 @@ function MonthlyAttendanceTab() {
   }, [sortedAll, employmentType])
 
   // Search-filtered view (drives the table + summary). Filtering a sorted list
-  // preserves order.
+  // preserves order. Every word must match the name, ID or job title, so "ali mason"
+  // still narrows to the masons named Ali.
   const filteredReports = useMemo(() => {
+    const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    if (terms.length === 0) return scopedReports
     return scopedReports.filter((employee) => {
-      const matchesName = employee.employeeName
+      const haystack = [employee.employeeName, employee.employeeId, employee.jobTitle]
+        .join(" ")
         .toLowerCase()
-        .includes(name.toLowerCase())
-      const matchesEmployeeId = employee.employeeId
-        .toLowerCase()
-        .includes(employeeId.toLowerCase())
-      const matchesJobTitle = employee.jobTitle
-        .toLowerCase()
-        .includes(jobTitle.toLowerCase())
-      return matchesName && matchesEmployeeId && matchesJobTitle
+      return terms.every((term) => haystack.includes(term))
     })
-  }, [scopedReports, name, employeeId, jobTitle])
-
-  const filtersActive =
-    employmentType !== "all" || !!name || !!employeeId || !!jobTitle
+  }, [scopedReports, search])
 
   // The ticked employees still in the report (ids that dropped out are ignored), and
   // how many of them the current filters hide.
@@ -277,13 +285,29 @@ function MonthlyAttendanceTab() {
     () => sortedAll.filter((e) => selectedIds.has(e._id)),
     [sortedAll, selectedIds]
   )
-  const hiddenSelectedCount =
-    selectedReports.length -
-    filteredReports.filter((e) => selectedIds.has(e._id)).length
+  const listedSelectedCount = filteredReports.filter((e) =>
+    selectedIds.has(e._id)
+  ).length
+  const hiddenSelectedCount = selectedReports.length - listedSelectedCount
 
-  // Selection only feeds the ERPNext export, which is per month.
-  const selectable = mode === "month"
-  const columnCount = 12 + ABSENT_REASONS.length + (selectable ? 1 : 0)
+  const columnCount = 13 + ABSENT_REASONS.length
+
+  // Tick everyone the filters currently list, across all pages (the header checkbox
+  // only covers the visible page).
+  function selectAllListed() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const e of filteredReports) next.add(e._id)
+      return next
+    })
+  }
+
+  function showActionsHint() {
+    setActionsHintOpen(true)
+    window.clearTimeout(actionsHintTimer.current)
+    actionsHintTimer.current = window.setTimeout(() => setActionsHintOpen(false), 2500)
+  }
+  useEffect(() => () => window.clearTimeout(actionsHintTimer.current), [])
 
   // Pagination math. "all" collapses to a single page of the full filtered list.
   const showAll = pageSize === "all"
@@ -299,7 +323,7 @@ function MonthlyAttendanceTab() {
   // Reset to page 1 whenever the filtered set or page size changes.
   useEffect(() => {
     setCurrentPage(1)
-  }, [name, employeeId, jobTitle, employmentType, pageSize, mode, month, year, range.from, range.to])
+  }, [search, employmentType, pageSize, mode, month, year, range.from, range.to])
 
   // Guard against landing past the last page if the data shrinks.
   useEffect(() => {
@@ -333,43 +357,37 @@ function MonthlyAttendanceTab() {
     })
   }
 
+  // The two things to clear up before an export, across the listed employees.
   const totals = useMemo(() => {
     return filteredReports.reduce(
       (acc, e) => {
-        acc.halfDays += e.halfDays
-        acc.absentDays += e.absentDays
         acc.pendingDays += e.pendingDays || 0
         acc.unmarkedDays += e.unmarkedDays || 0
-        acc.annualDays += e.leaveDays || 0
-        const absent = absentCountsOf(e)
-        for (const reason of ABSENT_REASONS) acc.absent[reason.key] += absent[reason.key]
-        acc.overtimeHours += e.overtimeHours
-        acc.holidayHours += e.holidayHours
-        acc.totalOvertimeHours += e.totalOvertimeHours
         return acc
       },
-      {
-        halfDays: 0,
-        absentDays: 0,
-        pendingDays: 0,
-        unmarkedDays: 0,
-        annualDays: 0,
-        absent: emptyAbsentCounts(),
-        overtimeHours: 0,
-        holidayHours: 0,
-        totalOvertimeHours: 0,
-      }
+      { pendingDays: 0, unmarkedDays: 0 }
     )
   }, [filteredReports])
+
+  // The filter + summary toolbar is sticky; the table header pins right below it, so
+  // track the toolbar's height (it wraps onto more lines on narrow screens).
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const [toolbarHeight, setToolbarHeight] = useState(0)
+  useEffect(() => {
+    const el = toolbarRef.current
+    if (!el) return
+    const observer = new ResizeObserver(() => setToolbarHeight(el.offsetHeight))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // Every calendar day of the period (holidays included) — the same for every row.
   const workingDays = reports[0]?.workingDays ?? 0
 
-  function exportToExcel() {
-    // Export every employee of the selected type for the period, regardless of the
-    // active search.
-    if (scopedReports.length === 0) return
-    const formattedData = scopedReports.map((employee, index) => {
+  // Spreadsheet of the period's figures for the ticked employees.
+  function exportToExcel(employees: ReportEmployee[]) {
+    if (employees.length === 0) return
+    const formattedData = employees.map((employee, index) => {
       const absent = absentCountsOf(employee)
       return {
         "Sl No": index + 1,
@@ -389,7 +407,8 @@ function MonthlyAttendanceTab() {
         ),
         "Pending Check-outs (in no reason)": employee.pendingDays || 0,
         [ANNUAL_LEAVE.label]: employee.leaveDays || 0,
-        "Unmarked Days": employee.unmarkedDays || 0,
+        [unmarkedAsAbsent ? "Unmarked Days (in absent)" : "Unmarked Days (paid)"]:
+          employee.unmarkedDays || 0,
         "Attendance %": employee.attendancePercentage,
         "OT Hours": employee.overtimeHours,
         "Holiday Hours": employee.holidayHours,
@@ -410,12 +429,18 @@ function MonthlyAttendanceTab() {
     const fileData = new Blob([excelBuffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
     })
-    const typeSuffix = employmentType === "all" ? "" : `-${employmentType}`
+    // Named like the ERPNext files: one employee by ID, a partial roster by count.
+    const who =
+      employees.length === 1
+        ? `-${employees[0].employeeId}`
+        : employees.length === sortedAll.length
+          ? ""
+          : `-${employees.length}-employees`
     saveAs(
       fileData,
       mode === "month"
-        ? `monthly-report-${month}-${year}${typeSuffix}.xlsx`
-        : `attendance-report-${range.from}_to_${range.to}${typeSuffix}.xlsx`
+        ? `monthly-report-${month}-${year}${who}.xlsx`
+        : `attendance-report-${range.from}_to_${range.to}${who}.xlsx`
     )
   }
 
@@ -451,6 +476,13 @@ function MonthlyAttendanceTab() {
 
   return (
     <div className="space-y-4">
+      {/* Sticky toolbar: filters + summary stay pinned while the table scrolls with the
+          page (like Employees). Opaque background tinted like the page behind it. */}
+      <div
+        ref={toolbarRef}
+        className="sticky top-0 z-20 -mx-3 border-b bg-background sm:-mx-4"
+      >
+      <div className="space-y-3 bg-muted/30 px-3 py-3 sm:px-4">
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
         <Tabs value={mode} onValueChange={(v) => setMode(v as PeriodMode)}>
@@ -484,107 +516,100 @@ function MonthlyAttendanceTab() {
           </SelectContent>
         </Select>
 
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative w-full sm:w-auto sm:min-w-[240px] sm:max-w-sm sm:flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
-            className="w-[160px] pl-8"
-            placeholder="Name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+            className="pl-8"
+            placeholder="Search by name, ID or job title"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        <Input
-          className="w-[120px]"
-          placeholder="ID"
-          value={employeeId}
-          onChange={(e) => setEmployeeId(e.target.value)}
-        />
-
-        <Input
-          className="w-[120px]"
-          placeholder="Job Title"
-          value={jobTitle}
-          onChange={(e) => setJobTitle(e.target.value)}
-        />
-
-        {(name || employeeId || jobTitle) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setName("")
-              setEmployeeId("")
-              setJobTitle("")
-            }}
-          >
+        {search && (
+          <Button variant="ghost" size="sm" onClick={() => setSearch("")}>
             <RotateCcw className="mr-1 h-3 w-3" />
             Clear
           </Button>
         )}
 
+        {/* ACTIONS — every export covers exactly the ticked employees. With nothing
+            ticked the button is muted (not disabled, so it can still be hovered or
+            tapped) and explains itself in a tooltip instead of opening. */}
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={exportToExcel}
-            disabled={scopedReports.length === 0}
-          >
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export all
-          </Button>
-
-          {/* ERPNext imports are per month. The span carries the tooltip because a
-              disabled button gets no pointer events. */}
-          <span
-            className="inline-flex"
-            title={
-              mode === "range"
-                ? "ERPNext export works per month — switch to Month"
-                : undefined
-            }
-          >
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+          {selectedReports.length === 0 ? (
+            <Tooltip open={actionsHintOpen} onOpenChange={setActionsHintOpen}>
+              <TooltipTrigger asChild>
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={erpBusy || mode === "range"}
+                  aria-disabled="true"
+                  className="cursor-not-allowed opacity-50"
+                  // preventDefault stops Radix's own click/pointer handlers from
+                  // closing the tooltip we're opening.
+                  onPointerDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    showActionsHint()
+                  }}
                 >
                   <Download className="mr-1.5 h-3.5 w-3.5" />
-                  Export for ERPNext
+                  Actions
+                  <ChevronDown className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Select employees first — tick them in the table, or use "Select all".
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={erpBusy}>
+                  <Download className="mr-1.5 h-3.5 w-3.5" />
+                  Actions ({selectedReports.length})
+                  <ChevronDown className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
                 </Button>
               </DropdownMenuTrigger>
-              {/* Each file goes out for the ticked employees, or for everyone the
-                  page's filters (type + search boxes) currently list. */}
-              <DropdownMenuContent align="end" className="w-56">
-                {ERP_FILES.map((file, i) => (
-                  <DropdownMenuGroup key={file.type}>
-                    {i > 0 && <DropdownMenuSeparator />}
-                    <DropdownMenuLabel>{file.label}</DropdownMenuLabel>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                  {selectedReports.length} selected employee
+                  {selectedReports.length === 1 ? "" : "s"}
+                </DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => exportToExcel(selectedReports)}>
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Spreadsheet (.xlsx)
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {/* ERPNext imports are per month. */}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>
+                    ERPNext import (CSV)
+                    {mode === "range" && (
+                      <span className="block text-xs font-normal text-muted-foreground">
+                        Per month only — switch to Month
+                      </span>
+                    )}
+                  </DropdownMenuLabel>
+                  {ERP_FILES.map((file) => (
                     <DropdownMenuItem
-                      disabled={selectedReports.length === 0}
+                      key={file.type}
+                      disabled={erpBusy || mode === "range"}
                       onClick={() => downloadErp(file, selectedReports)}
                     >
-                      Selected employees ({selectedReports.length})
+                      {file.label}
                     </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={filteredReports.length === 0}
-                      onClick={() => downloadErp(file, filteredReports)}
-                    >
-                      {filtersActive ? "All matching filters" : "All employees"} (
-                      {filteredReports.length})
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                ))}
+                  ))}
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-          </span>
+          )}
         </div>
       </div>
 
-      {/* Summary row */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground border-b pb-3">
+      {/* Summary row — just the headcount, the period, and what to fix before export
+          (the per-employee figures are in the table and the Excel export). */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground">
         {mode === "range" && (
           <span>
             <span className="font-medium text-foreground">{formatDateRange(range)}</span>
@@ -592,64 +617,23 @@ function MonthlyAttendanceTab() {
             {daysInRange(range)} {daysInRange(range) === 1 ? "day" : "days"}
           </span>
         )}
-        <span className="flex items-center gap-2">
-          {employmentType !== "all" && (
-            <Badge variant="secondary">
-              {EMPLOYMENT_FILTER_LABELS[employmentType]}
-            </Badge>
+        <span>
+          {filteredReports.length === scopedReports.length ? (
+            <>
+              <span className="font-medium text-foreground">{scopedReports.length}</span> employees
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">{filteredReports.length}</span> of{" "}
+              {scopedReports.length} employees
+            </>
           )}
-          <span>
-            {filteredReports.length === scopedReports.length ? (
-              <>
-                <span className="font-medium text-foreground">{scopedReports.length}</span> employees
-              </>
-            ) : (
-              <>
-                <span className="font-medium text-foreground">{filteredReports.length}</span> of{" "}
-                {scopedReports.length} employees
-              </>
-            )}
-          </span>
         </span>
         {workingDays > 0 && (
           <span title="Every calendar day of the period, holidays included">
             Working days <span className="font-medium text-foreground">{workingDays}</span>
           </span>
         )}
-        <span>
-          OT <span className="font-medium text-foreground">{totals.overtimeHours.toFixed(2)}</span>h
-        </span>
-        <span>
-          Holiday <span className="font-medium text-foreground">{totals.holidayHours.toFixed(2)}</span>h
-        </span>
-        <span>
-          Total OT <span className="font-medium text-foreground">{totals.totalOvertimeHours.toFixed(2)}</span>h
-        </span>
-        {/* Absent composition + paid leave across the listed employees */}
-        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>
-            Absent{" "}
-            <span className="font-medium text-foreground tabular-nums">
-              {totals.absentDays}
-            </span>
-          </span>
-          {ABSENT_REASONS.map((reason) => (
-            <span key={reason.key} className="inline-flex items-center gap-1.5">
-              <span className={cn("size-2 rounded-full", reason.dot)} />
-              {reason.name}
-              <span className="font-medium text-foreground tabular-nums">
-                {totals.absent[reason.key]}
-              </span>
-            </span>
-          ))}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className={cn("size-2 rounded-full", ANNUAL_LEAVE.dot)} />
-          {ANNUAL_LEAVE.label} (paid)
-          <span className="font-medium text-foreground tabular-nums">
-            {totals.annualDays}
-          </span>
-        </span>
         {/* Open check-ins: counted as absent (no reason) — and exported to ERPNext as
             Absent — until someone closes them. */}
         {totals.pendingDays > 0 && (
@@ -658,23 +642,41 @@ function MonthlyAttendanceTab() {
             {totals.pendingDays === 1 ? "" : "s"} counted as absent
           </span>
         )}
-        {/* Days with no record at all: not in the ERPNext file, counted as paid. */}
+        {/* Days before today with no record at all: not in the ERPNext file, so ERPNext
+            applies "Consider Unmarked Attendance As" — mirrored by the Configure toggle. */}
         {totals.unmarkedDays > 0 && (
           <span
             className="font-medium text-amber-700 dark:text-amber-400"
-            title="Days so far with no attendance record (holidays excluded). They aren't in the ERPNext file, so Payment Days counts them as paid — like ERPNext's default for unmarked attendance."
+            title={
+              unmarkedAsAbsent
+                ? "Days before today with no attendance record (holidays excluded). Counted as absent (no reason), like ERPNext with \"Consider Unmarked Attendance As: Absent\". Change it under Configure → ERPNext Export."
+                : "Days before today with no attendance record (holidays excluded). Counted as paid, like ERPNext with \"Consider Unmarked Attendance As: Present\". Change it under Configure → ERPNext Export."
+            }
           >
-            {totals.unmarkedDays} unmarked day{totals.unmarkedDays === 1 ? "" : "s"}
+            {totals.unmarkedDays} unmarked day{totals.unmarkedDays === 1 ? "" : "s"} counted as{" "}
+            {unmarkedAsAbsent ? "absent" : "paid"}
           </span>
         )}
-        {/* Employees ticked for the ERPNext export */}
-        {selectable && selectedReports.length > 0 && (
-          <span className="flex items-center gap-1">
+        {/* Employees ticked for export, plus a one-click "everyone listed". */}
+        <span className="flex items-center gap-1">
+          {selectedReports.length > 0 && (
             <span>
               <span className="font-medium text-foreground">{selectedReports.length}</span>{" "}
               selected
               {hiddenSelectedCount > 0 && ` (${hiddenSelectedCount} hidden by filters)`}
             </span>
+          )}
+          {listedSelectedCount < filteredReports.length && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-primary"
+              onClick={selectAllListed}
+            >
+              Select all {filteredReports.length}
+            </Button>
+          )}
+          {selectedReports.length > 0 && (
             <Button
               variant="ghost"
               size="sm"
@@ -683,32 +685,38 @@ function MonthlyAttendanceTab() {
             >
               Clear
             </Button>
-          </span>
-        )}
+          )}
+        </span>
+      </div>
+      </div>
       </div>
 
-      {/* Table — grows with the page's rows; pagination bounds the count, so no
-          inner scroll cage. Horizontal scroll is handled by the Table wrapper. */}
+      {/* Table — grows with the page's rows; pagination bounds the count, so no inner
+          scroll cage. From lg up the wrapper stops being a scroll box so the header can
+          pin under the sticky toolbar (a scroll box would trap position: sticky); below
+          lg it keeps horizontal scroll and only the toolbar pins. The shadow stands in
+          for the header's bottom border, which a sticky collapsed-border table drops. */}
       <div className="rounded-lg border">
-        <Table>
-          <TableHeader className="bg-background">
+        <Table wrapperClassName="lg:overflow-visible">
+          <TableHeader
+            className="bg-background shadow-[0_1px_0_var(--border)] lg:sticky lg:z-10"
+            style={{ top: toolbarHeight }}
+          >
             <TableRow>
-              {selectable && (
-                <TableHead rowSpan={2} className="w-8 pr-0">
-                  <Checkbox
-                    checked={
-                      allPageSelected
-                        ? true
-                        : pageSelectedCount > 0
-                          ? "indeterminate"
-                          : false
-                    }
-                    onCheckedChange={togglePage}
-                    disabled={loading || pagedReports.length === 0}
-                    aria-label="Select all on this page"
-                  />
-                </TableHead>
-              )}
+              <TableHead rowSpan={2} className="w-8 pr-0">
+                <Checkbox
+                  checked={
+                    allPageSelected
+                      ? true
+                      : pageSelectedCount > 0
+                        ? "indeterminate"
+                        : false
+                  }
+                  onCheckedChange={togglePage}
+                  disabled={loading || pagedReports.length === 0}
+                  aria-label="Select all on this page"
+                />
+              </TableHead>
               <TableHead rowSpan={2} className="w-10">#</TableHead>
               <TableHead rowSpan={2}>Employee</TableHead>
               <TableHead rowSpan={2}>ID</TableHead>
@@ -794,22 +802,20 @@ function MonthlyAttendanceTab() {
                 return (
                   <TableRow
                     key={employee.employeeId}
-                    data-state={selectable && isSelected ? "selected" : undefined}
+                    data-state={isSelected ? "selected" : undefined}
                     className={
                       employee.isActive === false
                         ? "opacity-50"
                         : ""
                     }
                   >
-                    {selectable && (
-                      <TableCell className="w-8 pr-0">
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={() => toggleOne(employee._id)}
-                          aria-label={`Select ${employee.employeeName}`}
-                        />
-                      </TableCell>
-                    )}
+                    <TableCell className="w-8 pr-0">
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleOne(employee._id)}
+                        aria-label={`Select ${employee.employeeName}`}
+                      />
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {startIndex + index + 1}
                     </TableCell>
@@ -828,8 +834,9 @@ function MonthlyAttendanceTab() {
                     <TableCell className="capitalize whitespace-normal">{employee.jobTitle}</TableCell>
                     <TableCell className="text-right font-medium tabular-nums">
                       {employee.paymentDays}
-                      {/* Days with no record are counted as paid — flag them. */}
-                      {employee.unmarkedDays > 0 && (
+                      {/* Days with no record counted as paid — flag them here. (When
+                          they count as absent, the No-reason cell flags them instead.) */}
+                      {!unmarkedAsAbsent && employee.unmarkedDays > 0 && (
                         <span
                           className="ml-1 text-xs font-normal text-amber-700 dark:text-amber-400"
                           title={`${employee.unmarkedDays} day(s) with no attendance record, counted as paid`}
@@ -853,11 +860,22 @@ function MonthlyAttendanceTab() {
                         )}
                       >
                         {absent[reason.key]}
-                        {/* Open check-ins sit in "no reason" until closed. */}
-                        {reason.key === "none" && employee.pendingDays > 0 && (
+                        {/* Open check-ins — and, when counted as absent, unmarked days —
+                            sit in "no reason" until someone records them. */}
+                        {reason.key === "none" &&
+                          (employee.pendingDays > 0 ||
+                            (unmarkedAsAbsent && employee.unmarkedDays > 0)) && (
                           <span
                             className="ml-0.5 text-xs text-amber-700 dark:text-amber-400"
-                            title={`incl. ${employee.pendingDays} pending check-out(s)`}
+                            title={`incl. ${[
+                              employee.pendingDays > 0 &&
+                                `${employee.pendingDays} pending check-out(s)`,
+                              unmarkedAsAbsent &&
+                                employee.unmarkedDays > 0 &&
+                                `${employee.unmarkedDays} unmarked day(s) with no record`,
+                            ]
+                              .filter(Boolean)
+                              .join(" + ")}`}
                           >
                             *
                           </span>

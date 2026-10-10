@@ -50,6 +50,7 @@ export const updateWorkSchedule = async (req, res) => {
       erpOvertimeActivityType,
       erpOvertimeType,
       erpPaidLeaveType,
+      countUnmarkedAsAbsent,
     } = req.body;
 
 
@@ -186,6 +187,18 @@ export const updateWorkSchedule = async (req, res) => {
 
     if (erpPaidLeaveType !== undefined) {
       schedule.erpPaidLeaveType = String(erpPaidLeaveType).trim();
+    }
+
+    // Unmarked days (no record) → absent (true, the default) or paid (false) in the
+    // report and timesheet, matching ERPNext's "Consider Unmarked Attendance As".
+    if (countUnmarkedAsAbsent !== undefined) {
+      if (typeof countUnmarkedAsAbsent !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          message: "countUnmarkedAsAbsent must be true or false",
+        });
+      }
+      schedule.countUnmarkedAsAbsent = countUnmarkedAsAbsent;
     }
 
     // Optional validation

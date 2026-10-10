@@ -18,6 +18,7 @@ import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage 
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
+import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
 import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
@@ -555,20 +556,10 @@ export const unlockAttendance = async (req, res) => {
 // Longest span the date-range report accepts (a year, leap-safe).
 const MAX_REPORT_RANGE_DAYS = 366;
 
-// getUTCDay() index → the lowercase day names WorkSchedule.weeklyHolidays uses.
-const WEEKDAY_NAMES = [
-  "sunday",
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday",
-];
-
 // Per-employee hours report over an inclusive span of business days. `fromDay` and
 // `toDay` are UTC midnights (how Attendance.date is stored). Shared by the monthly
-// report and the date-range report. Returns null when the work schedule is missing.
+// report and the date-range report. Returns `{ report, unmarkedAsAbsent }`, or null when
+// the work schedule is missing.
 async function buildAttendanceReport(fromDay, toDay) {
   const [employees, attendances, workConfig, customHolidays] =
     await Promise.all([
@@ -599,21 +590,14 @@ async function buildAttendanceReport(fromDay, toDay) {
   const spanDays = eachUtcDay(fromDay, toDay);
   const workingDays = spanDays.length;
 
-  // Unmarked days (no record at all) are only checked up to today's business day.
-  const today = normalizeUtcDay(getTodayLocal());
-  const weeklyHolidays = workConfig.weeklyHolidays || [];
-  const publicHolidayKeys = new Set(
-    customHolidays.map((holiday) => utcDayKey(holiday.date))
+  // Unmarked days (no record at all) are only checked up to YESTERDAY — see
+  // utils/unmarkedDays.js. countUnmarkedAsAbsent decides whether they are deducted.
+  const countableDays = buildCountableDays(
+    spanDays,
+    workConfig.weeklyHolidays || [],
+    customHolidays
   );
-  const pastDays = spanDays
-    .filter((day) => day.getTime() <= today.getTime())
-    .map((day) => ({
-      key: utcDayKey(day),
-      time: day.getTime(),
-      isHoliday:
-        weeklyHolidays.includes(WEEKDAY_NAMES[day.getUTCDay()]) ||
-        publicHolidayKeys.has(utcDayKey(day)),
-    }));
+  const countUnmarked = unmarkedAsAbsent(workConfig);
 
   const attendanceMap = new Map();
 
@@ -684,7 +668,14 @@ async function buildAttendanceReport(fromDay, toDay) {
         // "holiday" — a paid day off, or holiday work paid as holiday hours: no day bucket.
       }
 
-      // The unpaid days: everything ERPNext receives as "Absent".
+      // Days before today with no record at all — not in the ERPNext CSV, so ERPNext
+      // treats them per its "Consider Unmarked Attendance As" setting, mirrored by
+      // countUnmarkedAsAbsent: Absent → they are plain absences (in "no reason", so the
+      // four reasons still sum to absentDays); Present → they count as paid.
+      const unmarkedDays = countUnmarkedDays(employee, records, countableDays);
+      if (countUnmarked) noReasonAbsentDays += unmarkedDays;
+
+      // The unpaid days: everything ERPNext counts as "Absent".
       const absentDays =
         noReasonAbsentDays + emergencyLeaveDays + sickLeaveDays + lopDays;
 
@@ -693,26 +684,6 @@ async function buildAttendanceReport(fromDay, toDay) {
         workingDays - absentDays - 0.5 * halfDays,
         0
       );
-
-      // Days so far with no record at all — not in the ERPNext CSV, so ERPNext treats
-      // them per its "Consider Unmarked Attendance As" setting (default Present, which
-      // is how Payment Days counts them). Surfaced as a warning only. Counted from the
-      // day the employee was added, and not for inactive employees; holidays are days
-      // off except for temporary workers.
-      let unmarkedDays = 0;
-      if (employee.isActive !== false) {
-        const addedOn = employee.createdAt
-          ? normalizeUtcDay(employee.createdAt).getTime()
-          : 0;
-        const recordedKeys = new Set(
-          records.map((record) => utcDayKey(record.date))
-        );
-        for (const day of pastDays) {
-          if (day.time < addedOn) continue;
-          if (day.isHoliday && !isTemporary) continue;
-          if (!recordedKeys.has(day.key)) unmarkedDays += 1;
-        }
-      }
 
       // OT and holiday hours are paid at the same rate, so they combine into a
       // single "total OT" figure for reporting.
@@ -746,6 +717,7 @@ async function buildAttendanceReport(fromDay, toDay) {
         pendingDays,
         // Annual (paid) leave — never in absentDays.
         leaveDays,
+        // Days with no record; part of noReasonAbsentDays when unmarkedAsAbsent.
         unmarkedDays,
 
         attendancePercentage: round(
@@ -775,7 +747,7 @@ async function buildAttendanceReport(fromDay, toDay) {
     return a.employeeName.localeCompare(b.employeeName);
   });
 
-  return report;
+  return { report, unmarkedAsAbsent: countUnmarked };
 }
 
 //GET /api/attendance/reports/monthly/:month/:year
@@ -809,9 +781,9 @@ export const monthlyReport = async (req, res) => {
     const fromDay = new Date(Date.UTC(yearNum, monthNum - 1, 1));
     const toDay = new Date(Date.UTC(yearNum, monthNum, 0));
 
-    const report = await buildAttendanceReport(fromDay, toDay);
+    const built = await buildAttendanceReport(fromDay, toDay);
 
-    if (!report) {
+    if (!built) {
       return res.status(404).json({
         success: false,
         message: "Work schedule configuration not found",
@@ -822,7 +794,9 @@ export const monthlyReport = async (req, res) => {
       success: true,
       month: monthNum,
       year: yearNum,
-      report,
+      report: built.report,
+      // Whether unmarked days are already counted in absentDays (WorkSchedule setting).
+      unmarkedAsAbsent: built.unmarkedAsAbsent,
     });
   }
 
@@ -889,9 +863,9 @@ export const rangeReport = async (req, res) => {
       });
     }
 
-    const report = await buildAttendanceReport(fromDay, toDay);
+    const built = await buildAttendanceReport(fromDay, toDay);
 
-    if (!report) {
+    if (!built) {
       return res.status(404).json({
         success: false,
         message: "Work schedule configuration not found",
@@ -902,7 +876,8 @@ export const rangeReport = async (req, res) => {
       success: true,
       from: utcDayKey(fromDay),
       to: utcDayKey(toDay),
-      report,
+      report: built.report,
+      unmarkedAsAbsent: built.unmarkedAsAbsent,
     });
   } catch (error) {
     console.error("rangeReport error:", error);
@@ -4092,6 +4067,32 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
           ),
       }));
 
+    // Unmarked days for the month, counted exactly like the Monthly Report
+    // (utils/unmarkedDays.js) so the timesheet's Payment Days matches its row there.
+    // UTC month bounds — how Attendance.date is stored.
+    const monthFrom = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+    const monthTo = new Date(Date.UTC(Number(year), Number(month), 0));
+    const [employeeDoc, workConfig, customHolidays] = await Promise.all([
+      empModel
+        .findById(employeeId)
+        .select("isActive createdAt employmentType")
+        .lean(),
+      workModel.findOne({ type: "default" }).lean(),
+      customHolidayModel
+        .find({
+          date: {
+            $gte: monthFrom,
+            $lte: new Date(monthTo.getTime() + 86400000 - 1),
+          },
+        })
+        .lean(),
+    ]);
+    const countableDays = buildCountableDays(
+      eachUtcDay(monthFrom, monthTo),
+      workConfig?.weeklyHolidays || [],
+      customHolidays
+    );
+
     return res.status(200).json({
       success: true,
 
@@ -4099,6 +4100,14 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
         formattedData.length,
 
       data: formattedData,
+
+      // Days with no record, and whether WorkSchedule.countUnmarkedAsAbsent deducts them.
+      payroll: {
+        unmarkedDays: employeeDoc
+          ? countUnmarkedDays(employeeDoc, attendance, countableDays)
+          : 0,
+        unmarkedAsAbsent: unmarkedAsAbsent(workConfig),
+      },
     });
   } catch (error) {
     console.error(error);

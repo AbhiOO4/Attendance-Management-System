@@ -163,6 +163,17 @@ const workScheduleSchema = new mongoose.Schema(
       default: "Annual Leave",
     },
 
+    // Mirrors ERPNext Payroll Settings → "Consider Unmarked Attendance As". A day with no
+    // attendance record at all (up to yesterday; holidays excluded except for temporary
+    // workers) is never in the ERPNext CSV, so ERPNext applies its own rule to it. true
+    // (Absent) → the monthly report and the employee timesheet deduct those days from
+    // Payment Days as plain absences; false (Present) → they count as paid. Read it as
+    // `!== false` (utils/unmarkedDays.js) so config docs that predate the field are ON.
+    countUnmarkedAsAbsent: {
+      type: Boolean,
+      default: true,
+    },
+
     // Monetary penalty (in OMR) attached to a Loss-of-Pay (LOP) day. When a
     // supervisor toggles an absent record to LOP (Attendance.isLop), the record's
     // remark is auto-filled with "Deduct <lopDeductionAmount> OMR". Purely an
