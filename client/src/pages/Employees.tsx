@@ -79,8 +79,11 @@ interface Filters {
   // "" = all employment types; otherwise restrict to permanent or temporary.
   employmentType: "" | "permanent" | "temporary"
   page: number
+  // Rows per page; ALL_ROWS (0) = no pagination, every matching employee on one page.
   limit: number
 }
+
+const ALL_ROWS = 0
 
 interface Site {
   _id: string
@@ -89,8 +92,9 @@ interface Site {
 
 interface EmployeesResponse {
   employees: Employee[]
-  currentPage: number
-  totalPages: number
+  // Only sent when the request is paginated (page + limit both given).
+  currentPage?: number
+  totalPages?: number
   totalEmployees: number
 }
 
@@ -297,10 +301,17 @@ function Employees() {
 
   async function fetchEmployees() {
     try {
+      // "All" omits page + limit, which the API treats as "return everything".
+      const params: Partial<Filters> = { ...filters }
+      if (filters.limit === ALL_ROWS) {
+        delete params.page
+        delete params.limit
+      }
+
       const res = await api.get<EmployeesResponse>(
         "/api/employees",
         {
-          params: filters,
+          params,
         }
       )
 
@@ -310,9 +321,9 @@ function Employees() {
         employeeMetaRef.current.set(e._id, e)
       )
 
-      setCurrentPage(res.data.currentPage)
+      setCurrentPage(res.data.currentPage ?? 1)
 
-      setTotalPages(res.data.totalPages)
+      setTotalPages(res.data.totalPages ?? 1)
 
       setTotalEmployees(res.data.totalEmployees)
     } catch (error) {
@@ -1048,6 +1059,7 @@ function Employees() {
                     {size}
                   </SelectItem>
                 ))}
+                <SelectItem value={String(ALL_ROWS)}>All</SelectItem>
               </SelectContent>
             </Select>
           </div>
