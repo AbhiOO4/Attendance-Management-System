@@ -27,3 +27,16 @@ export async function findAssignableJob(jobId, siteId, session = null) {
   if (!job || !job.isActive || job.site.toString() !== siteId.toString()) return null
   return job
 }
+
+/**
+ * True when `siteId` has at least one live job (not soft-deleted, active, not completed).
+ * On such a site every session with a time must name a job (site-sheet submit + edits);
+ * a site with no jobs keeps sessions job-optional. Mirrors the client's liveSiteJobs.
+ */
+export async function siteHasLiveJobs(siteId, session = null) {
+  if (!siteId || !mongoose.isValidObjectId(siteId)) return false
+  const found = await jobModel
+    .exists({ site: siteId, isDeleted: { $ne: true }, isActive: true, isCompleted: { $ne: true } })
+    .session(session || null)
+  return !!found
+}

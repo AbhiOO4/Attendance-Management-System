@@ -19,7 +19,7 @@ import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
-import { isAssignableSite, findAssignableJob } from '../utils/siteAssignable.js';
+import { isAssignableSite, findAssignableJob, siteHasLiveJobs } from '../utils/siteAssignable.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
 import { placeMiddayArrival, assertNotMovedOn } from '../utils/handover.js';
@@ -1680,6 +1680,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
     // Drivers sheet (the hidden pool site): every session stays on the pool and, once it has a
     // time, must name the job it was for — any active job at a live site.
     const driverSheet = await isDriverPool(siteId, session);
+    // Site sheet: once the site has a live job, every session with a time must name one.
+    const siteJobRequired = !driverSheet && (await siteHasLiveJobs(siteId, session));
 
     // -----------------------------
     // MAIN LOOP (EMPLOYEES)
@@ -1820,6 +1822,14 @@ export const siteFirstSubmitAttendance = async (req, res) => {
               `Pick the job ${employee?.name || "this driver"}'s session was for${job?._id ? " (the selected job is no longer active)" : ""}`
             );
           }
+        }
+
+        if (siteJobRequired && (checkIn || checkOut) && !job?._id) {
+          throwValidationError(
+            400,
+            `Pick a job for ${employee?.name || "this employee"}'s session`,
+            { code: "JOB_REQUIRED" }
+          );
         }
 
         // Site sheet: a job the supervisor PICKED in the draft must be an active job of this
@@ -3275,6 +3285,21 @@ export const updateAttendance = async (req, res) => {
           }
         }
       }
+      // Site sheet: once the site has a live job, every session at it with a time must name
+      // one. Only the site-sheet editors send ?siteId (admin edit-past does not), and
+      // transfers place their arrivals without this endpoint, so they stay job-optional.
+      else if (siteId && (await siteHasLiveJobs(siteId))) {
+        const missingJob = sessions.some(
+          (s) => String(s.siteId) === String(siteId) && (s.checkIn || s.checkOut) && !s.jobId
+        );
+        if (missingJob) {
+          return res.status(400).json({
+            success: false,
+            code: "JOB_REQUIRED",
+            message: "Pick a job for every session at this site",
+          });
+        }
+      }
 
       const processedSessions = sessions.map(
         (session) => {
@@ -3702,10 +3727,11 @@ export const updateAttendance = async (req, res) => {
           "sessions.siteId",
           "siteName"
         )
-        .populate(
-          "sessions.jobId",
-          "name jobCode"
-        );
+        .populate({
+          path: "sessions.jobId",
+          select: "name jobCode site",
+          populate: { path: "site", select: "siteName" },
+        });
 
     const formattedAttendance = {
       attendanceId:
@@ -3825,6 +3851,20 @@ export const updateAttendance = async (req, res) => {
             jobCode:
               session.jobId?.jobCode ||
               null,
+
+            // Same shape the day's list endpoint attaches (getSiteAttendance), which is
+            // what the saved cards render. Without it a just-saved row loses its job chip
+            // until the page is reloaded.
+            job: session.jobId?._id
+              ? {
+                  _id: String(session.jobId._id),
+                  name: session.jobId.name,
+                  jobCode: session.jobId.jobCode || null,
+                  site: session.jobId.site?._id
+                    ? { _id: String(session.jobId.site._id), siteName: session.jobId.site.siteName }
+                    : null,
+                }
+              : null,
 
             checkIn:
               session.checkIn,

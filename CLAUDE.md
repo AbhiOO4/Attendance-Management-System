@@ -260,6 +260,14 @@ The Site Attendance draft is built client-side from the roster (`loadRosterConte
   (untouched) follow a changed default on refresh. API responses are `Cache-Control: no-store`
   and the service worker deliberately has no `/api` runtime cache.
 
+**Mandatory session job.** Once a site has a live job (not deleted, active, not completed —
+server `siteHasLiveJobs` in `utils/siteAssignable.js`, client `liveSiteJobs` in `lib/siteJobs.ts`;
+keep in sync), every session there with a check-in/out must name a job: the draft submit, the
+saved-row inline editor and `EditSiteRecord` refuse it client-side, and `siteFirstSubmitAttendance`
+/ `updateAttendance` (only when called with `?siteId`) answer 400 `JOB_REQUIRED`. Transfers,
+send-to-site and pull requests stay job-optional; a saved session left without one shows a red
+"No job · Assign" chip. The drivers sheet keeps its own any-site job rule.
+
 ### Shared cloud draft (runtime switch `CLOUD_DRAFT_ENABLED`)
 Lets several supervisors mark one site/day from different devices. Off by default; the server
 reports it as `features.cloudDraft` on `GET /api/config` (`utils/features.js`,

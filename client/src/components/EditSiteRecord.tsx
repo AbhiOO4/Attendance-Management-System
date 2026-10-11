@@ -66,6 +66,8 @@ import { categoryOf, defaultCheckOutFor, CHECKOUT_REMARK_GRACE_MINUTES, type Col
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import JobPicker from "@/components/drivers/JobPicker"
 import { useDriverJobIndex } from "@/lib/driverJobs"
+import { liveSiteJobs } from "@/lib/siteJobs"
+import { cn } from "@/lib/utils"
 
 // --------------------------------------------------
 // TYPES
@@ -74,6 +76,10 @@ import { useDriverJobIndex } from "@/lib/driverJobs"
 interface Job {
   _id: string
   name: string
+  jobCode?: string | null
+  isActive?: boolean
+  isDeleted?: boolean
+  isCompleted?: boolean
 }
 
 interface Site {
@@ -387,6 +393,14 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
 
   const remarkMissing = requiresRemark && !remark.trim()
 
+  // Every session at this site with a time must name a job — on the drivers sheet always,
+  // on a site once it has a live job (a site with none keeps sessions job-optional).
+  const liveJobs = useMemo(() => liveSiteJobs(site), [site])
+  const jobRequired = anyJob || liveJobs.length > 0
+  const sessionMissingJob = (session: AttendanceSession) =>
+    jobRequired && !!(session.checkIn || session.checkOut) && !session.jobId
+  const jobsMissing = currentSiteSessions.some(({ session }) => sessionMissingJob(session))
+
   // --------------------------------------------------
   // HANDLERS
   // --------------------------------------------------
@@ -600,12 +614,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       }
       setSessionErrors({})
 
-      // Drivers sheet: every session with a time names the job it was for.
-      if (
-        anyJob &&
-        sessions.some((s) => String(s.siteId) === String(site._id) && (s.checkIn || s.checkOut) && !s.jobId)
-      ) {
-        toast.error("Pick the job for every driver session.")
+      // Every session here with a time names the job it was for.
+      if (jobsMissing) {
+        toast.error(anyJob ? "Pick the job for every driver session." : "Assign a job to every session before saving.")
         return
       }
 
@@ -769,6 +780,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
     const hasError = !!sessionErrors[globalIndex]
     const night = isNightSession(session)
     const canDelete = currentSiteSessions.length > 1
+    const missingJob = sessionMissingJob(session)
 
     return (
       <div
@@ -843,27 +855,45 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
                 ? driverJobIndex.get(String(session.jobId)) ?? { _id: String(session.jobId), name: session.jobName || "Job" }
                 : null
             }
-            invalid={!!(session.checkIn || session.checkOut) && !session.jobId}
+            invalid={missingJob}
             onChange={(job) => updateSessionField(globalIndex, "jobId", job._id)}
             className="h-10 sm:h-11"
           />
         ) : (
+        <div className="space-y-1">
         <Select
-          value={session.jobId || "not-assigned"}
+          // A job is required once the site has one: no "Not Assigned" option, blank → placeholder.
+          value={session.jobId || (jobRequired ? "" : "not-assigned")}
           onValueChange={(value) =>
             updateSessionField(globalIndex, "jobId", value === "not-assigned" ? null : value)
           }
         >
-          <SelectTrigger className="w-full h-9 text-sm sm:h-10">
+          <SelectTrigger
+            className={cn(
+              "w-full h-9 text-sm sm:h-10",
+              missingJob && "border-red-400 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-950/30 dark:text-red-300"
+            )}
+            aria-invalid={missingJob || undefined}
+          >
             <SelectValue placeholder="Select job" />
           </SelectTrigger>
           <SelectContent position="popper" sideOffset={4}>
-            <SelectItem value="not-assigned">Not Assigned</SelectItem>
-            {site.jobs.map((job) => (
-              <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>
+            {!jobRequired && <SelectItem value="not-assigned">Not Assigned</SelectItem>}
+            {/* A job the session already has that has since gone inactive still shows. */}
+            {session.jobId && !liveJobs.some((job) => String(job._id) === String(session.jobId)) && (
+              <SelectItem value={String(session.jobId)}>{session.jobName || "Current job"}</SelectItem>
+            )}
+            {liveJobs.map((job) => (
+              <SelectItem key={job._id} value={job._id}>
+                {job.jobCode ? `${job.jobCode} · ${job.name}` : job.name}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
+        {missingJob && (
+          <p className="text-[11px] font-medium text-red-600 dark:text-red-400">Pick the job this session was for.</p>
+        )}
+        </div>
         )}
 
         {/* Time inputs */}
@@ -1089,11 +1119,16 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         </div>
 
         {/* FOOTER */}
-        <div className="border-t px-4 py-3 sm:px-6 flex justify-end gap-2">
+        <div className="border-t px-4 py-3 sm:px-6 flex items-center justify-end gap-2">
+          {jobsMissing && (
+            <p className="mr-auto text-[11px] font-medium text-red-600 dark:text-red-400">
+              Assign a job to every session to save
+            </p>
+          )}
           <Button variant="outline" size="sm" onClick={handleManualClose}>
             Cancel
           </Button>
-          <Button size="sm" onClick={updateARecord} disabled={saving || remarkMissing}>
+          <Button size="sm" onClick={updateARecord} disabled={saving || remarkMissing || jobsMissing}>
             {saving ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
