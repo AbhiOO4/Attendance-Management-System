@@ -1,7 +1,7 @@
 // pages/SiteJobs.tsx
 
 import { useEffect, useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { useNavigate, useParams } from "react-router-dom"
 import { ArrowLeft, Briefcase, Loader2, Plus, Trash2, Users } from "lucide-react"
 import toast from "react-hot-toast"
 
@@ -36,6 +36,21 @@ interface Job {
 
 function SiteJobs() {
   const { id } = useParams()
+  const navigate = useNavigate()
+
+  // Return to the site page by POPPING history, not pushing a new entry. A push would
+  // stack a second Site Detail on top of this page, and its Back button would then lead
+  // straight here again. Popping lands on the original Site Detail entry, which keeps
+  // the "where did I come from" state it was opened with. Opened directly (no history
+  // to pop): navigate to the site page instead.
+  const backToSite = () => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
+    if (idx > 0) {
+      navigate(-1)
+    } else {
+      navigate(`/site/${id ?? ""}`)
+    }
+  }
 
   const [site, setSite] = useState<Site | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
@@ -186,15 +201,16 @@ function SiteJobs() {
   return (
     <div className="min-h-screen bg-muted/30 p-4 sm:p-6">
       <div className="mx-auto max-w-7xl space-y-6">
-        <Link
-          to={`/site/${id ?? ""}`}
+        <button
+          type="button"
+          onClick={backToSite}
           className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground"
         >
           <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg border bg-background">
             <ArrowLeft className="h-4 w-4" />
           </span>
           <span>Back to site</span>
-        </Link>
+        </button>
 
         {/* Header */}
         <Card className="rounded-3xl border bg-card p-6 shadow-sm sm:p-8">

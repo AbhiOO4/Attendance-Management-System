@@ -353,7 +353,7 @@ function DashBoard() {
                     <TableRow
                       key={site.siteId}
                       onClick={() =>
-                        !isSupervisor && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
+                        !isSupervisor && navigate(`/site/${site.siteId}`, { state: { backTo: "/dashboard" } })
                       }
                       className={isSupervisor ? "" : "cursor-pointer transition-colors hover:bg-muted/50"}
                     >
@@ -407,7 +407,7 @@ function DashBoard() {
                 <Card
                   key={site.siteId}
                   onClick={() =>
-                    !isSupervisor && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })
+                    !isSupervisor && navigate(`/site/${site.siteId}`, { state: { backTo: "/dashboard" } })
                   }
                   className={isSupervisor
                     ? "border p-4"
@@ -529,7 +529,7 @@ function DashBoard() {
                           <Card
                             key={site.siteId}
                             className={`border p-3.5 ${isAdmin ? "cursor-pointer transition-colors hover:border-primary/50" : ""}`}
-                            onClick={() => isAdmin && navigate(`/site/${site.siteId}`, { state: { from: "dashboard" } })}
+                            onClick={() => isAdmin && navigate(`/site/${site.siteId}`, { state: { backTo: "/dashboard" } })}
                           >
                             {/* Site name + permanent badge */}
                             <div className="flex items-start justify-between gap-2">

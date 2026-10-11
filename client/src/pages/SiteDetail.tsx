@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from "react"
-import { useParams, useNavigate } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { useParams, useNavigate, useLocation } from "react-router-dom"
 import {
   MapPin,
   ArrowLeft,
@@ -64,19 +64,16 @@ function SiteDetail() {
   const { id } = useParams()
 
   const navigate = useNavigate()
+  const location = useLocation()
 
-  // Whether a real in-app page preceded this one, captured on mount. React Router
-  // tracks its stack position in history.state.idx (0 = first entry — nothing to go
-  // back to, e.g. a deep link or a fresh tab). When there is history, Back returns to
-  // wherever the user actually came from (site list, dashboard, a site's attendance
-  // page, …) rather than a hardcoded destination; otherwise it falls back to the list.
-  const canGoBackRef = useRef(false)
-  useEffect(() => {
-    // An entry pushed outside React Router can leave `idx` missing or NaN; then trust the
-    // browser's own history length rather than assuming this is the first page.
-    const idx = (window.history.state as { idx?: number } | null)?.idx
-    canGoBackRef.current = Number.isFinite(idx) ? (idx as number) > 0 : window.history.length > 1
-  }, [])
+  // Back is a fixed destination, never a history pop. A pop (navigate(-1)) lands on
+  // whatever page was visited last — after opening a nested page (Jobs, Add Employees)
+  // and returning, that is the nested page again, which loops. Pages that want Back to
+  // return to them (Site Attendance, Dashboard) pass their path as `state.backTo`;
+  // everything else — the site list's own link, a deep link, a refresh — has none and
+  // lands on the site list. `backTo` lives in this history entry's state, so it
+  // survives the round trip through a nested page that pops back here.
+  const backTo = (location.state as { backTo?: string } | null)?.backTo
 
   const { user } = useAuth()
   // Supervisors reach this page as their "Manage Employees" screen: they only
@@ -280,13 +277,7 @@ function SiteDetail() {
           <>
         <button
           type="button"
-          onClick={() => {
-            if (canGoBackRef.current) {
-              navigate(-1)
-            } else {
-              navigate("/site")
-            }
-          }}
+          onClick={() => navigate(backTo || "/site")}
           className="inline-flex items-center gap-2 text-sm text-muted-foreground transition hover:text-foreground"
         >
           <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg border bg-background">
