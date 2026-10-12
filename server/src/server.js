@@ -52,6 +52,8 @@ import siteRoutes from '../src/routes/siteRoutes.js'
 import configRoutes from '../src/routes/configRoutes.js'
 import requestRoutes from '../src/routes/requestRoutes.js'
 import driverRoutes from '../src/routes/driverRoutes.js'
+import jobRoutes from '../src/routes/jobRoutes.js'
+import activityTypeRoutes from '../src/routes/activityTypeRoutes.js'
 
 app.use(cookieParser())
 
@@ -70,6 +72,8 @@ app.use('/api/site', siteRoutes)
 app.use('/api/config', configRoutes)
 app.use('/api/requests', requestRoutes)
 app.use('/api/drivers', driverRoutes)
+app.use('/api/jobs', jobRoutes)
+app.use('/api/activity-types', activityTypeRoutes)
 
 
 

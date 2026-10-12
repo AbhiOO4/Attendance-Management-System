@@ -6,6 +6,7 @@ import { findRecordedElsewhere } from "../utils/draftRoster.js"
 import { getTodayLocal, getDateLocal } from "../utils/timeLocal.js"
 import { driverEmployeeFilter, getDriverPoolId } from "../utils/driverPool.js"
 import { isAssignableSite } from "../utils/siteAssignable.js"
+import { GLOBAL_JOB_GROUP, listLiveGlobalJobs } from "../utils/globalJobs.js"
 
 // How far back "last job used" looks for a driver's draft prefill.
 const LAST_JOB_LOOKBACK_DAYS = 60
@@ -80,7 +81,8 @@ export const getDriverRoster = async (req, res) => {
 }
 
 // employeeId → { _id, name, jobCode, site: { _id, siteName } } for each driver's most recent
-// drivers-sheet session that still points at an assignable job.
+// drivers-sheet session that still points at an assignable job (a global job comes back with
+// `isGlobal: true, site: null`).
 async function lastDriverJobs(employeeIds, poolId) {
   const out = new Map()
   if (!employeeIds.length) return out
@@ -105,12 +107,18 @@ async function lastDriverJobs(employeeIds, poolId) {
   if (!candidateByEmp.size) return out
 
   const jobs = await jobModel
-    .find({ _id: { $in: [...new Set(candidateByEmp.values())] }, isDeleted: { $ne: true } }, "name jobCode isActive isCompleted site")
+    .find({ _id: { $in: [...new Set(candidateByEmp.values())] }, isDeleted: { $ne: true } }, "name jobCode isActive isCompleted site isGlobal")
     .populate("site", "siteName isActive isDeleted isCompleted isDriverPool")
     .lean()
   const jobById = new Map()
   for (const j of jobs) {
-    if (j.isActive === false || j.isCompleted || !isAssignableSite(j.site)) continue
+    if (j.isActive === false || j.isCompleted) continue
+    // A global job (no site) stays pickable from any sheet.
+    if (j.isGlobal) {
+      jobById.set(String(j._id), { _id: String(j._id), name: j.name, jobCode: j.jobCode || null, isGlobal: true, site: null })
+      continue
+    }
+    if (!isAssignableSite(j.site)) continue
     jobById.set(String(j._id), {
       _id: String(j._id),
       name: j.name,
@@ -126,11 +134,13 @@ async function lastDriverJobs(employeeIds, poolId) {
 }
 
 /**
- * GET /api/drivers/jobs — every job a driver session may be logged against: active,
- * not completed jobs at live (assignable) sites, grouped by site. Feeds the job picker.
+ * GET /api/drivers/jobs — every job a driver session may be logged against: the live global
+ * jobs (first, as one group) plus active, not completed jobs at live (assignable) sites,
+ * grouped by site. Feeds the job picker.
  */
 export const getDriverJobs = async (req, res) => {
   try {
+    const globalJobs = await listLiveGlobalJobs()
     const sites = await siteModel
       .find(
         { isDeleted: { $ne: true }, isActive: true, isCompleted: { $ne: true }, isDriverPool: { $ne: true } },
@@ -154,6 +164,7 @@ export const getDriverJobs = async (req, res) => {
           .sort((a, b) => String(a.jobCode || a.name).localeCompare(String(b.jobCode || b.name))),
       }))
       .filter((s) => s.jobs.length > 0)
+    if (globalJobs.length) data.unshift({ ...GLOBAL_JOB_GROUP, jobs: globalJobs })
 
     res.status(200).json({ success: true, data })
   } catch (error) {

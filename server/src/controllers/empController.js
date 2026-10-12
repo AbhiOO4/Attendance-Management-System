@@ -33,12 +33,34 @@ export const getAllEmployees = async (req, res) => {
       employmentType,
       rosterForSite,
       status,
+      activityType,
+      collarType,
+      nationality,
     } = req.query;
 
     let filter = {};
 
     if (employmentType) {
       filter.employmentType = employmentType;
+    }
+
+    if (collarType) {
+      filter.collarType = collarType;
+    }
+
+    if (nationality) {
+      filter.nationality = nationality;
+    }
+
+    // Allocated ERPNext activity type (Activity Types page): an id, or "none" = unallocated.
+    if (activityType) {
+      if (activityType === "none") {
+        filter.activityType = null;
+      } else if (mongoose.isValidObjectId(activityType)) {
+        filter.activityType = activityType;
+      } else {
+        return res.status(400).json({ success: false, message: "Invalid activityType" });
+      }
     }
 
     if (notSupervisor === "true") {
@@ -135,9 +157,10 @@ export const getAllEmployees = async (req, res) => {
     }
 
     let query = empModel.find(filter,
-        "_id name employeeId companyId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledVisit scheduledBySiteId"
+        "_id name employeeId companyId jobTitle currentSite currentJob user employmentType collarType nationality isActive pendingTransferCheckIn pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId pendingTransferJobId scheduledSiteId scheduledJobId scheduledEffectiveDate scheduledRemoval scheduledVisit scheduledBySiteId activityType"
       )
       .populate("currentJob", "name") // 👈 add this
+      .populate("activityType", "name") // allocated ERPNext activity type
       .populate("pendingTransferFromSiteId", "siteName") // source site for transfer badge
       .populate("pendingTransferJobId", "name") // per-visit job for a cross-site visitor
       .sort({ name: 1 });

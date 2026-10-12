@@ -17,14 +17,15 @@ export function isAssignableSite(site) {
  * The job, when it can take an employee at `siteId`: it exists, is not soft-deleted,
  * is active, and belongs to that site. Returns null otherwise. The single rule every
  * placement path (transfer, send-to-site, requests, insta-add, bulk job assign, the
- * scheduled-assignment cron) checks a target job against.
+ * scheduled-assignment cron) checks a target job against. A global job (no site) is never
+ * one — it is a session-only job (utils/globalJobs.js).
  */
 export async function findAssignableJob(jobId, siteId, session = null) {
   if (!jobId || !siteId || !mongoose.isValidObjectId(jobId)) return null
   const job = await jobModel
     .findOne({ _id: jobId, isDeleted: { $ne: true } })
     .session(session || null)
-  if (!job || !job.isActive || job.site.toString() !== siteId.toString()) return null
+  if (!job || !job.isActive || !job.site || job.site.toString() !== siteId.toString()) return null
   return job
 }
 

@@ -25,7 +25,10 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -61,6 +64,7 @@ import {
   type HolidayReason,
 } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
+import { GLOBAL_JOBS_GROUP_LABEL, useGlobalJobs } from "@/lib/globalJobs"
 
 // --------------------------------------------------
 // TYPES
@@ -170,6 +174,7 @@ function EditRecord({ open, onClose, record, onUpdated }: EditRecordProps) {
     useState<number[]>([])
 
   const [sites, setSites] = useState<Site[]>([])
+  const globalJobs = useGlobalJobs(open)
 
   const [sessions, setSessions] =
     useState<AttendanceSession[]>([])
@@ -886,6 +891,20 @@ const [sessionToDelete, setSessionToDelete] =
                           {selectedSite?.jobs.map((job) => (
                             <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>
                           ))}
+                          {/* Global jobs (any site) — session-only general-expense jobs. */}
+                          {globalJobs.length > 0 && (
+                            <>
+                              {!!selectedSite?.jobs.length && <SelectSeparator />}
+                              <SelectGroup>
+                                <SelectLabel>{GLOBAL_JOBS_GROUP_LABEL}</SelectLabel>
+                                {globalJobs.map((job) => (
+                                  <SelectItem key={job._id} value={job._id}>
+                                    {job.jobCode ? `${job.jobCode} · ${job.name}` : job.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </>
+                          )}
                         </SelectContent>
                       </Select>
                     </div>

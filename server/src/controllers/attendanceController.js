@@ -20,6 +20,7 @@ import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVIT
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
 import { isAssignableSite, findAssignableJob, siteHasLiveJobs } from '../utils/siteAssignable.js';
+import { findSessionJob, isGlobalJobId } from '../utils/globalJobs.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
 import { placeMiddayArrival, assertNotMovedOn } from '../utils/handover.js';
@@ -90,6 +91,10 @@ async function syncCurrentJobFromLatestSession({ empId, siteId, recordDate, doc,
 
   const targetJob = latest?.jobId || null;
   const currentJob = employee.currentJob || null;
+
+  // A global job is a session-only job (utils/globalJobs.js): logging hours against it never
+  // moves the roster job, so tomorrow's draft still defaults to the home job.
+  if (targetJob && (await isGlobalJobId(targetJob, session))) return;
 
   if ((currentJob ? currentJob.toString() : null) === (targetJob ? targetJob.toString() : null)) {
     return; // no change → skip (avoids needless job employees[] churn)
@@ -1046,10 +1051,24 @@ export const jobReport = async (req, res) => {
       return siteMap.get(siteId);
     };
 
+    // Global jobs (no site) are logged from any site; they get one group of their own,
+    // listed first, instead of a site's.
+    const globalEntry = {
+      siteId: "global",
+      siteName: "Global jobs (all sites)",
+      isActive: true,
+      isPermanent: false,
+      isCompleted: false,
+      isGlobal: true,
+      jobs: [],
+    };
+
     // Real job rows.
     for (const job of jobs) {
-      if (!job.site) continue;
-      const siteEntry = ensureSite(job.site);
+      let siteEntry;
+      if (job.isGlobal) siteEntry = globalEntry;
+      else if (job.site) siteEntry = ensureSite(job.site);
+      else continue;
 
       const h = hoursMap.get(job._id.toString());
       const ot = h ? h.overtimeHours : 0;
@@ -1106,6 +1125,10 @@ export const jobReport = async (req, res) => {
     const report = Array.from(siteMap.values()).sort((a, b) =>
       a.siteName.localeCompare(b.siteName)
     );
+    if (globalEntry.jobs.length) {
+      globalEntry.jobs.sort((a, b) => String(a.jobCode || a.jobName).localeCompare(String(b.jobCode || b.jobName)));
+      report.unshift(globalEntry);
+    }
 
     return res.status(200).json({
       success: true,
@@ -1833,8 +1856,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         }
 
         // Site sheet: a job the supervisor PICKED in the draft must be an active job of this
-        // site. Only picked jobs are checked, so a stale roster job never blocks a submit.
-        if (!driverSheet && jobPicked && job?._id && !(await findAssignableJob(job._id, siteId, session))) {
+        // site or a live global job. Only picked jobs are checked, so a stale roster job never
+        // blocks a submit.
+        if (!driverSheet && jobPicked && job?._id && !(await findSessionJob(job._id, siteId, session))) {
           throwValidationError(
             400,
             `The job picked for ${employee?.name || "this employee"} is no longer active at this site`
@@ -2457,13 +2481,19 @@ export const getSiteAttendance = async (req, res) => {
     {
       const jobIds = [...new Set(result.flatMap((r) => r.sessions.map((s) => s.jobId).filter(Boolean)).map(String))]
       if (jobIds.length) {
-        const jobs = await Job.find({ _id: { $in: jobIds } }, "name jobCode site")
+        const jobs = await Job.find({ _id: { $in: jobIds } }, "name jobCode site isGlobal")
           .populate("site", "siteName")
           .lean()
         const jobById = new Map(
           jobs.map((j) => [
             String(j._id),
-            { _id: String(j._id), name: j.name, jobCode: j.jobCode || null, site: j.site ? { _id: String(j.site._id), siteName: j.site.siteName } : null },
+            {
+              _id: String(j._id),
+              name: j.name,
+              jobCode: j.jobCode || null,
+              isGlobal: j.isGlobal === true,
+              site: j.site ? { _id: String(j.site._id), siteName: j.site.siteName } : null,
+            },
           ])
         )
         for (const row of result) {
@@ -3729,7 +3759,7 @@ export const updateAttendance = async (req, res) => {
         )
         .populate({
           path: "sessions.jobId",
-          select: "name jobCode site",
+          select: "name jobCode site isGlobal",
           populate: { path: "site", select: "siteName" },
         });
 
@@ -3860,6 +3890,7 @@ export const updateAttendance = async (req, res) => {
                   _id: String(session.jobId._id),
                   name: session.jobId.name,
                   jobCode: session.jobId.jobCode || null,
+                  isGlobal: session.jobId.isGlobal === true,
                   site: session.jobId.site?._id
                     ? { _id: String(session.jobId.site._id), siteName: session.jobId.site.siteName }
                     : null,
@@ -6846,7 +6877,12 @@ export const exportErpnext = async (req, res) => {
 
     const [attendances, workConfig] = await Promise.all([
       Attendance.find(filter)
-        .populate("employee", "employeeId name")
+        // activityType: the employee's allocated ERPNext activity type (timesheet lines).
+        .populate({
+          path: "employee",
+          select: "employeeId name activityType",
+          populate: { path: "activityType", select: "name" },
+        })
         .populate("sessions.jobId", "jobCode")
         .lean(),
       workModel.findOne({ type: "default" }).lean(),
@@ -6886,6 +6922,9 @@ export const exportErpnext = async (req, res) => {
 
     if (built.meta?.skippedNoJob != null) {
       res.setHeader("X-Erpnext-Skipped-No-Job", String(built.meta.skippedNoJob));
+    }
+    if (built.meta?.unallocated != null) {
+      res.setHeader("X-Erpnext-Unallocated-Activity", String(built.meta.unallocated));
     }
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

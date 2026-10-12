@@ -163,6 +163,17 @@ const workScheduleSchema = new mongoose.Schema(
       default: "Annual Leave",
     },
 
+    // Rate multiplier of every activity type's automatic OVERTIME twin (Activity Types page):
+    // twin rates = the type's costing/billing rate × this. Derived on read, so changing it
+    // re-rates every twin at once (re-import the master CSV into ERPNext afterwards).
+    // Superadmin-only to change. See utils/activityTypes.js.
+    overtimeActivityMultiplier: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: 1.25,
+    },
+
     // Mirrors ERPNext Payroll Settings → "Consider Unmarked Attendance As". A day with no
     // attendance record at all (up to yesterday; holidays excluded except for temporary
     // workers) is never in the ERPNext CSV, so ERPNext applies its own rule to it. true

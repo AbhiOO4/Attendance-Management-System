@@ -7,7 +7,8 @@
  * sessions[].siteId are required. So drivers are marked against ONE hidden Site doc flagged
  * `isDriverPool`:
  *   - a driver session is stored with siteId = the pool and jobId = the job it was for, picked
- *     from ANY assignable site — so a real site's sheet, stats, manpower and auto-checkout
+ *     from ANY assignable site or the global jobs (utils/globalJobs.js) — so a real site's
+ *     sheet, stats, manpower and auto-checkout
  *     (all keyed on sessions.siteId) never see drivers, while job-level reports
  *     (sessions.jobId) and the ERPNext timesheet still bill the job;
  *   - a driverSupervisor's User.assignedSite is pinned to the pool, so the existing site
@@ -22,6 +23,7 @@ import mongoose from "mongoose"
 import siteModel from "../models/siteModel.js"
 import jobModel from "../models/jobModel.js"
 import { isAssignableSite } from "./siteAssignable.js"
+import { findGlobalJob } from "./globalJobs.js"
 
 export const DRIVER_POOL_NAME = "Drivers"
 
@@ -134,11 +136,14 @@ export function mirrorPoolDefaultsInBody(body) {
 }
 
 /**
- * A job a driver session may be logged against: exists, not deleted, active, not completed,
- * at an assignable (live, non-pool) site. Returns the job (with `site` populated) or null.
+ * A job a driver session may be logged against: a live global job (utils/globalJobs.js), or a
+ * job that exists, is not deleted, active, not completed, at an assignable (live, non-pool)
+ * site. Returns the job (with `site` populated for a site job) or null.
  */
 export async function findDriverJob(jobId, session = null) {
   if (!jobId || !mongoose.isValidObjectId(String(jobId))) return null
+  const globalJob = await findGlobalJob(jobId, session)
+  if (globalJob) return globalJob
   const job = await jobModel
     .findOne({ _id: jobId, isDeleted: { $ne: true } })
     .populate("site", "siteName isActive isDeleted isCompleted isDriverPool")

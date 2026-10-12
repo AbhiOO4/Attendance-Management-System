@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react"
 import { api } from "@/lib/api"
 
-/** A job a driver session can be logged against (any live site). */
+/** A job a driver session can be logged against (any live site, or a global job). */
 export type DriverJob = {
   _id: string
   name: string
   jobCode?: string | null
+  // A global job (lib/globalJobs.ts) has no site.
+  isGlobal?: boolean
   site?: { _id: string; siteName: string } | null
 }
 
 export type SiteJobs = {
   _id: string
   siteName: string
+  // The global-jobs group (GET /api/drivers/jobs lists it first; site sheets append it).
+  isGlobal?: boolean
   jobs: { _id: string; name: string; jobCode: string | null }[]
 }
 
@@ -22,6 +26,11 @@ let inflight: Promise<SiteJobs[]> | null = null
 const TTL_MS = 60_000
 
 export const cachedDriverJobs = (): SiteJobs[] | null => cache?.data ?? null
+
+/** Drop the cache (after the Global Jobs page changes the list). */
+export const invalidateDriverJobs = () => {
+  cache = null
+}
 
 export function loadDriverJobs(force = false): Promise<SiteJobs[]> {
   if (!force && cache && Date.now() - cache.at < TTL_MS) return Promise.resolve(cache.data)
@@ -41,6 +50,16 @@ export function loadDriverJobs(force = false): Promise<SiteJobs[]> {
 export const jobLabel = (job?: DriverJob | null) =>
   job ? [job.jobCode, job.name].filter(Boolean).join(" · ") : ""
 
+/** Where a job belongs: its site, or "Global · all sites" for a global job. */
+export const jobPlaceLabel = (job?: DriverJob | null) =>
+  job ? (job.isGlobal ? "Global · all sites" : job.site?.siteName ?? "") : ""
+
+/** A group's job as a DriverJob: a global group's jobs carry `isGlobal` and no site. */
+export const jobFromGroup = (group: SiteJobs, j: SiteJobs["jobs"][number]): DriverJob =>
+  group.isGlobal
+    ? { ...j, isGlobal: true, site: null }
+    : { ...j, site: { _id: group._id, siteName: group.siteName } }
+
 /**
  * jobId → DriverJob for every pickable job (shared cache), so an editor can label a stored
  * session's job with its code and site. Loads only while `enabled`.
@@ -59,7 +78,7 @@ export function useDriverJobIndex(enabled: boolean): Map<string, DriverJob> {
   }, [enabled])
   const index = new Map<string, DriverJob>()
   for (const s of sites) {
-    for (const j of s.jobs) index.set(j._id, { ...j, site: { _id: s._id, siteName: s.siteName } })
+    for (const j of s.jobs) index.set(j._id, jobFromGroup(s, j))
   }
   return index
 }

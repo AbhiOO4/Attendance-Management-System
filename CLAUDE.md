@@ -64,7 +64,8 @@ and never sees the token. Key pieces:
   ("Workshop Phase 7") is auto-created on server boot. There are FOUR sets of day/night
   defaults, one per category: `defaultCheck*`/`nightDefaultCheck*` (foreign skilled),
   `staff*` (foreign staff), `omani*` (Omani labours), `omaniStaff*` (Omani staffs).
-- **Job** — belongs to a Site, holds `employees[]`.
+- **Job** — belongs to a Site, holds `employees[]`. A GLOBAL job (`isGlobal: true`, `site: null`)
+  belongs to no site and is a session-only job offered everywhere — see "Global jobs" below.
 - **User** — supervisor/admin/superadmin; supervisors have `assignedSite` and an
   `employeeId`. Password is bcrypt-hashed in a pre-save hook and `select: false`.
 - **Attendance** — one doc per employee per day (unique index on `{employee, date}`).
@@ -86,7 +87,8 @@ and never sees the token. Key pieces:
   doesn't support it; it made grants fail intermittently with NoSuchTransaction).
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
   `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `weeklyHolidays`,
-  `breakDurationMinutes`, `breakMinHours` (see Hours calculation §2, §5). (The weekly-holiday award knobs
+  `breakDurationMinutes`, `breakMinHours` (see Hours calculation §2, §5), plus the ERPNext
+  export labels and `overtimeActivityMultiplier` (see "Activity types"). (The weekly-holiday award knobs
   `weeklyHolidayAwardEnabled` / `weeklyHolidayAwardHours` / `weeklyHolidayMinHours`,
   and the pay knobs `overtimeMultiplier` / `monthlyHoursDivisor`, were removed.)
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
@@ -126,7 +128,9 @@ Any change to this formula requires re-running the recalculation script in
 
 **No pay/money logic.** There is no per-employee salary, no OT rate and no pay
 pricing (the old `server/src/utils/payMath.js`, `monthlySalary`, `overtimeMultiplier`
-and `monthlyHoursDivisor` were all removed). The monthly report (`monthlyReport` in
+and `monthlyHoursDivisor` were all removed). The only stored money values are the
+activity-type rates (see "Activity types" below), which are ERPNext master data — nothing
+in AMS computes with them. The monthly report (`monthlyReport` in
 `attendanceController.js`) is an hours + PAYMENT-DAYS report, built to be cross-checked
 against the ERPNext salary slip. Every day is classified by `classifyPayrollDay(record)`
 (`server/src/utils/payrollDay.js`) — the SAME function the ERPNext Attendance CSV
@@ -267,6 +271,41 @@ saved-row inline editor and `EditSiteRecord` refuse it client-side, and `siteFir
 / `updateAttendance` (only when called with `?siteId`) answer 400 `JOB_REQUIRED`. Transfers,
 send-to-site and pull requests stay job-optional; a saved session left without one shows a red
 "No job · Assign" chip. The drivers sheet keeps its own any-site job rule.
+
+**Global jobs** (`utils/globalJobs.js`, client `lib/globalJobs.ts`) — jobs common to every site,
+for hours tracked against general expenses (e.g. drivers). A `Job` with `isGlobal: true, site: null`,
+so populates, the Jobs report and the ERPNext timesheet (jobCode → Job Order) bill it like any job.
+Code = alphanumeric segments joined by single hyphens (`JOB_CODE_REGEX` / `JOB_CODE_PATTERN`, keep in
+sync), unique across ALL jobs, case-insensitively checked on create. Managed by admins on Sites →
+Global Jobs (`/site/global-jobs`, `pages/GlobalJobs.tsx`) via `/api/jobs/global` (GET live list for
+every role; `/manage`, POST, `PATCH /:jobId/status`, DELETE soft — admin). Offered as a "Global (all
+sites)" group in every session job picker (site sheet draft/inline/`EditSiteRecord`, admin
+`EditRecord`, the drivers list from `GET /api/drivers/jobs`). SESSION-ONLY: never a `currentJob` —
+`syncCurrentJobFromLatestSession` skips it, `findAssignableJob` rejects a job with no site, and the
+site job-assignment endpoints 400 it. It never makes a job MANDATORY: a site with no jobs of its own
+shows the Job column (`showJobColumn`) with an optional picker ("No job" clears it); `siteHasJobs` /
+`siteHasLiveJobs` still count only the site's own jobs. Submit validates a picked job with
+`findSessionJob` (global or the site's). The Jobs report lists them first as one "Global jobs (all
+sites)" group; Site Detail's per-job stats show only the site's own jobs.
+
+**Activity types** (`models/activityTypeModel.js`, `utils/activityTypes.js`, client
+`lib/activityTypes.ts` — keep in sync) — ERPNext Activity Types as rate bands (`name`,
+mandatory `costingRate` + `billingRate`) allocated per employee (`Employee.activityType`), so
+ERPNext costs time-logs at the type's DEFAULT rates with no per-employee Activity Cost. Every
+type has an automatic OVERTIME twin that is never stored: name = `name + " - Overtime"`
+(`overtimeNameFor`; a name ending in the suffix is refused), rates = base ×
+`WorkSchedule.overtimeActivityMultiplier` (default 1.25, Configure → ERPNext Export), derived on
+read so changing the multiplier re-rates every twin. Superadmin only: the Activity Types page
+(`/activity-types`, `pages/ActivityTypes.tsx`), `/api/activity-types` (list, create, PATCH rates
+— names are fixed ERPNext keys, DELETE refused while allocated, `POST /allocate`
+`{ activityTypeId|null, employeeIds }`, `GET /erpnext?mode=insert|update` = the Activity Type
+master Data Import CSV, two rows per type), and the multiplier (`updateWorkSchedule` 403s anyone
+else). `buildTimesheetCsv` picks names PER RECORD: an allocated employee's regular hours go under
+their type and OT/holiday hours under its twin (split always on); unallocated employees keep the
+`erpDefaultActivityType` / `erpOvertimeActivityType` fallback. CURRENT allocation only — no history,
+so a mid-month change re-types the whole month. `GET /api/employees` takes `activityType` (id |
+`none`), `collarType`, `nationality`. Verify the master CSV labels against ERPNext's Download
+Template, and import it before a timesheet that uses new names.
 
 ### Shared cloud draft (runtime switch `CLOUD_DRAFT_ENABLED`)
 Lets several supervisors mark one site/day from different devices. Off by default; the server

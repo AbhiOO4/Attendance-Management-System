@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
-import { MapPin, Search, Trash2 } from "lucide-react"
+import { Globe, MapPin, Search, Trash2 } from "lucide-react"
 
 import { api } from "@/lib/api"
 
@@ -105,7 +105,7 @@ export default function SitesPage() {
   return (
     <div className="min-h-screen bg-muted/30 p-6">
       <div className="mx-auto max-w-5xl">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-4xl font-bold tracking-tight">
               Sites
@@ -116,7 +116,16 @@ export default function SitesPage() {
             </p>
           </div>
 
-          <AddSiteModal fetchSites={fetchSites} />
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Jobs common to every site (general expenses) — offered on every sheet. */}
+            <Button asChild size="lg" variant="outline" className="gap-2 rounded-xl px-5">
+              <Link to="/site/global-jobs">
+                <Globe className="h-5 w-5" />
+                Global Jobs
+              </Link>
+            </Button>
+            <AddSiteModal fetchSites={fetchSites} />
+          </div>
         </div>
 
         <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

@@ -1,7 +1,15 @@
 import { useState } from "react"
-import { Briefcase, Check, ChevronDown, MapPin } from "lucide-react"
+import { Ban, Briefcase, Check, ChevronDown, Globe, MapPin } from "lucide-react"
 
-import { cachedDriverJobs, jobLabel, loadDriverJobs, type DriverJob, type SiteJobs } from "@/lib/driverJobs"
+import {
+  cachedDriverJobs,
+  jobFromGroup,
+  jobLabel,
+  jobPlaceLabel,
+  loadDriverJobs,
+  type DriverJob,
+  type SiteJobs,
+} from "@/lib/driverJobs"
 import { cn } from "@/lib/utils"
 import {
   Command,
@@ -15,13 +23,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 
 /**
  * Searchable job combobox for the Drivers Attendance sheet: every active job at every live
- * site, grouped by site, with the driver's last-used job shown first. `invalid` paints the
- * trigger red (a session with times but no job can't be saved). Pass `sites` to scope it to
- * a fixed list instead (the Site sheet draft: that site's own jobs) — nothing is fetched then.
+ * site, grouped by site, plus the global jobs, with the driver's last-used job shown first.
+ * `invalid` paints the trigger red (a session with times but no job can't be saved). Pass
+ * `sites` to scope it to a fixed list instead (the Site sheet: that site's own jobs + the
+ * global jobs) — nothing is fetched then. Pass `onClear` where a job is optional: a "No job"
+ * item then appears at the top.
  */
 export default function JobPicker({
   value,
   onChange,
+  onClear,
   recent,
   invalid = false,
   disabled = false,
@@ -31,6 +42,7 @@ export default function JobPicker({
 }: {
   value: DriverJob | null
   onChange: (job: DriverJob) => void
+  onClear?: () => void
   recent?: DriverJob | null
   invalid?: boolean
   disabled?: boolean
@@ -60,6 +72,9 @@ export default function JobPicker({
     setOpen(false)
   }
 
+  // Scoped to one site (+ maybe the global group): an empty trigger names that site.
+  const fallbackPlace = scopedSites ? scopedSites.find((s) => !s.isGlobal)?.siteName ?? "Global jobs" : "Any site"
+
   return (
     <Popover open={open} onOpenChange={openChange}>
       <PopoverTrigger asChild>
@@ -80,10 +95,10 @@ export default function JobPicker({
           <Briefcase className={cn("h-4 w-4 shrink-0", invalid ? "text-red-600" : "text-muted-foreground")} />
           <span className="flex min-w-0 flex-1 flex-col leading-tight">
             <span className={cn("truncate text-sm font-medium", !value && (invalid ? "text-red-700 dark:text-red-300" : "text-muted-foreground"))}>
-              {value ? jobLabel(value) : "Choose job"}
+              {value ? jobLabel(value) : onClear ? "No job" : "Choose job"}
             </span>
             <span className="truncate text-[11px] text-muted-foreground">
-              {value?.site?.siteName || (scopedSites ? scopedSites[0]?.siteName : "Any site")}
+              {(value && jobPlaceLabel(value)) || fallbackPlace}
             </span>
           </span>
           {value && showLastUsed && (
@@ -107,10 +122,28 @@ export default function JobPicker({
             <CommandEmpty className="py-4 text-xs sm:py-6 sm:text-sm">
               {loading ? "Loading jobs…" : "No job matches that search."}
             </CommandEmpty>
+            {onClear && (
+              <CommandGroup className={groupClass}>
+                <CommandItem
+                  value="__no-job__ no job none clear"
+                  onSelect={() => {
+                    onClear()
+                    setOpen(false)
+                  }}
+                  className={itemClass}
+                >
+                  <div className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2">
+                    <Ban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">No job</span>
+                    <Check className={cn("h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4", !value ? "opacity-100" : "opacity-0")} />
+                  </div>
+                </CommandItem>
+              </CommandGroup>
+            )}
             {recent && (
               <CommandGroup heading="Last used" className={groupClass}>
                 <CommandItem
-                  value={`recent ${jobLabel(recent)} ${recent.site?.siteName ?? ""}`}
+                  value={`recent ${jobLabel(recent)} ${jobPlaceLabel(recent)}`}
                   onSelect={() => pick(recent)}
                   className={itemClass}
                 >
@@ -124,13 +157,13 @@ export default function JobPicker({
                 className={groupClass}
                 heading={
                   <span className="inline-flex items-center gap-1">
-                    <MapPin className="h-3 w-3" />
+                    {s.isGlobal ? <Globe className="h-3 w-3" /> : <MapPin className="h-3 w-3" />}
                     {s.siteName}
                   </span>
                 }
               >
                 {s.jobs.map((j) => {
-                  const job: DriverJob = { ...j, site: { _id: s._id, siteName: s.siteName } }
+                  const job = jobFromGroup(s, j)
                   return (
                     <CommandItem
                       key={j._id}
@@ -156,14 +189,15 @@ const groupClass = "p-0.5 **:[[cmdk-group-heading]]:py-1 **:[[cmdk-group-heading
 const itemClass = "px-1.5 py-1 text-xs sm:px-2 sm:py-1.5 sm:text-sm"
 
 function JobRow({ job, selected, withSite = false }: { job: DriverJob; selected: boolean; withSite?: boolean }) {
+  const place = jobPlaceLabel(job)
   return (
     <div className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2">
-      <span className="w-11 shrink-0 text-[11px] font-semibold tabular-nums text-muted-foreground sm:w-14 sm:text-xs">
+      <span className="min-w-11 max-w-[45%] shrink-0 truncate text-[11px] font-semibold tabular-nums text-muted-foreground sm:min-w-14 sm:text-xs">
         {job.jobCode || "—"}
       </span>
       <span className="min-w-0 flex-1 truncate">
         {job.name}
-        {withSite && job.site && <span className="text-[11px] text-muted-foreground sm:text-xs"> · {job.site.siteName}</span>}
+        {withSite && place && <span className="text-[11px] text-muted-foreground sm:text-xs"> · {place}</span>}
       </span>
       <Check className={cn("h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4", selected ? "opacity-100" : "opacity-0")} />
     </div>

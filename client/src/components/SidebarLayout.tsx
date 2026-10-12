@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   Inbox,
   Truck,
+  Tags,
   type LucideIcon,
 } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -57,6 +58,7 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
   { name: "Requests", path: "/requests", icon: Inbox },
+  { name: "Activity Types", path: "/activity-types", icon: Tags },
   { name: "Configure", path: "/configure", icon: Settings },
   { name: "Manage Users", path: "/manage-users", icon: ShieldCheck },
 ]

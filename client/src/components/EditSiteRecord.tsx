@@ -25,7 +25,10 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -67,6 +70,7 @@ import { useWorkConfig } from "@/context/WorkConfigContext"
 import JobPicker from "@/components/drivers/JobPicker"
 import { useDriverJobIndex } from "@/lib/driverJobs"
 import { liveSiteJobs } from "@/lib/siteJobs"
+import { GLOBAL_JOBS_GROUP_LABEL, useGlobalJobs } from "@/lib/globalJobs"
 import { cn } from "@/lib/utils"
 
 // --------------------------------------------------
@@ -188,6 +192,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
   // time must name a job before saving. Adding a second job happens only here (after save).
   const anyJob = !!site?.isDriverPool
   const driverJobIndex = useDriverJobIndex(open && anyJob)
+  // A site's sessions may also be logged against a global job (lib/globalJobs.ts); the
+  // drivers picker gets them through its own any-site list.
+  const globalJobs = useGlobalJobs(open && !anyJob)
   const [, setOverlapInfo] = useState<any>(null)
   const [overlapSessionIds, setOverlapSessionIds] = useState<string[]>([])
   const [record, setRecord] = useState<AttendanceRecord | null>(null)
@@ -394,7 +401,8 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
   const remarkMissing = requiresRemark && !remark.trim()
 
   // Every session at this site with a time must name a job — on the drivers sheet always,
-  // on a site once it has a live job (a site with none keeps sessions job-optional).
+  // on a site once it has a live job of its own (a site with none keeps sessions job-optional;
+  // global jobs are offered but never make it mandatory).
   const liveJobs = useMemo(() => liveSiteJobs(site), [site])
   const jobRequired = anyJob || liveJobs.length > 0
   const sessionMissingJob = (session: AttendanceSession) =>
@@ -880,7 +888,9 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
           <SelectContent position="popper" sideOffset={4}>
             {!jobRequired && <SelectItem value="not-assigned">Not Assigned</SelectItem>}
             {/* A job the session already has that has since gone inactive still shows. */}
-            {session.jobId && !liveJobs.some((job) => String(job._id) === String(session.jobId)) && (
+            {session.jobId &&
+              !liveJobs.some((job) => String(job._id) === String(session.jobId)) &&
+              !globalJobs.some((job) => String(job._id) === String(session.jobId)) && (
               <SelectItem value={String(session.jobId)}>{session.jobName || "Current job"}</SelectItem>
             )}
             {liveJobs.map((job) => (
@@ -888,6 +898,19 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
                 {job.jobCode ? `${job.jobCode} · ${job.name}` : job.name}
               </SelectItem>
             ))}
+            {globalJobs.length > 0 && (
+              <>
+                {liveJobs.length > 0 && <SelectSeparator />}
+                <SelectGroup>
+                  <SelectLabel>{GLOBAL_JOBS_GROUP_LABEL}</SelectLabel>
+                  {globalJobs.map((job) => (
+                    <SelectItem key={job._id} value={job._id}>
+                      {job.jobCode ? `${job.jobCode} · ${job.name}` : job.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </>
+            )}
           </SelectContent>
         </Select>
         {missingJob && (

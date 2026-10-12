@@ -19,6 +19,7 @@
 import { toLocalDateString, toLocalTimeString } from "./timeLocal.js";
 import { allocateSessionNetHours, allocateProRata } from "./attendanceMath.js";
 import { classifyPayrollDay } from "./payrollDay.js";
+import { overtimeNameFor } from "./activityTypes.js";
 
 // --------------------------------------------------------------------------
 // Tunables. Defaults; the controller overrides company/activity from WorkSchedule
@@ -48,7 +49,7 @@ function csvCell(value) {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function toCsv(header, rows) {
+export function toCsv(header, rows) {
   return [header, ...rows].map((cells) => cells.map(csvCell).join(",")).join("\r\n");
 }
 
@@ -240,6 +241,13 @@ export function buildAttendanceCsv(
 // Attendance CSV, which sends them as overtime duration. The OT log is placed as the shift's TAIL
 // (From = check-in + regular hours) so the two contiguous logs never overlap in ERPNext.
 // With no OT type configured, a session stays a single net-hours line (unchanged).
+//
+// Per-employee activity types: when the record's employee has an allocated activity type
+// (record.employee.activityType populated with `name`), its lines use THAT type for regular
+// hours and its overtime twin (overtimeNameFor) for OT/holiday hours — the split is always on,
+// since every type has a twin — so ERPNext costs them at that type's default rates. Unallocated
+// employees fall back to `activityType` / `overtimeActivityType` above and are counted in
+// meta.unallocated (distinct employees with at least one exported line).
 export function buildTimesheetCsv(
   records,
   {
@@ -271,9 +279,16 @@ export function buildTimesheetCsv(
     "Is Billable (Time Sheets)",
   ];
 
-  const splitOt = !!overtimeActivityType;
+  // The (regular, overtime) activity names for a record's employee; overtime "" = no split.
+  const activityFor = (record) => {
+    const allocated = record.employee?.activityType?.name;
+    return allocated
+      ? { regular: allocated, overtime: overtimeNameFor(allocated) }
+      : { regular: activityType, overtime: overtimeActivityType };
+  };
 
   let skippedNoJob = 0;
+  const unallocated = new Set();
 
   // ---- Pass 1: bucket time-log lines by (employee, job order) ----
   // The per-DAY math must run per record first: allocateSessionNetHours splits the day net
@@ -293,6 +308,8 @@ export function buildTimesheetCsv(
     if (worked.length === 0) continue;
 
     const employeeId = record.employee.employeeId;
+    const { regular: regularType, overtime: overtimeType } = activityFor(record);
+    const splitOt = !!overtimeType;
     const nets = allocateSessionNetHours(worked, record.totalWorkHours || 0);
     // Hours paid at the OT rate: overtime on a normal day, the whole holiday credit on a
     // worked holiday (overtimeHours is 0 on holidays upstream, so the two never stack).
@@ -307,6 +324,7 @@ export function buildTimesheetCsv(
         skippedNoJob++;
         return;
       }
+      if (!record.employee?.activityType?.name) unallocated.add(employeeId);
 
       const from = localDateTimeString(session.checkIn);
       const otH = ots[i];
@@ -315,15 +333,15 @@ export function buildTimesheetCsv(
       if (splitOt && otH > 0) {
         // Regular portion first, then OT as the tail so the two logs are contiguous
         // (To Time = From + Hours) and never overlap within the Timesheet.
-        if (regH > 0) addLine(employeeId, jobCode, activityType, from, regH);
+        if (regH > 0) addLine(employeeId, jobCode, regularType, from, regH);
         // Exact to the second: regH is 2dp, so regH*3600 is a whole number of seconds and the
         // tail starts precisely where the regular log ends (From + Hrs), not a few seconds early.
         const otFrom = localDateTimeStringExact(
           new Date(new Date(session.checkIn).getTime() + Math.round(regH * 3600) * 1000)
         );
-        addLine(employeeId, jobCode, overtimeActivityType, otFrom, otH);
+        addLine(employeeId, jobCode, overtimeType, otFrom, otH);
       } else {
-        addLine(employeeId, jobCode, activityType, from, round2(nets[i]));
+        addLine(employeeId, jobCode, regularType, from, round2(nets[i]));
       }
     });
   }
@@ -366,5 +384,8 @@ export function buildTimesheetCsv(
     }
   }
 
-  return { csv: toCsv(header, rows), meta: { rows: rows.length, skippedNoJob } };
+  return {
+    csv: toCsv(header, rows),
+    meta: { rows: rows.length, skippedNoJob, unallocated: unallocated.size },
+  };
 }

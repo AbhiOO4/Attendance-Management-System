@@ -181,6 +181,15 @@ const employeeSchema = new mongoose.Schema({
     type: Number,
     min: 0,
     default: null
+  },
+
+  // ERPNext activity type (rate band) allocated on the Activity Types page. The timesheet
+  // export stamps its name (and its overtime twin's) on this employee's time-logs; null →
+  // the configured default activity types. Current allocation only — no history.
+  activityType: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ActivityType',
+    default: null
   }
 
 }, {
@@ -190,6 +199,8 @@ const employeeSchema = new mongoose.Schema({
 employeeSchema.index({ currentJob: 1 });
 
 employeeSchema.index({ currentSite: 1 });
+
+employeeSchema.index({ activityType: 1 });
 
 employeeSchema.index(
   { companyId: 1 },

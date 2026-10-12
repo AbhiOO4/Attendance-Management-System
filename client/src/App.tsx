@@ -24,9 +24,11 @@ const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
 const MissingEmployees = lazy(() => import("./pages/MissingEmployees"))
 
 const SiteJobs = lazy(() => import("./pages/SiteJobs"))
+const GlobalJobs = lazy(() => import("./pages/GlobalJobs"))
 const MonthlyReport = lazy(() => import("./pages/MonthlyReport"))
 const Configure = lazy(() => import("./pages/Configure"))
 const ManageUsers = lazy(() => import("./pages/ManageUsers"))
+const ActivityTypes = lazy(() => import("./pages/ActivityTypes"))
 const EmployeeDetailAttendance = lazy(() => import("./pages/EmployeeDetailAttendance"))
 const InstaAddEmployees = lazy(() => import("./pages/InstaAddEmployees"))
 const Requests = lazy(() => import("./pages/Requests"))
@@ -162,6 +164,16 @@ function App() {
           }
         />
 
+        {/* Global jobs (common to every site) — a static segment, ranked above site/:id. */}
+        <Route
+          path="site/global-jobs"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <GlobalJobs />
+            </ProtectedRoute>
+          }
+        />
+
         <Route
           path="site/:id"
           element={
@@ -195,6 +207,15 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin"]}>
               <ManageUsers />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="activity-types"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin"]}>
+              <ActivityTypes />
             </ProtectedRoute>
           }
         />

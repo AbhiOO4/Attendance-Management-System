@@ -1,6 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useWorkConfig } from "@/context/WorkConfigContext";
+import { useAuth } from "@/context/AuthContext";
+import {
+  DEFAULT_OVERTIME_MULTIPLIER,
+  MAX_OVERTIME_MULTIPLIER,
+  MIN_OVERTIME_MULTIPLIER,
+} from "@/lib/activityTypes";
 import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +78,9 @@ type WorkSchedule = {
   erpOvertimeActivityType: string;
   erpOvertimeType: string;
   erpPaidLeaveType: string;
+  // Rate multiplier of every activity type's automatic overtime twin (Activity Types page).
+  // Superadmin-only: the server 403s anyone else, so admins never send it.
+  overtimeActivityMultiplier: number;
   // Mirrors ERPNext "Consider Unmarked Attendance As": true = Absent (deducted from
   // Payment Days in the report + timesheet), false = Present (paid).
   countUnmarkedAsAbsent: boolean;
@@ -135,6 +144,7 @@ const SECTIONS: Record<SectionId, SettingsSection> = {
       "erpOvertimeActivityType",
       "erpOvertimeType",
       "erpPaidLeaveType",
+      "overtimeActivityMultiplier",
       "countUnmarkedAsAbsent",
     ],
   },
@@ -156,6 +166,7 @@ const sameValue = (a: unknown, b: unknown) => {
 const normalizeSchedule = (data: WorkSchedule): WorkSchedule => ({
   ...data,
   breakMinHours: data.breakMinHours ?? data.fullDayHours,
+  overtimeActivityMultiplier: data.overtimeActivityMultiplier ?? DEFAULT_OVERTIME_MULTIPLIER,
   // Config docs that predate the field are ON (the server reads it the same way).
   countUnmarkedAsAbsent: data.countUnmarkedAsAbsent !== false,
 });
@@ -260,6 +271,12 @@ function Field({
 
 export default function Configure() {
   const { refreshConfig } = useWorkConfig();
+  const { user } = useAuth();
+  const isSuperadmin = user?.role === "superadmin";
+  // The fields a section posts: the activity-type multiplier is superadmin-only (the server
+  // refuses it from anyone else), so an admin's ERPNext save leaves it out.
+  const postedFields = (section: SettingsSection) =>
+    isSuperadmin ? section.fields : section.fields.filter((f) => f !== "overtimeActivityMultiplier");
 
   // `schedule` is the editable draft; `saved` is the last copy the server confirmed.
   const [schedule, setSchedule] = useState<WorkSchedule>({
@@ -278,6 +295,7 @@ export default function Configure() {
     erpOvertimeActivityType: "",
     erpOvertimeType: "",
     erpPaidLeaveType: "Annual Leave",
+    overtimeActivityMultiplier: DEFAULT_OVERTIME_MULTIPLIER,
     countUnmarkedAsAbsent: true,
   });
   const [saved, setSaved] = useState<WorkSchedule | null>(null);
@@ -360,7 +378,7 @@ export default function Configure() {
       setSavingSection(section.id);
       const res = await api.patch(
         "/api/config/update",
-        pickFields(schedule, section.fields)
+        pickFields(schedule, postedFields(section))
       );
 
       const raw = res.data?.data as WorkSchedule | undefined;
@@ -860,7 +878,7 @@ export default function Configure() {
                 <Field
                   id="cfg-erp-activity"
                   label="ERPNext Activity Type"
-                  hint="Stamped on regular Timesheet time-logs in the ERPNext export. The costing rate for this activity lives in ERPNext (Activity Cost per employee) — this app tracks hours only."
+                  hint="Fallback for employees with no allocated activity type (Activity Types page): stamped on their regular Timesheet time-logs in the ERPNext export."
                 >
                   <Input
                     id="cfg-erp-activity"
@@ -873,7 +891,7 @@ export default function Configure() {
                 <Field
                   id="cfg-erp-ot-activity"
                   label="ERPNext Overtime Activity Type"
-                  hint="When set, the Timesheet export splits each working day into a regular line (above) and a separate overtime line under this Activity Type, so OT can be costed at a premium in ERPNext. Leave blank to put all hours on the regular Activity Type."
+                  hint="Fallback for employees with no allocated activity type. When set, their Timesheet lines are split into a regular line (above) and a separate overtime line under this Activity Type, so OT can be costed at a premium in ERPNext. Leave blank to put all their hours on the regular Activity Type. Allocated employees always use their type's automatic overtime type."
                 >
                   <Input
                     id="cfg-erp-ot-activity"
@@ -908,6 +926,24 @@ export default function Configure() {
                     onChange={(e) => setField("erpPaidLeaveType", e.target.value)}
                   />
                 </Field>
+
+                {isSuperadmin && (
+                  <Field
+                    id="cfg-ot-activity-multiplier"
+                    label="Overtime Activity Multiplier"
+                    hint={`Every activity type gets an automatic "- Overtime" type whose costing and billing rates are the type's rates × this (default ${DEFAULT_OVERTIME_MULTIPLIER}). Changing it re-rates every overtime type — re-import the Activity Types master CSV into ERPNext afterwards.`}
+                  >
+                    <Input
+                      id="cfg-ot-activity-multiplier"
+                      type="number"
+                      min={MIN_OVERTIME_MULTIPLIER}
+                      max={MAX_OVERTIME_MULTIPLIER}
+                      step={0.05}
+                      value={schedule.overtimeActivityMultiplier ?? ""}
+                      onChange={(e) => setField("overtimeActivityMultiplier", Number(e.target.value))}
+                    />
+                  </Field>
+                )}
 
                 {/* Unmarked days never reach the ERPNext file, so ERPNext applies its own
                     rule to them — this mirrors it so the report's Payment Days match the slip. */}

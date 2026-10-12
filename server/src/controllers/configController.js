@@ -2,6 +2,7 @@ import workModel from '../models/workModel.js'
 import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
 import { getFeatures } from '../utils/features.js';
+import { MIN_OVERTIME_MULTIPLIER, MAX_OVERTIME_MULTIPLIER } from '../utils/activityTypes.js';
 
 export const getWorkSchedule = async (req, res) => {
   try {
@@ -51,6 +52,7 @@ export const updateWorkSchedule = async (req, res) => {
       erpOvertimeType,
       erpPaidLeaveType,
       countUnmarkedAsAbsent,
+      overtimeActivityMultiplier,
     } = req.body;
 
 
@@ -187,6 +189,31 @@ export const updateWorkSchedule = async (req, res) => {
 
     if (erpPaidLeaveType !== undefined) {
       schedule.erpPaidLeaveType = String(erpPaidLeaveType).trim();
+    }
+
+    // Activity-type overtime twin multiplier. Rates are money, so — unlike the rest of this
+    // admin-level route — only a superadmin may change it (the Activity Types page is theirs).
+    if (overtimeActivityMultiplier !== undefined) {
+      if (req.user?.role !== "superadmin") {
+        return res.status(403).json({
+          success: false,
+          message: "Only a superadmin can change the overtime activity multiplier",
+        });
+      }
+      const m = Number(overtimeActivityMultiplier);
+      if (
+        overtimeActivityMultiplier === null ||
+        overtimeActivityMultiplier === "" ||
+        !Number.isFinite(m) ||
+        m < MIN_OVERTIME_MULTIPLIER ||
+        m > MAX_OVERTIME_MULTIPLIER
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `Overtime activity multiplier must be between ${MIN_OVERTIME_MULTIPLIER} and ${MAX_OVERTIME_MULTIPLIER}`,
+        });
+      }
+      schedule.overtimeActivityMultiplier = m;
     }
 
     // Unmarked days (no record) → absent (true, the default) or paid (false) in the

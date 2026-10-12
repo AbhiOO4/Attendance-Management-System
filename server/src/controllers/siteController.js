@@ -716,6 +716,15 @@ export const addEmployeeToJob = async (req, res) => {
       });
     }
 
+    // A global job is a session-only job — never an employee's job.
+    if (job.isGlobal || !job.site) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({
+        message: "Global jobs can't be assigned to employees",
+      });
+    }
+
     // Ensure employee belongs to same site as the job
     if (
       !employee.currentSite ||
@@ -1454,7 +1463,8 @@ export const changeJobStatus = async (req, res) => {
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id).session(session);
-      if (!user || !user.assignedSite || user.assignedSite.toString() !== job.site.toString()) {
+      // String(): a global job has no site, so it never matches a supervisor's site.
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== String(job.site)) {
         await session.abortTransaction();
         session.endSession();
         return res.status(403).json({ message: "Forbidden: Job is not on your assigned site" });
@@ -2775,7 +2785,8 @@ export const toggleJobCompleted = async (req, res) => {
 
     if (req.user.role === 'supervisor') {
       const user = await userModel.findById(req.user.id);
-      if (!user || !user.assignedSite || user.assignedSite.toString() !== job.site.toString()) {
+      // String(): a global job has no site, so it never matches a supervisor's site.
+      if (!user || !user.assignedSite || user.assignedSite.toString() !== String(job.site)) {
         return res.status(403).json({ message: "Forbidden: Job is not on your assigned site" });
       }
     }
@@ -2844,6 +2855,13 @@ export const updateEmployeeJob = async (req, res) => {
         session.endSession();
         return res.status(404).json({
           message: "Job not found",
+        });
+      }
+      if (job.isGlobal || !job.site) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          message: "Global jobs can't be assigned to employees",
         });
       }
       if (job.site.toString() !== siteId) {

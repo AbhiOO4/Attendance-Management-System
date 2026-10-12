@@ -2,7 +2,7 @@
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -48,7 +48,7 @@ import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
 import GrantLeaveDialog from "@/components/GrantLeaveDialog"
 import axios from "axios"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
@@ -257,14 +257,46 @@ function EmployeeRowActions({
 
 function Employees() {
   const navigate = useNavigate()
-  const [filters, setFilters] = useState<Filters>({
-    search: "",
-    site: "",
-    status: "active",
-    employmentType: "",
-    page: 1,
-    limit: 10,
-  })
+
+  // Filters live in the URL query string, so opening an employee and coming back
+  // (Back / browser back) restores them, while the sidebar's bare /employees link
+  // resets them. Writes replace the history entry so typing doesn't stack entries.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const paramsKey = searchParams.toString()
+  const filters = useMemo<Filters>(() => {
+    const status = searchParams.get("status")
+    const employmentType = searchParams.get("employmentType")
+    const page = Number(searchParams.get("page"))
+    const limit = searchParams.get("limit")
+    return {
+      search: searchParams.get("search") ?? "",
+      site: searchParams.get("site") ?? "",
+      status:
+        status === "deactivated" || status === "all" ? status : "active",
+      employmentType:
+        employmentType === "permanent" || employmentType === "temporary"
+          ? employmentType
+          : "",
+      page: Number.isInteger(page) && page > 0 ? page : 1,
+      limit:
+        limit !== null && [10, 25, 50, 100, ALL_ROWS].includes(Number(limit))
+          ? Number(limit)
+          : 10,
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramsKey])
+
+  // Only non-default values go in the URL, keeping it short and readable.
+  const setFilters = (next: Filters) => {
+    const params = new URLSearchParams()
+    if (next.search) params.set("search", next.search)
+    if (next.site) params.set("site", next.site)
+    if (next.status !== "active") params.set("status", next.status)
+    if (next.employmentType) params.set("employmentType", next.employmentType)
+    if (next.page !== 1) params.set("page", String(next.page))
+    if (next.limit !== 10) params.set("limit", String(next.limit))
+    setSearchParams(params, { replace: true })
+  }
 
   const [employees, setEmployees] = useState<Employee[]>([])
   const [sites, setSites] = useState<Site[]>([])
