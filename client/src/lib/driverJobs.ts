@@ -47,6 +47,28 @@ export function loadDriverJobs(force = false): Promise<SiteJobs[]> {
   return inflight
 }
 
+// A driver's job title contains "driver". KEEP IN SYNC with the server's DRIVER_TITLE_REGEX
+// (server/src/utils/driverPool.js). Past-day editors gate the "Drivers" place on it.
+export const isDriverTitle = (jobTitle?: string | null) => /driver/i.test(jobTitle || "")
+
+/**
+ * GET /api/site plus the hidden Drivers pool (last, flagged `isDriverPool`) — for the admin
+ * past-day editors, where a driver session is placed on "Drivers" like on a site.
+ */
+export async function fetchSitesWithDriverPool<T = unknown>(): Promise<T[]> {
+  const res = await api.get<T[]>("/api/site", { params: { includeDriverPool: true } })
+  return res.data || []
+}
+
+/** True when a session sits on the Drivers pool and has a time but no job (blocks save). */
+export const driverSessionMissingJob = (
+  sites: { _id: string; isDriverPool?: boolean }[],
+  s: { siteId: string; jobId?: string | null; checkIn?: string | null; checkOut?: string | null }
+) => {
+  const pool = sites.find((x) => x.isDriverPool)
+  return !!pool && s.siteId === pool._id && !!(s.checkIn || s.checkOut) && !s.jobId
+}
+
 export const jobLabel = (job?: DriverJob | null) =>
   job ? [job.jobCode, job.name].filter(Boolean).join(" · ") : ""
 

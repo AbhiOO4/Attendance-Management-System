@@ -272,6 +272,18 @@ saved-row inline editor and `EditSiteRecord` refuse it client-side, and `siteFir
 send-to-site and pull requests stay job-optional; a saved session left without one shows a red
 "No job · Assign" chip. The drivers sheet keeps its own any-site job rule.
 
+**Drivers in the past-day editors.** Driver sessions live on the hidden Drivers pool site
+(`utils/driverPool.js`), which `GET /api/site` hides unless `?includeDriverPool=true` (admins
+only; appended last, flagged `isDriverPool`). Edit past (`EditRecord`), Backfill and Bulk backfill
+fetch it that way and render it as a "No site → Drivers" place via
+`components/SessionSiteJobFields.tsx` — offered only for drivers (job title contains "driver",
+client `isDriverTitle` in `lib/driverJobs.ts` ↔ server `DRIVER_TITLE_REGEX`) or a session already
+on it, and preselected for drivers. A Drivers session uses the any-site `JobPicker` and needs a job.
+Server: `validateDriverPoolSessions` (backfill, admin edit without `?siteId`) and the bulk backfill
+pool branch (non-drivers skipped "Not a driver") check it; the job check is LENIENT on liveness
+(`findPastDriverJob`: any non-deleted global or real-site job), unlike today's `findDriverJob`.
+Edit past + Missing offer a "Drivers" filter (Missing maps it to `driverEmployeeFilter()`).
+
 **Global jobs** (`utils/globalJobs.js`, client `lib/globalJobs.ts`) — jobs common to every site,
 for hours tracked against general expenses (e.g. drivers). A `Job` with `isGlobal: true, site: null`,
 so populates, the Jobs report and the ERPNext timesheet (jobCode → Job Order) bill it like any job.

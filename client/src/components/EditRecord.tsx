@@ -22,17 +22,6 @@ import { Button } from "@/components/ui/button"
 
 import { Input } from "@/components/ui/input"
 
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-
 import { Badge } from "@/components/ui/badge"
 
 import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
@@ -64,24 +53,15 @@ import {
   type HolidayReason,
 } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
-import { GLOBAL_JOBS_GROUP_LABEL, useGlobalJobs } from "@/lib/globalJobs"
+import { useGlobalJobs } from "@/lib/globalJobs"
+import { driverSessionMissingJob, fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import SessionSiteJobFields, { type PickerSite } from "@/components/SessionSiteJobFields"
 
 // --------------------------------------------------
 // TYPES
 // --------------------------------------------------
 
-interface Job {
-  _id: string
-  name: string
-}
-
-interface Site {
-  _id: string
-  siteName: string
-  locationDetails: string
-  isActive: boolean
-  jobs: Job[]
-}
+type Site = PickerSite
 
 interface AttendanceSession {
   _id?: string
@@ -311,9 +291,8 @@ const [sessionToDelete, setSessionToDelete] =
 
   const fetchSites = async () => {
     try {
-      const res = await api.get("/api/site")
-
-      setSites(res.data || [])
+      // With the Drivers pool, so a driver session shows (and can be placed on) "Drivers".
+      setSites(await fetchSitesWithDriverPool<Site>())
     } catch (error) {
       console.log(error)
     }
@@ -620,6 +599,11 @@ const [sessionToDelete, setSessionToDelete] =
       return
     }
 
+    if (sessions.some((s) => driverSessionMissingJob(sites, s))) {
+      toast.error("Pick a job for every driver session")
+      return
+    }
+
     // -------------------------
     // SESSION COMPLETION VALIDATION
     // -------------------------
@@ -815,7 +799,6 @@ const [sessionToDelete, setSessionToDelete] =
           {/* SESSIONS */}
           <div className="space-y-3">
             {sessions.map((session, index) => {
-              const selectedSite = sites.find((site) => site._id === session.siteId)
               const inT = toTimeValue(session.checkIn)
               const outT = toTimeValue(session.checkOut)
               const night = session.isNightShift || (!!inT && !!outT && isCrossMidnight(inT, outT, session.isNightShift))
@@ -859,56 +842,19 @@ const [sessionToDelete, setSessionToDelete] =
                     </Button>
                   </div>
 
-                  {/* Site + Job */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Site</label>
-                      <Select
-                        value={session.siteId}
-                        onValueChange={(value) => updateSessionField(index, "siteId", value)}
-                      >
-                        <SelectTrigger className="w-full h-10 text-sm">
-                          <SelectValue placeholder="Select site" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {sites.map((site) => (
-                            <SelectItem key={site._id} value={site._id}>{site.siteName}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Job</label>
-                      <Select
-                        value={session.jobId || ""}
-                        onValueChange={(value) => updateSessionField(index, "jobId", value)}
-                      >
-                        <SelectTrigger className="w-full h-10 text-sm">
-                          <SelectValue placeholder="Select job" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {selectedSite?.jobs.map((job) => (
-                            <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>
-                          ))}
-                          {/* Global jobs (any site) — session-only general-expense jobs. */}
-                          {globalJobs.length > 0 && (
-                            <>
-                              {!!selectedSite?.jobs.length && <SelectSeparator />}
-                              <SelectGroup>
-                                <SelectLabel>{GLOBAL_JOBS_GROUP_LABEL}</SelectLabel>
-                                {globalJobs.map((job) => (
-                                  <SelectItem key={job._id} value={job._id}>
-                                    {job.jobCode ? `${job.jobCode} · ${job.name}` : job.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
+                  {/* Site + Job ("Drivers" for a driver — any-site job picker) */}
+                  <SessionSiteJobFields
+                    sites={sites}
+                    siteId={session.siteId}
+                    jobId={session.jobId}
+                    jobName={session.jobName}
+                    jobCode={session.jobCode}
+                    allowDrivers={isDriverTitle(record?.jobTitle)}
+                    globalJobs={globalJobs}
+                    hasTimes={!!(session.checkIn || session.checkOut)}
+                    onSiteChange={(value) => updateSessionField(index, "siteId", value)}
+                    onJobChange={(value) => updateSessionField(index, "jobId", value)}
+                  />
 
                   {/* Time inputs */}
                   <div className="grid grid-cols-2 gap-3">

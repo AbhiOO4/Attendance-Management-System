@@ -9,7 +9,7 @@
 //    site filter to narrow by currentSite). Selecting employees + "Backfill selected"
 //    opens BulkBackfillModal, which applies one common site/job + check-in/out to all.
 
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { useNavigate, useSearchParams } from "react-router-dom"
@@ -23,18 +23,20 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 
-import { ArrowLeft, Loader2, ListChecks, UserPlus, X } from "lucide-react"
+import { ArrowLeft, Loader2, ListChecks, Truck, UserPlus, X } from "lucide-react"
 
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
+import { fetchSitesWithDriverPool } from "@/lib/driverJobs"
 import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
 import BulkBackfillModal, { type BulkBackfillResult } from "@/components/BulkBackfillModal"
+import type { PickerSite } from "@/components/SessionSiteJobFields"
 
-type Job = { _id: string; name: string }
-type Site = { _id: string; siteName: string; jobs: Job[] }
+type Site = PickerSite
 
 function MissingEmployees() {
   const navigate = useNavigate()
@@ -78,8 +80,8 @@ function MissingEmployees() {
 
   const fetchSites = async () => {
     try {
-      const res = await api.get("/api/site")
-      setSites(res.data || [])
+      // With the Drivers pool: a filter option here, and a place in the backfill dialogs.
+      setSites(await fetchSitesWithDriverPool<Site>())
     } catch (error) {
       console.log(error)
     }
@@ -238,10 +240,20 @@ function MissingEmployees() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Sites</SelectItem>
-              {sites.map((site) => (
+              {sites.filter((site) => !site.isDriverPool).map((site) => (
                 <SelectItem key={site._id} value={site._id}>
                   {site.siteName}
                 </SelectItem>
+              ))}
+              {/* Drivers (no site) — the drivers roster, whose records sit on the pool. */}
+              {sites.filter((site) => site.isDriverPool).map((site) => (
+                <Fragment key={site._id}>
+                  <SelectSeparator />
+                  <SelectItem value={site._id}>
+                    <Truck className="h-3.5 w-3.5 text-muted-foreground" />
+                    Drivers
+                  </SelectItem>
+                </Fragment>
               ))}
             </SelectContent>
           </Select>

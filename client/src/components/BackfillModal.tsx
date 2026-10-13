@@ -23,14 +23,6 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-
-import {
   Loader2,
   Plus,
   Save,
@@ -52,23 +44,15 @@ import {
   type HolidayReason,
 } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
+import { useGlobalJobs } from "@/lib/globalJobs"
+import { driverSessionMissingJob, fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import SessionSiteJobFields, { type PickerSite } from "@/components/SessionSiteJobFields"
 
 // --------------------------------------------------
 // TYPES
 // --------------------------------------------------
 
-interface Job {
-  _id: string
-  name: string
-}
-
-interface Site {
-  _id: string
-  siteName: string
-  locationDetails: string
-  isActive: boolean
-  jobs: Job[]
-}
+type Site = PickerSite
 
 interface SessionDraft {
   siteId: string
@@ -105,6 +89,10 @@ interface BackfillModalProps {
 
 function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillModalProps) {
   const [sites, setSites] = useState<Site[]>([])
+  const globalJobs = useGlobalJobs(open)
+  // A driver's sessions go on "Drivers" (the hidden pool) by default.
+  const isDriver = isDriverTitle(employee?.jobTitle)
+  const driverPoolId = sites.find((s) => s.isDriverPool)?._id ?? ""
   const [sessions, setSessions] = useState<SessionDraft[]>([])
   const [sessionErrors, setSessionErrors] = useState<Record<number, string>>({})
   const [saving, setSaving] = useState(false)
@@ -218,8 +206,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
   const fetchSites = async () => {
     try {
-      const res = await api.get("/api/site")
-      setSites(res.data || [])
+      setSites(await fetchSitesWithDriverPool<Site>())
     } catch (error) {
       console.log(error)
     }
@@ -349,7 +336,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     }
     setSessions([
       ...sessions,
-      { siteId: "", jobId: null, checkIn: null, checkOut: null, workedHours: 0 },
+      { siteId: isDriver ? driverPoolId : "", jobId: null, checkIn: null, checkOut: null, workedHours: 0 },
     ])
   }
 
@@ -370,6 +357,11 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     const hasMissingSite = sessions.some((s) => !s.siteId)
     if (hasMissingSite) {
       toast.error("Every session must have a site selected")
+      return
+    }
+
+    if (sessions.some((s) => driverSessionMissingJob(sites, s))) {
+      toast.error("Pick a job for every driver session")
       return
     }
 
@@ -539,7 +531,6 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
             )}
 
             {sessions.map((session, index) => {
-              const selectedSite = sites.find((site) => site._id === session.siteId)
               const inT = toTimeValue(session.checkIn)
               const outT = toTimeValue(session.checkOut)
               const night = session.isNightShift || (!!inT && !!outT && isCrossMidnight(inT, outT, session.isNightShift))
@@ -583,42 +574,18 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                     </Button>
                   </div>
 
-                  {/* Site + Job */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Site</label>
-                      <Select
-                        value={session.siteId}
-                        onValueChange={(value) => updateSessionField(index, "siteId", value)}
-                      >
-                        <SelectTrigger className="w-full h-10 text-sm">
-                          <SelectValue placeholder="Select site" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {sites.map((site) => (
-                            <SelectItem key={site._id} value={site._id}>{site.siteName}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Job</label>
-                      <Select
-                        value={session.jobId || ""}
-                        onValueChange={(value) => updateSessionField(index, "jobId", value)}
-                      >
-                        <SelectTrigger className="w-full h-10 text-sm">
-                          <SelectValue placeholder="Select job" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {selectedSite?.jobs.map((job) => (
-                            <SelectItem key={job._id} value={job._id}>{job.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
+                  {/* Site + Job ("Drivers" for a driver — any-site job picker) */}
+                  <SessionSiteJobFields
+                    sites={sites}
+                    siteId={session.siteId}
+                    jobId={session.jobId}
+                    jobName={session.jobName}
+                    allowDrivers={isDriver}
+                    globalJobs={globalJobs}
+                    hasTimes={!!(session.checkIn || session.checkOut)}
+                    onSiteChange={(value) => updateSessionField(index, "siteId", value)}
+                    onJobChange={(value) => updateSessionField(index, "jobId", value)}
+                  />
 
                   {/* Time inputs */}
                   <div className="grid grid-cols-2 gap-3">

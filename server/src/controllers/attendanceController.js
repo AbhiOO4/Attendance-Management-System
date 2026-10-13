@@ -32,7 +32,7 @@ import { recordSiteActivity } from '../utils/siteActivity.js';
 import { computeExpectedDraftRoster, touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js';
 import AttendanceDraftRow from '../models/attendanceDraftRowModel.js';
 import { isCloudDraftEnabled } from '../utils/features.js';
-import { isDriverPool, findDriverJob, getDriverPoolId, driverEmployeeFilter, isDriverEmployee } from '../utils/driverPool.js';
+import { isDriverPool, findDriverJob, getDriverPoolId, driverEmployeeFilter, isDriverEmployee, validateDriverPoolSessions, findPastDriverJob, DRIVER_TITLE_REGEX } from '../utils/driverPool.js';
 import { isSiteScopedRole } from '../middlewares/rbac.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
@@ -2760,7 +2760,7 @@ export const getAttendanceRecords = async (req, res) => {
         )
         .populate(
           "sessions.jobId",
-          "name"
+          "name jobCode"
         )
         .sort({ date: -1 })
         .skip(skip)
@@ -2841,6 +2841,9 @@ export const getAttendanceRecords = async (req, res) => {
             jobName:
               session.jobId?.name ||
               "",
+
+            jobCode:
+              session.jobId?.jobCode || null,
 
             checkIn:
               session.checkIn,
@@ -3328,6 +3331,21 @@ export const updateAttendance = async (req, res) => {
             code: "JOB_REQUIRED",
             message: "Pick a job for every session at this site",
           });
+        }
+      }
+      // Admin edit-past (no ?siteId): sessions placed on the Drivers pool via the site picker.
+      else if (!siteId) {
+        const poolId = await getDriverPoolId();
+        const alreadyOnPool = !!poolId && attendance.sessions.some((s) => String(s.siteId) === poolId);
+        const employee = await Employee.findById(attendance.employee).select("jobTitle").lean();
+        const driverError = await validateDriverPoolSessions({
+          sessions,
+          poolId,
+          employee,
+          requireDriver: !alreadyOnPool,
+        });
+        if (driverError) {
+          return res.status(400).json({ success: false, message: driverError });
         }
       }
 
@@ -5018,7 +5036,9 @@ export const getMissingEmployees = async (req, res) => {
     // Narrow by currentSite (list convenience). Supervisors are already scoped to their
     // assignedSite above, so only apply the client-supplied filter for admins/superadmins.
     if (site && site !== 'all' && req.user.role !== 'supervisor') {
-      employeeFilter.currentSite = new mongoose.Types.ObjectId(site);
+      // "Drivers" (the hidden pool) → the drivers roster; they have no currentSite.
+      if (await isDriverPool(site)) Object.assign(employeeFilter, driverEmployeeFilter());
+      else employeeFilter.currentSite = new mongoose.Types.ObjectId(site);
     }
 
     const totalEmployees = await Employee.countDocuments(employeeFilter);
@@ -5128,6 +5148,16 @@ export const backfillAttendance = async (req, res) => {
         markedBy,
         isNightShift: sessionIsNight,
       });
+    }
+
+    // Sessions placed on "Drivers" (the hidden pool) need a driver and a job, like the sheet.
+    const driverError = await validateDriverPoolSessions({
+      sessions: builtSessions,
+      poolId: await getDriverPoolId(),
+      employee,
+    });
+    if (driverError) {
+      return res.status(400).json({ success: false, message: driverError });
     }
 
     // Sort sessions by checkIn
@@ -5353,9 +5383,14 @@ export const bulkBackfillAttendance = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Both checkIn and checkOut are required' });
     }
 
-    const site = await Site.findById(siteId).select('siteName').lean();
+    const site = await Site.findById(siteId).select('siteName isDriverPool').lean();
     if (!site) {
       return res.status(404).json({ success: false, message: 'Site not found' });
+    }
+    // "Drivers" (the hidden pool): a job is required, and only drivers are placed on it.
+    const onDriverPool = site.isDriverPool === true;
+    if (onDriverPool && !(await findPastDriverJob(jobId))) {
+      return res.status(400).json({ success: false, message: 'Pick a job for the driver session' });
     }
 
     const workConfig = await workModel.findOne({ type: 'default' });
@@ -5397,7 +5432,7 @@ export const bulkBackfillAttendance = async (req, res) => {
 
     // Load the employees and the records they already have for this date, both in one query.
     const employees = await Employee.find({ _id: { $in: uniqueIds }, isActive: true })
-      .select('_id name employeeId employmentType currentSite')
+      .select('_id name employeeId employmentType currentSite jobTitle')
       .lean();
     const employeeById = new Map(employees.map((e) => [String(e._id), e]));
 
@@ -5417,6 +5452,10 @@ export const bulkBackfillAttendance = async (req, res) => {
       }
       if (alreadyRecorded.has(id)) {
         skipped.push({ employeeId: id, name: emp.name, reason: 'Already has a record for this date' });
+        continue;
+      }
+      if (onDriverPool && !DRIVER_TITLE_REGEX.test(emp.jobTitle || '')) {
+        skipped.push({ employeeId: id, name: emp.name, reason: 'Not a driver' });
         continue;
       }
       candidates.push(emp);

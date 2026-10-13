@@ -136,6 +136,46 @@ export function mirrorPoolDefaultsInBody(body) {
 }
 
 /**
+ * Past-day driver sessions (admin Edit past / Backfill, which place a session on the pool via
+ * the site picker). Each pool session with a time needs a driver employee (job title only — a
+ * past day doesn't care where they sit today) and a job that exists, isn't deleted, and is
+ * global or at a real (non-pool) site. Deliberately lenient on liveness: a job completed since
+ * that day is still a valid record of it, unlike findDriverJob (today's sheet).
+ * Returns an error message, or null when every pool session is fine.
+ */
+export async function validateDriverPoolSessions({ sessions, poolId, employee, requireDriver = true, session = null }) {
+  if (!poolId || !Array.isArray(sessions)) return null
+  const poolSessions = sessions.filter(
+    (s) => s && s.siteId && String(s.siteId) === String(poolId) && (s.checkIn || s.checkOut)
+  )
+  if (poolSessions.length === 0) return null
+  // `requireDriver: false` lets an edit keep a record that is ALREADY on the pool even if the
+  // employee's title has since changed — only placing someone new on Drivers is gated.
+  if (requireDriver && !DRIVER_TITLE_REGEX.test(employee?.jobTitle || "")) {
+    return "Only drivers can be marked on Drivers"
+  }
+  for (const s of poolSessions) {
+    if (!(await findPastDriverJob(s.jobId, session))) {
+      return "Pick a job for every driver session"
+    }
+  }
+  return null
+}
+
+/** The lenient past-day job check behind validateDriverPoolSessions. */
+export async function findPastDriverJob(jobId, session = null) {
+  if (!jobId || !mongoose.isValidObjectId(String(jobId))) return null
+  const job = await jobModel
+    .findOne({ _id: jobId, isDeleted: { $ne: true } })
+    .populate("site", "isDriverPool")
+    .session(session)
+  if (!job) return null
+  if (job.isGlobal) return job
+  if (!job.site || job.site.isDriverPool) return null
+  return job
+}
+
+/**
  * A job a driver session may be logged against: a live global job (utils/globalJobs.js), or a
  * job that exists, is not deleted, active, not completed, at an assignable (live, non-pool)
  * site. Returns the job (with `site` populated for a site job) or null.

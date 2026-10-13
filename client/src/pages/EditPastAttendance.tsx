@@ -1,7 +1,8 @@
 import { api } from "@/lib/api"
 import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
+import { fetchSitesWithDriverPool } from "@/lib/driverJobs"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
 import BulkCheckoutModal from "@/components/BulkCheckoutModal"
@@ -21,6 +22,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -43,6 +45,7 @@ import {
   LogOut,
   Pencil,
   Search,
+  Truck,
   UserPlus,
   X,
 } from "lucide-react"
@@ -165,6 +168,8 @@ type Site = {
   siteName: string
   locationDetails: string
   isActive: boolean
+  // The hidden Drivers pool (only with includeDriverPool) — listed as "Drivers".
+  isDriverPool?: boolean
 }
 
 interface Filters {
@@ -345,11 +350,8 @@ function EditPastAttendance() {
 
   const fetchSites = async () => {
     try {
-      const res = await api.get(
-        "/api/site"
-      )
-
-      setSites(res.data || [])
+      // With the Drivers pool, offered as a "Drivers" filter.
+      setSites(await fetchSitesWithDriverPool<Site>())
     } catch (error) {
       console.log(error)
     }
@@ -640,7 +642,7 @@ function EditPastAttendance() {
                     All Sites
                   </SelectItem>
 
-                  {sites.map(
+                  {sites.filter((site) => !site.isDriverPool).map(
                     (site) => (
                       <SelectItem
                         key={
@@ -656,6 +658,17 @@ function EditPastAttendance() {
                       </SelectItem>
                     )
                   )}
+
+                  {/* Drivers (no site) — records whose sessions sit on the drivers pool. */}
+                  {sites.filter((site) => site.isDriverPool).map((site) => (
+                    <Fragment key={site._id}>
+                      <SelectSeparator />
+                      <SelectItem value={site._id}>
+                        <Truck className="h-3.5 w-3.5 text-muted-foreground" />
+                        Drivers
+                      </SelectItem>
+                    </Fragment>
+                  ))}
                 </SelectContent>
               </Select>
 

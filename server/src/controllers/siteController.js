@@ -113,6 +113,13 @@ export const getSites = async (req, res) => {
             return res.status(200).json(sitesWithStatus)
         }
 
+        // The admin past-day editors (Edit past, Backfill) ask for the pool too, so a driver
+        // session can be placed on / shown as "Drivers". Appended last, flagged `isDriverPool`.
+        if (req.query.includeDriverPool === "true" && !isSiteScopedRole(req.user?.role)) {
+            const pool = await siteModel.findOne({ isDriverPool: true, isDeleted: { $ne: true } }, "_id siteName locationDetails jobs isActive isPermanent isCompleted isDriverPool").lean()
+            if (pool) return res.status(200).json([...sites, { ...pool, jobs: [] }])
+        }
+
         res.status(200).json(sites)
     }catch(error){  
         res.status(500).json({message: "Internal server error"})

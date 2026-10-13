@@ -25,7 +25,10 @@ import { Badge } from "@/components/ui/badge"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -36,6 +39,7 @@ import {
   Loader2,
   Moon,
   Save,
+  Truck,
   Users,
 } from "lucide-react"
 
@@ -50,17 +54,11 @@ import {
 import { computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import type { MissingEmployee } from "@/components/BackfillModal"
+import JobPicker from "@/components/drivers/JobPicker"
+import type { PickerSite } from "@/components/SessionSiteJobFields"
+import { isDriverTitle, type DriverJob } from "@/lib/driverJobs"
 
-interface Job {
-  _id: string
-  name: string
-}
-
-interface Site {
-  _id: string
-  siteName: string
-  jobs: Job[]
-}
+type Site = PickerSite
 
 interface BulkResultEntry {
   employeeId: string
@@ -118,12 +116,22 @@ function BulkBackfillModal({
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<BulkBackfillResult | null>(null)
+  // The job picked on "Drivers" (any-site JobPicker), kept for its label.
+  const [driverJob, setDriverJob] = useState<DriverJob | null>(null)
+
+  // "Drivers" (the hidden pool) is offered — and preselected — only when every selected
+  // employee is a driver; the server skips non-drivers anyway.
+  const driverPool = sites.find((s) => s.isDriverPool)
+  const allDrivers = employees.length > 0 && employees.every((e) => isDriverTitle(e.jobTitle))
+  const regularSites = sites.filter((s) => !s.isDriverPool)
+  const onPool = !!driverPool && siteId === driverPool._id
 
   // Reset the form each time the modal opens.
   useEffect(() => {
     if (open) {
-      setSiteId("")
+      setSiteId(allDrivers && driverPool ? driverPool._id : "")
       setJobId(null)
+      setDriverJob(null)
       setCheckIn("")
       setCheckOut("")
       setCheckInNextDay(false)
@@ -131,9 +139,10 @@ function BulkBackfillModal({
       setBreaksTaken(null)
       setResult(null)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset on open only
   }, [open])
 
-  const selectedSite = sites.find((s) => s._id === siteId)
+  const selectedSite = regularSites.find((s) => s._id === siteId)
 
   // --------------------------------------------------
   // TIME HANDLERS (mirror EditSiteRecord's offset logic)
@@ -204,7 +213,7 @@ function BulkBackfillModal({
 
   const isNight = checkInNextDay || checkOutNextDay
 
-  const canSubmit = !!siteId && !!checkIn && !!checkOut && !timeError && employees.length > 0
+  const canSubmit = !!siteId && !!checkIn && !!checkOut && !timeError && employees.length > 0 && (!onPool || !!jobId)
 
   // --------------------------------------------------
   // SUBMIT
@@ -214,6 +223,7 @@ function BulkBackfillModal({
       if (!siteId) toast.error("Please select a site")
       else if (!checkIn || !checkOut) toast.error("Enter both check-in and check-out")
       else if (timeError) toast.error(timeError)
+      else if (onPool && !jobId) toast.error("Pick a job for the driver session")
       return
     }
 
@@ -358,23 +368,49 @@ function BulkBackfillModal({
                     onValueChange={(value) => {
                       setSiteId(value)
                       setJobId(null)
+                      setDriverJob(null)
                     }}
                   >
                     <SelectTrigger className="w-full h-10 text-sm">
                       <SelectValue placeholder="Select site" />
                     </SelectTrigger>
                     <SelectContent>
-                      {sites.map((site) => (
+                      {regularSites.map((site) => (
                         <SelectItem key={site._id} value={site._id}>
                           {site.siteName}
                         </SelectItem>
                       ))}
+                      {driverPool && allDrivers && (
+                        <>
+                          <SelectSeparator />
+                          <SelectGroup>
+                            <SelectLabel>No site</SelectLabel>
+                            <SelectItem value={driverPool._id}>
+                              <Truck className="h-3.5 w-3.5 text-muted-foreground" />
+                              Drivers
+                            </SelectItem>
+                          </SelectGroup>
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Job</label>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    {onPool ? <>Job (any site) <span className="text-red-500">*</span></> : "Job"}
+                  </label>
+                  {onPool ? (
+                    <JobPicker
+                      value={driverJob}
+                      onChange={(job) => {
+                        setDriverJob(job)
+                        setJobId(job._id)
+                      }}
+                      invalid={!jobId && !!(checkIn || checkOut)}
+                      className="h-10"
+                    />
+                  ) : (
                   <Select
                     value={jobId || NOT_ASSIGNED}
                     onValueChange={(value) => setJobId(value === NOT_ASSIGNED ? null : value)}
@@ -392,6 +428,7 @@ function BulkBackfillModal({
                       ))}
                     </SelectContent>
                   </Select>
+                  )}
                 </div>
               </div>
 
