@@ -2,11 +2,12 @@ import mongoose from "mongoose";
 
 // A single leave grant over a from–to range — annual PAID leave or (unpaid, excused)
 // EMERGENCY leave, per `type`. This is the grant LEDGER — the authoritative object
-// for listing history and for cancelling a grant exactly. The annual balance itself
-// is NOT tracked here: "used" days are derived by counting paid-leave attendance
-// records (Attendance.isPaidLeave) per calendar year, so this ledger and the
-// attendance flags can never silently diverge. Emergency leave has no balance; its
-// days are flagged Attendance.isEmergencyLeave.
+// for listing history and for cancelling or editing a grant exactly (a Leave page
+// "application"). The annual balance itself is NOT tracked here: it comes from the
+// employee's date-range LeaveAllocations, and "used" days are derived by counting
+// paid-leave attendance records (Attendance.isPaidLeave) inside each allocation, so
+// this ledger and the attendance flags can never silently diverge. Emergency leave
+// has no balance; its days are flagged Attendance.isEmergencyLeave.
 //
 // `days` records every working day the grant actually marked (holidays and days
 // the employee already worked are skipped and never appear here), plus whether
@@ -93,6 +94,13 @@ const leaveSchema = new mongoose.Schema(
         message: "{VALUE} is not a valid leave status",
       },
       default: "active",
+    },
+
+    // Who last edited the application (PUT /leave/:leaveId); null if never edited.
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
 
     cancelledBy: {

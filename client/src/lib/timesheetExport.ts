@@ -15,6 +15,7 @@ import { saveAs } from "file-saver"
 
 import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
+import { sessionJobCell } from "@/lib/jobSplit"
 
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
@@ -484,7 +485,7 @@ export function addTimesheetSheet(
 
         session?.siteName || "-",
 
-        session?.jobCode || "-",
+        sessionJobCell(session, session?.jobCode || "-"),
 
         session?.checkIn ? formatLocalTime12h(session.checkIn) : "-",
 

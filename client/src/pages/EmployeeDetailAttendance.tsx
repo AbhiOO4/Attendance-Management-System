@@ -3,6 +3,7 @@ import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
 import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
+import { sessionJobCell } from "@/lib/jobSplit"
 import {
   exportSingleTimesheet,
   getDisplayStatus,
@@ -35,9 +36,8 @@ import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
 import EmployeeTimesheetHeader, {
   type LeaveBalance,
 } from "@/components/employee/EmployeeTimesheetHeader"
-import LeaveHistoryTable, {
-  type LeaveGrant,
-} from "@/components/employee/LeaveHistoryTable"
+import LeaveHistoryTable from "@/components/employee/LeaveHistoryTable"
+import type { LeaveApplication } from "@/lib/leave"
 
 import type {
   AttendanceRecord,
@@ -144,12 +144,13 @@ function EmployeeAttendanceDetail() {
 
   const [erpBusy, setErpBusy] = useState(false)
 
-  // Annual paid-leave balance (for the selected year) + grant history. Admin-only.
+  // Leave balance (annual allocations + this year's emergency days) + the leave
+  // history. Admin-only and read-only here — leave is managed on the Leave page.
   const [leaveBalance, setLeaveBalance] =
     useState<LeaveBalance | null>(null)
 
   const [leaves, setLeaves] =
-    useState<LeaveGrant[]>([])
+    useState<LeaveApplication[]>([])
 
   const fetchEmployee = async () => {
     try {
@@ -202,7 +203,7 @@ function EmployeeAttendanceDetail() {
     }
   }
 
-  // Balance + grant history are admin-only and scoped to the selected year.
+  // Balance + leave history are admin-only; the emergency count follows the selected year.
   const fetchLeaveInfo = async () => {
     if (!canWrite || !id) return
     try {
@@ -214,25 +215,6 @@ function EmployeeAttendanceDetail() {
       setLeaves(listRes.data.data || [])
     } catch (error) {
       console.log(error)
-    }
-  }
-
-  // After a grant or cancel, the attendance rows, the balance and the history
-  // all change — refetch the three together.
-  const refreshAfterLeaveChange = async () => {
-    await Promise.all([fetchAttendance(), fetchLeaveInfo()])
-  }
-
-  const handleCancelLeave = async (leaveId: string) => {
-    try {
-      await api.patch(`/api/attendance/leave/${leaveId}/cancel`)
-      toast.success("Leave cancelled")
-      await refreshAfterLeaveChange()
-    } catch (error: any) {
-      console.log(error)
-      toast.error(
-        error?.response?.data?.message || "Failed to cancel leave"
-      )
     }
   }
 
@@ -502,7 +484,7 @@ function EmployeeAttendanceDetail() {
                             </TableCell>
 
                             <TableCell>
-                              {session?.jobCode || "-"}
+                              {sessionJobCell(session, session?.jobCode || "-")}
                             </TableCell>
 
                             <TableCell>
@@ -632,16 +614,16 @@ function EmployeeAttendanceDetail() {
                                     className="text-right"
                                   >
                                     {/* A granted leave day (annual or emergency) is locked;
-                                        cancel the grant (Leave history tab) to edit it. */}
+                                        edit or cancel the leave on the Leave page. */}
                                     <Button
                                       size="icon"
                                       variant="outline"
                                       disabled={!!record.isPaidLeave || !!record.isEmergencyLeave}
                                       title={
                                         record.isPaidLeave
-                                          ? "On annual leave — cancel the leave to edit"
+                                          ? "On annual leave — edit or cancel it on the Leave page"
                                           : record.isEmergencyLeave
-                                            ? "On emergency leave — cancel the leave to edit"
+                                            ? "On emergency leave — edit or cancel it on the Leave page"
                                             : undefined
                                       }
                                       onClick={() =>
@@ -701,7 +683,7 @@ function EmployeeAttendanceDetail() {
     <div className="min-h-screen bg-muted/30 px-3 py-4 sm:px-4">
       <div className="mx-auto max-w-none space-y-4">
 
-        {/* EMPLOYEE, TOOLBAR (month, sort, grant leave, export) AND MONTH STATS */}
+        {/* EMPLOYEE, TOOLBAR (month, sort, export) AND MONTH STATS */}
         <EmployeeTimesheetHeader
           employee={employee}
           canWrite={canWrite}
@@ -714,11 +696,10 @@ function EmployeeAttendanceDetail() {
           erpBusy={erpBusy}
           onExportSpreadsheet={exportSpreadsheet}
           onExportErp={downloadErp}
-          onLeaveGranted={refreshAfterLeaveChange}
           onBack={() => navigate(-1)}
         />
 
-        {/* ATTENDANCE TABLE — admins also get a Leave history tab (the grant ledger). */}
+        {/* ATTENDANCE TABLE — admins also get a read-only Leave history tab. */}
         {canWrite ? (
           <Tabs defaultValue="timesheet" className="gap-3">
             <TabsList>
@@ -737,10 +718,7 @@ function EmployeeAttendanceDetail() {
 
             <TabsContent value="leave">
               <Card className="py-0">
-                <LeaveHistoryTable
-                  leaves={leaves}
-                  onCancel={handleCancelLeave}
-                />
+                <LeaveHistoryTable leaves={leaves} />
               </Card>
             </TabsContent>
           </Tabs>

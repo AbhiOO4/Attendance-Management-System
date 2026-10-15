@@ -13,6 +13,7 @@ import { getTodayLocal } from '../utils/timeLocal.js'
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { findRecordedElsewhere } from '../utils/draftRoster.js'
 import { syncSupervisorScope } from '../utils/supervisorScope.js'
+import { isDriverTitle, DRIVER_ONLY_MESSAGE, hasSitePlacement, releaseSitePlacement, latestServedPlaces } from '../utils/driverPool.js'
 
 //Admin
 
@@ -225,6 +226,19 @@ export const getAllEmployees = async (req, res) => {
       }
     }
 
+    // Drivers have no site of their own (they live on the Drivers sheet): their "current site"
+    // is the site their latest drivers-sheet session served.
+    const driverIds = employees.filter((e) => isDriverTitle(e.jobTitle)).map((e) => e._id);
+    if (driverIds.length) {
+      const places = await latestServedPlaces(driverIds);
+      employees = employees.map((e) => {
+        if (!isDriverTitle(e.jobTitle)) return e;
+        const obj = typeof e.toObject === "function" ? e.toObject() : e;
+        obj.driverSite = places.get(String(e._id)) ?? null;
+        return obj;
+      });
+    }
+
     const response = {
       employees,
       totalEmployees,
@@ -252,17 +266,17 @@ export const addEmployee = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
+    // Drivers live only on the Drivers sheet — never created onto a site.
+    if (isDriverTitle(req.body.jobTitle) && (req.body.currentSite || req.body.currentJob)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE });
+    }
+
     // Derive collar type from the chosen job title (client never sets it directly).
     req.body.collarType = await resolveCollarType(req.body.jobTitle);
     // Nationality is set on the employee (not derived). Normalize to the allowed pair.
     req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
-
-    // Optional per-employee annual-leave override: empty/invalid → null (use global default).
-    if (req.body.annualLeaveEntitlement !== undefined) {
-      const raw = req.body.annualLeaveEntitlement;
-      const n = raw === null || raw === '' ? null : Number(raw);
-      req.body.annualLeaveEntitlement = Number.isFinite(n) && n >= 0 ? n : null;
-    }
 
     // Optional company ID: blank → null (the partial unique index ignores nulls).
     if (req.body.companyId !== undefined) {
@@ -427,23 +441,26 @@ export const editEmployee = async (req, res) => {
     if (req.body.jobTitle && req.body.jobTitle !== existingEmployee.jobTitle) {
       req.body.collarType = await resolveCollarType(req.body.jobTitle);
     }
+
+    // Drivers live only on the Drivers sheet. A driver can't be put on a site here, and an
+    // edit that MAKES someone a driver takes them off their site / job / visit / schedule
+    // (attendance history is untouched); their supervisor access follows below.
+    const driverAfterEdit = isDriverTitle(req.body.jobTitle ?? existingEmployee.jobTitle);
+    if (driverAfterEdit && (currentSite || currentJob)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE });
+    }
+    let releasedFromSite = false;
+    if (driverAfterEdit && hasSitePlacement(existingEmployee)) {
+      await releaseSitePlacement(existingEmployee, session);
+      await existingEmployee.save({ session });
+      releasedFromSite = true;
+    }
     // Normalize nationality only when the edit actually includes it (findByIdAndUpdate
     // skips validators, so guard against a stray value slipping through).
     if (req.body.nationality !== undefined) {
       req.body.nationality = req.body.nationality === 'omani' ? 'omani' : 'foreign';
-    }
-
-    // Per-employee annual-leave override. Empty string / null / invalid → null
-    // (fall back to the global default); a valid non-negative number is stored.
-    // Guarded because findByIdAndUpdate below skips schema validators.
-    if (req.body.annualLeaveEntitlement !== undefined) {
-      const raw = req.body.annualLeaveEntitlement;
-      if (raw === null || raw === '') {
-        req.body.annualLeaveEntitlement = null;
-      } else {
-        const n = Number(raw);
-        req.body.annualLeaveEntitlement = Number.isFinite(n) && n >= 0 ? n : null;
-      }
     }
 
     // Optional company ID: blank → null (clears it). Omitted → left untouched.
@@ -518,7 +535,7 @@ export const editEmployee = async (req, res) => {
     }
     // An edit that re-homes the employee is a permanent move: their supervisor
     // account's site access follows it (cleared when the site is cleared).
-    if (siteChanged) {
+    if (siteChanged || releasedFromSite) {
       await syncSupervisorScope(employee, session);
     }
 
@@ -526,7 +543,10 @@ export const editEmployee = async (req, res) => {
     session.endSession();
 
     res.status(200).json({
-      message: "Updated employee details successfully",
+      message: releasedFromSite
+        ? "Updated — as a driver they're now on Drivers Attendance only"
+        : "Updated employee details successfully",
+      releasedFromSite,
     });
 
   } catch (error) {
@@ -975,7 +995,9 @@ export const getTempPool = async (req, res) => {
     let filter = {
       employmentType: 'temporary',
       currentSite: null,
-      isActive: true
+      isActive: true,
+      // Drivers live only on the Drivers sheet — never offered for a site.
+      $and: [{ jobTitle: { $not: /driver/i } }],
     };
 
     if (jobTitle) {
@@ -1045,6 +1067,12 @@ export const assignTempWorker = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: "Employee not found" });
+    }
+
+    if (isDriverTitle(employee.jobTitle)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE });
     }
 
     if (employee.employmentType !== 'temporary') {

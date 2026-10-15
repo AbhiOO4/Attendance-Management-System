@@ -45,7 +45,6 @@ export const updateWorkSchedule = async (req, res) => {
       checkoutReminderGraceMinutes,
       checkoutRemarkGraceMinutes,
       lopDeductionAmount,
-      annualLeaveDefaultDays,
       erpCompanyName,
       erpDefaultActivityType,
       erpOvertimeActivityType,
@@ -157,16 +156,6 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.lopDeductionAmount = lopDeductionAmount;
-    }
-
-    if (annualLeaveDefaultDays !== undefined) {
-      if (annualLeaveDefaultDays < 0 || annualLeaveDefaultDays > 365) {
-        return res.status(400).json({
-          success: false,
-          message: "Annual leave default days must be between 0 and 365",
-        });
-      }
-      schedule.annualLeaveDefaultDays = annualLeaveDefaultDays;
     }
 
     // ERPNext export labels (free text; no rate logic). Empty string is allowed —

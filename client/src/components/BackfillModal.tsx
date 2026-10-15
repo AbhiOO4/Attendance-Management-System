@@ -45,7 +45,8 @@ import {
 } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useGlobalJobs } from "@/lib/globalJobs"
-import { driverSessionMissingJob, fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import { fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import { driverSessionMissingPlace, type DriverPlace } from "@/lib/jobSplit"
 import SessionSiteJobFields, { type PickerSite } from "@/components/SessionSiteJobFields"
 
 // --------------------------------------------------
@@ -59,6 +60,8 @@ interface SessionDraft {
   siteName?: string
   jobId?: string | null
   jobName?: string
+  // On "Drivers": the site served + the ticked jobs its hours are split across.
+  place?: DriverPlace | null
   checkIn?: string | null
   checkOut?: string | null
   workedHours: number
@@ -313,6 +316,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
 
       if (field === "siteId") {
         updated[index].jobId = null
+        updated[index].place = null
       }
     }
 
@@ -336,7 +340,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     }
     setSessions([
       ...sessions,
-      { siteId: isDriver ? driverPoolId : "", jobId: null, checkIn: null, checkOut: null, workedHours: 0 },
+      { siteId: isDriver ? driverPoolId : "", jobId: null, place: null, checkIn: null, checkOut: null, workedHours: 0 },
     ])
   }
 
@@ -360,8 +364,8 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       return
     }
 
-    if (sessions.some((s) => driverSessionMissingJob(sites, s))) {
-      toast.error("Pick a job for every driver session")
+    if (sessions.some((s) => driverSessionMissingPlace(sites, s))) {
+      toast.error("Pick the site for every driver session")
       return
     }
 
@@ -450,7 +454,9 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
         date,
         sessions: sortedSessions.map((s) => ({
           siteId: s.siteId,
-          jobId: s.jobId || null,
+          jobId: s.place?.jobIds.length ? null : s.jobId || null,
+          // Drivers: the server keeps the split only for a session on "Drivers".
+          splitJobIds: s.place?.jobIds ?? [],
           checkIn: s.checkIn ? toTimeValue(s.checkIn) : null,
           checkOut: s.checkOut ? toTimeValue(s.checkOut) : null,
           isNightShift: s.isNightShift || false,
@@ -574,7 +580,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                     </Button>
                   </div>
 
-                  {/* Site + Job ("Drivers" for a driver — any-site job picker) */}
+                  {/* Site + Job ("Drivers" for a driver — the site served + its jobs) */}
                   <SessionSiteJobFields
                     sites={sites}
                     siteId={session.siteId}
@@ -583,8 +589,10 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                     allowDrivers={isDriver}
                     globalJobs={globalJobs}
                     hasTimes={!!(session.checkIn || session.checkOut)}
+                    place={session.place ?? null}
                     onSiteChange={(value) => updateSessionField(index, "siteId", value)}
                     onJobChange={(value) => updateSessionField(index, "jobId", value)}
+                    onPlaceChange={(value) => updateSessionField(index, "place", value)}
                   />
 
                   {/* Time inputs */}

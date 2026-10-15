@@ -46,14 +46,14 @@ import {
 
 import EditEmployee from "@/components/EditEmployee"
 import AddEmployee from "@/components/AddEmployee"
-import GrantLeaveDialog from "@/components/GrantLeaveDialog"
 import axios from "axios"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
-import { CalendarPlus, Download, Loader2, MoreHorizontal, Pencil, RotateCcw, Search, Siren, Trash2, X } from "lucide-react"
+import { Download, Loader2, MoreHorizontal, Pencil, RotateCcw, Search, Trash2, X } from "lucide-react"
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
+import { isDriverTitle } from "@/lib/driverJobs"
 
 interface Employee {
   _id: string
@@ -67,6 +67,9 @@ interface Employee {
   nationality?: 'foreign' | 'omani'
   companyId?: string | null
   isActive?: boolean
+  // Drivers only (no site of their own): the site their latest Drivers Attendance session
+  // served — "General" for global jobs; null when they've never been marked.
+  driverSite?: { siteId: string | null; siteName: string } | null
 }
 
 
@@ -104,7 +107,6 @@ type NewEmployee = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
-  annualLeaveEntitlement?: number | null
   companyId?: string | null
 }
 
@@ -114,13 +116,12 @@ type UpdateInfo = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
-  annualLeaveEntitlement?: number | null
   companyId?: string | null
 }
 
 
 // Per-row action menu. Kept as its own component so each row owns the open state
-// of its Edit / Grant-leave / Grant-emergency-leave / Delete dialogs. Deactivated rows only offer Restore.
+// of its Edit / Delete dialogs. Deactivated rows only offer Restore.
 // The dialogs are rendered as siblings of the menu (not nested inside the dropdown
 // content) and driven in controlled mode, so opening one from a menu item is clean.
 function EmployeeRowActions({
@@ -137,8 +138,6 @@ function EmployeeRowActions({
   onRestore: (id: string) => void
 }) {
   const [editOpen, setEditOpen] = useState(false)
-  const [leaveOpen, setLeaveOpen] = useState(false)
-  const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   if (employee.isActive === false) {
@@ -159,16 +158,6 @@ function EmployeeRowActions({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem onSelect={() => setLeaveOpen(true)}>
-            <CalendarPlus className="h-4 w-4" />
-            Grant Annual Leave
-          </DropdownMenuItem>
-
-          <DropdownMenuItem onSelect={() => setEmergencyOpen(true)}>
-            <Siren className="h-4 w-4" />
-            Grant Emergency Leave
-          </DropdownMenuItem>
-
           <DropdownMenuItem onSelect={() => setEditOpen(true)}>
             <Pencil className="h-4 w-4" />
             Edit
@@ -185,27 +174,6 @@ function EmployeeRowActions({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
-      {/* GRANT LEAVE — controlled, triggerless */}
-      <GrantLeaveDialog
-        employeeId={employee._id}
-        employeeName={employee.name}
-        onGranted={() => {}}
-        open={leaveOpen}
-        onOpenChange={setLeaveOpen}
-        hideTrigger
-      />
-
-      {/* GRANT EMERGENCY LEAVE (unpaid, excused) — controlled, triggerless */}
-      <GrantLeaveDialog
-        employeeId={employee._id}
-        employeeName={employee.name}
-        leaveType="emergency"
-        onGranted={() => {}}
-        open={emergencyOpen}
-        onOpenChange={setEmergencyOpen}
-        hideTrigger
-      />
 
       {/* EDIT — controlled, triggerless */}
       <EditEmployee
@@ -1011,12 +979,23 @@ function Employees() {
                   </TableCell>
 
                   <TableCell>
-                    <div className="flex flex-col gap-0.5">
-                      <span>{employee.currentSite ? siteMap[employee.currentSite] : "Not Assigned"}</span>
-                      {employee.currentJob && (
-                        <span className="text-xs text-muted-foreground">{employee.currentJob.name}</span>
-                      )}
-                    </div>
+                    {isDriverTitle(employee.jobTitle) ? (
+                      // Drivers live on Drivers Attendance: their site is the one their latest
+                      // session served. No job — a driver's hours split across that site's jobs.
+                      <div className="flex flex-col gap-0.5">
+                        <span className={employee.driverSite ? "" : "text-muted-foreground"}>
+                          {employee.driverSite?.siteName ?? "Not marked yet"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">Drivers</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-0.5">
+                        <span>{employee.currentSite ? siteMap[employee.currentSite] : "Not Assigned"}</span>
+                        {employee.currentJob && (
+                          <span className="text-xs text-muted-foreground">{employee.currentJob.name}</span>
+                        )}
+                      </div>
+                    )}
                   </TableCell>
 
                   {canWrite && (

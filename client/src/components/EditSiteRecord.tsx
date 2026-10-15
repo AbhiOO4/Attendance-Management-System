@@ -67,8 +67,9 @@ import {
 } from "@/lib/attendanceUtils"
 import { categoryOf, defaultCheckOutFor, CHECKOUT_REMARK_GRACE_MINUTES, type CollarType, type Nationality } from "@/lib/rosterUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
-import JobPicker from "@/components/drivers/JobPicker"
+import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
 import { useDriverJobIndex } from "@/lib/driverJobs"
+import { placeFromJob, placeFromSession, type DriverPlace, type SessionSplitFields } from "@/lib/jobSplit"
 import { liveSiteJobs } from "@/lib/siteJobs"
 import { GLOBAL_JOBS_GROUP_LABEL, useGlobalJobs } from "@/lib/globalJobs"
 import { cn } from "@/lib/utils"
@@ -114,6 +115,13 @@ interface AttendanceSession {
 
   jobId?: string | null
   jobName?: string
+
+  // Drivers sheet: the site served + the jobs its hours are split across (from the server),
+  // and the editor's working pick (lib/jobSplit.ts). `place` stays undefined on a legacy
+  // single-job session until the job is re-picked, so it saves with its job unchanged.
+  servedSite?: SessionSplitFields["servedSite"]
+  splitJobs?: SessionSplitFields["splitJobs"]
+  place?: DriverPlace | null
 
   checkIn?: string | null
 
@@ -251,6 +259,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       const b = s2[i]
       if (a.siteId !== b.siteId) return false
       if ((a.jobId || null) !== (b.jobId || null)) return false
+      if ((a.place?.jobIds ?? []).join() !== (b.place?.jobIds ?? []).join()) return false
       if (!isSameDateStr(a.checkIn, b.checkIn)) return false
       if (!isSameDateStr(a.checkOut, b.checkOut)) return false
     }
@@ -291,9 +300,12 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
       const attendance = res.data
       setRecord(attendance)
 
-      const cloned = JSON.parse(JSON.stringify(attendance.sessions || []))
-      setSessions(cloned)
-      setInitialSessions(JSON.parse(JSON.stringify(attendance.sessions || [])))
+      // Drivers: a saved split opens as its place (site + ticked jobs).
+      const withPlaces = (attendance.sessions || []).map((s: AttendanceSession) =>
+        anyJob && s.splitJobs?.length ? { ...s, place: placeFromSession(s) } : s
+      )
+      setSessions(JSON.parse(JSON.stringify(withPlaces)))
+      setInitialSessions(JSON.parse(JSON.stringify(withPlaces)))
       const bt = clampBreaks(attendance.breaksTaken)
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
@@ -405,8 +417,17 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
   // global jobs are offered but never make it mandatory).
   const liveJobs = useMemo(() => liveSiteJobs(site), [site])
   const jobRequired = anyJob || liveJobs.length > 0
+  // Drivers: the session's place — its working pick, else a legacy single job's site.
+  const placeOf = (session: AttendanceSession): DriverPlace | null =>
+    session.place !== undefined
+      ? session.place
+      : session.jobId
+      ? placeFromJob(driverJobIndex.get(String(session.jobId)))
+      : null
   const sessionMissingJob = (session: AttendanceSession) =>
-    jobRequired && !!(session.checkIn || session.checkOut) && !session.jobId
+    jobRequired &&
+    !!(session.checkIn || session.checkOut) &&
+    (anyJob ? !(session.place !== undefined ? session.place?.jobIds.length : session.jobId) : !session.jobId)
   const jobsMissing = currentSiteSessions.some(({ session }) => sessionMissingJob(session))
 
   // --------------------------------------------------
@@ -521,6 +542,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         siteId: site._id,
         siteName: site.siteName,
         jobId: anyJob ? null : record.jobId || null,
+        ...(anyJob ? { place: null } : {}),
         checkIn: null,
         checkOut: null,
         workedHours: 0,
@@ -624,7 +646,7 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
 
       // Every session here with a time names the job it was for.
       if (jobsMissing) {
-        toast.error(anyJob ? "Pick the job for every driver session." : "Assign a job to every session before saving.")
+        toast.error(anyJob ? "Pick the site for every driver session." : "Assign a job to every session before saving.")
         return
       }
 
@@ -648,7 +670,11 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         sessions: sortedSessions.map((session) => ({
           _id: session._id,
           siteId: session.siteId,
-          jobId: session.jobId || null,
+          // Drivers: a picked place sends its ticked jobs; an untouched legacy single-job
+          // session keeps its job (the server leaves an unsent split as it is).
+          ...(anyJob && session.place !== undefined
+            ? { jobId: null, splitJobIds: session.place?.jobIds ?? [] }
+            : { jobId: session.jobId || null }),
           checkIn: session.checkIn || null,
           checkOut: session.checkOut || null,
           isNightShift: session.isNightShift || false,
@@ -855,16 +881,13 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
         </div>
         )}
 
-        {/* Job selector (drivers sheet: any site's job) */}
+        {/* Drivers sheet: the site served + the jobs its hours are split across */}
         {anyJob ? (
-          <JobPicker
-            value={
-              session.jobId
-                ? driverJobIndex.get(String(session.jobId)) ?? { _id: String(session.jobId), name: session.jobName || "Job" }
-                : null
-            }
+          <SiteSplitPicker
+            value={placeOf(session)}
+            knownJobs={session.splitJobs}
             invalid={missingJob}
-            onChange={(job) => updateSessionField(globalIndex, "jobId", job._id)}
+            onChange={(place) => updateSessionField(globalIndex, "place", place)}
             className="h-10 sm:h-11"
           />
         ) : (

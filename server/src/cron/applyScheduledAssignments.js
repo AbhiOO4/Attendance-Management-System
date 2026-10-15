@@ -8,6 +8,7 @@ import { applyHandover } from '../utils/handover.js';
 import { touchSiteRosters } from '../utils/draftRoster.js';
 import { syncSupervisorScope } from '../utils/supervisorScope.js';
 import { recordSiteActivity, SYSTEM_ACTOR } from '../utils/siteActivity.js';
+import { isDriverTitle } from '../utils/driverPool.js';
 
 /**
  * Promote deferred ("from tomorrow") assignments once their effective date arrives.
@@ -166,6 +167,14 @@ export async function runApplyScheduledAssignments() {
 
           console.log(`[ScheduledAssignments] Applied removal for employee ${employee._id}`);
           await logScheduleEvent(employee, { type: 'scheduled_applied', kind: 'removal', fromSiteId: removedFrom });
+          continue;
+        }
+
+        // Drivers live only on the Drivers sheet: a move / visit / job change scheduled before
+        // they became a driver is dropped, never applied.
+        if (isDriverTitle(employee.jobTitle)) {
+          const ev = await dropSchedule(employee, session, 'skipped, drivers live only on the Drivers sheet');
+          await logScheduleEvent(employee, ev);
           continue;
         }
 

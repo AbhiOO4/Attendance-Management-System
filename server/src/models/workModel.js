@@ -95,16 +95,6 @@ const workScheduleSchema = new mongoose.Schema(
       default: 15,
     },
 
-    // Global default annual PAID-LEAVE entitlement, in working days per calendar
-    // year. Applies to every employee unless overridden by Employee.annualLeaveEntitlement.
-    // "Used" is never stored — it is derived from paid-leave attendance records
-    // (Attendance.isPaidLeave) for the year, so this is purely the allowance.
-    annualLeaveDefaultDays: {
-      type: Number,
-      min: 0,
-      default: 30,
-    },
-
     // Minutes a manually-edited check-out may run past the employee's category
     // default check-out before a supervisor remark becomes mandatory to save the
     // record. Enforced client-side in EditSiteRecord (see the requiresRemark gate).

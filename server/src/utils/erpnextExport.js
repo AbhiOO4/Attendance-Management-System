@@ -74,6 +74,14 @@ function localDateTimeString(instant) {
 // so truncating to the minute would start the next log up to 59s BEFORE the previous one ends
 // and ERPNext rejects the import as an overlap. The APP offset is whole minutes, so the UTC
 // seconds are the local seconds.
+// A session's jobs, populated: `splitJobIds` when non-empty (a driver split), else
+// [jobId]. Mirrors sessionJobIds in utils/jobSplit.js, kept inline so this file stays pure.
+function sessionJobs(session) {
+  const split = Array.isArray(session?.splitJobIds) ? session.splitJobIds.filter(Boolean) : [];
+  if (split.length) return split;
+  return session?.jobId ? [session.jobId] : [];
+}
+
 function localDateTimeStringExact(instant) {
   const d = new Date(Math.round(new Date(instant).getTime() / 1000) * 1000);
   const ss = String(d.getUTCSeconds()).padStart(2, "0");
@@ -232,6 +240,13 @@ export function buildAttendanceCsv(
 // A worked session with no job can't bill to a Project: it is skipped and counted in
 // meta.skippedNoJob so nothing vanishes silently.
 //
+// Driver job splits (utils/jobSplit.js): a session whose hours are split across N jobs
+// (`splitJobIds`) becomes N slices of equal net (and equal OT), laid ONE AFTER ANOTHER from
+// the check-in (job A regular → A overtime → job B regular …). Each slice lands in its own
+// job's Timesheet, and back-to-back slices never overlap there — ERPNext rejects an
+// employee's overlapping time logs across Timesheets. A sliced job with no code is skipped
+// and counted like a jobless session.
+//
 // Regular/OT split: when `overtimeActivityType` is set, a session is emitted as up to TWO
 // time-logs — the regular hours under `activityType` and the overtime hours under
 // `overtimeActivityType` — so ERPNext can cost OT at a premium (its own Activity Cost per
@@ -319,30 +334,43 @@ export function buildTimesheetCsv(
       : nets.map(() => 0);
 
     worked.forEach((session, i) => {
-      const jobCode = session.jobId && session.jobId.jobCode;
-      if (!jobCode) {
+      const jobs = sessionJobs(session);
+      if (!jobs.some((job) => job && job.jobCode)) {
         skippedNoJob++;
         return;
       }
       if (!record.employee?.activityType?.name) unallocated.add(employeeId);
 
-      const from = localDateTimeString(session.checkIn);
-      const otH = ots[i];
-      const regH = round2(nets[i] - otH);
+      // One job → one slice (the whole session). N jobs → N equal slices, back to back.
+      const netParts = allocateProRata(jobs.map(() => 1), nets[i]);
+      const otParts = allocateProRata(jobs.map(() => 1), ots[i]);
+      let sliceStartMs = new Date(session.checkIn).getTime();
 
-      if (splitOt && otH > 0) {
-        // Regular portion first, then OT as the tail so the two logs are contiguous
-        // (To Time = From + Hours) and never overlap within the Timesheet.
-        if (regH > 0) addLine(employeeId, jobCode, regularType, from, regH);
-        // Exact to the second: regH is 2dp, so regH*3600 is a whole number of seconds and the
-        // tail starts precisely where the regular log ends (From + Hrs), not a few seconds early.
-        const otFrom = localDateTimeStringExact(
-          new Date(new Date(session.checkIn).getTime() + Math.round(regH * 3600) * 1000)
-        );
-        addLine(employeeId, jobCode, overtimeType, otFrom, otH);
-      } else {
-        addLine(employeeId, jobCode, regularType, from, round2(nets[i]));
-      }
+      jobs.forEach((job, k) => {
+        const startMs = sliceStartMs;
+        // Exact to the second: the parts are 2dp, so part*3600 is a whole number of seconds
+        // and each slice starts precisely where the previous one ends (From + Hrs).
+        sliceStartMs += Math.round(netParts[k] * 3600) * 1000;
+        const jobCode = job && job.jobCode;
+        if (!jobCode) {
+          skippedNoJob++;
+          return;
+        }
+
+        const from = k === 0 ? localDateTimeString(session.checkIn) : localDateTimeStringExact(new Date(startMs));
+        const otH = otParts[k];
+        const regH = round2(netParts[k] - otH);
+
+        if (splitOt && otH > 0) {
+          // Regular portion first, then OT as the tail so the two logs are contiguous
+          // (To Time = From + Hours) and never overlap within the Timesheet.
+          if (regH > 0) addLine(employeeId, jobCode, regularType, from, regH);
+          const otFrom = localDateTimeStringExact(new Date(startMs + Math.round(regH * 3600) * 1000));
+          addLine(employeeId, jobCode, overtimeType, otFrom, otH);
+        } else {
+          addLine(employeeId, jobCode, regularType, from, round2(netParts[k]));
+        }
+      });
     });
   }
 

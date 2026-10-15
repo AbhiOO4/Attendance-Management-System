@@ -49,6 +49,7 @@ import {
 } from "../utils/sessionOverlap.js"
 import { openEventStream } from "../utils/realtime.js"
 import { touchSiteRosters, isWriteConflict } from "../utils/draftRoster.js"
+import { isDriverTitle, DRIVER_ONLY_MESSAGE } from "../utils/driverPool.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -199,6 +200,10 @@ export const createRequest = async (req, res) => {
     const employee = await empModel.findById(employeeId)
     if (!employee || !employee.isActive) {
       return res.status(404).json({ success: false, message: "Employee not found" })
+    }
+    // Drivers live only on the Drivers sheet — never requested onto a site.
+    if (isDriverTitle(employee.jobTitle)) {
+      return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
     }
 
     if (!employee.currentSite) {
@@ -484,6 +489,14 @@ export const acceptRequest = async (req, res) => {
         request, req, res, session,
         note: "Employee was deactivated",
         message: "This employee has been deactivated — request expired",
+      })
+    }
+    // Became a driver since the request was made: drivers never go onto a site.
+    if (isDriverTitle(employee.jobTitle)) {
+      return expireAndRespond({
+        request, req, res, session,
+        note: "Employee is now a driver",
+        message: `${DRIVER_ONLY_MESSAGE} — request expired`,
       })
     }
 

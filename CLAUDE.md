@@ -76,10 +76,25 @@ and never sees the token. Key pieces:
   `isLop`, and night-shift fields. A pre-save hook enforces the invariant that a leave
   flag is only valid when no session has any check-in/out, and that they are mutually
   exclusive (precedence paid > emergency > sick > lop).
-- **Leave** (`leaveModel.js`) — the grant ledger for range-granted leave: `type`
-  `annual` (PAID, draws on the yearly balance → `isPaidLeave`) or `emergency` (excused
-  but UNPAID like sick leave, no balance → `isEmergencyLeave`, counts as an absent day in
-  reports). Endpoints under `/api/attendance/leave/*` take `type`. A granted day of
+- **Leave** (`leaveModel.js`) — the ledger of leave APPLICATIONS over a range: `type`
+  `annual` (PAID → `isPaidLeave`, capped by allocations) or `emergency` (excused but
+  UNPAID like sick leave, no cap → `isEmergencyLeave`, counts as an absent day in
+  reports). Managed ONLY on the Leave page (`/leave`, `pages/Leave.tsx`, admin+superadmin,
+  sidebar "Leave"): tab Applications (create `POST /leave`, EDIT `PUT /leave/:id` = revert +
+  re-apply in one transaction via `revertLeaveDays`/`applyLeaveDays`, cancel, DELETE `/leave/:id`
+  — only a cancelled one (409 otherwise), list `GET /leave`; row actions in a kebab menu)
+  and tab Allocations. The employee timesheet only shows the balance chip + a read-only history.
+- **LeaveAllocation** (`leaveAllocationModel.js`, `controllers/leaveAllocationController.js`,
+  routes `/api/attendance/leave/allocations*`) — the ONLY source of annual allowance: one
+  employee, `fromDate`–`toDate`, `days`. One employee's allocations NEVER overlap (409
+  `ALLOCATION_OVERLAP`); an allocation can't be cut below / shrunk away from annual days already
+  taken, nor deleted while used. "Used" is derived (count `isPaidLeave` inside the range), never
+  stored — `utils/leaveBalance.js` (`checkAnnualAgainstAllocations`: every annual day must sit in
+  an allocation with room; `allocationSummaries` for `GET /leave/balance/:id`). The old
+  `Employee.annualLeaveEntitlement` / `WorkSchedule.annualLeaveDefaultDays` were removed;
+  production was moved over by `seed/migrateLeaveAllocations.js "<url>" [--apply]` (60 days,
+  2026, for employees with an active annual grant). Endpoints under `/api/attendance/leave/*`
+  take `type`. A granted day of
   either type is LOCKED: submit/bulk-edit skip it, edits 409, the crons skip it, and the
   Site Attendance draft excludes it (`GET /leave/on-date`, mirrored by
   `utils/draftRoster.js`). Grant/cancel run in `session.withTransaction` with strictly
@@ -272,17 +287,50 @@ saved-row inline editor and `EditSiteRecord` refuse it client-side, and `siteFir
 send-to-site and pull requests stay job-optional; a saved session left without one shows a red
 "No job · Assign" chip. The drivers sheet keeps its own any-site job rule.
 
+**Drivers live ONLY on Drivers Attendance.** A driver = active + job title contains "driver" (title
+only — `driverEmployeeFilter` / `isDriverEmployee` / `isDriverTitle` in `utils/driverPool.js`, client
+`isDriverTitle` in `lib/driverJobs.ts`). They never get a site: every placement path refuses them with
+400 `DRIVER_ONLY` (`DRIVER_ONLY_MESSAGE`) — insta-add (and its candidate list), assign/assign-supervisor,
+send-to-site, requests (create; accept expires it), `transferEmployee` (also from the pool), temp-worker
+assign/pool, `addEmployee` with a site, plus a backstop in `utils/handover.js`; the scheduled-assignment
+cron DROPS a driver's schedule. Attendance writers refuse a driver's session at a real site
+(`nonPoolDriverSessionError`): site-sheet submit, `updateAttendance` (NEW/moved sessions only — history
+already at a site stays editable), backfill, add-session; bulk backfill / night shift / bulk edit skip
+them. Editing a title INTO a driver title clears every placement (`releaseSitePlacement`: site, job,
+Job.employees, visit stash, schedule) and re-syncs supervisor scope. `seed/moveDriversToPool.js
+"<mongo url>" [--apply]` does the same for drivers placed before the rule (dry run by default). The
+Employees list shows a driver's site as the one their LATEST pool session served
+(`latestServedPlaces` → `driverSite` on `GET /api/employees` rows), with no job.
+
 **Drivers in the past-day editors.** Driver sessions live on the hidden Drivers pool site
 (`utils/driverPool.js`), which `GET /api/site` hides unless `?includeDriverPool=true` (admins
 only; appended last, flagged `isDriverPool`). Edit past (`EditRecord`), Backfill and Bulk backfill
 fetch it that way and render it as a "No site → Drivers" place via
 `components/SessionSiteJobFields.tsx` — offered only for drivers (job title contains "driver",
 client `isDriverTitle` in `lib/driverJobs.ts` ↔ server `DRIVER_TITLE_REGEX`) or a session already
-on it, and preselected for drivers. A Drivers session uses the any-site `JobPicker` and needs a job.
+on it, and preselected for drivers. A Drivers session names a site + job split (below) and needs one.
 Server: `validateDriverPoolSessions` (backfill, admin edit without `?siteId`) and the bulk backfill
-pool branch (non-drivers skipped "Not a driver") check it; the job check is LENIENT on liveness
-(`findPastDriverJob`: any non-deleted global or real-site job), unlike today's `findDriverJob`.
+pool branch (non-drivers skipped "Not a driver") check it — LENIENT on liveness for past days.
 Edit past + Missing offer a "Drivers" filter (Missing maps it to `driverEmployeeFilter()`).
+
+**Driver job splits** (`utils/jobSplit.js`, client `lib/jobSplit.ts` — keep in sync). A driver serves a
+SITE, not one job: a Drivers-pool session stores `servedSiteId` + `splitJobIds` (`jobId: null`) and its
+hours are split EQUALLY across those jobs. `servedSiteId: null` = the "General" place (global jobs).
+A session's jobs are ALWAYS read via `sessionJobIds`: `splitJobIds` when non-empty, else `[jobId]` —
+legacy single-job driver sessions still work and convert to a one-job split when next saved.
+`resolveDriverSplit(jobIds, { strict })` derives the site server-side (all jobs at ONE real site, or all
+global; mixes refused); `strict` (today's sheet) also needs every job live + the site assignable.
+Clients send only `splitJobIds`. `updateAttendance` CARRIES a stored split forward when a body session
+omits `splitJobIds` (sick/LOP toggles, carryover closes, times-only edits) and re-checks liveness only
+when the split changed. Picker: `components/drivers/SiteSplitPicker.tsx` (sites with no live job are
+listed muted + unpickable — `GET /api/drivers/jobs` now includes them with `jobs: []`; a fresh pick
+ticks every live job; the last tick can't be removed). Used by the Drivers sheet (draft + inline),
+`EditSiteRecord`, `SessionSiteJobFields` (Edit past, Backfill) and Bulk backfill. Draft prefill =
+`lastPlace` from `GET /api/drivers/roster` (last site served, ALL its current live jobs ticked).
+Readers that divide by N: `jobReport` (`_jobs`/`_n` after `$unwind`), `jobManHoursAndDays`, and
+`buildTimesheetCsv`, which lays the N slices ONE AFTER ANOTHER from check-in (each in its own job's
+Timesheet) so ERPNext never sees overlapping time logs. Responses carry `servedSite` + `splitJobs`
+(`buildSplitLookup`); `sessionJobCell` renders them in tables/exports.
 
 **Global jobs** (`utils/globalJobs.js`, client `lib/globalJobs.ts`) — jobs common to every site,
 for hours tracked against general expenses (e.g. drivers). A `Job` with `isGlobal: true, site: null`,
@@ -292,7 +340,7 @@ sync), unique across ALL jobs, case-insensitively checked on create. Managed by 
 Global Jobs (`/site/global-jobs`, `pages/GlobalJobs.tsx`) via `/api/jobs/global` (GET live list for
 every role; `/manage`, POST, `PATCH /:jobId/status`, DELETE soft — admin). Offered as a "Global (all
 sites)" group in every session job picker (site sheet draft/inline/`EditSiteRecord`, admin
-`EditRecord`, the drivers list from `GET /api/drivers/jobs`). SESSION-ONLY: never a `currentJob` —
+`EditRecord`; for drivers, the "General" place of the site split picker). SESSION-ONLY: never a `currentJob` —
 `syncCurrentJobFromLatestSession` skips it, `findAssignableJob` rejects a job with no site, and the
 site job-assignment endpoints 400 it. It never makes a job MANDATORY: a site with no jobs of its own
 shows the Job column (`showJobColumn`) with an optional picker ("No job" clears it); `siteHasJobs` /

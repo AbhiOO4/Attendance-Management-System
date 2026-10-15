@@ -28,7 +28,7 @@ export const LIVE_GLOBAL_JOB_FILTER = {
 }
 
 // The picker group global jobs are listed under (GET /api/drivers/jobs).
-export const GLOBAL_JOB_GROUP = { _id: "global", siteName: "Global (all sites)", isGlobal: true }
+export const GLOBAL_JOB_GROUP = { _id: "global", siteName: "General (global jobs)", isGlobal: true }
 
 /** The live global jobs as `{ _id, name, jobCode }`, sorted by code. */
 export async function listLiveGlobalJobs() {

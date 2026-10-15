@@ -151,7 +151,8 @@ export default function JobPicker({
                 </CommandItem>
               </CommandGroup>
             )}
-            {sites.map((s) => (
+            {/* GET /api/drivers/jobs also lists job-less sites (for the drivers' site picker). */}
+            {sites.filter((s) => s.jobs.length > 0).map((s) => (
               <CommandGroup
                 key={s._id}
                 className={groupClass}

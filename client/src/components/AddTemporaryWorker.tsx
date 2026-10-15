@@ -11,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
+import { isDriverTitle } from "@/lib/driverJobs"
 import {
   Select,
   SelectContent,
@@ -69,7 +70,8 @@ function AddTemporaryWorker({
   const fetchTitles = async () => {
     try {
       const res = await api.get<JobTitle[]>('/api/employees/jobTitles')
-      setJobTitles(res.data)
+      // A hired worker joins THIS site; drivers live only on Drivers Attendance.
+      setJobTitles(res.data.filter((t) => !isDriverTitle(t.title)))
     } catch (error) {
       console.log(error)
     }

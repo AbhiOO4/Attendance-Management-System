@@ -1,0 +1,232 @@
+<mxfile host="app.diagrams.net" agent="Claude Code">
+  <diagram id="ngdp-ams-architecture" name="NGDP AMS architecture">
+    <mxGraphModel dx="1800" dy="1600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1850" pageHeight="1700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============ LAYER BANDS ============ -->
+        <mxCell id="band_client" value="&lt;b&gt;1 · CLIENT&lt;/b&gt; — React 19 + React Router 7 + Vite PWA (client/)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#f2f7fd;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=14;fontColor=#23466e;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1760" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="band_api" value="&lt;b&gt;2 · API&lt;/b&gt; — Express (server/src/server.js), ESM" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#f3faf1;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=14;fontColor=#2d5a1e;" vertex="1" parent="1">
+          <mxGeometry x="20" y="350" width="1760" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="band_services" value="&lt;b&gt;3 · SERVICES&lt;/b&gt; — controllers, domain logic, realtime, push, crons" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#fffbef;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=14;fontColor=#6b5200;" vertex="1" parent="1">
+          <mxGeometry x="20" y="630" width="1760" height="365" as="geometry" />
+        </mxCell>
+        <mxCell id="band_data" value="&lt;b&gt;4 · DATA&lt;/b&gt; — Mongoose models (server/src/models)" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#f8f3fa;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=14;fontColor=#4b2d5a;" vertex="1" parent="1">
+          <mxGeometry x="20" y="1030" width="1760" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="band_ext" value="&lt;b&gt;5 · EXTERNAL INTEGRATIONS&lt;/b&gt;" style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#fdf3f3;strokeColor=#b85450;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fontSize=14;fontColor=#7a2b28;" vertex="1" parent="1">
+          <mxGeometry x="20" y="1330" width="1760" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- ============ ACTORS ============ -->
+        <mxCell id="actors" value="&lt;b&gt;Users&lt;/b&gt;: Supervisor · Admin · Superadmin · Driver Supervisor (browser or installed PWA)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=12;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="270" y="-50" width="550" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ============ CLIENT ============ -->
+        <mxCell id="c_router" value="&lt;b&gt;Router &amp;amp; guards&lt;/b&gt;&lt;br&gt;App.tsx (lazy routes)&lt;br&gt;ProtectedRoute(allowedRoles)&lt;br&gt;PublicRoute · SidebarLayout" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="190" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="c_ctx" value="&lt;b&gt;Contexts&lt;/b&gt;&lt;br&gt;AuthContext → GET /api/user/me&lt;br&gt;WorkConfigContext → GET /api/config (schedule + feature flags)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="185" width="190" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="c_pages" value="&lt;b&gt;Pages&lt;/b&gt; (client/src/pages)&lt;br&gt;SiteAttendance — daily draft &amp;amp; submit&lt;br&gt;DriversAttendance — drivers pool sheet&lt;br&gt;EditPastAttendance · MissingEmployees&lt;br&gt;Employees · EmployeeDetailAttendance&lt;br&gt;SitesPage · SiteDetail · SiteJobs · GlobalJobs&lt;br&gt;MonthlyReport (superadmin)&lt;br&gt;Leave · Requests · Configure&lt;br&gt;ManageUsers · ActivityTypes · Dashboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="70" width="310" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="c_api" value="&lt;b&gt;lib/api.ts&lt;/b&gt;&lt;br&gt;shared axios instance&lt;br&gt;baseURL = VITE_API_URL&lt;br&gt;withCredentials: true&lt;br&gt;X-Timezone-Offset header (APP_OFFSET from dateUtils)&lt;br&gt;&lt;br&gt;never sees the JWT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="70" width="200" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="c_mirror" value="&lt;b&gt;Shared logic mirrors&lt;/b&gt;&lt;br&gt;&lt;i&gt;must stay in sync with server&lt;/i&gt;&lt;br&gt;dateUtils.ts ↔ timeLocal.js&lt;br&gt;attendanceUtils.ts ↔ attendanceMath.js&lt;br&gt;payrollDay.ts ↔ payrollDay.js&lt;br&gt;jobSplit.ts ↔ jobSplit.js&lt;br&gt;siteJobs.ts ↔ siteAssignable.js&lt;br&gt;globalJobs.ts · driverJobs.ts&lt;br&gt;activityTypes.ts ↔ activityTypes.js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="70" width="250" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="c_draft" value="&lt;b&gt;Draft state&lt;/b&gt;&lt;br&gt;draftStorage.ts (on-device)&lt;br&gt;cloudDraft.ts — localStorage outbox, push 600 ms / pull 15 s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="70" width="200" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="c_export" value="&lt;b&gt;Client-side exports&lt;/b&gt;&lt;br&gt;exceljs / xlsx / jsPDF (loaded on demand)&lt;br&gt;timesheetExport · manpowerExport" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="185" width="200" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="c_sw" value="&lt;b&gt;Service worker&lt;/b&gt; (vite-plugin-pwa, generateSW)&lt;br&gt;autoUpdate · skipWaiting · NO /api runtime cache&lt;br&gt;importScripts push-sw.js (push, notificationclick)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="70" width="390" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="c_push" value="&lt;b&gt;lib/push.ts&lt;/b&gt; + PushReminderToggle&lt;br&gt;subscribe → POST /api/user/push-subscription" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="150" width="390" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="c_live" value="&lt;b&gt;lib/requestsLive.ts&lt;/b&gt; (started in SidebarLayout)&lt;br&gt;EventSource → Requests page + sidebar badge&lt;br&gt;fallback: 90 s poll" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="225" width="390" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- ============ API ============ -->
+        <mxCell id="a_routers" value="&lt;b&gt;Routers&lt;/b&gt; (routes/*Routes.js)&lt;br&gt;/api/employees&lt;br&gt;/api/user&lt;br&gt;/api/attendance&lt;br&gt;   (+ /draft, /leave, /reports)&lt;br&gt;/api/site · /api/config&lt;br&gt;/api/requests · /api/drivers&lt;br&gt;/api/jobs · /api/activity-types&lt;br&gt;&lt;i&gt;specific paths before /:id&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="220" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="a_auth" value="&lt;b&gt;Auth &amp;amp; access&lt;/b&gt;&lt;br&gt;verifyToken — JWT from httpOnly 'token' cookie → req.user&lt;br&gt;rbac.authorizeRoles(...) (admin route ⇒ superadmin too)&lt;br&gt;rbac.requireSiteAccess (supervisor ⇒ assignedSite only)&lt;br&gt;validation.js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="290" y="400" width="230" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="a_mw" value="&lt;b&gt;Global middleware&lt;/b&gt; (server.js)&lt;br&gt;origin audit log&lt;br&gt;CORS: CLIENT_URL, CLIENT_URL_2, credentials&lt;br&gt;express.json() · cookieParser()&lt;br&gt;/api → Cache-Control: no-store" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="400" width="300" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="a_env" value="&lt;b&gt;Config&lt;/b&gt; (server/.env)&lt;br&gt;MONGO_URI · JWT_SECRET · PORT · CLIENT_URL(_2)&lt;br&gt;SAME_SITE → auth cookie policy&lt;br&gt;APP_TIMEZONE_OFFSET (= client VITE_APP_TIMEZONE_OFFSET)&lt;br&gt;VAPID_PUBLIC_KEY / PRIVATE_KEY / SUBJECT&lt;br&gt;CLOUD_DRAFT_ENABLED → features.cloudDraft on GET /api/config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;dashed=1;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="890" y="400" width="440" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="a_sse" value="&lt;b&gt;GET /api/requests/stream&lt;/b&gt; (Server-Sent Events)&lt;br&gt;events carry only { scopes: [requests, notifications, read, resync] }&lt;br&gt;— no data; clients refetch the normal endpoints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1360" y="400" width="400" height="170" as="geometry" />
+        </mxCell>
+
+        <!-- ============ SERVICES ============ -->
+        <mxCell id="s_ctrl" value="&lt;b&gt;Controllers&lt;/b&gt; (controllers/*.js) → { success, message, data }&lt;br&gt;&lt;b&gt;attendanceController&lt;/b&gt; — site submit + lock, saved-row edits,&lt;br&gt;   carryover, backfill, transfers, leave apply/cancel,&lt;br&gt;   monthly/range report, ERPNext export&lt;br&gt;empController · siteController (manpower) · userController&lt;br&gt;configController (WorkSchedule, holidays) · requestController&lt;br&gt;driverController · draftController (cloud draft)&lt;br&gt;leaveAllocationController · globalJobController&lt;br&gt;activityTypeController · pushController&lt;br&gt;&lt;br&gt;409 guards: ROSTER_CHANGED · ALREADY_SUBMITTED&lt;br&gt;RECORD_CHANGED · DRAFT_CHANGED · JOB_REQUIRED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="680" width="490" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="s_utils" value="&lt;b&gt;Domain utilities&lt;/b&gt; (utils/*.js)&lt;br&gt;&lt;b&gt;attendanceMath&lt;/b&gt;.computeAttendanceTotals — status, break, net, OT, holiday hrs&lt;br&gt;&lt;b&gt;timeLocal&lt;/b&gt; — app-timezone + next-day offsets · &lt;b&gt;sessionOverlap&lt;/b&gt; — cross-day&lt;br&gt;&lt;b&gt;payrollDay&lt;/b&gt;.classifyPayrollDay · unmarkedDays · leaveBalance&lt;br&gt;&lt;b&gt;draftRoster&lt;/b&gt; (submit roster guard) · siteManpower&lt;br&gt;&lt;b&gt;jobSplit&lt;/b&gt; · driverPool · globalJobs · siteAssignable&lt;br&gt;handover · supervisorScope · propagateDefaults · rosterFields · collar&lt;br&gt;&lt;b&gt;erpnextExport&lt;/b&gt; (CSV builders) · activityTypes&lt;br&gt;attendanceAudit · siteActivity · notify · transferRequests&lt;br&gt;generateTokenAndSetCookie (JWT + cookie options)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="570" y="680" width="550" height="290" as="geometry" />
+        </mxCell>
+        <mxCell id="s_boot" value="&lt;b&gt;Boot&lt;/b&gt; (server.js)&lt;br&gt;connectDB → ensure 'Workshop Phase 7'&lt;br&gt;→ ensureDriverPool → crons → watchers → listen" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="680" width="290" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s_rt" value="&lt;b&gt;utils/realtime.js&lt;/b&gt;&lt;br&gt;MongoDB change streams on&lt;br&gt;transferrequests + notifications&lt;br&gt;→ fan out { scopes } to open SSE clients&lt;br&gt;(fires only after commit; covers every writer)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="780" width="290" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="s_cron" value="&lt;b&gt;Cron jobs&lt;/b&gt; (node-cron, cron/)&lt;br&gt;autoCheckOut — one mode per roster category&lt;br&gt;applyScheduledAssignments&lt;br&gt;checkoutReminder (every 10 min)&lt;br&gt;expireTransferRequests&lt;br&gt;&lt;i&gt;autoCheckIn — present, not scheduled&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1450" y="680" width="310" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="s_push" value="&lt;b&gt;utils/webPush.js&lt;/b&gt; (web-push)&lt;br&gt;openSessionAudit finds 'forgotten' open sessions&lt;br&gt;→ site supervisor + admin digest&lt;br&gt;(≤ 3/day, ≥ 1 h apart)&lt;br&gt;no-op when VAPID env is absent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1450" y="840" width="310" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- ============ DATA ============ -->
+        <mxCell id="d_odm" value="&lt;b&gt;Mongoose ODM&lt;/b&gt;&lt;br&gt;config/db.js connectDB()&lt;br&gt;schemas · indexes · hooks&lt;br&gt;&lt;br&gt;Attendance pre('save'): derive checkIn/checkOut from raw HH:mm + next-day flags; enforce leave-flag invariants" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1080" width="190" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="d_core" value="&lt;b&gt;Core attendance&lt;/b&gt;&lt;br&gt;&lt;b&gt;Attendance&lt;/b&gt; — 1 per employee per day; sessions[] (site, job / split jobs, raw times, next-day flags), status, hours, leave flags&lt;br&gt;&lt;b&gt;AttendanceLock&lt;/b&gt; — {siteId, date}, set on submit&lt;br&gt;&lt;b&gt;Employee&lt;/b&gt; — site, job, category, pendingTransfer*, activityType&lt;br&gt;&lt;b&gt;Site&lt;/b&gt; — jobs[], 4 × day/night defaults, rosterRev&lt;br&gt;&lt;b&gt;Job&lt;/b&gt; (site job or isGlobal)&lt;br&gt;&lt;b&gt;User&lt;/b&gt; — role, assignedSite, pushSubscriptions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="260" y="1080" width="420" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="d_cfg" value="&lt;b&gt;Configuration&lt;/b&gt;&lt;br&gt;&lt;b&gt;WorkSchedule&lt;/b&gt; (type 'default') — day hours, OT threshold, break rules, weekly holidays, ERPNext labels, OT activity multiplier&lt;br&gt;&lt;b&gt;Holiday&lt;/b&gt; · &lt;b&gt;JobTitle&lt;/b&gt;&lt;br&gt;&lt;b&gt;ActivityType&lt;/b&gt; (rate bands)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="1080" width="260" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="d_leave" value="&lt;b&gt;Leave&lt;/b&gt;&lt;br&gt;&lt;b&gt;Leave&lt;/b&gt; — annual / emergency applications over a date range&lt;br&gt;&lt;b&gt;LeaveAllocation&lt;/b&gt; — non-overlapping annual allowance; 'used' is derived" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="980" y="1080" width="220" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="d_collab" value="&lt;b&gt;Collaboration&lt;/b&gt;&lt;br&gt;&lt;b&gt;AttendanceDraftRow&lt;/b&gt; — touched cloud-draft rows, rev, 3-day TTL&lt;br&gt;&lt;b&gt;TransferRequest&lt;/b&gt; — add / request / transfer&lt;br&gt;&lt;b&gt;Notification&lt;/b&gt; — per-tab read state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="1080" width="270" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="d_audit" value="&lt;b&gt;Audit&lt;/b&gt;&lt;br&gt;&lt;b&gt;AttendanceAudit&lt;/b&gt; — per-record edit diffs + supervisor remarks&lt;br&gt;&lt;b&gt;SiteActivity&lt;/b&gt; — per-site-day movement feed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="1080" width="250" height="200" as="geometry" />
+        </mxCell>
+
+        <!-- ============ EXTERNAL ============ -->
+        <mxCell id="e_mongo" value="&lt;b&gt;MongoDB Atlas&lt;/b&gt; (replica set)&lt;br&gt;multi-document transactions (session.withTransaction, sequential ops only)&lt;br&gt;change streams → realtime.js&lt;br&gt;all timestamps stored in UTC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1380" width="520" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="e_scripts" value="&lt;b&gt;Operator scripts&lt;/b&gt; (server/src/seed)&lt;br&gt;seed.js — recalc after a formula change&lt;br&gt;migrateLeaveAllocations · moveDriversToPool&lt;br&gt;updateCompanyIds · backfillRawOffsets&lt;br&gt;run by hand with node" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="600" y="1380" width="300" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="e_erp" value="&lt;b&gt;ERPNext&lt;/b&gt; (HR / payroll)&lt;br&gt;no live API: Data Import CSVs —&lt;br&gt;Attendance · Timesheet · Activity Type master&lt;br&gt;downloaded from Reports / Activity Types and imported by hand;&lt;br&gt;salary slip cross-checked against AMS Payment Days" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="940" y="1380" width="420" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="e_push" value="&lt;b&gt;Browser push services&lt;/b&gt;&lt;br&gt;(FCM / Mozilla autopush / Apple)&lt;br&gt;deliver VAPID-signed payloads to the PWA service worker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="1380" width="360" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LEGEND ============ -->
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;   solid arrow = runtime call / data flow   ·   dashed arrow = duplicated logic that must be kept in sync   ·   dashed box = configuration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;align=left;spacingLeft=10;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="1550" width="900" height="36" as="geometry" />
+        </mxCell>
+
+        <!-- ============ EDGES ============ -->
+        <mxCell id="e01" value="use" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.28;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="actors" target="c_pages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e02" value="routes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;entryX=0;entryY=0.24;" edge="1" parent="1" source="c_router" target="c_pages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e03" value="context" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;entryX=0;entryY=0.76;" edge="1" parent="1" source="c_ctx" target="c_pages">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e04" value="calls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="c_pages" target="c_api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e05" value="HTTPS JSON&lt;br&gt;+ httpOnly JWT cookie&lt;br&gt;+ X-Timezone-Offset" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.533;entryY=0;" edge="1" parent="1" source="c_api" target="a_mw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e06" value="authenticate" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="a_mw" target="a_auth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e07" value="req.user,&lt;br&gt;role ok" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="a_auth" target="a_routers">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e08" value="dispatch to handler" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.224;entryY=0;" edge="1" parent="1" source="a_routers" target="s_ctrl">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e09" value="hours math, rosters,&lt;br&gt;leave + overlap checks" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.35;entryX=0;entryY=0.35;" edge="1" parent="1" source="s_ctrl" target="s_utils">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="mirrored logic&lt;br&gt;(keep in sync)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=open;startArrow=open;dashed=1;strokeWidth=1.5;strokeColor=#6c8ebf;exitX=0.06;exitY=1;entryX=0.5545;entryY=0;" edge="1" parent="1" source="c_mirror" target="s_utils">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="Mongoose CRUD&lt;br&gt;+ transactions" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=2;exitX=0.735;exitY=1;entryX=0.333;entryY=0;" edge="1" parent="1" source="s_ctrl" target="d_core">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="reads WorkSchedule,&lt;br&gt;holidays" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.473;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s_utils" target="d_cfg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="ERPNext Data Import CSVs&lt;br&gt;(via browser download)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;strokeColor=#b85450;exitX=0.727;exitY=1;entryX=0.071;entryY=0;" edge="1" parent="1" source="s_utils" target="e_erp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="start" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s_boot" target="s_cron">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="start watchers" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s_boot" target="s_rt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="checkoutReminder" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s_cron" target="s_push">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="auto check-out · scheduled moves · request expiry" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;strokeColor=#d6b656;exitX=1;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="s_cron" target="d_core">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1775" y="740" />
+              <mxPoint x="1775" y="1005" />
+              <mxPoint x="470" y="1005" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" value="change streams&lt;br&gt;(post-commit)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0.296;exitY=0;entryX=0.552;entryY=1;" edge="1" parent="1" source="d_collab" target="s_rt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e19" value="notify {scopes}" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=1;exitY=0.2;entryX=0.2;entryY=1;" edge="1" parent="1" source="s_rt" target="a_sse">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1440" y="818" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e20" value="EventSource (SSE):&lt;br&gt;scope events → refetch" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;startArrow=block;startFill=1;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5125;entryY=0;" edge="1" parent="1" source="c_live" target="a_sse">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" value="VAPID-signed&lt;br&gt;web-push" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;strokeColor=#b85450;exitX=0.161;exitY=1;entryX=0.278;entryY=0;" edge="1" parent="1" source="s_push" target="e_push">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" value="push event → notification + deep link" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;strokeColor=#b85450;exitX=1;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="e_push" target="c_sw">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1795" y="1445" />
+              <mxPoint x="1795" y="105" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e23" value="models" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="d_core" target="d_odm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e24" value="MONGO_URI" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.19;entryY=0;" edge="1" parent="1" source="d_odm" target="e_mongo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e25" value="connect directly" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;labelBackgroundColor=#ffffff;endArrow=block;endFill=1;strokeWidth=1.5;dashed=0;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="e_scripts" target="e_mongo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

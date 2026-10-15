@@ -1,15 +1,12 @@
-import { useState, type ReactNode } from "react"
+import { type ReactNode } from "react"
 import {
   ArrowLeft,
-  CalendarPlus,
   ChevronDown,
   Download,
   FileSpreadsheet,
   Loader2,
-  Siren,
 } from "lucide-react"
 
-import GrantLeaveDialog, { type LeaveType } from "@/components/GrantLeaveDialog"
 import { MonthYearPicker } from "@/components/MonthYearPicker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,7 +17,6 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
@@ -37,6 +33,7 @@ import {
 } from "@/lib/leaveComposition"
 import type { MonthYear } from "@/lib/monthYear"
 import { round2 } from "@/lib/timesheetExport"
+import { fmtLeaveRange, type LeaveBalance } from "@/lib/leave"
 import { cn } from "@/lib/utils"
 
 export interface TimesheetEmployee {
@@ -48,16 +45,7 @@ export interface TimesheetEmployee {
   isActive: boolean
 }
 
-export interface LeaveBalance {
-  year: number
-  defaultDays: number
-  override: number | null
-  entitlement: number
-  used: number
-  remaining: number
-  // Emergency (unpaid, excused) leave days taken this year — informational, no allowance.
-  emergencyUsed?: number
-}
+export type { LeaveBalance }
 
 /** The month's payroll tally, computed by the page (see `totals` there). */
 export interface TimesheetTotals {
@@ -90,7 +78,6 @@ interface Props {
   erpBusy: boolean
   onExportSpreadsheet: () => void
   onExportErp: (type: ErpExportType, label: string) => void
-  onLeaveGranted: () => void | Promise<void>
   onBack: () => void
 }
 
@@ -108,7 +95,6 @@ export default function EmployeeTimesheetHeader({
   erpBusy,
   onExportSpreadsheet,
   onExportErp,
-  onLeaveGranted,
   onBack,
 }: Props) {
   return (
@@ -179,14 +165,6 @@ export default function EmployeeTimesheetHeader({
         </Select>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {canWrite && employee && (
-            <GrantLeaveMenu
-              employee={employee}
-              balance={leaveBalance}
-              onGranted={onLeaveGranted}
-            />
-          )}
-
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" disabled={erpBusy}>
@@ -400,10 +378,9 @@ function LeaveBalanceInline({
   balance: LeaveBalance
   className?: string
 }) {
+  const current = balance.current
   const usedPct =
-    balance.entitlement > 0
-      ? Math.min(100, (balance.used / balance.entitlement) * 100)
-      : 0
+    current && current.days > 0 ? Math.min(100, (current.used / current.days) * 100) : 0
   const emergencyUsed = balance.emergencyUsed ?? 0
 
   return (
@@ -413,32 +390,35 @@ function LeaveBalanceInline({
         className
       )}
     >
-      {/* Annual: paid, drawn from a yearly allowance */}
-      <span
-        className="flex items-center gap-1.5"
-        title={`Annual leave ${balance.year}: ${balance.used} of ${balance.entitlement} used${
-          balance.override !== null ? " (custom allowance)" : ""
-        }`}
-      >
-        <span className="size-2 rounded-full bg-violet-500" />
-        Annual {balance.year}
-        <span className="h-1 w-14 overflow-hidden rounded-full bg-violet-500/15">
-          <span
-            className="block h-full rounded-full bg-violet-500"
-            style={{ width: `${usedPct}%` }}
-          />
+      {/* Annual: paid, drawn from the allocation covering today */}
+      {current ? (
+        <span
+          className="flex items-center gap-1.5"
+          title={`Annual leave ${fmtLeaveRange(current.fromDate, current.toDate)}: ${current.used} of ${current.days} used`}
+        >
+          <span className="size-2 rounded-full bg-violet-500" />
+          Annual
+          <span className="h-1 w-14 overflow-hidden rounded-full bg-violet-500/15">
+            <span
+              className="block h-full rounded-full bg-violet-500"
+              style={{ width: `${usedPct}%` }}
+            />
+          </span>
+          <span>
+            <b className="font-semibold text-foreground">{current.remaining}</b>/{current.days} left
+          </span>
         </span>
-        <span>
-          <b className="font-semibold text-foreground">{balance.remaining}</b>/
-          {balance.entitlement} left
-          {balance.override !== null && " (custom)"}
+      ) : (
+        <span className="flex items-center gap-1.5" title="No annual leave allocation covers today">
+          <span className="size-2 rounded-full bg-violet-500/40" />
+          No annual allocation
         </span>
-      </span>
+      )}
 
       {/* Emergency: excused but unpaid, no allowance — just a count */}
       <span
         className="flex items-center gap-1.5"
-        title={`Emergency leave ${balance.year}: unpaid, no yearly limit`}
+        title={`Emergency leave ${balance.year}: unpaid, no limit`}
       >
         <span className="size-2 rounded-full bg-orange-500" />
         Emergency
@@ -457,67 +437,5 @@ function LeaveBalanceInline({
         </span>
       </span>
     </div>
-  )
-}
-
-// One "Grant leave ▾" button. Both dialogs stay mounted (controlled, trigger-less) so
-// the closing one keeps its title during the close animation.
-function GrantLeaveMenu({
-  employee,
-  balance,
-  onGranted,
-}: {
-  employee: TimesheetEmployee
-  balance: LeaveBalance | null
-  onGranted: () => void | Promise<void>
-}) {
-  const [open, setOpen] = useState<LeaveType | null>(null)
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline">
-            <CalendarPlus />
-            Grant leave
-            <ChevronDown className="text-muted-foreground" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem onSelect={() => setOpen("annual")}>
-            <CalendarPlus />
-            Annual leave
-            {balance && (
-              <DropdownMenuShortcut className="tracking-normal">
-                {balance.remaining} left
-              </DropdownMenuShortcut>
-            )}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setOpen("emergency")}>
-            <Siren />
-            Emergency leave
-            <DropdownMenuShortcut className="tracking-normal">unpaid</DropdownMenuShortcut>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <GrantLeaveDialog
-        employeeId={employee._id}
-        employeeName={employee.name}
-        onGranted={onGranted}
-        open={open === "annual"}
-        onOpenChange={(v) => setOpen(v ? "annual" : null)}
-        hideTrigger
-      />
-      <GrantLeaveDialog
-        employeeId={employee._id}
-        employeeName={employee.name}
-        leaveType="emergency"
-        onGranted={onGranted}
-        open={open === "emergency"}
-        onOpenChange={(v) => setOpen(v ? "emergency" : null)}
-        hideTrigger
-      />
-    </>
   )
 }

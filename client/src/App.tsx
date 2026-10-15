@@ -29,6 +29,7 @@ const MonthlyReport = lazy(() => import("./pages/MonthlyReport"))
 const Configure = lazy(() => import("./pages/Configure"))
 const ManageUsers = lazy(() => import("./pages/ManageUsers"))
 const ActivityTypes = lazy(() => import("./pages/ActivityTypes"))
+const Leave = lazy(() => import("./pages/Leave"))
 const EmployeeDetailAttendance = lazy(() => import("./pages/EmployeeDetailAttendance"))
 const InstaAddEmployees = lazy(() => import("./pages/InstaAddEmployees"))
 const Requests = lazy(() => import("./pages/Requests"))
@@ -216,6 +217,15 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin"]}>
               <ActivityTypes />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="leave"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <Leave />
             </ProtectedRoute>
           }
         />

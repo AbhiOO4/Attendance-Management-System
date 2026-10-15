@@ -14,6 +14,23 @@ const attendanceSessionSchema = new mongoose.Schema(
       ref: "Job",
     },
 
+    // Drivers only (sessions on the Drivers pool, utils/driverPool.js): the session is logged
+    // against a SITE and its hours are split EQUALLY across `splitJobIds` — jobs of
+    // `servedSiteId`, or global jobs when `servedSiteId` is null (the "General" place). Both
+    // are set by the server from the jobs (utils/jobSplit.js resolveDriverSplit); `jobId` is
+    // null on such a session. A session's jobs are `splitJobIds` when non-empty, else
+    // `[jobId]` — always read them through sessionJobIds().
+    servedSiteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      default: null,
+    },
+
+    splitJobIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Job" }],
+      default: [],
+    },
+
     // Absolute UTC instants. As of the cutoff redesign these are a DERIVED CACHE
     // recomputed from date + raw{CheckIn,CheckOut} + {checkIn,checkOut}NextDay on
     // every write; the raw fields + offsets below are the source of truth. Kept

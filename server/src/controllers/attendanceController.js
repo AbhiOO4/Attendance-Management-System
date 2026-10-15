@@ -27,12 +27,14 @@ import { placeMiddayArrival, assertNotMovedOn } from '../utils/handover.js';
 import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js';
 import TransferRequest from '../models/transferRequestModel.js';
 import Leave from '../models/leaveModel.js';
+import { normalizeUtcDay, utcDayKey, eachUtcDay, allocationSummaries, checkAnnualAgainstAllocations, matchEmployeeIds, MAX_LEAVE_RANGE_DAYS } from '../utils/leaveBalance.js';
 import { recordAttendanceAudit, recordAttendanceAuditBatch, resolveActor, buildAuditRow, breaksChangeSummary, summarizeAttendanceEdit, joinChangeParts } from '../utils/attendanceAudit.js';
 import { recordSiteActivity } from '../utils/siteActivity.js';
 import { computeExpectedDraftRoster, touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js';
 import AttendanceDraftRow from '../models/attendanceDraftRowModel.js';
 import { isCloudDraftEnabled } from '../utils/features.js';
-import { isDriverPool, findDriverJob, getDriverPoolId, driverEmployeeFilter, isDriverEmployee, validateDriverPoolSessions, findPastDriverJob, DRIVER_TITLE_REGEX } from '../utils/driverPool.js';
+import { isDriverPool, getDriverPoolId, driverEmployeeFilter, isDriverEmployee, validateDriverPoolSessions, DRIVER_TITLE_REGEX, isDriverTitle, DRIVER_ONLY_MESSAGE, nonPoolDriverSessionError } from '../utils/driverPool.js';
+import { resolveDriverSplit, sessionJobIds, sameJobSet, hasSplitKey, buildSplitLookup } from '../utils/jobSplit.js';
 import { isSiteScopedRole } from '../middlewares/rbac.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
@@ -248,50 +250,13 @@ function holidayInfoForEmployee(baseHolidayInfo, employmentType) {
 }
 
 // ---------------------------------------------------------------------------
-// ANNUAL PAID LEAVE helpers
+// LEAVE helpers — annual PAID leave and (unpaid, excused) EMERGENCY leave. The
+// date helpers and the annual balance (date-range allocations) live in
+// utils/leaveBalance.js.
 // ---------------------------------------------------------------------------
 
-// Normalize any date-ish value to UTC midnight (how Attendance.date is stored).
-function normalizeUtcDay(value) {
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
-}
-
-// "YYYY-MM-DD" key from a date's UTC parts (stable calendar-day identity).
-function utcDayKey(date) {
-  return new Date(date).toISOString().slice(0, 10);
-}
-
-// Inclusive list of UTC-midnight days from `from` to `to`.
-function eachUtcDay(from, to) {
-  const days = [];
-  const cur = normalizeUtcDay(from);
-  const end = normalizeUtcDay(to);
-  if (!cur || !end) return days;
-  while (cur.getTime() <= end.getTime()) {
-    days.push(new Date(cur));
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return days;
-}
-
-// The employee's effective annual paid-leave allowance (per calendar year):
-// their own override if set, else the global WorkSchedule default.
-function effectiveLeaveEntitlement(employee, workConfig) {
-  if (
-    employee &&
-    employee.annualLeaveEntitlement !== null &&
-    employee.annualLeaveEntitlement !== undefined
-  ) {
-    return employee.annualLeaveEntitlement;
-  }
-  return workConfig?.annualLeaveDefaultDays ?? 0;
-}
-
 // Leave grant type → the Attendance flag its days carry. Annual leave is PAID (and
-// draws on the yearly balance); emergency leave is EXCUSED but UNPAID (no balance).
+// draws on the employee's allocations); emergency leave is EXCUSED but UNPAID (no cap).
 const LEAVE_FLAG = { annual: "isPaidLeave", emergency: "isEmergencyLeave" };
 const LEAVE_LABEL = { annual: "annual leave", emergency: "emergency leave" };
 
@@ -304,8 +269,8 @@ const isGrantedLeaveDay = (record) => !!(record && (record.isPaidLeave || record
 // Message for a write refused because the day is a granted leave day.
 const leaveLockedMessage = (record) =>
   record?.isEmergencyLeave
-    ? "This day is approved emergency leave. Cancel the leave grant to edit it."
-    : "This day is approved annual leave. Cancel the leave grant to edit it.";
+    ? "This day is approved emergency leave. Edit or cancel it on the Leave page."
+    : "This day is approved annual leave. Edit or cancel it on the Leave page.";
 
 // The app's current calendar year — from the LOCAL business day, not UTC (which is
 // still last year between 00:00 and the offset on 1 January).
@@ -321,19 +286,22 @@ class LeaveHttpError extends Error {
   }
 }
 
-// Leave days already USED by an employee in a calendar year — derived by counting
-// flagged attendance records (paid leave by default), never stored. Pass a mongoose
-// session to read consistently inside a grant/cancel transaction.
-async function usedLeaveForYear(employeeId, year, session = null, flag = "isPaidLeave") {
-  const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
-  const q = Attendance.countDocuments({
-    employee: employeeId,
-    [flag]: true,
-    date: { $gte: start, $lte: end },
-  });
-  if (session) q.session(session);
-  return q;
+// Emergency leave days an employee took in a calendar year, minus `ignoreDates` (the
+// days of a leave being edited). Informational only — emergency leave has no cap.
+async function emergencyDaysInYear(employeeId, year, ignoreDates = null) {
+  const docs = await Attendance.find(
+    {
+      employee: employeeId,
+      isEmergencyLeave: true,
+      date: {
+        $gte: new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0)),
+        $lte: new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999)),
+      },
+    },
+    "date"
+  ).lean();
+  if (!ignoreDates) return docs.length;
+  return docs.filter((d) => !ignoreDates.has(utcDayKey(d.date))).length;
 }
 
 // Whether a UTC-midnight date is a weekly holiday under this config.
@@ -353,7 +321,9 @@ function isWeeklyHolidayUtc(date, weeklyHolidays) {
 //   - holidayDays:   [dates]  weekly or public holidays (never consume a day)
 //   - conflictDays:  [dates]  the employee already worked (has a check-in) — protected
 //   - alreadyLeave:  [dates]  already a granted leave day, of either type (no re-count)
-async function classifyLeaveRange({ employeeId, from, to, workConfig, session = null }) {
+// `ignoreDates` (a Set of day keys) are leave days to treat as free — the days of the
+// leave being edited, for the read-only edit preview.
+async function classifyLeaveRange({ employeeId, from, to, workConfig, session = null, ignoreDates = null }) {
   const days = eachUtcDay(from, to);
   const start = days[0];
   const end = days[days.length - 1];
@@ -410,7 +380,7 @@ async function classifyLeaveRange({ employeeId, from, to, workConfig, session = 
         conflictDays.push(date);
         continue;
       }
-      if (isGrantedLeaveDay(record)) {
+      if (isGrantedLeaveDay(record) && !ignoreDates?.has(key)) {
         alreadyLeave.push(date);
         continue;
       }
@@ -421,30 +391,6 @@ async function classifyLeaveRange({ employeeId, from, to, workConfig, session = 
 
   return { toMark, holidayDays, conflictDays, alreadyLeave, recordByKey };
 }
-
-// Group the to-mark days by calendar year and validate each year's new days
-// against that year's remaining balance. Returns { ok, violations: [{year, requested, remaining}] }.
-async function validateLeaveBalance({ employee, workConfig, toMark, session = null }) {
-  const entitlement = effectiveLeaveEntitlement(employee, workConfig);
-  const byYear = new Map();
-  for (const d of toMark) {
-    const y = new Date(d.date).getUTCFullYear();
-    byYear.set(y, (byYear.get(y) || 0) + 1);
-  }
-
-  const violations = [];
-  for (const [year, requested] of byYear) {
-    const used = await usedLeaveForYear(employee._id, year, session);
-    const remaining = entitlement - used;
-    if (requested > remaining) {
-      violations.push({ year, requested, remaining, entitlement });
-    }
-  }
-  return { ok: violations.length === 0, violations, entitlement };
-}
-
-// Maximum span a single grant may cover, as a guard against a runaway range.
-const MAX_LEAVE_RANGE_DAYS = 400;
 
 /**
  * Automatically sets the check-out time of a previous session at a different site
@@ -963,7 +909,10 @@ export const jobReport = async (req, res) => {
     // hours belong to the holiday bucket (Total OT), not regular, and must not be
     // counted twice. Never negative (OT and holiday are mutually exclusive and
     // their sum never exceeds net; _rawTotal > 0 is guaranteed by the $match).
-    const share = { $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, "$_rawTotal"] };
+    // A driver session split across N jobs (utils/jobSplit.js) gives each job 1/N of it.
+    const share = {
+      $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, { $multiply: ["$_rawTotal", { $max: ["$_n", 1] }] }],
+    };
     const regularExpr = {
       $sum: {
         $multiply: [
@@ -988,6 +937,19 @@ export const jobReport = async (req, res) => {
       { $addFields: { _rawTotal: { $sum: "$sessions.workedHours" } } },
       { $match: { _rawTotal: { $gt: 0 } } },
       { $unwind: "$sessions" },
+      // The session's jobs: splitJobIds when non-empty, else [jobId] (see sessionJobIds).
+      {
+        $addFields: {
+          _jobs: {
+            $cond: [
+              { $gt: [{ $size: { $ifNull: ["$sessions.splitJobIds", []] } }, 0] },
+              "$sessions.splitJobIds",
+              { $cond: [{ $ifNull: ["$sessions.jobId", false] }, ["$sessions.jobId"], []] },
+            ],
+          },
+        },
+      },
+      { $addFields: { _n: { $size: "$_jobs" } } },
     ];
 
     const [jobs, jobResults, unassignedResults] = await Promise.all([
@@ -998,10 +960,11 @@ export const jobReport = async (req, res) => {
       // Hours grouped by job (sessions that HAVE a job).
       Attendance.aggregate([
         ...basePipeline,
-        { $match: { "sessions.jobId": { $ne: null } } },
+        { $match: { _n: { $gt: 0 } } },
+        { $unwind: "$_jobs" },
         {
           $group: {
-            _id: "$sessions.jobId",
+            _id: "$_jobs",
             regularHours: regularExpr,
             overtimeHours: overtimeExpr,
             holidayHours: holidayExpr,
@@ -1013,7 +976,7 @@ export const jobReport = async (req, res) => {
       // hours are dropped from the report and every site total undercounts them.
       Attendance.aggregate([
         ...basePipeline,
-        { $match: { "sessions.jobId": null, "sessions.siteId": { $ne: null } } },
+        { $match: { _n: 0, "sessions.siteId": { $ne: null } } },
         {
           $group: {
             _id: "$sessions.siteId",
@@ -1770,8 +1733,13 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // indicator once attendance is saved). The stash itself is cleared after
       // save, below.
       const empPending = await empModel.findById(empId)
-        .select("pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId employmentType")
+        .select("pendingTransferSiteId pendingTransferDate pendingTransferFromSiteId employmentType name jobTitle")
         .session(session)
+
+      // Drivers live only on the Drivers sheet — never recorded on a site's sheet.
+      if (!driverSheet && isDriverTitle(empPending?.jobTitle)) {
+        throwValidationError(400, `${empPending.name}: ${DRIVER_ONLY_MESSAGE}`, { code: "DRIVER_ONLY" })
+      }
 
       // Temporary workers are exempt from holiday treatment — for them a holiday
       // is a normal working day (normal hours + OT, no holiday-hours credit).
@@ -1837,12 +1805,19 @@ export const siteFirstSubmitAttendance = async (req, res) => {
           throwValidationError(400, boundsError);
         }
 
+        // Drivers sheet: the session names a SITE (or General) plus the jobs of it its hours
+        // are split equally across (utils/jobSplit.js). An older draft that still carries a
+        // single `job` counts as a one-job split.
+        let driverSplit = null;
         if (driverSheet && (checkIn || checkOut)) {
-          const driverJob = job?._id ? await findDriverJob(job._id, session) : null;
-          if (!driverJob) {
+          const pickedJobIds = Array.isArray(sessionObj.splitJobIds)
+            ? sessionObj.splitJobIds
+            : job?._id ? [job._id] : [];
+          driverSplit = await resolveDriverSplit(pickedJobIds, { strict: true, session });
+          if (!driverSplit) {
             throwValidationError(
               400,
-              `Pick the job ${employee?.name || "this driver"}'s session was for${job?._id ? " (the selected job is no longer active)" : ""}`
+              `Pick the site ${employee?.name || "this driver"} worked for${pickedJobIds.length ? " (the selected site or one of its jobs is no longer active)" : ""}`
             );
           }
         }
@@ -1883,7 +1858,9 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         // RULE: checkIn only OR null/null → 0 hours
         updatedSessions.push({
           siteId: finalSiteId,
-          jobId: job?._id || null,
+          jobId: driverSheet ? null : job?._id || null,
+          servedSiteId: driverSplit?.servedSiteId ?? null,
+          splitJobIds: driverSplit?.splitJobIds ?? [],
           checkIn: checkInDate,
           checkOut: checkOutDate,
           rawCheckIn: checkIn || null,
@@ -2045,10 +2022,8 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       attendanceDoc.crossedMidnight = hasCrossedMidnight
       attendanceDoc.shiftType = hasCrossedMidnight ? "night" : "day"
       attendanceDoc.siteId = siteId
-      // Drivers: the record's job is the first job their sheet session names.
-      attendanceDoc.jobId = driverSheet
-        ? (updatedSessions.find((s) => s.jobId)?.jobId || null)
-        : (jobId || null)
+      // Drivers: no single record job — their sessions split across a site's jobs.
+      attendanceDoc.jobId = driverSheet ? null : (jobId || null)
       attendanceDoc.markedBy = markedBy
 
       await attendanceDoc.save({ session })
@@ -2413,6 +2388,10 @@ export const getSiteAttendance = async (req, res) => {
 
                 jobId: "$$s.jobId",
 
+                servedSiteId: "$$s.servedSiteId",
+
+                splitJobIds: "$$s.splitJobIds",
+
                 checkIn: "$$s.checkIn",
 
                 checkOut: "$$s.checkOut",
@@ -2499,6 +2478,11 @@ export const getSiteAttendance = async (req, res) => {
         for (const row of result) {
           for (const s of row.sessions) s.job = s.jobId ? jobById.get(String(s.jobId)) || null : null
         }
+      }
+      // Drivers: the site a session served and the jobs its hours are split across.
+      const splitInfo = await buildSplitLookup(result.flatMap((r) => r.sessions))
+      for (const row of result) {
+        for (const s of row.sessions) Object.assign(s, splitInfo(s))
       }
     }
 
@@ -2595,6 +2579,8 @@ export const getSiteCarryovers = async (req, res) => {
         siteId: (s.siteId?._id || s.siteId)?.toString() || null,
         siteName: s.siteId?.siteName || null,
         jobId: s.jobId || null,
+        servedSiteId: s.servedSiteId || null,
+        splitJobIds: s.splitJobIds || [],
         checkIn: s.checkIn || null,
         checkOut: s.checkOut || null,
         rawCheckIn: s.rawCheckIn || null,
@@ -2770,6 +2756,9 @@ export const getAttendanceRecords = async (req, res) => {
     // -----------------------------
     // Format response
     // -----------------------------
+    const recordsSplitInfo = await buildSplitLookup(
+      attendanceRecords.flatMap((r) => r.sessions || [])
+    );
     const formattedRecords =
       attendanceRecords.map((record) => ({
         attendanceId: record._id,
@@ -2844,6 +2833,8 @@ export const getAttendanceRecords = async (req, res) => {
 
             jobCode:
               session.jobId?.jobCode || null,
+
+            ...recordsSplitInfo(session),
 
             checkIn:
               session.checkIn,
@@ -3015,8 +3006,12 @@ export const bulkEditAttendance = async (
       // Temporary workers are exempt from holiday treatment — for them a holiday
       // is a normal working day (normal hours + OT, no holiday-hours credit).
       const editEmp = await empModel.findById(employeeId)
-        .select("employmentType")
+        .select("employmentType jobTitle")
         .session(session);
+      // Drivers live only on the Drivers sheet — never given a session at a real site.
+      if (isDriverTitle(editEmp?.jobTitle) && !(await isDriverPool(siteId, session))) {
+        continue;
+      }
       const effHolidayInfo = holidayInfoForEmployee(holidayInfo, editEmp?.employmentType);
 
       // CALCULATE WORKED HOURS
@@ -3228,6 +3223,8 @@ export const updateAttendance = async (req, res) => {
       _id: s._id,
       siteId: s.siteId,
       jobId: s.jobId,
+      servedSiteId: s.servedSiteId,
+      splitJobIds: (s.splitJobIds || []).map(String),
       rawCheckIn: s.rawCheckIn,
       rawCheckOut: s.rawCheckOut,
     }));
@@ -3306,16 +3303,58 @@ export const updateAttendance = async (req, res) => {
         }
       }
 
-      // Drivers sheet: each of the pool's sessions with a time must name a live job (any site).
-      if (siteId && (await isDriverPool(siteId))) {
+      // Driver sessions (on the pool) carry a job split (utils/jobSplit.js). A body session
+      // that sends no `splitJobIds` (sick/LOP toggles, carryover closes, times-only edits
+      // from any caller) keeps the split it already has, like the transfer source below.
+      const poolId = await getDriverPoolId();
+      const storedSessionFor = (s) =>
+        s?._id ? attendance.sessions.find((st) => String(st._id) === String(s._id)) : null;
+      if (poolId) {
         for (const s of sessions) {
-          if (String(s.siteId) !== String(siteId) || (!s.checkIn && !s.checkOut)) continue;
-          if (!(await findDriverJob(s.jobId))) {
-            return res.status(400).json({
-              success: false,
-              message: "Pick an active job for every driver session",
-            });
+          if (String(s.siteId) !== poolId || hasSplitKey(s) || s.jobId) continue;
+          const stored = storedSessionFor(s);
+          if (!stored || String(stored.siteId) !== poolId) continue;
+          if (stored.splitJobIds?.length) {
+            s.splitJobIds = stored.splitJobIds.map(String);
+            s.servedSiteId = stored.servedSiteId ?? null;
+          } else if (stored.jobId) {
+            s.jobId = stored.jobId;
           }
+        }
+      }
+      // Liveness is only re-checked where the split CHANGED — a job completed since the day
+      // was saved must not block a times-only edit.
+      const splitChanged = (s) => {
+        const stored = storedSessionFor(s);
+        return !stored || String(stored.siteId) !== poolId || !sameJobSet(sessionJobIds(stored), sessionJobIds(s));
+      };
+
+      // Drivers live only on the Drivers sheet: a driver's NEW or MOVED session at a real site
+      // is refused. A session already stored at that same site (history from before the rule)
+      // can still be edited in place.
+      const editedEmployee = await Employee.findById(attendance.employee).select("jobTitle").lean();
+      const offPoolError = nonPoolDriverSessionError({
+        sessions: sessions.filter((s) => {
+          const stored = storedSessionFor(s);
+          return !stored || String(stored.siteId) !== String(s.siteId);
+        }),
+        poolId,
+        employee: editedEmployee,
+      });
+      if (offPoolError) {
+        return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: offPoolError });
+      }
+
+      // Drivers sheet: each of the pool's sessions with a time must name a site + its jobs.
+      if (siteId && poolId && String(siteId) === poolId) {
+        const driverError = await validateDriverPoolSessions({
+          sessions,
+          poolId,
+          requireDriver: false,
+          isStrict: splitChanged,
+        });
+        if (driverError) {
+          return res.status(400).json({ success: false, message: driverError });
         }
       }
       // Site sheet: once the site has a live job, every session at it with a time must name
@@ -3335,13 +3374,11 @@ export const updateAttendance = async (req, res) => {
       }
       // Admin edit-past (no ?siteId): sessions placed on the Drivers pool via the site picker.
       else if (!siteId) {
-        const poolId = await getDriverPoolId();
         const alreadyOnPool = !!poolId && attendance.sessions.some((s) => String(s.siteId) === poolId);
-        const employee = await Employee.findById(attendance.employee).select("jobTitle").lean();
         const driverError = await validateDriverPoolSessions({
           sessions,
           poolId,
-          employee,
+          employee: editedEmployee,
           requireDriver: !alreadyOnPool,
         });
         if (driverError) {
@@ -3403,10 +3440,20 @@ export const updateAttendance = async (req, res) => {
             }
           }
 
+          // A job split only lives on a worked driver (pool) session; moving a session off the
+          // pool, or clearing its times, drops it.
+          const keepsSplit =
+            !!poolId && String(session.siteId) === poolId && !!(session.checkIn || session.checkOut);
+          const splitIds = keepsSplit
+            ? (session.splitJobIds || []).map((v) => String(v)).filter((v) => mongoose.isValidObjectId(v))
+            : [];
+
           return {
             _id: session._id,
             siteId: session.siteId,
-            jobId: session.jobId || null,
+            jobId: splitIds.length ? null : session.jobId || null,
+            servedSiteId: splitIds.length ? session.servedSiteId ?? null : null,
+            splitJobIds: splitIds,
             checkIn: checkInDate,
             checkOut: checkOutDate,
             rawCheckIn: inStr,
@@ -3697,7 +3744,14 @@ export const updateAttendance = async (req, res) => {
       // Resolve job/site names once (small indexed lookups) so the diff can read
       // "New session created for Welder" instead of an ObjectId.
       const jobIds = [...new Set(attendance.sessions.map((s) => s.jobId).filter(Boolean).map(String))];
-      const siteIds = [...new Set(attendance.sessions.map((s) => s.siteId).filter(Boolean).map(String))];
+      const siteIds = [
+        ...new Set(
+          [...attendance.sessions, ...prevSessionsSnap]
+            .flatMap((s) => [s.siteId, s.servedSiteId])
+            .filter(Boolean)
+            .map(String)
+        ),
+      ];
       const [jobDocs, siteDocs] = await Promise.all([
         jobIds.length ? Job.find({ _id: { $in: jobIds } }).select("name").lean() : [],
         siteIds.length ? Site.find({ _id: { $in: siteIds } }).select("siteName").lean() : [],
@@ -3781,6 +3835,7 @@ export const updateAttendance = async (req, res) => {
           populate: { path: "site", select: "siteName" },
         });
 
+    const updatedSplitInfo = await buildSplitLookup(updatedAttendance.sessions);
     const formattedAttendance = {
       attendanceId:
         updatedAttendance._id,
@@ -3915,6 +3970,8 @@ export const updateAttendance = async (req, res) => {
                 }
               : null,
 
+            ...updatedSplitInfo(session),
+
             checkIn:
               session.checkIn,
 
@@ -4035,6 +4092,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
           date: 1,
         });
 
+    const monthSplitInfo = await buildSplitLookup(
+      attendance.flatMap((r) => r.sessions || [])
+    );
     const formattedData =
       attendance.map((record) => ({
         attendanceId:
@@ -4137,6 +4197,8 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
                 session.jobId
                   ?.jobCode ||
                 null,
+
+              ...monthSplitInfo(session),
 
               checkIn:
                 session.checkIn,
@@ -4446,6 +4508,12 @@ export const getAttendanceById = async (req, res) => {
                   },
                 },
 
+                servedSiteId:
+                  "$$s.servedSiteId",
+
+                splitJobIds:
+                  "$$s.splitJobIds",
+
                 checkIn:
                   "$$s.checkIn",
 
@@ -4474,6 +4542,9 @@ export const getAttendanceById = async (req, res) => {
           "Attendance record not found",
       })
     }
+
+    const byIdSplitInfo = await buildSplitLookup(result[0].sessions || [])
+    for (const s of result[0].sessions || []) Object.assign(s, byIdSplitInfo(s))
 
     return res.status(200).json(
       result[0]
@@ -4537,6 +4608,14 @@ export const addSessionToAttendance = async (
       // site's submission originally created the doc.
       if (!user || !user.assignedSite || user.assignedSite.toString() !== session.siteId.toString()) {
         return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
+      }
+    }
+
+    // Drivers live only on the Drivers sheet — never given a session at a real site.
+    if (!(await isDriverPool(session.siteId))) {
+      const sessionEmployee = await Employee.findById(attendance.employee).select("jobTitle").lean();
+      if (isDriverTitle(sessionEmployee?.jobTitle)) {
+        return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE });
       }
     }
 
@@ -4712,6 +4791,10 @@ export const transferEmployee = async (req, res) => {
     const employee = await empModel.findById(employeeId).session(dbSession)
     if (!employee || !employee.isActive) {
       throwValidationError(404, "Employee not found")
+    }
+    // Drivers live only on the Drivers sheet — never transferred onto (or off it to) a site.
+    if (isDriverTitle(employee.jobTitle) || (await isDriverPool(fromSiteId, dbSession))) {
+      throwValidationError(400, DRIVER_ONLY_MESSAGE)
     }
 
     // Only the employee's HOME site (or an admin) may re-home them. A site they are merely
@@ -5142,6 +5225,7 @@ export const backfillAttendance = async (req, res) => {
       builtSessions.push({
         siteId: sessionSiteId,
         jobId: jobId || null,
+        splitJobIds: Array.isArray(session.splitJobIds) ? session.splitJobIds : [],
         checkIn: checkInDate,
         checkOut: checkOutDate,
         workedHours: Number(workedHours.toFixed(2)),
@@ -5150,14 +5234,26 @@ export const backfillAttendance = async (req, res) => {
       });
     }
 
-    // Sessions placed on "Drivers" (the hidden pool) need a driver and a job, like the sheet.
+    // Sessions placed on "Drivers" (the hidden pool) need a driver and a site + job split,
+    // like the sheet (resolved in place). A split anywhere else is dropped.
+    const backfillPoolId = await getDriverPoolId();
     const driverError = await validateDriverPoolSessions({
       sessions: builtSessions,
-      poolId: await getDriverPoolId(),
+      poolId: backfillPoolId,
       employee,
     });
     if (driverError) {
       return res.status(400).json({ success: false, message: driverError });
+    }
+    // ...and a driver is never backfilled onto a real site.
+    const offPoolError = nonPoolDriverSessionError({ sessions: builtSessions, poolId: backfillPoolId, employee });
+    if (offPoolError) {
+      return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: offPoolError });
+    }
+    for (const s of builtSessions) {
+      if (String(s.siteId) === String(backfillPoolId) && (s.checkIn || s.checkOut)) continue;
+      s.splitJobIds = [];
+      s.servedSiteId = null;
     }
 
     // Sort sessions by checkIn
@@ -5300,6 +5396,7 @@ export const backfillAttendance = async (req, res) => {
       .lean();
 
     const record = populated;
+    const backfillSplitInfo = await buildSplitLookup(record.sessions);
     const formatted = {
       attendanceId: record._id,
       employee: record.employee?._id,
@@ -5330,6 +5427,7 @@ export const backfillAttendance = async (req, res) => {
         siteName: session.siteId?.siteName || '',
         jobId: session.jobId?._id || null,
         jobName: session.jobId?.name || '',
+        ...backfillSplitInfo(session),
         checkIn: session.checkIn,
         checkOut: session.checkOut,
         workedHours: session.workedHours,
@@ -5387,11 +5485,19 @@ export const bulkBackfillAttendance = async (req, res) => {
     if (!site) {
       return res.status(404).json({ success: false, message: 'Site not found' });
     }
-    // "Drivers" (the hidden pool): a job is required, and only drivers are placed on it.
+    // "Drivers" (the hidden pool): a site + job split is required (lenient on liveness, as for
+    // every past-day editor), and only drivers are placed on it.
     const onDriverPool = site.isDriverPool === true;
-    if (onDriverPool && !(await findPastDriverJob(jobId))) {
-      return res.status(400).json({ success: false, message: 'Pick a job for the driver session' });
+    const driverSplit = onDriverPool
+      ? await resolveDriverSplit(
+          Array.isArray(req.body.splitJobIds) ? req.body.splitJobIds : jobId ? [jobId] : [],
+          { strict: false }
+        )
+      : null;
+    if (onDriverPool && !driverSplit) {
+      return res.status(400).json({ success: false, message: 'Pick a site and its jobs for the driver session' });
     }
+    const sessionJobId = onDriverPool ? null : jobId || null;
 
     const workConfig = await workModel.findOne({ type: 'default' });
     if (!workConfig) {
@@ -5458,6 +5564,11 @@ export const bulkBackfillAttendance = async (req, res) => {
         skipped.push({ employeeId: id, name: emp.name, reason: 'Not a driver' });
         continue;
       }
+      // Drivers live only on the Drivers sheet — never backfilled onto a real site.
+      if (!onDriverPool && isDriverTitle(emp.jobTitle)) {
+        skipped.push({ employeeId: id, name: emp.name, reason: 'Driver — use Drivers' });
+        continue;
+      }
       candidates.push(emp);
     }
 
@@ -5493,7 +5604,7 @@ export const bulkBackfillAttendance = async (req, res) => {
           employee: empId,
           date: attendanceDate,
           siteId,
-          jobId: jobId || null,
+          jobId: sessionJobId,
           markedBy,
           isHoliday: effHolidayInfo.isHoliday,
           holidayReason: effHolidayInfo.reason,
@@ -5507,7 +5618,9 @@ export const bulkBackfillAttendance = async (req, res) => {
           crossedMidnight: hasCrossedMidnight,
           sessions: [{
             siteId,
-            jobId: jobId || null,
+            jobId: sessionJobId,
+            servedSiteId: driverSplit?.servedSiteId ?? null,
+            splitJobIds: driverSplit?.splitJobIds ?? [],
             checkIn: checkInDate,
             checkOut: checkOutDate,
             workedHours: rawHours,
@@ -6003,11 +6116,15 @@ export const assignNightShift = async (req, res) => {
     // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
     const auditActor = await resolveActor(req);
     const auditRows = [];
+    const nightOnPool = await isDriverPool(siteId, dbSession);
 
     for (const empId of employeeIds) {
       const emp = await Employee.findById(empId)
-        .select("currentSite currentJob collarType")
+        .select("currentSite currentJob collarType jobTitle")
         .session(dbSession);
+
+      // Drivers live only on the Drivers sheet — never given a night shift at a real site.
+      if (!nightOnPool && isDriverTitle(emp?.jobTitle)) continue;
 
       // Collar-aware, NO fallback: staff use only the staff night default.
       const isStaff = emp?.collarType === "staff";
@@ -6094,6 +6211,11 @@ export const assignNightShift = async (req, res) => {
             // Case D: All sessions are completed → push a new night session
             if (siteSessions.length > 0 && siteSessions[0].jobId) {
               nightSession.jobId = siteSessions[0].jobId;
+            }
+            // Drivers: the night session serves the same site + job split.
+            if (siteSessions.length > 0 && siteSessions[0].splitJobIds?.length) {
+              nightSession.servedSiteId = siteSessions[0].servedSiteId ?? null;
+              nightSession.splitJobIds = [...siteSessions[0].splitJobIds];
             }
             attendanceDoc.sessions.push(nightSession);
           }
@@ -6351,9 +6473,11 @@ export const updateAttendanceRemark = async (req, res) => {
 // --- DEFAULT EXPORT ---
 
 // ===========================================================================
-// LEAVE endpoints — annual PAID leave and (unpaid, excused) EMERGENCY leave.
-// Both are granted over a range through the same endpoints (`type`), share the
-// Leave ledger and the working-day/lock rules; only annual leave has a balance.
+// LEAVE endpoints — leave APPLICATIONS: annual PAID leave and (unpaid, excused)
+// EMERGENCY leave. Both are granted over a range through the same endpoints
+// (`type`), share the Leave ledger and the working-day/lock rules; only annual
+// leave is capped — by the employee's date-range allocations
+// (controllers/leaveAllocationController.js, utils/leaveBalance.js).
 // ===========================================================================
 
 // The grant/preview `type`: "annual" when omitted, null when unrecognised.
@@ -6362,7 +6486,167 @@ function parseLeaveType(value) {
   return Object.prototype.hasOwnProperty.call(LEAVE_FLAG, value) ? value : null;
 }
 
+// Validate a from/to pair → { fromDay, toDay } or { error }.
+function parseLeaveRange(from, to) {
+  if (!from || !to) return { error: "from and to are required" };
+  const fromDay = normalizeUtcDay(from);
+  const toDay = normalizeUtcDay(to);
+  if (!fromDay || !toDay) return { error: "Invalid from/to date" };
+  if (fromDay.getTime() > toDay.getTime()) return { error: "'from' must be on or before 'to'" };
+  if (eachUtcDay(fromDay, toDay).length > MAX_LEAVE_RANGE_DAYS) {
+    return { error: `Range too large (max ${MAX_LEAVE_RANGE_DAYS} days)` };
+  }
+  return { fromDay, toDay };
+}
+
+// The 400 for annual days that don't fit the employee's allocations.
+function annualBalanceError(check) {
+  const unallocated = check.unallocatedDays.length;
+  return new LeaveHttpError(400, {
+    message: unallocated
+      ? `No annual leave allocation covers ${unallocated} of these day(s). Allocate leave for that period first.`
+      : "Requested leave exceeds the available balance",
+    data: { violations: check.violations, unallocatedDays: check.unallocatedDays },
+  });
+}
+
+// IN-TRANSACTION: mark the working days of [fromDay, toDay] as `type` leave for an
+// employee (classify → annual allocation check → flag/create records). Returns the
+// classification; throws LeaveHttpError on a validation failure. Every operation is
+// SEQUENTIAL — never Promise.all on a transaction session.
+async function applyLeaveDays(session, { employeeId, type, fromDay, toDay, markedBy }) {
+  const employee = await empModel.findById(employeeId).session(session);
+  if (!employee) {
+    throw new LeaveHttpError(404, { message: "Employee not found" });
+  }
+  const workConfig = await workModel.findOne({ type: "default" }).session(session);
+
+  // Attendance requires a siteId. Use the employee's current site, falling back
+  // to the auto-created permanent site so leave works for anyone not on a site.
+  let siteId = employee.currentSite;
+  // Drivers' leave sits on the drivers pool, so it shows on the Drivers sheet.
+  if (!siteId && isDriverEmployee(employee)) {
+    siteId = await getDriverPoolId(session);
+  }
+  if (!siteId) {
+    const permanentSite = await siteModel.findOne({ isPermanent: true }).select("_id").session(session);
+    siteId = permanentSite?._id || null;
+  }
+  if (!siteId) {
+    throw new LeaveHttpError(400, { message: "No site available to attach leave to" });
+  }
+
+  const classified = await classifyLeaveRange({
+    employeeId,
+    from: fromDay,
+    to: toDay,
+    workConfig,
+    session,
+  });
+  const { toMark, holidayDays, conflictDays, alreadyLeave, recordByKey } = classified;
+
+  if (toMark.length === 0) {
+    throw new LeaveHttpError(400, {
+      message: "No working days to grant in this range",
+      data: {
+        holidayDays: holidayDays.length,
+        conflictDays: conflictDays.map(utcDayKey),
+        alreadyLeaveDays: alreadyLeave.map(utcDayKey),
+      },
+    });
+  }
+
+  // Only annual (paid) leave draws on allocations.
+  if (type === "annual") {
+    const check = await checkAnnualAgainstAllocations({ employeeId, toMark, session });
+    if (!check.ok) throw annualBalanceError(check);
+  }
+
+  for (const day of toMark) {
+    const existing = recordByKey.get(day.key);
+    if (existing) {
+      existing.isPaidLeave = type === "annual";
+      existing.isEmergencyLeave = type === "emergency";
+      existing.isSickLeave = false;
+      // A granted leave supersedes a prior LOP day — clear the flag and its
+      // auto-remark (the pre-save hook clears the flag, but not the "Deduct … OMR" note).
+      existing.isLop = false;
+      applyLopRemark(existing, false, workConfig?.lopDeductionAmount);
+      existing.status = "absent";
+      await existing.save({ session });
+    } else {
+      await Attendance.create(
+        [
+          {
+            employee: employeeId,
+            siteId,
+            jobId: employee.currentJob || null,
+            markedBy,
+            date: day.date,
+            status: "absent",
+            isPaidLeave: type === "annual",
+            isEmergencyLeave: type === "emergency",
+            isSickLeave: false,
+            totalWorkHours: 0,
+            overtimeHours: 0,
+            sessions: [],
+          },
+        ],
+        { session }
+      );
+    }
+  }
+
+  return classified;
+}
+
+// IN-TRANSACTION: put every day a leave marked back the way it was before the grant —
+// a record the grant created is deleted, a converted absent record just loses the flag.
+async function revertLeaveDays(session, leave) {
+  // The flag this grant set (legacy grants without a stored type are annual).
+  const flag = LEAVE_FLAG[leave.type] || LEAVE_FLAG.annual;
+
+  for (const day of leave.days) {
+    const record = await Attendance.findOne({
+      employee: leave.employee,
+      date: normalizeUtcDay(day.date),
+    }).session(session);
+    if (!record) continue;
+
+    const hasFilledSession = Array.isArray(record.sessions)
+      ? record.sessions.some((s) => s && (s.checkIn || s.checkOut))
+      : false;
+
+    if (day.created && record[flag] && !hasFilledSession) {
+      await record.deleteOne({ session });
+    } else if (record[flag]) {
+      record[flag] = false;
+      await record.save({ session });
+    }
+  }
+}
+
+// Ensure the Leave collection exists BEFORE opening a transaction. Inserting the
+// first-ever document into a not-yet-created collection *inside* a multi-document
+// transaction throws "Cannot create namespace ... in multi-document transaction".
+// createCollection is idempotent — a no-op once the collection exists.
+async function ensureLeaveCollection() {
+  try {
+    await Leave.createCollection();
+  } catch {
+    /* collection already exists */
+  }
+}
+
+const skippedSummary = ({ holidayDays, conflictDays, alreadyLeave }) => ({
+  holidays: holidayDays.length,
+  conflicts: conflictDays.map(utcDayKey),
+  alreadyLeave: alreadyLeave.map(utcDayKey),
+});
+
 // GET /api/attendance/leave/balance/:employeeId?year=
+// The employee's annual leave allocations (each with used/remaining), the one
+// covering today as `current`, and the emergency days taken in `year` (default: this year).
 export const getLeaveBalance = async (req, res) => {
   try {
     const { employeeId } = req.params;
@@ -6372,41 +6656,18 @@ export const getLeaveBalance = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid employee id" });
     }
 
-    const [employee, workConfig] = await Promise.all([
-      empModel.findById(employeeId).lean(),
-      // Non-lean so Mongoose applies the annualLeaveDefaultDays schema default on
-      // installs whose WorkSchedule doc predates the field (a lean read would see
-      // undefined). Matches grantLeave's non-lean read.
-      workModel.findOne({ type: "default" }),
-    ]);
-
+    const employee = await empModel.findById(employeeId).select("_id").lean();
     if (!employee) {
       return res.status(404).json({ success: false, message: "Employee not found" });
     }
 
-    const defaultDays = workConfig?.annualLeaveDefaultDays ?? 0;
-    const override =
-      employee.annualLeaveEntitlement !== null && employee.annualLeaveEntitlement !== undefined
-        ? employee.annualLeaveEntitlement
-        : null;
-    const entitlement = effectiveLeaveEntitlement(employee, workConfig);
-    const [used, emergencyUsed] = await Promise.all([
-      usedLeaveForYear(employeeId, year),
-      usedLeaveForYear(employeeId, year, null, LEAVE_FLAG.emergency),
-    ]);
+    const { allocations, current } = await allocationSummaries(employeeId, { todayKey: getTodayLocal() });
+    // Emergency leave has no allowance — this is informational only.
+    const emergencyUsed = await emergencyDaysInYear(employeeId, year);
 
     return res.status(200).json({
       success: true,
-      data: {
-        year,
-        defaultDays,
-        override,
-        entitlement,
-        used,
-        remaining: entitlement - used,
-        // Emergency leave has no allowance — this is informational only.
-        emergencyUsed,
-      },
+      data: { year, allocations, current, emergencyUsed },
     });
   } catch (error) {
     console.error("getLeaveBalance error:", error);
@@ -6414,40 +6675,43 @@ export const getLeaveBalance = async (req, res) => {
   }
 };
 
-// GET /api/attendance/leave/preview?employeeId=&from=&to=&type=annual|emergency
+// GET /api/attendance/leave/preview?employeeId=&from=&to=&type=annual|emergency&excludeLeaveId=
 // Read-only: how many working days a range would mark, what would be skipped, and
-// (annual only) whether it would exceed the balance. Drives the grant dialog's live
-// feedback.
+// (annual only) whether the allocations cover it. Drives the application dialog's
+// live feedback. `excludeLeaveId` = the leave being edited: its own days count as free.
 export const previewLeave = async (req, res) => {
   try {
-    const { employeeId, from, to } = req.query;
+    const { employeeId, from, to, excludeLeaveId } = req.query;
     const type = parseLeaveType(req.query.type);
 
     if (!type) {
       return res.status(400).json({ success: false, message: "Invalid leave type" });
     }
-    if (!employeeId || !from || !to) {
-      return res.status(400).json({ success: false, message: "employeeId, from and to are required" });
+    if (!employeeId || !mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ success: false, message: "A valid employeeId is required" });
     }
-    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
-      return res.status(400).json({ success: false, message: "Invalid employee id" });
+    const range = parseLeaveRange(from, to);
+    if (range.error) {
+      return res.status(400).json({ success: false, message: range.error });
     }
+    const { fromDay, toDay } = range;
 
-    const fromDay = normalizeUtcDay(from);
-    const toDay = normalizeUtcDay(to);
-    if (!fromDay || !toDay) {
-      return res.status(400).json({ success: false, message: "Invalid from/to date" });
-    }
-    if (fromDay.getTime() > toDay.getTime()) {
-      return res.status(400).json({ success: false, message: "'from' must be on or before 'to'" });
-    }
-    if (eachUtcDay(fromDay, toDay).length > MAX_LEAVE_RANGE_DAYS) {
-      return res.status(400).json({ success: false, message: `Range too large (max ${MAX_LEAVE_RANGE_DAYS} days)` });
+    let ignoreDates = null;
+    if (excludeLeaveId) {
+      if (!mongoose.Types.ObjectId.isValid(excludeLeaveId)) {
+        return res.status(400).json({ success: false, message: "Invalid leave id" });
+      }
+      const editing = await Leave.findById(excludeLeaveId).lean();
+      if (!editing || String(editing.employee) !== String(employeeId)) {
+        return res.status(400).json({ success: false, message: "Leave not found for this employee" });
+      }
+      if (editing.status === "active") {
+        ignoreDates = new Set((editing.days || []).map((d) => utcDayKey(d.date)));
+      }
     }
 
     const [employee, workConfig] = await Promise.all([
-      empModel.findById(employeeId).lean(),
-      // Non-lean: apply the schema default for annualLeaveDefaultDays (see getLeaveBalance).
+      empModel.findById(employeeId).select("_id").lean(),
       workModel.findOne({ type: "default" }),
     ]);
     if (!employee) {
@@ -6459,9 +6723,9 @@ export const previewLeave = async (req, res) => {
       from: fromDay,
       to: toDay,
       workConfig,
+      ignoreDates,
     });
 
-    const years = [...new Set(eachUtcDay(fromDay, toDay).map((d) => d.getUTCFullYear()))];
     const base = {
       type,
       workingDays: toMark.length,
@@ -6471,45 +6735,30 @@ export const previewLeave = async (req, res) => {
     };
 
     if (type === "emergency") {
-      // No balance to check — emergency leave is unpaid. Report the days already
-      // taken in each touched year for context.
+      // No cap — emergency leave is unpaid. Report the days already taken in each
+      // touched year for context.
+      const years = [...new Set(eachUtcDay(fromDay, toDay).map((d) => d.getUTCFullYear()))];
       const usedByYear = {};
       for (const y of years) {
-        usedByYear[y] = await usedLeaveForYear(employeeId, y, null, LEAVE_FLAG.emergency);
+        usedByYear[y] = await emergencyDaysInYear(employeeId, y, ignoreDates);
       }
       return res.status(200).json({
         success: true,
-        data: {
-          ...base,
-          entitlement: null,
-          remainingByYear: {},
-          usedByYear,
-          wouldExceed: false,
-          violations: [],
-        },
+        data: { ...base, usedByYear, allocations: [], unallocatedDays: [], violations: [], wouldExceed: false },
       });
     }
 
-    const { ok, violations, entitlement } = await validateLeaveBalance({
-      employee,
-      workConfig,
-      toMark,
-    });
-
-    // Remaining per touched year (for display), based on current usage.
-    const remainingByYear = {};
-    for (const y of years) {
-      remainingByYear[y] = entitlement - (await usedLeaveForYear(employeeId, y));
-    }
+    const check = await checkAnnualAgainstAllocations({ employeeId, toMark, ignoreDates });
 
     return res.status(200).json({
       success: true,
       data: {
         ...base,
-        entitlement,
-        remainingByYear,
-        wouldExceed: !ok,
-        violations,
+        // The allocations this range draws on, with their usage BEFORE this application.
+        allocations: check.allocations,
+        unallocatedDays: check.unallocatedDays,
+        violations: check.violations,
+        wouldExceed: !check.ok,
       },
     });
   } catch (error) {
@@ -6526,33 +6775,18 @@ export const grantLeave = async (req, res) => {
   if (!type) {
     return res.status(400).json({ success: false, message: "Invalid leave type" });
   }
-  if (!employeeId || !from || !to) {
-    return res.status(400).json({ success: false, message: "employeeId, from and to are required" });
+  if (!employeeId || !mongoose.Types.ObjectId.isValid(employeeId)) {
+    return res.status(400).json({ success: false, message: "A valid employeeId is required" });
   }
-  if (!mongoose.Types.ObjectId.isValid(employeeId)) {
-    return res.status(400).json({ success: false, message: "Invalid employee id" });
+  const range = parseLeaveRange(from, to);
+  if (range.error) {
+    return res.status(400).json({ success: false, message: range.error });
   }
-  const fromDay = normalizeUtcDay(from);
-  const toDay = normalizeUtcDay(to);
-  if (!fromDay || !toDay || fromDay.getTime() > toDay.getTime()) {
-    return res.status(400).json({ success: false, message: "Invalid date range" });
-  }
-  if (eachUtcDay(fromDay, toDay).length > MAX_LEAVE_RANGE_DAYS) {
-    return res.status(400).json({ success: false, message: `Range too large (max ${MAX_LEAVE_RANGE_DAYS} days)` });
-  }
+  const { fromDay, toDay } = range;
 
-  // Ensure the Leave collection exists BEFORE opening the transaction. Inserting the
-  // first-ever document into a not-yet-created collection *inside* a multi-document
-  // transaction throws "Cannot create namespace ... in multi-document transaction".
-  // createCollection is idempotent — a no-op once the collection exists.
-  try {
-    await Leave.createCollection();
-  } catch {
-    /* collection already exists */
-  }
+  await ensureLeaveCollection();
 
   const markedBy = req.user?.id || null;
-  const flag = LEAVE_FLAG[type];
   let result = null;
 
   const session = await mongoose.startSession();
@@ -6567,93 +6801,7 @@ export const grantLeave = async (req, res) => {
     await session.withTransaction(async () => {
       result = null;
 
-      const employee = await empModel.findById(employeeId).session(session);
-      if (!employee) {
-        throw new LeaveHttpError(404, { message: "Employee not found" });
-      }
-      const workConfig = await workModel.findOne({ type: "default" }).session(session);
-
-      // Attendance requires a siteId. Use the employee's current site, falling back
-      // to the auto-created permanent site so leave works for anyone not on a site.
-      let siteId = employee.currentSite;
-      // Drivers' leave sits on the drivers pool, so it shows on the Drivers sheet.
-      if (!siteId && isDriverEmployee(employee)) {
-        siteId = await getDriverPoolId(session);
-      }
-      if (!siteId) {
-        const permanentSite = await siteModel.findOne({ isPermanent: true }).select("_id").session(session);
-        siteId = permanentSite?._id || null;
-      }
-      if (!siteId) {
-        throw new LeaveHttpError(400, { message: "No site available to attach leave to" });
-      }
-
-      const { toMark, holidayDays, conflictDays, alreadyLeave, recordByKey } = await classifyLeaveRange({
-        employeeId,
-        from: fromDay,
-        to: toDay,
-        workConfig,
-        session,
-      });
-
-      if (toMark.length === 0) {
-        throw new LeaveHttpError(400, {
-          message: "No working days to grant in this range",
-          data: {
-            holidayDays: holidayDays.length,
-            conflictDays: conflictDays.map(utcDayKey),
-            alreadyLeaveDays: alreadyLeave.map(utcDayKey),
-          },
-        });
-      }
-
-      // Only annual (paid) leave draws on a balance.
-      let entitlement = null;
-      if (type === "annual") {
-        const check = await validateLeaveBalance({ employee, workConfig, toMark, session });
-        if (!check.ok) {
-          throw new LeaveHttpError(400, {
-            message: "Requested leave exceeds the available balance",
-            data: { violations: check.violations, entitlement: check.entitlement },
-          });
-        }
-        entitlement = check.entitlement;
-      }
-
-      for (const day of toMark) {
-        const existing = recordByKey.get(day.key);
-        if (existing) {
-          existing.isPaidLeave = type === "annual";
-          existing.isEmergencyLeave = type === "emergency";
-          existing.isSickLeave = false;
-          // A granted leave supersedes a prior LOP day — clear the flag and its
-          // auto-remark (the pre-save hook clears the flag, but not the "Deduct … OMR" note).
-          existing.isLop = false;
-          applyLopRemark(existing, false, workConfig?.lopDeductionAmount);
-          existing.status = "absent";
-          await existing.save({ session });
-        } else {
-          await Attendance.create(
-            [
-              {
-                employee: employeeId,
-                siteId,
-                jobId: employee.currentJob || null,
-                markedBy,
-                date: day.date,
-                status: "absent",
-                isPaidLeave: type === "annual",
-                isEmergencyLeave: type === "emergency",
-                isSickLeave: false,
-                totalWorkHours: 0,
-                overtimeHours: 0,
-                sessions: [],
-              },
-            ],
-            { session }
-          );
-        }
-      }
+      const applied = await applyLeaveDays(session, { employeeId, type, fromDay, toDay, markedBy });
 
       const [leave] = await Leave.create(
         [
@@ -6663,25 +6811,16 @@ export const grantLeave = async (req, res) => {
             grantedBy: markedBy,
             fromDate: fromDay,
             toDate: toDay,
-            note: (note || "").slice(0, 500),
-            workingDays: toMark.length,
-            days: toMark.map((d) => ({ date: d.date, created: d.created })),
+            note: String(note || "").slice(0, 500),
+            workingDays: applied.toMark.length,
+            days: applied.toMark.map((d) => ({ date: d.date, created: d.created })),
             status: "active",
           },
         ],
         { session }
       );
 
-      result = {
-        leave,
-        entitlement,
-        granted: toMark.length,
-        skipped: {
-          holidays: holidayDays.length,
-          conflicts: conflictDays.map(utcDayKey),
-          alreadyLeave: alreadyLeave.map(utcDayKey),
-        },
-      };
+      result = { leave, granted: applied.toMark.length, skipped: skippedSummary(applied) };
     });
   } catch (error) {
     if (error instanceof LeaveHttpError) {
@@ -6701,27 +6840,91 @@ export const grantLeave = async (req, res) => {
     await session.endSession();
   }
 
-  // Committed. The follow-up usage read is best-effort: failing it must not report a
-  // grant that succeeded as failed (a retry would then find nothing left to grant).
-  let used = null;
-  try {
-    used = await usedLeaveForYear(employeeId, currentLocalYear(), null, flag);
-  } catch (error) {
-    console.error("grantLeave post-commit usage read failed:", error);
-  }
-
   return res.status(201).json({
     success: true,
     message: `Granted ${result.granted} day(s) of ${LEAVE_LABEL[type]}`,
-    data: {
-      leave: result.leave,
-      type,
-      granted: result.granted,
-      // Annual: days left this year. Emergency has no allowance → null.
-      remaining: type === "annual" && used !== null ? result.entitlement - used : null,
-      used,
-      skipped: result.skipped,
-    },
+    data: { leave: result.leave, type, granted: result.granted, skipped: result.skipped },
+  });
+};
+
+// PUT /api/attendance/leave/:leaveId  { from, to, type, note }
+// Edit an ACTIVE leave application in place (the employee is fixed). One transaction
+// reverts the days it marked and re-applies the new range/type, so the balance check
+// sees the application's own days as free and a failed check leaves it untouched.
+export const updateLeave = async (req, res) => {
+  const { leaveId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(leaveId)) {
+    return res.status(400).json({ success: false, message: "Invalid leave id" });
+  }
+  const type = parseLeaveType(req.body?.type);
+  if (!type) {
+    return res.status(400).json({ success: false, message: "Invalid leave type" });
+  }
+  const range = parseLeaveRange(req.body?.from, req.body?.to);
+  if (range.error) {
+    return res.status(400).json({ success: false, message: range.error });
+  }
+  const { fromDay, toDay } = range;
+  const note = req.body?.note;
+
+  const markedBy = req.user?.id || null;
+  let result = null;
+
+  const session = await mongoose.startSession();
+  try {
+    // Same transaction discipline as grantLeave: sequential operations, transient
+    // errors retried by withTransaction.
+    await session.withTransaction(async () => {
+      result = null;
+
+      const leave = await Leave.findById(leaveId).session(session);
+      if (!leave) {
+        throw new LeaveHttpError(404, { message: "Leave not found" });
+      }
+      if (leave.status === "cancelled") {
+        throw new LeaveHttpError(400, { message: "A cancelled leave can't be edited" });
+      }
+
+      await revertLeaveDays(session, leave);
+      const applied = await applyLeaveDays(session, {
+        employeeId: leave.employee,
+        type,
+        fromDay,
+        toDay,
+        markedBy,
+      });
+
+      leave.type = type;
+      leave.fromDate = fromDay;
+      leave.toDate = toDay;
+      if (note !== undefined) leave.note = String(note || "").slice(0, 500);
+      leave.workingDays = applied.toMark.length;
+      leave.days = applied.toMark.map((d) => ({ date: d.date, created: d.created }));
+      leave.updatedBy = markedBy;
+      await leave.save({ session });
+
+      result = { leave, granted: applied.toMark.length, skipped: skippedSummary(applied) };
+    });
+  } catch (error) {
+    if (error instanceof LeaveHttpError) {
+      return res.status(error.status).json(error.body);
+    }
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Attendance for one of these days changed while saving the leave. Please try again.",
+      });
+    }
+    console.error("updateLeave error:", error);
+    return res.status(500).json({ success: false, message: "Failed to update leave" });
+  } finally {
+    await session.endSession();
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: `Leave updated — ${result.granted} day(s) of ${LEAVE_LABEL[type]}`,
+    data: { leave: result.leave, type, granted: result.granted, skipped: result.skipped },
   });
 };
 
@@ -6746,30 +6949,7 @@ export const cancelLeave = async (req, res) => {
         throw new LeaveHttpError(400, { message: "Leave is already cancelled" });
       }
 
-      // The flag this grant set (legacy grants without a stored type are annual).
-      const flag = LEAVE_FLAG[leave.type] || LEAVE_FLAG.annual;
-
-      for (const day of leave.days) {
-        const record = await Attendance.findOne({
-          employee: leave.employee,
-          date: normalizeUtcDay(day.date),
-        }).session(session);
-        if (!record) continue;
-
-        const hasFilledSession = Array.isArray(record.sessions)
-          ? record.sessions.some((s) => s && (s.checkIn || s.checkOut))
-          : false;
-
-        if (day.created && record[flag] && !hasFilledSession) {
-          // The grant created this bare record — remove it so the day reverts to
-          // "no record" (its state before the grant).
-          await record.deleteOne({ session });
-        } else if (record[flag]) {
-          // Converted from an existing absent record — just clear the flag.
-          record[flag] = false;
-          await record.save({ session });
-        }
-      }
+      await revertLeaveDays(session, leave);
 
       leave.status = "cancelled";
       leave.cancelledBy = req.user?.id || null;
@@ -6786,27 +6966,85 @@ export const cancelLeave = async (req, res) => {
     await session.endSession();
   }
 
-  // Committed — the refreshed annual balance is best-effort (see grantLeave).
-  const year = currentLocalYear();
-  let entitlement = null;
-  let remaining = null;
-  try {
-    const [employee, workConfig] = await Promise.all([
-      empModel.findById(leave.employee).lean(),
-      // Non-lean: apply the schema default for annualLeaveDefaultDays (see getLeaveBalance).
-      workModel.findOne({ type: "default" }),
-    ]);
-    entitlement = effectiveLeaveEntitlement(employee, workConfig);
-    remaining = entitlement - (await usedLeaveForYear(leave.employee, year));
-  } catch (error) {
-    console.error("cancelLeave post-commit balance read failed:", error);
-  }
+  return res.status(200).json({ success: true, message: "Leave cancelled", data: { leave } });
+};
 
-  return res.status(200).json({
-    success: true,
-    message: "Leave cancelled",
-    data: { leave, remaining, entitlement, year },
-  });
+// DELETE /api/attendance/leave/:leaveId — only a CANCELLED application. Its days were
+// already put back by revertLeaveDays on cancel and nothing references a Leave by id,
+// so this just drops the ledger entry.
+export const deleteLeave = async (req, res) => {
+  const { leaveId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(leaveId)) {
+    return res.status(400).json({ success: false, message: "Invalid leave id" });
+  }
+  try {
+    const leave = await Leave.findById(leaveId).select("status").lean();
+    if (!leave) {
+      return res.status(404).json({ success: false, message: "Leave not found" });
+    }
+    // Status in the filter too, so a concurrent un-cancel can't slip through.
+    const { deletedCount } = await Leave.deleteOne({ _id: leaveId, status: "cancelled" });
+    if (leave.status !== "cancelled" || deletedCount === 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Only a cancelled leave can be deleted. Cancel it first.",
+      });
+    }
+    return res.status(200).json({ success: true, message: "Leave application deleted" });
+  } catch (error) {
+    console.error("deleteLeave error:", error);
+    return res.status(500).json({ success: false, message: "Failed to delete leave" });
+  }
+};
+
+// Lean reads skip schema defaults — grants made before emergency leave existed have
+// no stored type and are annual.
+const withLeaveType = (leave) => ({ ...leave, type: leave.type || "annual" });
+
+// GET /api/attendance/leave?type=&status=&search=&page=&limit=
+// Every leave application, newest first — the Leave page's Applications tab.
+export const listLeaves = async (req, res) => {
+  try {
+    const { type, status, search } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+    const filter = {};
+    // `$in: [..., null]` also matches legacy grants with no stored type (= annual).
+    if (type === "annual") filter.type = { $in: ["annual", null] };
+    else if (type === "emergency") filter.type = "emergency";
+    if (status === "active" || status === "cancelled") filter.status = status;
+
+    const employeeIds = await matchEmployeeIds(search);
+    if (employeeIds) filter.employee = { $in: employeeIds };
+
+    const [total, leaves] = await Promise.all([
+      Leave.countDocuments(filter),
+      Leave.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .select("-days")
+        .populate("employee", "name employeeId companyId jobTitle")
+        .populate("grantedBy", "name")
+        .populate("updatedBy", "name")
+        .populate("cancelledBy", "name")
+        .lean(),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        leaves: leaves.map(withLeaveType),
+        total,
+        page,
+        pages: Math.max(1, Math.ceil(total / limit)),
+      },
+    });
+  } catch (error) {
+    console.error("listLeaves error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch leave applications" });
+  }
 };
 
 // GET /api/attendance/leave/employee/:employeeId
@@ -6819,16 +7057,13 @@ export const listEmployeeLeaves = async (req, res) => {
 
     const leaves = await Leave.find({ employee: employeeId })
       .sort({ createdAt: -1 })
+      .select("-days")
       .populate("grantedBy", "name")
+      .populate("updatedBy", "name")
       .populate("cancelledBy", "name")
       .lean();
 
-    return res.status(200).json({
-      success: true,
-      // Lean reads skip schema defaults — grants made before emergency leave existed
-      // have no stored type and are annual.
-      data: leaves.map((leave) => ({ ...leave, type: leave.type || "annual" })),
-    });
+    return res.status(200).json({ success: true, data: leaves.map(withLeaveType) });
   } catch (error) {
     console.error("listEmployeeLeaves error:", error);
     return res.status(500).json({ success: false, message: "Failed to fetch leaves" });
@@ -6923,6 +7158,7 @@ export const exportErpnext = async (req, res) => {
           populate: { path: "activityType", select: "name" },
         })
         .populate("sessions.jobId", "jobCode")
+        .populate("sessions.splitJobIds", "jobCode")
         .lean(),
       workModel.findOne({ type: "default" }).lean(),
     ]);
@@ -7015,7 +7251,10 @@ const attendanceController = {
   getLeaveBalance,
   previewLeave,
   grantLeave,
+  updateLeave,
   cancelLeave,
+  deleteLeave,
+  listLeaves,
   listEmployeeLeaves,
   getEmployeesOnLeaveForDate,
 

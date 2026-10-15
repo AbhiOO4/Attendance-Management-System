@@ -106,7 +106,17 @@ export function summarizeAttendanceEdit({
 }) {
   const parts = []
   const t = (v) => (v ? v : "—")
-  const labelFor = (s) => jobNames[String(s.jobId)] || siteNames[String(s.siteId)] || null
+  // A driver session split across a site's jobs reads "GR-30 · 3 jobs" (servedSiteId null =
+  // the General place, i.e. global jobs).
+  const splitOf = (s) => (s?.splitJobIds || []).filter(Boolean).map(String)
+  const splitText = (s) => {
+    const n = splitOf(s).length
+    if (!n) return null
+    return `${siteNames[String(s.servedSiteId)] || "General"} · ${n} job${n === 1 ? "" : "s"}`
+  }
+  const jobsOf = (s) => (splitOf(s).length ? splitOf(s) : s?.jobId ? [String(s.jobId)] : [])
+  const sameJobs = (a, b) => a.length === b.length && a.every((id) => b.includes(id))
+  const labelFor = (s) => splitText(s) || jobNames[String(s.jobId)] || siteNames[String(s.siteId)] || null
 
   if (prevStatus && newStatus && prevStatus !== newStatus) {
     parts.push(newStatus === "absent" ? "Marked absent" : `Status ${prevStatus} → ${newStatus}`)
@@ -136,7 +146,11 @@ export function summarizeAttendanceEdit({
     if ((prev.rawCheckOut || null) !== (s.rawCheckOut || null)) {
       parts.push(`Session ${n} check-out ${t(prev.rawCheckOut)} → ${t(s.rawCheckOut)}`)
     }
-    if (String(prev.jobId || "") !== String(s.jobId || "")) {
+    if (splitOf(prev).length || splitOf(s).length) {
+      if (!sameJobs(jobsOf(prev), jobsOf(s))) {
+        parts.push(`Session ${n} jobs → ${splitText(s) || jobNames[String(s.jobId)] || "none"}`)
+      }
+    } else if (String(prev.jobId || "") !== String(s.jobId || "")) {
       parts.push(`Session ${n} job → ${jobNames[String(s.jobId)] || "none"}`)
     }
   })

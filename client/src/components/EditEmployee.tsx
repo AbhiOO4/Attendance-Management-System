@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input"
 import toast from "react-hot-toast"
 import { api } from "@/lib/api"
 import { COMPANY_ID_RE } from "@/lib/utils"
+import { isDriverTitle } from "@/lib/driverJobs"
 
 interface Employee {
   _id: string
@@ -35,6 +36,8 @@ interface Employee {
   employmentType: 'permanent' | 'temporary'
   nationality?: 'foreign' | 'omani'
   companyId?: string | null
+  // Their site, if any — a driver title takes them off it (drivers live on Drivers Attendance).
+  currentSite?: string | null
 }
 
 type UpdateInfo = {
@@ -43,8 +46,6 @@ type UpdateInfo = {
   jobTitle: string
   employmentType: 'permanent' | 'temporary'
   nationality: 'foreign' | 'omani'
-  // null → clear the per-employee override (fall back to the global default).
-  annualLeaveEntitlement?: number | null
   // null → clear the company ID.
   companyId?: string | null
 }
@@ -88,10 +89,6 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
       nationality: employee.nationality || "foreign",
     })
 
-  // Per-employee annual-leave override, held as a string so an empty field means
-  // "use the global default". Loaded from the full employee doc when the dialog opens.
-  const [entitlement, setEntitlement] = useState<string>("")
-
   // Optional company ID, blank = none (clears it on save).
   const [companyId, setCompanyId] = useState<string>(employee.companyId ?? "")
 
@@ -128,12 +125,8 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
       return
     }
 
-    const trimmed = entitlement.trim()
-    const annualLeaveEntitlement = trimmed === "" ? null : Number(trimmed)
-
     const ok = await onSave(employee._id, {
       ...formData,
-      annualLeaveEntitlement,
       companyId: trimmedCompanyId || null,
     })
     if (ok) setOpen(false)
@@ -151,16 +144,13 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
         nationality: employee.nationality || "foreign",
       })
       setCompanyId(employee.companyId ?? "")
-      // The list row doesn't carry the entitlement — fetch the full doc for it
-      // (and the freshest company ID).
+      // Fetch the full doc for the freshest company ID.
       api
         .get(`/api/employees/${employee._id}`)
         .then((res) => {
-          const v = res.data?.annualLeaveEntitlement
-          setEntitlement(v === null || v === undefined ? "" : String(v))
           setCompanyId(res.data?.companyId ?? "")
         })
-        .catch(() => setEntitlement(""))
+        .catch(() => {})
     }
   }, [open])
 
@@ -221,6 +211,12 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
             }
             placeholder="Select Job Title"
           />
+          {isDriverTitle(formData.jobTitle) && !isDriverTitle(employee.jobTitle) && employee.currentSite && (
+            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-300">
+              Drivers are marked only on Drivers Attendance. Saving takes this employee off their
+              current site and job; their past attendance stays as it is.
+            </p>
+          )}
 
           <Select
             value={formData.employmentType}
@@ -253,23 +249,6 @@ function EditEmployee({ employee, onSave, open: controlledOpen, onOpenChange, hi
               <SelectItem value="omani">Omani</SelectItem>
             </SelectContent>
           </Select>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">
-              Annual leave override (days/year)
-            </label>
-            <Input
-              type="number"
-              min={0}
-              max={365}
-              placeholder="Leave blank for the global default"
-              value={entitlement}
-              onChange={(e) => setEntitlement(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              Overrides the company default for this employee. Blank = use default.
-            </p>
-          </div>
 
           <Button
             className="w-full"

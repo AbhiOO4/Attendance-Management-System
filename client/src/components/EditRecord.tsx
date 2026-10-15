@@ -54,7 +54,8 @@ import {
 } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useGlobalJobs } from "@/lib/globalJobs"
-import { driverSessionMissingJob, fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import { fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
+import { driverSessionMissingPlace, placeFromSession, type DriverPlace, type SessionSplitFields } from "@/lib/jobSplit"
 import SessionSiteJobFields, { type PickerSite } from "@/components/SessionSiteJobFields"
 
 // --------------------------------------------------
@@ -75,6 +76,12 @@ interface AttendanceSession {
   jobName?: string
 
   jobCode?: string | null
+
+  // Drivers ("Drivers" place): the site served + the jobs its hours are split across, and the
+  // editor's working pick (undefined on an untouched legacy single-job session).
+  servedSite?: SessionSplitFields["servedSite"]
+  splitJobs?: SessionSplitFields["splitJobs"]
+  place?: DriverPlace | null
 
   checkIn?: string | null
 
@@ -210,6 +217,7 @@ const [sessionToDelete, setSessionToDelete] =
       const b = s2[i]
       if (a.siteId !== b.siteId) return false
       if ((a.jobId || null) !== (b.jobId || null)) return false
+      if ((a.place?.jobIds ?? []).join() !== (b.place?.jobIds ?? []).join()) return false
       if (!isSameDateStr(a.checkIn, b.checkIn)) return false
       if (!isSameDateStr(a.checkOut, b.checkOut)) return false
     }
@@ -256,9 +264,12 @@ const [sessionToDelete, setSessionToDelete] =
     setOverlapInfo(null)
     setOverlapIndexes([])
     if (open && record) {
-      const cloned = JSON.parse(JSON.stringify(record.sessions || []))
-      setSessions(cloned)
-      setInitialSessions(JSON.parse(JSON.stringify(record.sessions || [])))
+      // A driver's saved split opens as its place (site + ticked jobs).
+      const withPlaces = (record.sessions || []).map((s) =>
+        s.splitJobs?.length ? { ...s, place: placeFromSession(s) } : s
+      )
+      setSessions(JSON.parse(JSON.stringify(withPlaces)))
+      setInitialSessions(JSON.parse(JSON.stringify(withPlaces)))
       const bt = clampBreaks(record.breaksTaken)
       setBreaksTaken(bt)
       setInitialBreaksTaken(bt)
@@ -470,6 +481,8 @@ const [sessionToDelete, setSessionToDelete] =
 
     if (field === "siteId") {
       updated[index].jobId = null
+      // Moving onto "Drivers" needs a fresh site pick; off it, the split no longer applies.
+      updated[index].place = null
     }
   }
 
@@ -599,8 +612,8 @@ const [sessionToDelete, setSessionToDelete] =
       return
     }
 
-    if (sessions.some((s) => driverSessionMissingJob(sites, s))) {
-      toast.error("Pick a job for every driver session")
+    if (sessions.some((s) => driverSessionMissingPlace(sites, s))) {
+      toast.error("Pick the site for every driver session")
       return
     }
 
@@ -693,7 +706,11 @@ const [sessionToDelete, setSessionToDelete] =
         (session) => ({
           _id: session._id,
           siteId: session.siteId,
-          jobId: session.jobId || null,
+          // A picked driver place sends its ticked jobs; anything else its single job (the
+          // server keeps an unsent split as it is and drops it off "Drivers").
+          ...(session.place?.jobIds.length
+            ? { jobId: null, splitJobIds: session.place.jobIds }
+            : { jobId: session.jobId || null }),
           checkIn: session.checkIn || null,
           checkOut: session.checkOut || null,
           isNightShift: session.isNightShift || false,
@@ -848,12 +865,14 @@ const [sessionToDelete, setSessionToDelete] =
                     siteId={session.siteId}
                     jobId={session.jobId}
                     jobName={session.jobName}
-                    jobCode={session.jobCode}
                     allowDrivers={isDriverTitle(record?.jobTitle)}
                     globalJobs={globalJobs}
                     hasTimes={!!(session.checkIn || session.checkOut)}
+                    place={session.place}
+                    knownJobs={session.splitJobs}
                     onSiteChange={(value) => updateSessionField(index, "siteId", value)}
                     onJobChange={(value) => updateSessionField(index, "jobId", value)}
+                    onPlaceChange={(value) => updateSessionField(index, "place", value)}
                   />
 
                   {/* Time inputs */}

@@ -18,7 +18,7 @@ import TransferRequest from '../models/transferRequestModel.js'
 import siteActivityModel from '../models/siteActivityModel.js'
 import { applyHandover, createPreSaveVisitRecord } from '../utils/handover.js'
 import { syncSupervisorScope } from '../utils/supervisorScope.js'
-import { isDriverPool, mirrorPoolDefaultsInBody } from '../utils/driverPool.js'
+import { isDriverPool, mirrorPoolDefaultsInBody, isDriverTitle, DRIVER_ONLY_MESSAGE } from '../utils/driverPool.js'
 import { isSiteScopedRole } from '../middlewares/rbac.js'
 import { touchSiteRosters, isWriteConflict } from '../utils/draftRoster.js'
 import { notifySiteSupervisors } from '../utils/notify.js'
@@ -31,6 +31,7 @@ import {
 import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js'
 import { buildSiteManpower } from '../utils/siteManpower.js'
+import { sessionJobIds } from '../utils/jobSplit.js'
 
 
 //Admin
@@ -175,6 +176,13 @@ export const  assignSupervisor = async (req , res) => {
             return res.status(404).json({message: "Employee Doesnt exist"})
         }
 
+        // Drivers live only on the Drivers sheet — never on a site.
+        if (isDriverTitle(employee.jobTitle)) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
+        }
+
         const supervisor = await userModel.findOne({ _id: employee.user }).session(session)
         if (!supervisor) {
             await session.abortTransaction();
@@ -253,6 +261,10 @@ export const assignEmployee = async (req , res) => {
         const employee = await empModel.findOne({_id})
         if (!employee){
             return res.status(400).json({message: "Employee doent exist"})
+        }
+        // Drivers live only on the Drivers sheet — never on a site.
+        if (isDriverTitle(employee.jobTitle)) {
+            return res.status(400).json({ code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
         }
         employee.currentSite = siteId
         const saved = await employee.save()
@@ -882,7 +894,8 @@ export const bulkSetEmployeeJob = async (req, res) => {
     for (const empId of empIds) {
       const employee = await empModel.findById(empId).session(session);
 
-      if (!employee || !employee.isActive) {
+      // Drivers never hold a site job (they live only on the Drivers sheet).
+      if (!employee || !employee.isActive || isDriverTitle(employee.jobTitle)) {
         skipped++;
         continue;
       }
@@ -1000,7 +1013,7 @@ export const jobManHoursAndDays = async (req,res) => {
 
     const records =
       await attendanceModel.find({
-        "sessions.jobId": jobId,
+        $or: [{ "sessions.jobId": jobId }, { "sessions.splitJobIds": jobId }],
         employee: { $nin: staffIds },
       });
 
@@ -1027,12 +1040,11 @@ export const jobManHoursAndDays = async (req,res) => {
       const netFactor = recordNetFactor(record);
 
       for (const session of record.sessions) {
-        if (
-          session.jobId?.toString() ===
-          jobId
-        ) {
+        // A driver session split across N jobs gives this job 1/N of it (utils/jobSplit.js).
+        const sessionJobs = sessionJobIds(session).map(String);
+        if (sessionJobs.includes(jobId)) {
           totalManHours +=
-            (session.workedHours || 0) * netFactor;
+            ((session.workedHours || 0) * netFactor) / sessionJobs.length;
 
           contributedToJob =
             true;
@@ -1561,6 +1573,13 @@ export const instaAddEmployee = async (req, res) => {
         success: false,
         message: "Employee not found",
       })
+    }
+
+    // Drivers live only on the Drivers sheet — never added to a site.
+    if (isDriverTitle(employee.jobTitle)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
     }
 
     const site = await siteModel.findById(siteId).session(session)
@@ -2107,6 +2126,8 @@ export const getAvailableEmployeesForSite = async (
             },
           ],
         },
+        // Drivers live only on the Drivers sheet — never offered for a site.
+        { jobTitle: { $not: /driver/i } },
       ],
     }
 
@@ -3143,6 +3164,10 @@ export const sendEmployeeToSite = async (req, res) => {
     if (!employee) {
       await session.abortTransaction(); session.endSession()
       return res.status(404).json({ success: false, message: "Employee not found" })
+    }
+    if (isDriverTitle(employee.jobTitle)) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
     }
 
     // Owner check: the employee must be homed at the source site the caller owns.

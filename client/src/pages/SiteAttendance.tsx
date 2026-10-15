@@ -89,7 +89,16 @@ import {
   AlertTriangle,
 } from "lucide-react"
 import JobPicker from "@/components/drivers/JobPicker"
-import { jobPlaceLabel, type SiteJobs } from "@/lib/driverJobs"
+import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
+import { type SiteJobs } from "@/lib/driverJobs"
+import {
+  placeFromJob,
+  placeFromSession,
+  sessionJobText as splitSessionText,
+  splitJobsList,
+  type DriverPlace,
+  type SessionSplitFields,
+} from "@/lib/jobSplit"
 import { globalJobsGroup, useGlobalJobs } from "@/lib/globalJobs"
 import RemarkDialog from "@/components/drivers/RemarkDialog"
 
@@ -140,9 +149,9 @@ interface Employee {
   // (a visit whose pendingTransfer* stash was consumed when the visited site saved).
   // The durable signal that a home member is out today — dropped from this site's draft.
   recordedElsewhereToday?: { siteId: string; siteName: string | null } | null
-  // Drivers sheet only (GET /api/drivers/roster): the job of the driver's most recent
-  // drivers-sheet session, still assignable — prefills the draft row's job.
-  lastJob?: Job | null
+  // Drivers sheet only (GET /api/drivers/roster): the site the driver's most recent
+  // drivers-sheet session served, with ALL its current live jobs — prefills the draft row.
+  lastPlace?: DriverPlace | null
 }
 
 // Source site of an inbound transfer, shown as the "Transferred from" badge.
@@ -207,6 +216,11 @@ export interface AttendanceSession {
 
   // Drivers sheet only: the session's job resolved for display (code, name, site).
   job?: Job | null
+
+  // Drivers sheet: the site the session served + the jobs its hours are split across
+  // (lib/jobSplit.ts). A legacy single-job driver session has `job` instead.
+  servedSite?: SessionSplitFields["servedSite"]
+  splitJobs?: SessionSplitFields["splitJobs"]
 
   checkIn: string | null
 
@@ -305,11 +319,21 @@ interface DraftSession {
   // auto-initialized check-in from one the supervisor actually entered. Any manual edit to
   // the check-in clears it.
   checkInAutoInit?: boolean
-  // Drivers sheet: true once the supervisor picked this session's job (so a roster refresh
-  // never swaps it back to the prefilled one), and whether the job is the driver's last used.
+  // Drivers sheet: true once the supervisor picked this session's site (so a roster refresh
+  // never swaps it back to the prefilled one), and whether it is the driver's last used.
   jobPicked?: boolean
   jobFromLast?: boolean
+  // Drivers sheet: the site (or General) the session served and the jobs its hours are split
+  // equally across. An older on-device draft may still carry a single `job` instead —
+  // read it through draftPlaceOf().
+  place?: DriverPlace | null
+  // Drivers sheet, on submit only: the place's ticked job ids (the server derives the site).
+  splitJobIds?: string[]
 }
+
+/** A drivers-sheet draft session's place (an older draft's single job counts as one). */
+const draftPlaceOf = (s?: DraftSession | null): DriverPlace | null =>
+  s ? s.place ?? placeFromJob(s.job) : null
 //siteId, date, isHoliday are common fields
 interface DraftAttendanceRecord {
   employee: {
@@ -462,7 +486,13 @@ const refreshRowMetadata = (
         ? s.jobPicked
           // A job the supervisor picked (drivers sheet) is their entry, not roster metadata.
           ? { ...s, siteId: freshSession.siteId }
-          : { ...s, siteId: freshSession.siteId, job: freshSession.job, jobFromLast: freshSession.jobFromLast }
+          : {
+              ...s,
+              siteId: freshSession.siteId,
+              job: freshSession.job,
+              place: freshSession.place,
+              jobFromLast: freshSession.jobFromLast,
+            }
         : s
     ),
   }
@@ -532,7 +562,9 @@ const mergeDraftWithRoster = (
     if (untouched && !carryoverJustClosed) {
       // Re-derive times/flags, but keep a job the supervisor picked (drivers sheet).
       const sessions = fresh.sessions.map((fs, i) =>
-        rec.sessions[i]?.jobPicked ? { ...fs, job: rec.sessions[i].job, jobPicked: true, jobFromLast: false } : fs
+        rec.sessions[i]?.jobPicked
+          ? { ...fs, job: rec.sessions[i].job, place: rec.sessions[i].place, jobPicked: true, jobFromLast: false }
+          : fs
       )
       const rederived = { ...rec, sessions, breaksTaken: fresh.breaksTaken, isSickLeave: fresh.isSickLeave }
       if (serializeEditable(editableOf(rederived)) !== serializeEditable(editableOf(rec))) row = rederived
@@ -931,6 +963,8 @@ interface DraftRowProps {
   jobRequired?: boolean
   /** `null` clears the job (only offered where a job is optional). */
   onPickJob?: (employeeId: string, sessionIndex: number, job: Job | null) => void
+  /** Drivers sheet: the site + ticked jobs the session's hours are split across. */
+  onPickPlace?: (employeeId: string, sessionIndex: number, place: DriverPlace) => void
 }
 
 // --- Mobile record card pieces (draft + saved, both sheets) ---
@@ -1043,20 +1077,81 @@ const BreakStepper = ({
   )
 }
 
-// Search text of a drivers-sheet session job (code, name, site).
-const sessionJobText = (job?: Job | null) =>
-  job ? `${job.jobCode ?? ""} ${job.name} ${jobPlaceLabel(job)}`.toLowerCase() : ""
+// Search text of a drivers-sheet session: its site and job codes/names.
+const savedPlaceSearchText = (s: AttendanceSession) =>
+  [placeFromSession(s)?.siteName, splitJobsList(s.splitJobs), s.job?.jobCode, s.job?.name]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+const draftPlaceSearchText = (s: DraftSession) => (draftPlaceOf(s)?.siteName ?? "").toLowerCase()
 
-/** Drivers sheet saved row: a session's job (code · name over its site), read-only. */
-const SavedJobLabel = ({ job }: { job: Job | null }) =>
-  job ? (
-    <div className="flex min-w-0 flex-col leading-tight">
-      <span className="truncate text-sm font-medium">{[job.jobCode, job.name].filter(Boolean).join(" · ")}</span>
-      <span className="truncate text-[11px] text-muted-foreground">{jobPlaceLabel(job)}</span>
+/** Drivers sheet saved row: the site a session served over the jobs its hours split across. */
+const SavedPlaceLabel = ({ session }: { session?: AttendanceSession | null }) => {
+  const place = placeFromSession(session)
+  if (!session || !place) return <span className="text-sm text-muted-foreground">No site</span>
+  const jobsText = session.splitJobs?.length
+    ? splitJobsList(session.splitJobs)
+    : [session.job?.jobCode, session.job?.name].filter(Boolean).join(" · ")
+  const n = place.jobIds.length
+  return (
+    <div className="flex min-w-0 flex-col leading-tight" title={jobsText}>
+      <span className="truncate text-sm font-medium">{place.siteName}</span>
+      <span className="truncate text-[11px] text-muted-foreground">
+        {n > 1 ? `${n} jobs · ${jobsText}` : jobsText}
+      </span>
     </div>
-  ) : (
-    <span className="text-sm text-muted-foreground">No job</span>
   )
+}
+
+/** Drivers sheet mobile card: the saved session's site + job count as a compact chip. */
+const PlaceChip = ({ session }: { session?: AttendanceSession | null }) => {
+  const text = splitSessionText({
+    ...session,
+    jobCode: session?.job?.jobCode,
+    jobName: session?.job?.name,
+  })
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-full items-center truncate rounded border px-1.5 py-px text-[11px] font-semibold",
+        text ? "bg-muted text-foreground/80" : "border-dashed text-muted-foreground"
+      )}
+      title={session?.splitJobs?.length ? splitJobsList(session.splitJobs) : undefined}
+    >
+      {text || "No site"}
+    </span>
+  )
+}
+
+/**
+ * Drivers sheet draft session's site + job split. Red while the session has times but no
+ * site (Save is held until every driver session names one).
+ */
+const DraftPlaceCell = ({
+  record,
+  disabled,
+  onPickPlace,
+}: {
+  record: DraftAttendanceRecord
+  disabled: boolean
+  onPickPlace?: DraftRowProps["onPickPlace"]
+}) => {
+  const session = record.sessions[0]
+  const place = draftPlaceOf(session)
+  const missing = isSessionNonEmpty(session) && !place?.jobIds.length
+  return (
+    <div className="space-y-1">
+      <SiteSplitPicker
+        value={place}
+        invalid={missing}
+        disabled={disabled}
+        showLastUsed={!!session.jobFromLast && !session.jobPicked}
+        onChange={(next) => onPickPlace?.(record.employee._id, 0, next)}
+      />
+      {missing && <p className="text-[11px] text-red-600 dark:text-red-400">Pick the site this driver worked for.</p>}
+    </div>
+  )
+}
 
 /**
  * Draft session's job picker. Drivers sheet: any site's job or a global job. Site sheet
@@ -1127,6 +1222,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   siteJobs,
   jobRequired = false,
   onPickJob,
+  onPickPlace,
 }: DraftRowProps) {
   const session = record.sessions[0]
   const inputsLocked = !!record.isSickLeave || !!hasCarryover
@@ -1193,14 +1289,18 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
           </div>
         )}
 
-        {(driverJobs || siteJobs) && (
-          <DraftJobCell
-            record={record}
-            disabled={inputsLocked}
-            onPickJob={onPickJob}
-            siteJobs={driverJobs ? undefined : siteJobs}
-            required={!!driverJobs || jobRequired}
-          />
+        {driverJobs ? (
+          <DraftPlaceCell record={record} disabled={inputsLocked} onPickPlace={onPickPlace} />
+        ) : (
+          siteJobs && (
+            <DraftJobCell
+              record={record}
+              disabled={inputsLocked}
+              onPickJob={onPickJob}
+              siteJobs={siteJobs}
+              required={jobRequired}
+            />
+          )
         )}
 
         {isNight && <NightTag />}
@@ -1320,6 +1420,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   siteJobs,
   jobRequired = false,
   onPickJob,
+  onPickPlace,
 }: DraftRowProps) {
   const session = record.sessions[0]
 
@@ -1371,13 +1472,21 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
 
         {(driverJobs || siteJobs) && (
           <TableCell className={driverJobs ? "min-w-[240px] max-w-[320px]" : "min-w-[200px] max-w-[280px]"}>
-            <DraftJobCell
-              record={record}
-              disabled={!!record.isSickLeave || !!hasCarryover}
-              onPickJob={onPickJob}
-              siteJobs={driverJobs ? undefined : siteJobs}
-              required={!!driverJobs || jobRequired}
-            />
+            {driverJobs ? (
+              <DraftPlaceCell
+                record={record}
+                disabled={!!record.isSickLeave || !!hasCarryover}
+                onPickPlace={onPickPlace}
+              />
+            ) : (
+              <DraftJobCell
+                record={record}
+                disabled={!!record.isSickLeave || !!hasCarryover}
+                onPickJob={onPickJob}
+                siteJobs={siteJobs}
+                required={jobRequired}
+              />
+            )}
           </TableCell>
         )}
 
@@ -1836,7 +1945,15 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     useState<string | null>(null)
 
   const [inlineEdit, setInlineEdit] =
-    useState<{ checkIn: string; checkOut: string; isNightShift: boolean; breaksTaken: number | null; job?: Job | null }>({
+    useState<{
+      checkIn: string
+      checkOut: string
+      isNightShift: boolean
+      breaksTaken: number | null
+      job?: Job | null
+      // Drivers sheet: the site + ticked jobs the session's hours are split across.
+      place?: DriverPlace | null
+    }>({
       checkIn: "",
       checkOut: "",
       isNightShift: false,
@@ -2216,10 +2333,11 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       // A cross-site visitor works this site's job for the day (pendingTransferJobId),
       // not their home currentJob — so their session's job (and thus job-hours
       // attribution) records the visited site's job. Non-visitors keep currentJob.
-      // Drivers sheet: the job is picked per day from any site; it starts on the driver's
-      // last-used job (or blank for a new driver, who must pick one before saving).
+      // Drivers sheet: no job — the session names a site whose jobs share its hours. It
+      // starts on the driver's last-used site with all its live jobs ticked (or blank for a
+      // new driver, who must pick one before saving).
       const sessionJob = isDrivers
-        ? emp.lastJob ?? null
+        ? null
         : hasPendingTransfer
         ? emp.pendingTransferJobId || null
         : emp.currentJob
@@ -2253,7 +2371,9 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
             // Auto-initialized only when the check-in is the category day default
             // (not a carryover blank and not a transfer's own check-in).
             checkInAutoInit: !!defaultIn && defaultIn === roleDefaultIn,
-            ...(isDrivers ? { jobPicked: false, jobFromLast: !!emp.lastJob } : {}),
+            ...(isDrivers
+              ? { place: emp.lastPlace ?? null, jobPicked: false, jobFromLast: !!emp.lastPlace }
+              : {}),
           },
         ],
 
@@ -3118,7 +3238,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     // Every session with a time must name its job (the server refuses it too).
     if (rowsMissingJob > 0) {
       toast.error(
-        `${rowsMissingJob} ${isDrivers ? "driver " : ""}session${rowsMissingJob === 1 ? "" : "s"} need${rowsMissingJob === 1 ? "s" : ""} a job before saving.`
+        `${rowsMissingJob} ${isDrivers ? "driver " : ""}session${rowsMissingJob === 1 ? "" : "s"} need${rowsMissingJob === 1 ? "s" : ""} ${isDrivers ? "a site" : "a job"} before saving.`
       )
       return
     }
@@ -3146,9 +3266,16 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       }
 
       // Submit exactly the rows on screen now, each naming the shared-draft version it shows.
-      const rows = draftAttendanceRef.current.map((rec) =>
-        cloud ? { ...rec, draftRev: remoteRowsRef.current.get(String(rec.employee._id))?.rev ?? 0 } : rec
-      )
+      const rows = draftAttendanceRef.current
+        .map((rec) =>
+          cloud ? { ...rec, draftRev: remoteRowsRef.current.get(String(rec.employee._id))?.rev ?? 0 } : rec
+        )
+        // Drivers: each session's hours are split across its place's ticked jobs.
+        .map((rec) =>
+          isDrivers
+            ? { ...rec, sessions: rec.sessions.map((s) => ({ ...s, splitJobIds: draftPlaceOf(s)?.jobIds ?? [] })) }
+            : rec
+        )
 
       const payload: DraftAttendancePayload = {
         siteId: id || "",
@@ -3321,6 +3448,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       // The session's job is editable inline too (drivers sheet, or a site with jobs). A job
       // id the list couldn't name still counts as set.
       job: session?.job ?? (session?.jobId ? { _id: String(session.jobId), name: "Job" } : null),
+      ...(isDrivers ? { place: placeFromSession(session) } : {}),
     })
   }
 
@@ -3383,7 +3511,11 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     setInlineEditError(null);
 
     // A session with a time must name its job (drivers sheet, or a site with a live job).
-    if ((isDrivers || siteHasJobs) && (checkIn || checkOut) && !inlineEdit.job) {
+    if (isDrivers && (checkIn || checkOut) && !inlineEdit.place?.jobIds.length) {
+      setInlineEditError("Pick the site this driver worked for");
+      return;
+    }
+    if (!isDrivers && siteHasJobs && (checkIn || checkOut) && !inlineEdit.job) {
       setInlineEditError("Pick the job this session was for");
       return;
     }
@@ -3422,7 +3554,9 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
             siteId: existing?.siteId ?? site?._id,
             // The inline picker edits the job on both sheets (seeded from the session's job)
             // whenever it is shown — a site's own jobs and/or the global jobs.
-            jobId: isDrivers || showJobColumn ? inlineEdit.job?._id ?? null : existing?.jobId ?? null,
+            jobId: isDrivers ? null : showJobColumn ? inlineEdit.job?._id ?? null : existing?.jobId ?? null,
+            // Drivers: the ticked jobs of the session's site (the server derives the site).
+            ...(isDrivers ? { splitJobIds: inlineEdit.place?.jobIds ?? [] } : {}),
             checkIn: combineFromOffset(record.date, checkIn || null, checkInNextDay),
             checkOut: combineFromOffset(record.date, checkOut || null, checkOutNextDay),
             checkInNextDay,
@@ -3613,7 +3747,12 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
 
   // Draft sessions with a time but no job — Save is held until each has one (drivers sheet,
   // and a site once it has a live job of its own; the server refuses it too).
-  const rowsMissingJob = isDrivers || siteHasJobs
+  const rowsMissingJob = isDrivers
+    ? draftAttendance.reduce(
+        (n, rec) => n + rec.sessions.filter((s) => isSessionNonEmpty(s) && !draftPlaceOf(s)?.jobIds.length).length,
+        0
+      )
+    : siteHasJobs
     ? draftAttendance.reduce(
         (n, rec) => n + rec.sessions.filter((s) => isSessionNonEmpty(s) && !s.job).length,
         0
@@ -3631,6 +3770,21 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
           i === sessionIndex ? { ...s, job, jobPicked: true, jobFromLast: false } : s
         )
         return { ...record, sessions, jobId: sessionIndex === 0 ? job?._id ?? null : record.jobId }
+      })
+    )
+    setIsDirty(true)
+  }, [])
+
+  // Drivers sheet: the site (+ ticked jobs) a draft session's hours are split across. Marked
+  // as picked so a roster refresh never swaps it back to the last-used site.
+  const pickDraftPlace = useCallback((employeeId: string, sessionIndex: number, place: DriverPlace) => {
+    setDraftAttendance((prev) =>
+      prev.map((record) => {
+        if (record.employee._id !== employeeId) return record
+        const sessions = record.sessions.map((s, i) =>
+          i === sessionIndex ? { ...s, job: null, place, jobPicked: true, jobFromLast: false } : s
+        )
+        return { ...record, sessions }
       })
     )
     setIsDirty(true)
@@ -4218,7 +4372,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
         record.employee.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query) ||
-        (isDrivers && record.sessions.some((s) => sessionJobText(s.job).includes(query)))
+        (isDrivers && record.sessions.some((s) => draftPlaceSearchText(s).includes(query)))
       return (
         (collarTab === 'all' || tabCategoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
@@ -4240,7 +4394,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
         record.name.toLowerCase().includes(query) ||
         record.employeeId.toLowerCase().includes(query) ||
         record.jobTitle.toLowerCase().includes(query) ||
-        (isDrivers && record.sessions.some((s) => sessionJobText(s.job).includes(query)))
+        (isDrivers && record.sessions.some((s) => savedPlaceSearchText(s).includes(query)))
       return (
         (collarTab === 'all' || tabCategoryOf(record.collarType, record.nationality) === collarTab) &&
         categoryMatch &&
@@ -4774,7 +4928,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
               )}
               {!attendanceExists && rowsMissingJob > 0 && (
                 <p className="text-center text-[11px] text-red-600 dark:text-red-400">
-                  {rowsMissingJob} session{rowsMissingJob === 1 ? "" : "s"} need{rowsMissingJob === 1 ? "s" : ""} a job before saving
+                  {rowsMissingJob} session{rowsMissingJob === 1 ? "" : "s"} need{rowsMissingJob === 1 ? "s" : ""} {isDrivers ? "a site" : "a job"} before saving
                 </p>
               )}
 
@@ -5537,13 +5691,21 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                             {/* The session's job: drivers pick any site's job, a site picks one of
                                 its own or a global job (optional when it has none of its own); a
                                 site with nothing to pick just shows it. */}
-                            {isDrivers || showJobColumn ? (
+                            {isDrivers ? (
+                              <SiteSplitPicker
+                                value={inlineEdit.place ?? null}
+                                knownJobs={record.sessions[0]?.splitJobs}
+                                invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.place?.jobIds.length}
+                                onChange={(place) => setInlineEdit((prev) => ({ ...prev, place }))}
+                                className="h-10"
+                              />
+                            ) : showJobColumn ? (
                               <JobPicker
                                 value={inlineEdit.job ?? null}
-                                invalid={(isDrivers || siteHasJobs) && !!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
-                                sites={isDrivers ? undefined : siteJobs}
+                                invalid={siteHasJobs && !!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
+                                sites={siteJobs}
                                 onChange={(job) => setInlineEdit((prev) => ({ ...prev, job }))}
-                                onClear={isDrivers || siteHasJobs ? undefined : () => setInlineEdit((prev) => ({ ...prev, job: null }))}
+                                onClear={siteHasJobs ? undefined : () => setInlineEdit((prev) => ({ ...prev, job: null }))}
                                 className="h-10"
                               />
                             ) : null}
@@ -5664,7 +5826,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                         ) : (
                           <>
                             {/* One block per session: its job code over In / Out. Drivers always
-                                name the job (any site); a site shows it when the session has one. */}
+                                name the site + jobs they served; a site shows its job when the session has one. */}
                             {record.sessions.map((session, idx) => {
                               const night = !!(session.isNightShift || (session.checkIn && session.checkOut && isCrossMidnight(toTimeValue(session.checkIn), toTimeValue(session.checkOut), session.isNightShift)))
                               const needsJob = sessionNeedsJob(session)
@@ -5675,6 +5837,8 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                                     <div className="flex flex-wrap items-center gap-1.5">
                                       {needsJob ? (
                                         <NoJobChip onAssign={assignJobHandler(record)} />
+                                      ) : isDrivers ? (
+                                        <PlaceChip session={session} />
                                       ) : (
                                         showChip && <JobChip job={session.job} emptyLabel="No job" />
                                       )}
@@ -5753,7 +5917,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                   <TableHeader>
                     <TableRow>
                       <TableHead>Employee</TableHead>
-                      {(isDrivers || showJobColumn) && <TableHead>{isDrivers ? "Job (any site)" : "Job"}</TableHead>}
+                      {(isDrivers || showJobColumn) && <TableHead>{isDrivers ? "Site · jobs" : "Job"}</TableHead>}
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
@@ -5838,17 +6002,19 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                                 </TableCell>
                               )}
 
-                              {/* JOB (drivers sheet: any site's job, per session) */}
+                              {/* SITE · JOBS (drivers sheet: the site served, hours split
+                                  equally across its ticked jobs, per session) */}
                               {isDrivers && (
                                 <TableCell className="min-w-[220px] max-w-[300px]">
                                   {isEditing && sessionIndex === 0 ? (
-                                    <JobPicker
-                                      value={inlineEdit.job ?? null}
-                                      invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.job}
-                                      onChange={(job) => setInlineEdit((prev) => ({ ...prev, job }))}
+                                    <SiteSplitPicker
+                                      value={inlineEdit.place ?? null}
+                                      knownJobs={session?.splitJobs}
+                                      invalid={!!(inlineEdit.checkIn || inlineEdit.checkOut) && !inlineEdit.place?.jobIds.length}
+                                      onChange={(place) => setInlineEdit((prev) => ({ ...prev, place }))}
                                     />
                                   ) : (
-                                    <SavedJobLabel job={session?.job ?? null} />
+                                    <SavedPlaceLabel session={session} />
                                   )}
                                 </TableCell>
                               )}
@@ -6212,6 +6378,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                       siteJobs={isDrivers ? undefined : siteJobs}
                       jobRequired={siteHasJobs}
                       onPickJob={pickDraftJob}
+                      onPickPlace={pickDraftPlace}
                     />
                   ))}
                 </div>
@@ -6224,7 +6391,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                   <TableHeader>
                     <TableRow>
                       <TableHead>Employee</TableHead>
-                      {(isDrivers || showJobColumn) && <TableHead>{isDrivers ? "Job (any site)" : "Job"}</TableHead>}
+                      {(isDrivers || showJobColumn) && <TableHead>{isDrivers ? "Site · jobs" : "Job"}</TableHead>}
                       <TableHead>Check In</TableHead>
                       <TableHead>Check Out</TableHead>
                       <TableHead>Shift</TableHead>
@@ -6259,6 +6426,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                         siteJobs={isDrivers ? undefined : siteJobs}
                         jobRequired={siteHasJobs}
                         onPickJob={pickDraftJob}
+                        onPickPlace={pickDraftPlace}
                       />
                     ))}
 

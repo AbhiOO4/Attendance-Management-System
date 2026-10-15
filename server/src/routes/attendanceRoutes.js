@@ -4,6 +4,7 @@ import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles, requireSiteAccess } from '../middlewares/rbac.js'
 import attendanceController from '../controllers/attendanceController.js'
 import * as draftController from '../controllers/draftController.js'
+import * as leaveAllocationController from '../controllers/leaveAllocationController.js'
 
 const router = express.Router()
 
@@ -46,8 +47,14 @@ router.post('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), atten
 // admin + superadmin — lives on the employee detail page. Bulk route above stays superadmin.
 router.get('/employee/:employeeId/erpnext/:month/:year', authorizeRoles("admin"), attendanceController.exportErpnext)
 
-// --- Annual paid leave (admin implicitly allows superadmin) ---
-// Specific /leave/* paths declared before the /:attendanceId wildcard.
+// --- Leave: annual allocations + leave applications (admin implicitly allows superadmin) ---
+// Specific /leave/* paths declared before the /:attendanceId wildcard, and the
+// /leave/allocations paths before /leave/:leaveId.
+router.get('/leave/allocations', authorizeRoles("admin"), leaveAllocationController.listAllocations)
+router.post('/leave/allocations', authorizeRoles("admin"), leaveAllocationController.createAllocation)
+router.patch('/leave/allocations/:id', authorizeRoles("admin"), leaveAllocationController.updateAllocation)
+router.delete('/leave/allocations/:id', authorizeRoles("admin"), leaveAllocationController.deleteAllocation)
+
 router.get('/leave/balance/:employeeId', authorizeRoles("admin"), attendanceController.getLeaveBalance)
 
 router.get('/leave/preview', authorizeRoles("admin"), attendanceController.previewLeave)
@@ -58,9 +65,15 @@ router.get('/leave/on-date', authorizeRoles("admin", "supervisor", "driverSuperv
 
 router.get('/leave/employee/:employeeId', authorizeRoles("admin"), attendanceController.listEmployeeLeaves)
 
+router.get('/leave', authorizeRoles("admin"), attendanceController.listLeaves)
+
 router.post('/leave', authorizeRoles("admin"), attendanceController.grantLeave)
 
+router.put('/leave/:leaveId', authorizeRoles("admin"), attendanceController.updateLeave)
+
 router.patch('/leave/:leaveId/cancel', authorizeRoles("admin"), attendanceController.cancelLeave)
+
+router.delete('/leave/:leaveId', authorizeRoles("admin"), attendanceController.deleteLeave)
 
 router.get('/reports/job-report', authorizeRoles("superadmin"), attendanceController.jobReport)
 

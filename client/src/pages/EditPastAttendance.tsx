@@ -3,6 +3,7 @@ import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/atte
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { Fragment, useEffect, useMemo, useState } from "react"
 import { fetchSitesWithDriverPool } from "@/lib/driverJobs"
+import { sessionJobCell, type SessionSplitFields } from "@/lib/jobSplit"
 import toast from "react-hot-toast"
 import EditRecord from "@/components/EditRecord"
 import BulkCheckoutModal from "@/components/BulkCheckoutModal"
@@ -80,6 +81,11 @@ export interface AttendanceSession {
   jobName?: string
 
   jobCode?: string | null
+
+  // Drivers: the site served + the jobs its hours are split across (lib/jobSplit.ts).
+  servedSite?: SessionSplitFields["servedSite"]
+
+  splitJobs?: SessionSplitFields["splitJobs"]
 
   checkIn?: string | null
 
@@ -866,7 +872,7 @@ function EditPastAttendance() {
                                 </TableCell>
 
                                 <TableCell>
-                                  {session?.jobName || "-"}
+                                  {sessionJobCell(session, session?.jobName || "-")}
                                 </TableCell>
 
                                 <TableCell>

@@ -24,6 +24,17 @@ import { getTodayLocal, combineFromOffset, toLocalDateString } from "./timeLocal
 import { categoryForEmployee } from "./collar.js"
 import { dayCheckInFieldFor } from "./rosterFields.js"
 import { syncSupervisorScope } from "./supervisorScope.js"
+import { isDriverTitle, DRIVER_ONLY_MESSAGE } from "./driverPool.js"
+
+// Backstop: drivers live only on the Drivers sheet. Every caller already refuses them; this
+// keeps a future caller from placing one on a site through these helpers.
+function assertNotDriver(employee) {
+  if (employee && isDriverTitle(employee.jobTitle)) {
+    const err = new Error(DRIVER_ONLY_MESSAGE)
+    err.status = 400
+    throw err
+  }
+}
 
 // App-timezone business-day midnight — the anchor every attendance record and the
 // pendingTransferDate stash use. Raw UTC midnight would resolve to the previous day in
@@ -34,6 +45,7 @@ function todayAttendanceDate() {
 }
 
 export async function applyHandover({ employee, toSiteId, toJobId = null, mode, session }) {
+  assertNotDriver(employee)
   if (mode === "today") {
     employee.pendingTransferCheckIn = null
     employee.pendingTransferSiteId = toSiteId
@@ -126,6 +138,7 @@ export async function placeMiddayArrival({
   session,
   attendanceDoc = null,
 }) {
+  assertNotDriver(employee)
   const doc =
     attendanceDoc ||
     (await Attendance.findOne({ employee: employee._id, date: attendanceDate }).session(session))
@@ -281,6 +294,7 @@ export async function createPreSaveVisitRecord({
   actor,
   session,
 }) {
+  assertNotDriver(employee)
   const todayStr = getTodayLocal()
   const attendanceDate = new Date(todayStr)
 

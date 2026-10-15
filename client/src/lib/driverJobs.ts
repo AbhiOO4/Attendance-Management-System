@@ -60,15 +60,6 @@ export async function fetchSitesWithDriverPool<T = unknown>(): Promise<T[]> {
   return res.data || []
 }
 
-/** True when a session sits on the Drivers pool and has a time but no job (blocks save). */
-export const driverSessionMissingJob = (
-  sites: { _id: string; isDriverPool?: boolean }[],
-  s: { siteId: string; jobId?: string | null; checkIn?: string | null; checkOut?: string | null }
-) => {
-  const pool = sites.find((x) => x.isDriverPool)
-  return !!pool && s.siteId === pool._id && !!(s.checkIn || s.checkOut) && !s.jobId
-}
-
 export const jobLabel = (job?: DriverJob | null) =>
   job ? [job.jobCode, job.name].filter(Boolean).join(" · ") : ""
 

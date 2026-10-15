@@ -54,9 +54,10 @@ import {
 import { computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import type { MissingEmployee } from "@/components/BackfillModal"
-import JobPicker from "@/components/drivers/JobPicker"
+import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
 import type { PickerSite } from "@/components/SessionSiteJobFields"
-import { isDriverTitle, type DriverJob } from "@/lib/driverJobs"
+import { isDriverTitle } from "@/lib/driverJobs"
+import type { DriverPlace } from "@/lib/jobSplit"
 
 type Site = PickerSite
 
@@ -116,14 +117,17 @@ function BulkBackfillModal({
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<BulkBackfillResult | null>(null)
-  // The job picked on "Drivers" (any-site JobPicker), kept for its label.
-  const [driverJob, setDriverJob] = useState<DriverJob | null>(null)
+  // On "Drivers": the site the drivers served + the ticked jobs their hours are split across.
+  const [driverPlace, setDriverPlace] = useState<DriverPlace | null>(null)
 
   // "Drivers" (the hidden pool) is offered — and preselected — only when every selected
-  // employee is a driver; the server skips non-drivers anyway.
+  // employee is a driver; the server skips non-drivers anyway. Drivers live only on Drivers
+  // Attendance, so an all-driver selection gets no regular sites, and on a site any selected
+  // drivers are skipped by the server (noted below).
   const driverPool = sites.find((s) => s.isDriverPool)
   const allDrivers = employees.length > 0 && employees.every((e) => isDriverTitle(e.jobTitle))
-  const regularSites = sites.filter((s) => !s.isDriverPool)
+  const driverCount = employees.filter((e) => isDriverTitle(e.jobTitle)).length
+  const regularSites = allDrivers ? [] : sites.filter((s) => !s.isDriverPool)
   const onPool = !!driverPool && siteId === driverPool._id
 
   // Reset the form each time the modal opens.
@@ -131,7 +135,7 @@ function BulkBackfillModal({
     if (open) {
       setSiteId(allDrivers && driverPool ? driverPool._id : "")
       setJobId(null)
-      setDriverJob(null)
+      setDriverPlace(null)
       setCheckIn("")
       setCheckOut("")
       setCheckInNextDay(false)
@@ -213,7 +217,7 @@ function BulkBackfillModal({
 
   const isNight = checkInNextDay || checkOutNextDay
 
-  const canSubmit = !!siteId && !!checkIn && !!checkOut && !timeError && employees.length > 0 && (!onPool || !!jobId)
+  const canSubmit = !!siteId && !!checkIn && !!checkOut && !timeError && employees.length > 0 && (!onPool || !!driverPlace?.jobIds.length)
 
   // --------------------------------------------------
   // SUBMIT
@@ -223,7 +227,7 @@ function BulkBackfillModal({
       if (!siteId) toast.error("Please select a site")
       else if (!checkIn || !checkOut) toast.error("Enter both check-in and check-out")
       else if (timeError) toast.error(timeError)
-      else if (onPool && !jobId) toast.error("Pick a job for the driver session")
+      else if (onPool && !driverPlace?.jobIds.length) toast.error("Pick the site the drivers worked for")
       return
     }
 
@@ -233,7 +237,8 @@ function BulkBackfillModal({
         date,
         employeeIds: employees.map((e) => e._id),
         siteId,
-        jobId: jobId || null,
+        jobId: onPool ? null : jobId || null,
+        ...(onPool ? { splitJobIds: driverPlace?.jobIds ?? [] } : {}),
         checkIn,
         checkOut,
         checkInNextDay,
@@ -292,6 +297,12 @@ function BulkBackfillModal({
             </span>
             .
           </p>
+          {driverCount > 0 && !allDrivers && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              {driverCount} driver{driverCount === 1 ? "" : "s"} will be skipped — drivers are
+              backfilled on Drivers only.
+            </p>
+          )}
         </div>
 
         {/* BODY */}
@@ -368,7 +379,7 @@ function BulkBackfillModal({
                     onValueChange={(value) => {
                       setSiteId(value)
                       setJobId(null)
-                      setDriverJob(null)
+                      setDriverPlace(null)
                     }}
                   >
                     <SelectTrigger className="w-full h-10 text-sm">
@@ -398,16 +409,13 @@ function BulkBackfillModal({
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">
-                    {onPool ? <>Job (any site) <span className="text-red-500">*</span></> : "Job"}
+                    {onPool ? <>Worked for (hours split across its jobs) <span className="text-red-500">*</span></> : "Job"}
                   </label>
                   {onPool ? (
-                    <JobPicker
-                      value={driverJob}
-                      onChange={(job) => {
-                        setDriverJob(job)
-                        setJobId(job._id)
-                      }}
-                      invalid={!jobId && !!(checkIn || checkOut)}
+                    <SiteSplitPicker
+                      value={driverPlace}
+                      onChange={setDriverPlace}
+                      invalid={!driverPlace?.jobIds.length && !!(checkIn || checkOut)}
                       className="h-10"
                     />
                   ) : (

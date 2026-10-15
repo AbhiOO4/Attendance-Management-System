@@ -174,15 +174,6 @@ const employeeSchema = new mongoose.Schema({
     default: 'foreign'
   },
 
-  // Per-employee override of the annual PAID-LEAVE entitlement (working days per
-  // calendar year). null → fall back to WorkSchedule.annualLeaveDefaultDays.
-  // Days USED are derived from paid-leave attendance records, never stored here.
-  annualLeaveEntitlement: {
-    type: Number,
-    min: 0,
-    default: null
-  },
-
   // ERPNext activity type (rate band) allocated on the Activity Types page. The timesheet
   // export stamps its name (and its overtime twin's) on this employee's time-logs; null →
   // the configured default activity types. Current allocation only — no history.

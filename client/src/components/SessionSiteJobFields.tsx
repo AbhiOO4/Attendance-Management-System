@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { Truck } from "lucide-react"
 
 import {
@@ -11,8 +10,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import JobPicker from "@/components/drivers/JobPicker"
-import { useDriverJobIndex, type DriverJob } from "@/lib/driverJobs"
+import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
+import { useDriverJobIndex } from "@/lib/driverJobs"
+import { placeFromJob, type DriverPlace, type SplitJob } from "@/lib/jobSplit"
 import { GLOBAL_JOBS_GROUP_LABEL, type GlobalJob } from "@/lib/globalJobs"
 
 /** A site as the past-day editors fetch it (GET /api/site?includeDriverPool=true). */
@@ -28,8 +28,9 @@ export type PickerSite = {
  * The Site + Job pair of one session in the admin past-day editors (Edit past, Backfill).
  *
  * "Drivers" is offered as its own "No site" group when `allowDrivers` (a driver employee), or
- * whenever the session is already on it. A Drivers session gets the drivers sheet's any-site
- * JobPicker (every live site's jobs + the global jobs) and the job is REQUIRED once the session
+ * whenever the session is already on it. A driver gets ONLY "Drivers" (drivers live only on
+ * Drivers Attendance) — plus the session's own site when it's history from before that rule. A Drivers session names the SITE the driver served
+ * (SiteSplitPicker: its jobs ticked, hours split equally) and that is REQUIRED once the session
  * has a time, like on the Drivers sheet; a site session keeps the site's jobs + global jobs.
  */
 export default function SessionSiteJobFields({
@@ -37,37 +38,47 @@ export default function SessionSiteJobFields({
   siteId,
   jobId,
   jobName,
-  jobCode,
   allowDrivers,
   globalJobs,
   hasTimes,
+  place,
+  knownJobs,
   onSiteChange,
   onJobChange,
+  onPlaceChange,
 }: {
   sites: PickerSite[]
   siteId: string
   jobId?: string | null
   // The stored job's label — shown when that job is no longer pickable (completed since).
   jobName?: string
-  jobCode?: string | null
   allowDrivers: boolean
   globalJobs: GlobalJob[]
   hasTimes: boolean
+  // Drivers: the working site + ticked jobs; undefined = an untouched legacy single-job
+  // session (shown as its job's site). `knownJobs` names the stored split's jobs.
+  place?: DriverPlace | null
+  knownJobs?: SplitJob[]
   onSiteChange: (siteId: string) => void
   onJobChange: (jobId: string) => void
+  onPlaceChange: (place: DriverPlace) => void
 }) {
   const pool = sites.find((s) => s.isDriverPool)
-  const regularSites = sites.filter((s) => !s.isDriverPool)
+  const regularSites = sites.filter((s) => !s.isDriverPool && (!allowDrivers || s._id === siteId))
   const onPool = !!pool && siteId === pool._id
   const showPool = !!pool && (allowDrivers || onPool)
   const selectedSite = regularSites.find((s) => s._id === siteId)
 
-  const driverJobIndex = useDriverJobIndex(onPool)
-  const [picked, setPicked] = useState<DriverJob | null>(null)
-  const driverJob: DriverJob | null = !jobId
-    ? null
-    : driverJobIndex.get(jobId) ??
-      (picked?._id === jobId ? picked : { _id: jobId, name: jobName || "Job", jobCode: jobCode ?? null })
+  // A legacy single-job driver session opens as its job's site with that one job ticked.
+  const driverJobIndex = useDriverJobIndex(onPool && place === undefined && !!jobId)
+  // (A job no longer pickable just shows its name until a site is picked.)
+  const driverPlace: DriverPlace | null =
+    place !== undefined
+      ? place
+      : jobId
+      ? placeFromJob(driverJobIndex.get(jobId)) ?? { siteId: "", siteName: jobName || "Job", jobIds: [jobId] }
+      : null
+  const placeMissing = place !== undefined ? !place?.jobIds.length : !jobId
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -99,16 +110,14 @@ export default function SessionSiteJobFields({
 
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-muted-foreground">
-          {onPool ? "Job (any site)" : "Job"}
+          {onPool ? "Worked for (hours split across its jobs)" : "Job"}
         </label>
         {onPool ? (
-          <JobPicker
-            value={driverJob}
-            onChange={(job) => {
-              setPicked(job)
-              onJobChange(job._id)
-            }}
-            invalid={hasTimes && !jobId}
+          <SiteSplitPicker
+            value={driverPlace}
+            knownJobs={knownJobs}
+            onChange={onPlaceChange}
+            invalid={hasTimes && placeMissing}
             className="h-10"
           />
         ) : (

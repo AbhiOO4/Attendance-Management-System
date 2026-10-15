@@ -72,7 +72,6 @@ type WorkSchedule = {
   checkoutReminderTime: string;
   checkoutRemarkGraceMinutes: number;
   lopDeductionAmount: number;
-  annualLeaveDefaultDays: number;
   erpCompanyName: string;
   erpDefaultActivityType: string;
   erpOvertimeActivityType: string;
@@ -128,10 +127,10 @@ const SECTIONS: Record<SectionId, SettingsSection> = {
   },
   leave: {
     id: "leave",
-    title: "Leave & LOP",
-    description: "Annual paid-leave entitlement and the Loss of Pay remark.",
+    title: "Loss of Pay",
+    description: "The Loss of Pay remark. Annual leave is allocated on the Leave page.",
     icon: CalendarCheck,
-    fields: ["annualLeaveDefaultDays", "lopDeductionAmount"],
+    fields: ["lopDeductionAmount"],
   },
   erp: {
     id: "erp",
@@ -289,7 +288,6 @@ export default function Configure() {
     checkoutReminderTime: "20:00",
     checkoutRemarkGraceMinutes: 15,
     lopDeductionAmount: 3.5,
-    annualLeaveDefaultDays: 30,
     erpCompanyName: "New Gulf Desert Projects LLC",
     erpDefaultActivityType: "Construction",
     erpOvertimeActivityType: "",
@@ -569,7 +567,7 @@ export default function Configure() {
             .map(capitalize)
             .join(", ") || "No weekly off days",
         checkout: `Reminder ${saved.checkoutReminderTime || "off"} · Remark after ${saved.checkoutRemarkGraceMinutes ?? 15} min over default`,
-        leave: `${saved.annualLeaveDefaultDays ?? 0} days/year · LOP deduct ${saved.lopDeductionAmount ?? 3.5} OMR`,
+        leave: `LOP deduct ${saved.lopDeductionAmount ?? 3.5} OMR`,
         erp: `${saved.erpCompanyName || "Company name not set"} · Unmarked days = ${saved.countUnmarkedAsAbsent === false ? "Present" : "Absent"}`,
       }
     : {
@@ -821,26 +819,10 @@ export default function Configure() {
               </div>
             )}
 
-            {/* LEAVE & LOP */}
+            {/* LOSS OF PAY */}
             {settingsSection(
               SECTIONS.leave,
               <div className="grid gap-6 md:grid-cols-2">
-                <Field
-                  id="cfg-annual-leave"
-                  label="Annual Leave (days/year)"
-                  hint="Default paid-leave entitlement per employee per calendar year. Can be overridden per employee."
-                >
-                  <Input
-                    id="cfg-annual-leave"
-                    type="number"
-                    min={0}
-                    max={365}
-                    step={1}
-                    value={schedule.annualLeaveDefaultDays ?? 0}
-                    onChange={(e) => setField("annualLeaveDefaultDays", Number(e.target.value))}
-                  />
-                </Field>
-
                 <Field
                   id="cfg-lop-amount"
                   label="LOP Deduction Amount (OMR)"
