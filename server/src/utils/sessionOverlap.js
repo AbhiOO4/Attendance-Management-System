@@ -1,5 +1,5 @@
 import Attendance from '../models/attendanceModel.js';
-import { toLocalTimeString } from './timeLocal.js';
+import { toLocalTimeString, MAX_SHIFT_HOURS } from './timeLocal.js';
 
 /**
  * In-memory dry-run overlap detection for attendance sessions.
@@ -45,9 +45,22 @@ export function hasSessionOverlap(sessions) {
  * can never reach beyond the adjacent calendar days. The record's own day is excluded — that
  * is what the within-record check already covers.
  *
+ * A session with a check-in but no check-out yet (the usual state of a morning save — the
+ * check-out comes later, often from the auto-checkout cron) is compared as an INSTANT at its
+ * check-in, on either side: a 06:00 check-in inside last night's 19:00→08:00 is a conflict,
+ * an 08:00 check-in (the exact end) is a continuation and passes. Two open sessions have no
+ * intervals to compare.
+ *
+ * `{ blockOpenPrevious: true }` (per call; today's sheet submit, for the sessions it writes): a
+ * session still OPEN on the previous day means the employee may still be on that shift, so
+ * any check-in after it (within MAX_SHIFT_HOURS) is refused until it is closed — the server
+ * side of the client's carryover rule.
+ *
  * Batched: one query for every employee being written, then a pure in-memory test per
- * employee. Returns `(employeeId, candidateSessions) => conflict | null`, where a conflict is
- * `{ day, checkIn, checkOut }` describing the already-recorded session that collides.
+ * employee. Returns `(employeeId, candidateSessions, opts?) => conflict | null`, where a
+ * conflict is `{ kind, day, checkIn, checkOut }` describing the already-recorded session that
+ * collides. `kind`: 'overlap' (closed session), 'checkin' (a stored check-in with no
+ * check-out yet falls inside the candidate), 'open' (blockOpenPrevious).
  */
 export async function buildCrossDayOverlapChecker({ employeeIds, date, dbSession = null }) {
   const anchor = new Date(date);
@@ -78,27 +91,39 @@ export async function buildCrossDayOverlapChecker({ employeeIds, date, dbSession
     byEmployee.get(key).push(rec);
   }
 
-  return (employeeId, candidateSessions) => {
+  return (employeeId, candidateSessions, { blockOpenPrevious = false } = {}) => {
     const records = byEmployee.get(String(employeeId));
     if (!records || records.length === 0) return null;
 
     for (const rec of records) {
+      const isPrevious = new Date(rec.date).getTime() === prevDate.getTime();
       for (const stored of rec.sessions || []) {
-        // An open session (no check-out) has no interval yet — nothing to collide with.
-        if (!stored.checkIn || !stored.checkOut) continue;
-        const nStart = new Date(stored.checkIn).getTime();
-        const nEnd = new Date(stored.checkOut).getTime();
+        if (!stored.checkIn) continue;
+        const stored_ = toSpan(stored);
 
         for (const candidate of candidateSessions || []) {
-          if (!candidate.checkIn || !candidate.checkOut) continue;
-          const cStart = new Date(candidate.checkIn).getTime();
-          const cEnd = new Date(candidate.checkOut).getTime();
+          if (!candidate.checkIn) continue;
+          const cand = toSpan(candidate);
 
-          if (cStart < nEnd && cEnd > nStart) {
+          let kind = null;
+          if (spansCollide(stored_, cand)) {
+            kind = stored_.open ? 'checkin' : 'overlap';
+          } else if (
+            blockOpenPrevious &&
+            isPrevious &&
+            stored_.open &&
+            cand.start >= stored_.start &&
+            cand.start - stored_.start <= MAX_SHIFT_HOURS * HOUR_MS
+          ) {
+            kind = 'open';
+          }
+
+          if (kind) {
             return {
+              kind,
               day: new Date(rec.date).toISOString().split('T')[0],
               checkIn: stored.checkIn,
-              checkOut: stored.checkOut,
+              checkOut: stored.checkOut || null,
             };
           }
         }
@@ -108,13 +133,48 @@ export async function buildCrossDayOverlapChecker({ employeeIds, date, dbSession
   };
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+// A session as a span; an open one (no check-out) is the instant at its check-in.
+function toSpan(s) {
+  const start = new Date(s.checkIn).getTime();
+  return s.checkOut
+    ? { start, end: new Date(s.checkOut).getTime(), open: false }
+    : { start, end: start, open: true };
+}
+
+// Two closed spans overlap when they share any time (touching ends is fine). An instant
+// collides with a closed span when it falls inside [start, end). Two instants never do.
+function spansCollide(a, b) {
+  if (a.open && b.open) return false;
+  if (a.open) return a.start >= b.start && a.start < b.end;
+  if (b.open) return b.start >= a.start && b.start < a.end;
+  return a.start < b.end && a.end > b.start;
+}
+
 /**
- * Human-readable message for a conflict returned by the cross-day checker.
+ * Human-readable message for a conflict returned by the cross-day checker. `who` names the
+ * employee on multi-employee writes (a whole sheet), so the supervisor knows which row.
  */
-export function crossDayOverlapMessage(conflict) {
+export function crossDayOverlapMessage(conflict, who = null) {
+  const lead = who ? `${who}: these times` : 'These times';
+  const forWhom = who ? '' : ' for this employee';
+  const at = toLocalTimeString(conflict.checkIn);
+  if (conflict.kind === 'open') {
+    return (
+      `${who || 'This employee'} still has an open session from ${conflict.day} (checked in ` +
+      `${at}, no check-out). Close that session before recording these times.`
+    );
+  }
+  if (conflict.kind === 'checkin') {
+    return (
+      `${lead} cover a check-in already recorded${forWhom} on ` +
+      `${conflict.day} at ${at}. The same hours cannot be paid twice.`
+    );
+  }
   return (
-    `These times overlap a session already recorded for this employee on ${conflict.day} ` +
-    `(${toLocalTimeString(conflict.checkIn)}–${toLocalTimeString(conflict.checkOut)}). ` +
+    `${lead} overlap a session already recorded${forWhom} on ` +
+    `${conflict.day} (${at}–${toLocalTimeString(conflict.checkOut)}). ` +
     `The same hours cannot be paid twice.`
   );
 }

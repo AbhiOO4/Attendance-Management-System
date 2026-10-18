@@ -218,7 +218,7 @@ function SiteRoster({
     } catch { /* sessionStorage unavailable */ }
   }, [siteId])
   const [categoryTab, setCategoryTab] = useState<CategoryTab>("all")
-  // Single search box matches either name or employee ID.
+  // Single search box matches name, employee ID or job title.
   const [query, setQuery] = useState("")
 
   // "Add hired worker" dialog, opened from the actions menu (Today tab only).
@@ -680,23 +680,24 @@ function SiteRoster({
     if (mode === "tomorrow" && hideLeaving) {
       dayList = dayList.filter((e) => !e.scheduledRemoval)
     }
+    // The row's job in this mode — today keys off the current job (or a visitor's per-visit
+    // job), tomorrow off the effective scheduled-or-current job (rowInfo.selectValue).
+    const rowJobId = (e: Employee): string | null => {
+      if (mode === "today") return refId(e.__visitingToday ? e.pendingTransferJobId : e.currentJob)
+      const v = rowInfo(e, mode).selectValue
+      return v === "unassigned" ? null : v
+    }
     const q = query.trim().toLowerCase()
     const searched = dayList.filter(
       (e) =>
         e.name.toLowerCase().includes(q) ||
-        e.employeeId.toLowerCase().includes(q)
+        e.employeeId.toLowerCase().includes(q) ||
+        (e.jobTitle ?? "").toLowerCase().includes(q)
     )
-    // Filter by job — today keys off the current job (or a visitor's per-visit job),
-    // tomorrow off the effective scheduled-or-current job (rowInfo.selectValue). "none" =
-    // unassigned / No job.
+    // Filter by job. "none" = unassigned / No job.
     if (jobFilter === "all") return searched
     return searched.filter((e) => {
-      const jid =
-        mode === "today"
-          ? refId(e.__visitingToday ? e.pendingTransferJobId : e.currentJob)
-          : rowInfo(e, mode).selectValue === "unassigned"
-          ? null
-          : rowInfo(e, mode).selectValue
+      const jid = rowJobId(e)
       return jobFilter === "none" ? jid === null : jid === jobFilter
     })
   }
@@ -1520,7 +1521,7 @@ function SiteRoster({
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Search by name or ID..."
+              placeholder="Search by name, ID or job title..."
               className="pl-10"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

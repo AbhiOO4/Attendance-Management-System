@@ -95,7 +95,7 @@ and never sees the token. Key pieces:
   production was moved over by `seed/migrateLeaveAllocations.js "<url>" [--apply]` (60 days,
   2026, for employees with an active annual grant). Endpoints under `/api/attendance/leave/*`
   take `type`. A granted day of
-  either type is LOCKED: submit/bulk-edit skip it, edits 409, the crons skip it, and the
+  either type is LOCKED: submit skips it, edits 409, the crons skip it, and the
   Site Attendance draft excludes it (`GET /leave/on-date`, mirrored by
   `utils/draftRoster.js`). Grant/cancel run in `session.withTransaction` with strictly
   SEQUENTIAL operations — never `Promise.all` on a transaction session (the driver

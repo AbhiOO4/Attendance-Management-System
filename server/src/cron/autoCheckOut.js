@@ -11,7 +11,7 @@ import {
   toLocalTimeString,
   MAX_SHIFT_HOURS,
 } from '../utils/timeLocal.js';
-import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { hasSessionOverlap, buildCrossDayOverlapChecker } from '../utils/sessionOverlap.js';
 import { getEmployeeIdsByCategory } from '../utils/collar.js';
 import { computeAttendanceTotals } from '../utils/attendanceMath.js';
 import { recordAttendanceAudit, SYSTEM_ACTOR } from '../utils/attendanceAudit.js';
@@ -55,6 +55,16 @@ async function processSites(sites, dateStr, opts, workConfig) {
         'sessions.siteId': site._id,
         employee: { $in: employeeIds },
       });
+
+      // Cross-day guard (one batched query): the default check-out must not run into a
+      // session already recorded on the neighbouring day (e.g. a night check-out at 08:00
+      // when tomorrow's record already has a 06:00 check-in).
+      const crossDayConflict = records.length
+        ? await buildCrossDayOverlapChecker({
+            employeeIds: records.map((r) => r.employee),
+            date: recordDate,
+          })
+        : () => null;
 
       for (const record of records) {
         let recordModified = false;
@@ -105,6 +115,13 @@ async function processSites(sites, dateStr, opts, workConfig) {
           if (hasSessionOverlap(candidate)) {
             console.warn(
               `[AutoCheckOut] Skipped overlapping check-out for record ${record._id} at site "${site.siteName}"`
+            );
+            continue;
+          }
+
+          if (crossDayConflict(record.employee, candidate)) {
+            console.warn(
+              `[AutoCheckOut] Skipped check-out overlapping an adjacent day for record ${record._id} at site "${site.siteName}"`
             );
             continue;
           }

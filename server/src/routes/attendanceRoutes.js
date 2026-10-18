@@ -108,8 +108,6 @@ router.post('/transfer', authorizeRoles("admin", "supervisor"), attendanceContro
 // GET /attendance?date=2026-05-25&name=abhi&page=1&limit=20
 router.get('/', authorizeRoles("admin", "supervisor"), attendanceController.getAttendanceRecords)
 
-router.patch('/bulk-update', authorizeRoles("admin", "supervisor"), requireSiteAccess, attendanceController.bulkEditAttendance)
-
 router.patch('/unlock', authorizeRoles("admin"), attendanceController.unlockAttendance)
 
 router.patch('/update/set-holiday', authorizeRoles("admin"), attendanceController.toggleHolidayStatus)

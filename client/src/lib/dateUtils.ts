@@ -275,6 +275,23 @@ export function combineFromOffset(
 }
 
 /**
+ * Cross-day overlap hint: whether a check-in on `day` lands before `previousDayEnd` — the
+ * latest check-out of the previous day's record that ran past midnight (from
+ * `GET /reports/carryovers` → `previousDayEnds`). The page-side mirror of the server's
+ * buildCrossDayOverlapChecker for the one case it can see; the server stays the authority.
+ */
+export function checkInBeforePreviousDayEnd(
+  day: string,
+  checkIn: string | null | undefined,
+  checkInNextDay: boolean,
+  previousDayEnd: string | null | undefined
+): boolean {
+  if (!checkIn || !previousDayEnd) return false;
+  const inIso = combineFromOffset(day, checkIn, checkInNextDay);
+  return !!inIso && new Date(inIso).getTime() < new Date(previousDayEnd).getTime();
+}
+
+/**
  * Derive the per-endpoint day offsets for a session from its raw times.
  * `startsAfterMidnight` is the explicit early-morning-tail intent.
  */

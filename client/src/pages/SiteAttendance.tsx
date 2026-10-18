@@ -30,7 +30,7 @@ import {
   type RemoteRow,
   type SaveDraftResult,
 } from "@/lib/cloudDraft"
-import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatFullDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { getCurrentTargetDateString, hoursFromOffset, isCrossMidnight, formatLogicalDateLabel, formatFullDateLabel, getCurrentTargetDayName, getCurrentTargetTime, validateSessionTimesV2, deriveOffsets, combineFromOffset, checkInBeforePreviousDayEnd, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 
 import {
   Card,
@@ -939,6 +939,8 @@ interface DraftRowProps {
   breakMinHours: number
   /** Overlap details when this row conflicts with another session, else null. */
   overlap: OverlapError | null
+  /** Yesterday's check-out (ISO) when this row's check-in falls before it, else null. */
+  crossDayEnd?: string | null
   /** True when this row was just cleared and can be undone. */
   showUndo: boolean
   /** True when this employee has an open (un-checked-out) session on yesterday's record. */
@@ -1208,6 +1210,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
   breakDurationMinutes,
   breakMinHours,
   overlap,
+  crossDayEnd,
   showUndo,
   hasCarryover,
   carryoverSiteName,
@@ -1232,7 +1235,7 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
 
   return (
     <Card
-      className={cn(RECORD_CARD_CLASS, overlap && "border-red-500 dark:border-red-500")}
+      className={cn(RECORD_CARD_CLASS, (overlap || crossDayEnd) && "border-red-500 dark:border-red-500")}
     >
       <div className={RECORD_STRIP_CLASS}>
           <div className="min-w-0">
@@ -1395,6 +1398,12 @@ const DraftAttendanceMobileCard = memo(function DraftAttendanceMobileCard({
             </div>
           </div>
         )}
+
+        {crossDayEnd && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 dark:bg-red-950/20 dark:border-red-800/30 dark:text-red-200">
+            Overlaps yesterday's shift, which ended at {formatLocalTime12h(crossDayEnd)}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -1406,6 +1415,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
   breakDurationMinutes,
   breakMinHours,
   overlap,
+  crossDayEnd,
   showUndo,
   hasCarryover,
   carryoverSiteName,
@@ -1428,7 +1438,7 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
     <>
       <TableRow
         className={
-          overlap
+          overlap || crossDayEnd
             ? "bg-red-50 dark:bg-red-950/20 border-red-500"
             : ""
         }
@@ -1647,6 +1657,16 @@ const DraftAttendanceDesktopRow = memo(function DraftAttendanceDesktopRow({
           </TableCell>
         </TableRow>
       )}
+      {crossDayEnd && (
+        <TableRow className="border-red-500/30">
+          <TableCell
+            colSpan={driverJobs || siteJobs ? 7 : 6}
+            className="bg-red-50 dark:bg-red-950/20 text-sm text-red-700 dark:text-red-200"
+          >
+            Overlaps yesterday's shift, which ended at {formatLocalTime12h(crossDayEnd)}
+          </TableCell>
+        </TableRow>
+      )}
     </>
   )
 })
@@ -1788,6 +1808,10 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
   // Yesterday's records with an OPEN (checked-in, not checked-out) session for this site.
   // Surfaced today so a supervisor can enter the real check-out; rolling one-day window.
   const [carryoverRecords, setCarryoverRecords] = useState<AttendanceRecord[]>([])
+  // employeeId → yesterday's latest check-out that ran past midnight into today (same fetch
+  // as the carryovers). A check-in before it would pay the same hours twice — flagged on the
+  // row before Save; the server's cross-day guard refuses it regardless.
+  const [previousDayEnds, setPreviousDayEnds] = useState<Map<string, string>>(() => new Map())
   // The pinned panel only shows before noon; after that the per-row badge remains.
   // It's collapsed by default — the header (with a count) is always visible, and the
   // supervisor expands it to see and action the individual pending check-outs.
@@ -2127,40 +2151,24 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     )
   }
 
-  // Where a "leave" / Back action should land: the ACTUAL previous page, not a
-  // fixed route. If the user arrived directly (deep link, refresh, cold PWA
-  // launch) there's no in-app history to pop, so fall back to the site list.
-  const LEAVE_FALLBACK_PATH = "/attendance"
+  // Where a "leave" / Back action lands: a FIXED destination, never a history pop
+  // (a pop returned to whatever page came before — Site Details, Dashboard…).
+  // Admins go to the site-attendance list; everyone else can't open it, so they go
+  // to their dashboard (ProtectedRoute sends a driver supervisor on to their sheet).
+  const BACK_PATH = isAdmin ? "/attendance" : "/dashboard"
 
-  // Captured on mount, BEFORE the dirty-guard pushes its duplicate entry: did a
-  // real page precede this one? React Router keeps its stack position in
-  // history.state.idx (0 = first entry, so nothing to go back to).
-  const canGoBackRef = useRef(false)
-  useEffect(() => {
-    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
-    canGoBackRef.current = idx > 0
-  }, [])
-
-  const goBackOrFallback = () => {
-    if (!canGoBackRef.current) {
-      navigate(LEAVE_FALLBACK_PATH, { replace: true })
-      return
-    }
-    // The dirty-guard pushes a tagged duplicate of this page to trap the Back
-    // button; when that duplicate is on top, step back OVER it (-2) to reach the
-    // real previous page. Otherwise a single step back is enough.
-    const guardOnTop = !!(window.history.state as { __guard?: boolean } | null)?.__guard
-    navigate(guardOnTop ? -2 : -1)
+  const goBack = () => {
+    navigate(BACK_PATH)
   }
 
   // The in-page ← button routes through here: leave immediately when clean,
-  // otherwise raise the unsaved-changes dialog (which leaves via goBackOrFallback).
+  // otherwise raise the unsaved-changes dialog (which leaves via goBack).
   const handleBackNavigation = () => {
     // Shared draft: edits are on the server (or in the outbox, pushed on the next visit), so
     // leaving loses nothing.
     if (!isDirty || cloudActive) {
       if (cloudActive) persistOutboxNow()
-      goBackOrFallback()
+      goBack()
       return
     }
 
@@ -2983,13 +2991,19 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
   const fetchCarryovers = async (targetToday: string = today): Promise<Set<string> | null> => {
     try {
       const prevDate = yesterdayOf(targetToday)
-      const res = await api.get<{ data: AttendanceRecord[] }>("/api/attendance/reports/carryovers", {
+      const res = await api.get<{
+        data: AttendanceRecord[]
+        previousDayEnds?: Array<{ employee: string; checkOut: string }>
+      }>("/api/attendance/reports/carryovers", {
         params: { date: prevDate, siteId: id },
       })
       const open = (res.data.data || []).filter((rec) =>
         rec.sessions?.some((s) => !!s.checkIn && !s.checkOut)
       )
       setCarryoverRecords(open)
+      setPreviousDayEnds(
+        new Map((res.data.previousDayEnds || []).map((e) => [String(e.employee), e.checkOut]))
+      )
       return new Set(open.map((r) => String(r.employee)))
     } catch (error) {
       console.log(error)
@@ -3242,6 +3256,12 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       )
       return
     }
+    if (crossDayEndByEmp.size > 0) {
+      toast.error(
+        `${crossDayEndByEmp.size} employee${crossDayEndByEmp.size === 1 ? "" : "s"} checked in before yesterday's shift ended — fix the check-in before saving.`
+      )
+      return
+    }
     submittingRef.current = true
     const cloud = liveRef.current.cloudActive
     try {
@@ -3362,6 +3382,10 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       } else if (responseData?.code === "SUBMIT_CONFLICT") {
         toast.error(responseData.message || "Another save happened at the same moment — please try again.")
         await refreshFromServer({ force: true })
+      } else if (responseData?.code === "CROSS_DAY_OVERLAP") {
+        // Yesterday's records changed since the page loaded — refresh them so the row lights up.
+        toast.error(responseData.message, { duration: 8000 })
+        await fetchCarryovers()
       } else if (responseData?.overlap) {
         setOverlapError(responseData.overlap)
 
@@ -3520,6 +3544,13 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       return;
     }
 
+    // Cross-day: today's check-in can't fall inside yesterday's shift that ran past midnight.
+    const previousEnd = record.date?.startsWith(today) ? previousDayEnds.get(String(record.employee)) : undefined
+    if (checkInBeforePreviousDayEnd(record.date, checkIn, checkInNextDay, previousEnd)) {
+      setInlineEditError(`Overlaps yesterday's shift, which ended at ${formatLocalTime12h(previousEnd)}`);
+      return;
+    }
+
     // A check-out past the category default needs a justification remark — collect it
     // via the popup before saving (prefilled with any existing note so it isn't clobbered).
     if (inlineNeedsRemark(record)) {
@@ -3622,6 +3653,9 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
       } else if (responseData?.overlap) {
         setOverlapError(responseData.overlap)
         toast.error(responseData.message || "Attendance sessions overlap")
+      } else if (responseData?.code === "CROSS_DAY_OVERLAP") {
+        setInlineEditError(responseData.message)
+        await fetchCarryovers()
       } else {
         setOverlapError(null)
         toast.error(
@@ -3758,6 +3792,20 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
         0
       )
     : 0
+
+  // Draft rows whose check-in falls before yesterday's shift ended (it ran past midnight):
+  // employeeId → that check-out. Save is held while any remain (the server refuses it too).
+  const crossDayEndByEmp = useMemo(() => {
+    const m = new Map<string, string>()
+    if (previousDayEnds.size === 0) return m
+    for (const rec of draftAttendance) {
+      const end = previousDayEnds.get(String(rec.employee._id))
+      if (end && rec.sessions.some((s) => checkInBeforePreviousDayEnd(today, s.checkIn, false, end))) {
+        m.set(String(rec.employee._id), end)
+      }
+    }
+    return m
+  }, [draftAttendance, previousDayEnds, today])
 
   // The job a draft session was for (drivers: any site's; site sheet: the site's own or a
   // global job). `null` clears it where a job is optional. Marked as picked so a roster
@@ -4228,8 +4276,10 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
         setIsDirty(true)
       }
 
-      // Remove response-only fields before setting site state
-      const { propagation: _propagation, ...siteData } = updatedSite
+      // Remove response-only fields before setting site state. Jobs never change here, so the
+      // loaded (populated) list stays authoritative.
+      const { propagation: _propagation, ...updatedFields } = updatedSite
+      const siteData = { ...updatedFields, jobs: site?.jobs ?? updatedFields.jobs }
       setSite(siteData)
 
       // Re-derive every row's default under the new site values, so the rows the propagation
@@ -4553,8 +4603,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
     // Trap the browser / hardware Back button while there are unsaved changes:
     // push a TAGGED duplicate of this page so a Back press fires popstate (which
     // we catch to raise the leave dialog) instead of navigating away outright.
-    // The __guard tag lets goBackOrFallback recognise the duplicate on top and
-    // step back OVER it to reach the real previous page. It KEEPS React Router's own
+    // The duplicate is tagged __guard and KEEPS React Router's own
     // state (idx/key): without `idx`, the next navigate() from here numbers the new entry
     // NaN, and pages that decide "can I go back?" from it (Site Details) fall back to their
     // list instead of returning here.
@@ -4796,9 +4845,11 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
               {loadError}. Check the connection and try again — nothing has been changed.
             </p>
             <div className="flex justify-center gap-2">
-              <Button variant="outline" onClick={goBackOrFallback}>
-                Back
-              </Button>
+              {isAdmin && (
+                <Button variant="outline" onClick={goBack}>
+                  Back
+                </Button>
+              )}
               <Button onClick={retryLoad}>Retry</Button>
             </div>
           </CardContent>
@@ -4830,8 +4881,9 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
 
             <div className="flex items-start gap-3">
 
-              {/* A driver supervisor lands here — there is no page to go back to. */}
-              {!(isDrivers && user?.role === "driverSupervisor") && (
+              {/* Admins only: Back always returns to the site-attendance list. Supervisors
+                  and driver supervisors navigate with the sidebar. */}
+              {isAdmin && (
                 <Button
                   variant="outline"
                   size="icon"
@@ -4925,6 +4977,11 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                     "Save Attendance"
                   )}
                 </Button>
+              )}
+              {!attendanceExists && crossDayEndByEmp.size > 0 && (
+                <p className="text-center text-[11px] text-red-600 dark:text-red-400">
+                  {crossDayEndByEmp.size} check-in{crossDayEndByEmp.size === 1 ? "" : "s"} before yesterday's shift ended
+                </p>
               )}
               {!attendanceExists && rowsMissingJob > 0 && (
                 <p className="text-center text-[11px] text-red-600 dark:text-red-400">
@@ -6369,6 +6426,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                       isNew={newRowIds.has(record.employee._id)}
                       editedBy={remoteEdits[record.employee._id] ? remoteEdits[record.employee._id].by || "another device" : null}
                       overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
+                      crossDayEnd={crossDayEndByEmp.get(String(record.employee._id)) ?? null}
                       showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                       onUpdateSession={updateDraftSession}
                       onUpdateBreaks={updateDraftBreaksTaken}
@@ -6417,6 +6475,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
                         isNew={newRowIds.has(record.employee._id)}
                         editedBy={remoteEdits[record.employee._id] ? remoteEdits[record.employee._id].by || "another device" : null}
                         overlap={overlapError?.employeeId === record.employee._id ? overlapError : null}
+                      crossDayEnd={crossDayEndByEmp.get(String(record.employee._id)) ?? null}
                         showUndo={!!(lastCleared && lastCleared.employeeId === record.employee._id && !record.sessions[0]?.checkIn && !record.sessions[0]?.checkOut)}
                         onUpdateSession={updateDraftSession}
                         onUpdateBreaks={updateDraftBreaksTaken}
@@ -6608,7 +6667,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
           // by submitting, and older days' drafts are pruned on the next visit.
           flushPendingDraftWrite()
           setIsDirty(false)
-          goBackOrFallback()
+          goBack()
         }}
       />
 

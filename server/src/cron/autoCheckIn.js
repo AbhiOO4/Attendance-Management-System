@@ -6,7 +6,7 @@ import {
   getTodayLocal,
   combineFromOffset,
 } from '../utils/timeLocal.js';
-import { hasSessionOverlap } from '../utils/sessionOverlap.js';
+import { hasSessionOverlap, buildCrossDayOverlapChecker } from '../utils/sessionOverlap.js';
 import { getEmployeeIdsByCategory } from '../utils/collar.js';
 
 /**
@@ -32,6 +32,15 @@ async function processSites(sites, todayStr, checkInField, employeeIds) {
         'sessions.siteId': site._id,
         employee: { $in: employeeIds },
       });
+
+      // Cross-day guard (one batched query): the night check-in must not land inside a
+      // session already recorded on a neighbouring day.
+      const crossDayConflict = records.length
+        ? await buildCrossDayOverlapChecker({
+            employeeIds: records.map((r) => r.employee),
+            date: todayDate,
+          })
+        : () => null;
 
       let updatedCount = 0;
 
@@ -62,6 +71,13 @@ async function processSites(sites, todayStr, checkInField, employeeIds) {
             if (hasSessionOverlap(candidate)) {
               console.warn(
                 `[AutoCheckIn] Skipped overlapping night check-in for record ${record._id} at site "${site.siteName}"`
+              );
+              continue;
+            }
+
+            if (crossDayConflict(record.employee, candidate)) {
+              console.warn(
+                `[AutoCheckIn] Skipped night check-in overlapping an adjacent day for record ${record._id} at site "${site.siteName}"`
               );
               continue;
             }

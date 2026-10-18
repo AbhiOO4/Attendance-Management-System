@@ -154,22 +154,30 @@ function BulkAssignNightShift({
     return counts
   }, [candidates])
 
-  // Keep the selection a subset of what's visible: narrowing the category filter
-  // (or a candidate refetch) drops now-hidden ids so a hidden employee is never
-  // assigned and the "N selected" count stays honest. Widening keeps selections.
+  // Keep the selection a subset of the CANDIDATES (not of what's visible): a
+  // refetch drops ids that are no longer eligible, but the category chips and the
+  // search box only change the view, so a group can be built across several
+  // filters/searches. Picks hidden by the filter are surfaced in the count below.
   useEffect(() => {
-    const visibleIds = new Set(visibleCandidates.map((c) => c._id))
+    const candidateIds = new Set(candidates.map((c) => c._id))
     setSelected((prev) => {
       if (prev.size === 0) return prev
       let changed = false
       const next = new Set<string>()
       for (const id of prev) {
-        if (visibleIds.has(id)) next.add(id)
+        if (candidateIds.has(id)) next.add(id)
         else changed = true
       }
       return changed ? next : prev
     })
-  }, [visibleCandidates])
+  }, [candidates])
+
+  const hiddenSelectedCount = useMemo(() => {
+    const visibleIds = new Set(visibleCandidates.map((c) => c._id))
+    let n = 0
+    for (const id of selected) if (!visibleIds.has(id)) n++
+    return n
+  }, [selected, visibleCandidates])
 
   const toggleCategory = (cat: RosterCategory) => {
     setSelectedCategories((prev) => {
@@ -193,12 +201,16 @@ function BulkAssignNightShift({
     visibleCandidates.length > 0 &&
     visibleCandidates.every((c) => selected.has(c._id))
 
+  // Acts on the visible rows only, leaving picks hidden by the filter untouched.
   const toggleAll = () => {
-    if (allSelected) {
-      setSelected(new Set())
-    } else {
-      setSelected(new Set(visibleCandidates.map((c) => c._id)))
-    }
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const c of visibleCandidates) {
+        if (allSelected) next.delete(c._id)
+        else next.add(c._id)
+      }
+      return next
+    })
   }
 
   const handleAssign = async () => {
@@ -318,8 +330,20 @@ function BulkAssignNightShift({
               Only employees without completed attendance
             </Label>
           </div>
-          <div className="text-sm text-muted-foreground">
-            {selected.size} selected
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>
+              {selected.size} selected
+              {hiddenSelectedCount > 0 && ` · ${hiddenSelectedCount} hidden by filter`}
+            </span>
+            {selected.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelected(new Set())}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Clear
+              </button>
+            )}
           </div>
         </div>
 

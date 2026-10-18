@@ -2767,6 +2767,13 @@ export const updateSite = async (req, res) => {
       );
     }
 
+    // Respond with populated jobs, like GET /:id — the client replaces its site state with
+    // this, and bare job ids read as live jobs there (a false "No job" on every row).
+    const respond = async (extra = {}) => {
+      await site.populate("jobs", "name jobCode isActive isDeleted isCompleted");
+      return res.status(200).json({ ...site.toObject(), ...extra });
+    };
+
     // Propagate changes to today's attendance records if requested
     if (updateTodayRecords) {
       try {
@@ -2778,15 +2785,11 @@ export const updateSite = async (req, res) => {
           actor
         );
 
-        return res.status(200).json({
-          ...site.toObject(),
-          propagation,
-        });
+        return respond({ propagation });
       } catch (propagationError) {
         console.error('Error propagating default changes:', propagationError);
         // Site was already saved successfully, return it with a propagation error note
-        return res.status(200).json({
-          ...site.toObject(),
+        return respond({
           propagation: {
             updated: 0,
             skipped: [],
@@ -2796,7 +2799,7 @@ export const updateSite = async (req, res) => {
       }
     }
 
-    return res.status(200).json({ ...site.toObject() });
+    return respond();
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Internal server error" });

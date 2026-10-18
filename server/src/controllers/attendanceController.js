@@ -1970,10 +1970,19 @@ export const siteFirstSubmitAttendance = async (req, res) => {
         }
       }
 
-      // Cross-day: the same real hours must not also be recorded on an adjacent day.
-      const neighbourConflict = crossDayConflict(empId, mergedSessions);
+      // Cross-day: the same real hours must not also be recorded on an adjacent day. A
+      // check-in with no check-out yet (the usual morning save) counts as an instant. The
+      // sessions this sheet writes are also refused while yesterday's shift is still open —
+      // the client blanks those rows (carryover), so this only catches a stale page.
+      const neighbourConflict =
+        crossDayConflict(empId, mergedSessions) ||
+        crossDayConflict(empId, updatedSessions, { blockOpenPrevious: true });
       if (neighbourConflict) {
-        throwValidationError(400, crossDayOverlapMessage(neighbourConflict));
+        throwValidationError(
+          400,
+          crossDayOverlapMessage(neighbourConflict, empPending?.name || employee?.name || null),
+          { code: "CROSS_DAY_OVERLAP", employeeId: String(empId) }
+        );
       }
 
       // -----------------------------
@@ -2553,22 +2562,46 @@ export const getSiteCarryovers = async (req, res) => {
 
     const rosterIds = rosterEmployees.map((e) => e._id)
     if (rosterIds.length === 0) {
-      return res.status(200).json({ success: true, data: [] })
+      return res.status(200).json({ success: true, data: [], previousDayEnds: [] })
     }
 
-    // Their prior-day records that still carry an open session (any site).
+    // Their prior-day records that still carry an open session (any site), plus those whose
+    // session ran past midnight into the target day — same single query.
     const records = await Attendance.find({
       employee: { $in: rosterIds },
       date: { $gte: start, $lte: end },
-      sessions: { $elemMatch: { checkIn: { $ne: null }, checkOut: null } },
+      $or: [
+        { sessions: { $elemMatch: { checkIn: { $ne: null }, checkOut: null } } },
+        { sessions: { $elemMatch: { checkOut: { $ne: null }, checkOutNextDay: true } } },
+      ],
     })
       .populate({ path: "employee", select: "name employeeId" })
       .populate({ path: "sessions.siteId", select: "siteName" })
 
+    // previousDayEnds: per employee, the latest prior-day check-out that lands on the target
+    // day. The draft flags a check-in before it (cross-day overlap) before Save; the submit's
+    // buildCrossDayOverlapChecker stays the authority.
+    const previousDayEnds = []
+    for (const rec of records) {
+      let latest = null
+      for (const s of rec.sessions || []) {
+        if (!s.checkIn || !s.checkOut || !s.checkOutNextDay) continue
+        if (!latest || new Date(s.checkOut) > latest) latest = new Date(s.checkOut)
+      }
+      if (latest) {
+        previousDayEnds.push({
+          employee: (rec.employee?._id || rec.employee)?.toString() || null,
+          checkOut: latest,
+        })
+      }
+    }
+
     // Shape to mirror getSiteAttendance's rows (attendanceId, employee = id, name,
     // employeeId, sessions[]) but WITHOUT pre-filtering to one site, and carry each
     // session's siteName so the client knows the open shift's HOME site.
-    const data = records.map((rec) => ({
+    const data = records
+      .filter((rec) => (rec.sessions || []).some((s) => s.checkIn && !s.checkOut))
+      .map((rec) => ({
       attendanceId: rec._id,
       date: rec.date,
       employee: (rec.employee?._id || rec.employee)?.toString() || null,
@@ -2592,7 +2625,7 @@ export const getSiteCarryovers = async (req, res) => {
 
     data.sort((a, b) => a.name.localeCompare(b.name))
 
-    return res.status(200).json({ success: true, data })
+    return res.status(200).json({ success: true, data, previousDayEnds })
   } catch (error) {
     console.error("getSiteCarryovers error:", error)
     return res.status(500).json({
@@ -2889,279 +2922,6 @@ export const getAttendanceRecords = async (req, res) => {
       success: false,
       message: "Server error",
       error: error.message,
-    });
-  }
-};//
-
-export const bulkEditAttendance = async (
-  req,
-  res
-) => {
-  const {
-    siteId,
-    date,
-    isHoliday = false,
-    attendance,
-  } = req.body;
-
-  const timezoneOffset = (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "")
-    ? process.env.APP_TIMEZONE_OFFSET
-    : req.headers['x-timezone-offset'];
-
-  // VALIDATION (outside transaction)
-  if (
-    !siteId ||
-    !date ||
-    !attendance ||
-    !Array.isArray(attendance) ||
-    attendance.length === 0
-  ) {
-    return res.status(400).json({
-      success: false,
-      message: "siteId, date and attendance array are required",
-    });
-  }
-
-  const markedBy = req.user?.id;
-
-  // NORMALIZE DATE
-  const attendanceDate = new Date(date);
-  attendanceDate.setUTCHours(0, 0, 0, 0);
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const throwValidationError = (status, message, extra = {}) => {
-      const err = new Error(message);
-      err.status = status;
-      err.extra = extra;
-      throw err;
-    };
-
-    // CHECK LOCK
-    const existingLock = await AttendanceLock.findOne({
-      siteId,
-      date: attendanceDate,
-      isLocked: true,
-    }).session(session);
-
-    if (existingLock) {
-      throwValidationError(400, "Attendance is locked. Unlock before editing.");
-    }
-
-    // GET WORK CONFIG
-    const workConfig = await workModel.findOne().session(session);
-
-    if (!workConfig) {
-      throwValidationError(404, "Work schedule configuration not found");
-    }
-
-    const {
-      fullDayHours,
-      halfDayHours,
-      overtimeThreshold,
-    } = workConfig;
-
-    const processedRecords = [];
-    const holidayInfo = await checkHolidayForDate(attendanceDate);
-
-    // Resolve the actor once for the whole batch; collect audit rows for one insertMany.
-    const auditActor = await resolveActor(req);
-    const auditRows = [];
-
-    // PROCESS EACH EMPLOYEE
-    for (const entry of attendance) {
-      const {
-        employeeId,
-        jobId,
-        checkIn,
-        checkOut,
-        breaksTaken = null,
-        isSickLeave,
-        isLop,
-      } = entry;
-
-
-      // FIND ATTENDANCE DOC
-      const attendanceDoc = await Attendance.findOne({
-        employee: employeeId,
-        date: attendanceDate,
-      }).session(session);
-
-      // MUST EXIST DURING EDIT
-      if (!attendanceDoc) {
-        continue;
-      }
-
-      // Locked leave day (annual or emergency) — never overwrite with a session (see
-      // siteFirstSubmitAttendance).
-      if (isGrantedLeaveDay(attendanceDoc)) {
-        continue;
-      }
-
-      // Snapshot the break override before mutation, so a change can be logged distinctly.
-      const prevBreaks = attendanceDoc.breaksTaken ?? null;
-
-      // Temporary workers are exempt from holiday treatment — for them a holiday
-      // is a normal working day (normal hours + OT, no holiday-hours credit).
-      const editEmp = await empModel.findById(employeeId)
-        .select("employmentType jobTitle")
-        .session(session);
-      // Drivers live only on the Drivers sheet — never given a session at a real site.
-      if (isDriverTitle(editEmp?.jobTitle) && !(await isDriverPool(siteId, session))) {
-        continue;
-      }
-      const effHolidayInfo = holidayInfoForEmployee(holidayInfo, editEmp?.employmentType);
-
-      // CALCULATE WORKED HOURS
-      let workedHours = 0;
-
-      if (checkIn && checkOut) {
-        const diffMs = new Date(checkOut) - new Date(checkIn);
-        workedHours = diffMs / (1000 * 60 * 60);
-
-        if (workedHours < 0) {
-          continue;
-        }
-      }
-
-      // UPDATED SESSION
-      const updatedSession = {
-        siteId,
-        jobId,
-        checkIn,
-        checkOut,
-        workedHours,
-        markedBy,
-      };
-
-      // FIND EXISTING SITE SESSION
-      const existingSessionIndex = attendanceDoc.sessions.findIndex(
-        (sessionObj) => sessionObj.siteId.toString() === siteId.toString()
-      );
-
-      // UPDATE EXISTING SESSION
-      if (existingSessionIndex !== -1) {
-        const existingObj = attendanceDoc.sessions[existingSessionIndex].toObject();
-        // Deliberate-absence flag: filled check-in clears it; emptying a
-        // previously filled session sets it; otherwise keep as-is.
-        let manuallyCleared = existingObj.manuallyCleared || false;
-        if (checkIn) {
-          manuallyCleared = false;
-        } else if (existingObj.checkIn || existingObj.checkOut) {
-          manuallyCleared = true;
-        }
-        attendanceDoc.sessions[existingSessionIndex] = {
-          ...existingObj,
-          ...updatedSession,
-          manuallyCleared,
-        };
-      } else {
-        // IF SESSION DOESN'T EXIST, ADD IT
-        attendanceDoc.sessions.push(updatedSession);
-      }
-
-      // -----------------------------
-      // AUTO CLOSE PREVIOUS SESSIONS
-      // -----------------------------
-      const closedSessions = autoClosePreviousSiteSessions(attendanceDoc.sessions, timezoneOffset);
-      attendanceDoc.sessions = closedSessions;
-
-      // RECALCULATE TOTAL HOURS, STATUS & OT
-      const rawHours = attendanceDoc.sessions.reduce(
-        (acc, sessionObj) => acc + (sessionObj.workedHours || 0),
-        0
-      );
-
-      const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
-        ? breaksTaken
-        : (attendanceDoc.breaksTaken ?? null);
-
-      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
-        rawHours,
-        workConfig,
-        effectiveBreaksTaken,
-        effHolidayInfo
-      );
-
-      // UPDATE DOC
-      attendanceDoc.totalWorkHours = netWorkHours;
-      attendanceDoc.status = status;
-      attendanceDoc.overtimeHours = overtimeHours;
-      if (breaksTaken !== undefined) {
-        attendanceDoc.breaksTaken = breaksTaken;
-      }
-      attendanceDoc.isHoliday = effHolidayInfo.isHoliday;
-      attendanceDoc.holidayReason = effHolidayInfo.reason;
-      attendanceDoc.holidayHours = holidayHours;
-      if (isSickLeave !== undefined) {
-        // Soft: the pre-save hook clears it if the resulting session is filled.
-        attendanceDoc.isSickLeave = !!isSickLeave;
-      }
-      if (isLop !== undefined) {
-        // LOP mirrors sick leave (soft; pre-save hook enforces the invariant + the
-        // paid > sick > lop precedence). Keep the auto-remark in step with the toggle.
-        attendanceDoc.isLop = !!isLop;
-        applyLopRemark(attendanceDoc, !!isLop, workConfig.lopDeductionAmount);
-      }
-
-
-
-      await attendanceDoc.save({ session });
-
-      processedRecords.push(attendanceDoc);
-
-      // --- Audit rows for this record (flushed in one insertMany below) ---
-      const newBreaks = attendanceDoc.breaksTaken ?? null;
-      if (newBreaks !== prevBreaks) {
-        auditRows.push(buildAuditRow(attendanceDoc, auditActor, "breaks_changed", breaksChangeSummary(prevBreaks, newBreaks)));
-      }
-      auditRows.push(buildAuditRow(attendanceDoc, auditActor, "edited", "Attendance edited"));
-    }
-
-    // LOCK AFTER EDIT
-    await AttendanceLock.findOneAndUpdate(
-      {
-        siteId,
-        date: attendanceDate,
-      },
-      {
-        isLocked: true,
-        lockedBy: markedBy,
-        lockedAt: new Date(),
-        unlockedBy: null,
-        unlockedAt: null,
-      },
-      {
-        new: true,
-        session,
-      }
-    );
-
-    // Audit log joins the same transaction (best-effort inside the helper).
-    await recordAttendanceAuditBatch(auditRows, session);
-
-    await session.commitTransaction();
-    session.endSession();
-
-    return res.status(200).json({
-      success: true,
-      message: "Attendance edited successfully",
-      recordsProcessed: processedRecords.length,
-      data: processedRecords,
-    });
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error(error);
-
-    return res.status(error.status || 500).json({
-      success: false,
-      message: error.message || "Failed to edit attendance",
-      error: error.message,
-      ...(error.extra || {}),
     });
   }
 };//
@@ -3625,6 +3385,8 @@ export const updateAttendance = async (req, res) => {
       if (neighbourConflict) {
         return res.status(400).json({
           success: false,
+          code: "CROSS_DAY_OVERLAP",
+          employeeId: String(attendance.employee),
           message: crossDayOverlapMessage(neighbourConflict),
         });
       }
@@ -7227,7 +6989,6 @@ const attendanceController = {
 
   getSiteAttendance,
   getSiteCarryovers,
-  bulkEditAttendance,
   getAttendanceRecords,
   getEmployeeAttendanceByMonth,
   siteFirstSubmitAttendance,
