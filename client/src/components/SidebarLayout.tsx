@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react"
-import { NavLink, Navigate, Outlet, useNavigate } from "react-router-dom"
+import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { cn } from "@/lib/utils"
 import { Menu } from "lucide-react"
 import { api } from "@/lib/api"
 import { startRequestsLive, REQUESTS_LIVE_EVENT } from "@/lib/requestsLive"
+import { BACKFILL_UPDATED_EVENT } from "@/lib/backfillRequests"
 
 import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
@@ -26,6 +27,7 @@ import {
   Truck,
   Tags,
   CalendarDays,
+  History,
   type LucideIcon,
 } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -55,6 +57,7 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   { name: "Employees", path: "/employees", icon: Users },
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
+  { name: "Past Attendance", path: "/attendance/edit", icon: History },
   { name: "Reports", path: "/reports", icon: BarChart3 },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
@@ -69,6 +72,7 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   { name: "Employees", path: "/employees", icon: Users },
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
+  { name: "Past Attendance", path: "/attendance/edit", icon: History },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
   { name: "Requests", path: "/requests", icon: Inbox },
@@ -99,6 +103,8 @@ function getSupervisorNavItems(
       path: `/site/${assignedSite}`,
       icon: Users,
     })
+    // Past days they forgot to mark: drafted here, approved by an admin.
+    items.push({ name: "Backfill", path: "/backfill", icon: History })
   }
 
   items.push({ name: "Requests", path: "/requests", icon: Inbox })
@@ -140,6 +146,12 @@ export default function SidebarLayout() {
   }
 
   const navigate = useNavigate()
+  const { pathname } = useLocation()
+
+  // "Mark Attendance" (/attendance) also prefixes Past Attendance (/attendance/edit/...), so it
+  // stands down there — only one item lights up.
+  const isItemActive = (path: string, isActive: boolean) =>
+    path === "/attendance" ? isActive && !pathname.startsWith("/attendance/edit") : isActive
 
   const handleLogout = async () => {
     try {
@@ -227,6 +239,41 @@ export default function SidebarLayout() {
     }
   }, [user])
 
+  // Past Attendance badge (admins): supervisor backfill requests awaiting approval. Refetched when
+  // the tab becomes visible, after any backfill write in this tab, and on a light 90s poll.
+  const [backfillCount, setBackfillCount] = useState(0)
+  const reviewsBackfills = user?.role === "admin" || user?.role === "superadmin"
+
+  useEffect(() => {
+    if (!reviewsBackfills) return
+    let cancelled = false
+    const fetchCount = async () => {
+      if (document.hidden) return
+      try {
+        const res = await api.get("/api/backfill-requests/pending-count")
+        if (!cancelled) setBackfillCount(res.data?.data?.count || 0)
+      } catch {
+        /* best-effort */
+      }
+    }
+    fetchCount()
+    const id = window.setInterval(fetchCount, 90000)
+    const onVisible = () => {
+      if (!document.hidden) fetchCount()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    window.addEventListener(BACKFILL_UPDATED_EVENT, fetchCount)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener(BACKFILL_UPDATED_EVENT, fetchCount)
+    }
+  }, [reviewsBackfills])
+
+  const countFor = (path: string) =>
+    path === "/requests" ? requestsCount : path === "/attendance/edit" ? backfillCount : 0
+
   if (loading) {
     return <div>Loading...</div>
   }
@@ -285,7 +332,7 @@ export default function SidebarLayout() {
           {/* Icon-only nav */}
           <nav className="mt-2 flex flex-col items-center gap-2">
             {navItems.map((item) => {
-              const count = item.path === "/requests" ? requestsCount : 0
+              const count = countFor(item.path)
               return (
                 <NavLink
                   key={item.path}
@@ -296,7 +343,7 @@ export default function SidebarLayout() {
                   className={({ isActive }) =>
                     cn(
                       "relative inline-flex h-10 w-10 items-center justify-center rounded-xl transition",
-                      isActive
+                      isItemActive(item.path, isActive)
                         ? "bg-primary text-primary-foreground"
                         : "text-muted-foreground hover:bg-muted"
                     )
@@ -369,7 +416,7 @@ export default function SidebarLayout() {
             {/* Nav */}
             <nav className="flex flex-col gap-1">
               {navItems.map((item) => {
-                const count = item.path === "/requests" ? requestsCount : 0
+                const count = countFor(item.path)
                 return (
                   <NavLink
                     key={item.path}
@@ -379,7 +426,7 @@ export default function SidebarLayout() {
                     className={({ isActive }) =>
                       cn(
                         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                        isActive
+                        isItemActive(item.path, isActive)
                           ? "bg-muted font-medium text-foreground"
                           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                       )

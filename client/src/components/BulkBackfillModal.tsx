@@ -19,8 +19,8 @@ import {
 } from "@/components/ui/dialog"
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import SessionTimeFields, { type SessionTimes } from "@/components/backfill/SessionTimeFields"
 
 import {
   Select,
@@ -45,12 +45,7 @@ import {
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import {
-  deriveOffsets,
-  hoursFromOffset,
-  validateSessionTimesV2,
-  formatOffsetDayLabel,
-} from "@/lib/dateUtils"
+import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
 import { computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import type { MissingEmployee } from "@/components/BackfillModal"
@@ -148,36 +143,12 @@ function BulkBackfillModal({
 
   const selectedSite = regularSites.find((s) => s._id === siteId)
 
-  // --------------------------------------------------
-  // TIME HANDLERS (mirror EditSiteRecord's offset logic)
-  // --------------------------------------------------
-  const handleCheckInChange = (value: string) => {
-    // Preserve the check-in's own next-day intent, re-derive the check-out offset.
-    const { checkInNextDay: ci, checkOutNextDay: co } = deriveOffsets(value, checkOut, checkInNextDay)
-    setCheckIn(value)
-    setCheckInNextDay(ci)
-    setCheckOutNextDay(co)
-  }
-
-  const handleCheckOutChange = (value: string) => {
-    const { checkOutNextDay: co } = deriveOffsets(checkIn, value, checkInNextDay)
-    setCheckOut(value)
-    setCheckOutNextDay(co)
-  }
-
-  // Toggle whether the shift STARTS on the next day (an after-midnight session recorded
-  // on this day). Re-derives the check-out offset from the new check-in.
-  const toggleCheckInNextDay = () => {
-    const next = !checkInNextDay
-    const { checkInNextDay: ci, checkOutNextDay: co } = deriveOffsets(checkIn, checkOut, next)
-    setCheckInNextDay(ci)
-    setCheckOutNextDay(co)
-  }
-
-  // Toggle whether the check-out is on the next day. Independent flip — this is how a true
-  // 24h shift (08:00→08:00) or any late-crossing check-out is expressed.
-  const toggleCheckOutNextDay = () => {
-    setCheckOutNextDay((prev) => !prev)
+  // Time entry (inputs + next-day pills) lives in SessionTimeFields.
+  const setTimes = (next: SessionTimes) => {
+    setCheckIn(next.checkIn)
+    setCheckOut(next.checkOut)
+    setCheckInNextDay(next.checkInNextDay)
+    setCheckOutNextDay(next.checkOutNextDay)
   }
 
   // --------------------------------------------------
@@ -441,58 +412,11 @@ function BulkBackfillModal({
               </div>
 
               {/* Time inputs + next-day toggles */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Check In</label>
-                  <Input
-                    className="h-10 text-sm"
-                    type="time"
-                    value={checkIn}
-                    onChange={(e) => handleCheckInChange(e.target.value)}
-                  />
-                  {checkIn && (
-                    <button
-                      type="button"
-                      onClick={toggleCheckInNextDay}
-                      className={`mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${
-                        checkInNextDay
-                          ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800/50 dark:bg-indigo-950/40 dark:text-indigo-300"
-                          : "border-border text-muted-foreground hover:bg-muted"
-                      }`}
-                      title="Toggle whether this shift STARTS on the next day (an after-midnight session recorded on this day)"
-                    >
-                      {checkInNextDay
-                        ? `🌙 Starts next day · ${formatOffsetDayLabel(date, 1)}`
-                        : `Starts same day · ${formatOffsetDayLabel(date, 0)}`}
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Check Out</label>
-                  <Input
-                    className="h-10 text-sm"
-                    type="time"
-                    value={checkOut}
-                    onChange={(e) => handleCheckOutChange(e.target.value)}
-                  />
-                  {checkIn && checkOut && (
-                    <button
-                      type="button"
-                      onClick={toggleCheckOutNextDay}
-                      className={`mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${
-                        checkOutNextDay
-                          ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800/50 dark:bg-indigo-950/40 dark:text-indigo-300"
-                          : "border-border text-muted-foreground hover:bg-muted"
-                      }`}
-                      title="Toggle whether the check-out is on the next day (for 24h or after-midnight shifts)"
-                    >
-                      {checkOutNextDay
-                        ? `🌙 Check-out next day · ${formatOffsetDayLabel(date, 1)}`
-                        : `Check-out same day · ${formatOffsetDayLabel(date, 0)}`}
-                    </button>
-                  )}
-                </div>
-              </div>
+              <SessionTimeFields
+                date={date}
+                value={{ checkIn, checkOut, checkInNextDay, checkOutNextDay }}
+                onChange={setTimes}
+              />
 
               {timeError && (
                 <p className="text-xs text-red-500 font-medium">{timeError}</p>

@@ -20,7 +20,7 @@ import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVIT
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
 import { isAssignableSite, findAssignableJob, siteHasLiveJobs } from '../utils/siteAssignable.js';
-import { findSessionJob, isGlobalJobId } from '../utils/globalJobs.js';
+import { findSessionJob } from '../utils/globalJobs.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
 import { notifySiteSupervisors, findSiteSupervisors, notifyAdmins, notifyUser } from '../utils/notify.js';
 import { placeMiddayArrival, assertNotMovedOn } from '../utils/handover.js';
@@ -36,6 +36,10 @@ import { isCloudDraftEnabled } from '../utils/features.js';
 import { isDriverPool, getDriverPoolId, driverEmployeeFilter, isDriverEmployee, validateDriverPoolSessions, DRIVER_TITLE_REGEX, isDriverTitle, DRIVER_ONLY_MESSAGE, nonPoolDriverSessionError } from '../utils/driverPool.js';
 import { resolveDriverSplit, sessionJobIds, sameJobSet, hasSplitKey, buildSplitLookup } from '../utils/jobSplit.js';
 import { isSiteScopedRole } from '../middlewares/rbac.js';
+import { syncCurrentJobFromLatestSession } from '../utils/currentJobSync.js';
+import { detectCrossedMidnight } from '../utils/crossedMidnight.js';
+import { checkHolidayForDate, holidayInfoForEmployee } from '../utils/holidayInfo.js';
+import { createBackfilledRecord } from '../utils/backfillRecord.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
 // "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
@@ -56,71 +60,6 @@ const applyLopRemark = (doc, lopOn, amount) => {
 };
 
 
-// --- CURRENT-JOB SYNC ---
-// Keep Employee.currentJob (the roster/"assigned job", scoped to currentSite) in step
-// with the LATEST session's job. Job flows one way otherwise: currentJob seeds a new
-// session's jobId, but a supervisor changing a session's job never flowed back. This
-// syncs the reverse — but ONLY for the employee's most-recent record at their current
-// site, so editing history (a past record) never rewrites the present roster. Setting
-// the latest session's job to none mirrors currentJob to null. Maintains each job's
-// employees[] like updateEmployeeJob (siteController). Pass the caller's mongoose
-// session when it runs in a transaction; otherwise it runs un-sessioned.
-async function syncCurrentJobFromLatestSession({ empId, siteId, recordDate, doc, session = null }) {
-  if (!empId || !siteId || !recordDate || !doc) return;
-
-  // Past edit? A newer record exists for this employee → leave currentJob alone.
-  const laterExists = await Attendance.exists({
-    employee: empId,
-    date: { $gt: recordDate },
-  }).session(session || null);
-  if (laterExists) return;
-
-  const employee = await Employee.findById(empId).session(session || null);
-  // currentJob belongs to currentSite — only a session at that site may move it.
-  if (!employee || !employee.currentSite || employee.currentSite.toString() !== siteId.toString()) {
-    return;
-  }
-
-  // The latest session at this site (by check-in); its job is the target (null allowed).
-  const siteSessions = (doc.sessions || []).filter(
-    (s) => s.siteId && s.siteId.toString() === siteId.toString()
-  );
-  if (siteSessions.length === 0) return;
-
-  const latest = [...siteSessions].sort(
-    (a, b) => new Date(a.checkIn || 0).getTime() - new Date(b.checkIn || 0).getTime()
-  ).at(-1);
-
-  const targetJob = latest?.jobId || null;
-  const currentJob = employee.currentJob || null;
-
-  // A global job is a session-only job (utils/globalJobs.js): logging hours against it never
-  // moves the roster job, so tomorrow's draft still defaults to the home job.
-  if (targetJob && (await isGlobalJobId(targetJob, session))) return;
-
-  if ((currentJob ? currentJob.toString() : null) === (targetJob ? targetJob.toString() : null)) {
-    return; // no change → skip (avoids needless job employees[] churn)
-  }
-
-  if (currentJob) {
-    await Job.findByIdAndUpdate(
-      currentJob,
-      { $pull: { employees: employee._id } },
-      { session: session || undefined }
-    );
-  }
-
-  employee.currentJob = targetJob;
-  await employee.save({ session: session || undefined });
-
-  if (targetJob) {
-    await Job.findByIdAndUpdate(
-      targetJob,
-      { $addToSet: { employees: employee._id } },
-      { session: session || undefined }
-    );
-  }
-}
 
 
 // --- SHIFT HELPERS ---
@@ -137,117 +76,6 @@ function toLocalTimeString(dateVal, offsetVal) {
   return `${h}:${m}`;
 }
 
-/**
- * Determines if any session in the array is a night shift.
- * Checks both the isNightShift flag and auto-detects cross-midnight.
- */
-function detectCrossedMidnight(sessions, timezoneOffset = null) {
-  let fallbackOffset = -330;
-  if (process.env.APP_TIMEZONE_OFFSET !== undefined && process.env.APP_TIMEZONE_OFFSET !== "") {
-    const parsedFallback = parseInt(process.env.APP_TIMEZONE_OFFSET, 10);
-    if (!isNaN(parsedFallback)) {
-      fallbackOffset = parsedFallback;
-    }
-  }
-
-  // Parse timezone offset
-  let offsetVal = fallbackOffset;
-  if (timezoneOffset !== null && timezoneOffset !== undefined) {
-    const parsed = parseInt(timezoneOffset, 10);
-    if (!isNaN(parsed)) {
-      offsetVal = parsed;
-    }
-  }
-
-  const getLocalInfo = (dateObj) => {
-    const localTime = new Date(dateObj.getTime() - offsetVal * 60 * 1000);
-    return {
-      date: localTime.getUTCDate(),
-      hours: localTime.getUTCHours(),
-      minutes: localTime.getUTCMinutes(),
-    };
-  };
-
-  return sessions.some((s) => {
-    // Explicit night shift flag
-    if (s.isNightShift) return true;
-
-    if (!s.checkIn || !s.checkOut) return false;
-    // Auto-detect from Date objects
-    let inTime, outTime;
-    if (typeof s.checkIn === "string" && s.checkIn.length === 5) {
-      inTime = s.checkIn;
-      outTime = s.checkOut;
-    } else {
-      const inDate = new Date(s.checkIn);
-      const outDate = new Date(s.checkOut);
-
-      const localIn = getLocalInfo(inDate);
-      const localOut = getLocalInfo(outDate);
-
-      // If checkOut is on a different date than checkIn, it crossed midnight
-      if (localOut.date !== localIn.date) return true;
-
-      inTime = `${String(localIn.hours).padStart(2, "0")}:${String(localIn.minutes).padStart(2, "0")}`;
-      outTime = `${String(localOut.hours).padStart(2, "0")}:${String(localOut.minutes).padStart(2, "0")}`;
-    }
-    const [inH] = inTime.split(":").map(Number);
-    const [outH] = outTime.split(":").map(Number);
-    const inMinutes = inH * 60 + (parseInt(inTime.split(":")[1]) || 0);
-    const outMinutes = outH * 60 + (parseInt(outTime.split(":")[1]) || 0);
-    return outMinutes < inMinutes;
-  });
-}
-
-/**
- * Resolves whether a given date is a holiday and why.
- * @returns {Promise<{isHoliday: boolean, reason: "weekly"|"public"|null}>}
- *          "public" = CustomHoliday doc (incl. manually declared); "weekly" = WorkSchedule.weeklyHolidays.
- */
-async function checkHolidayForDate(dateObj) {
-  const targetDate = new Date(dateObj);
-  targetDate.setUTCHours(0, 0, 0, 0);
-
-  const startOfDay = new Date(targetDate);
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date(targetDate);
-  endOfDay.setUTCHours(23, 59, 59, 999);
-
-  // 1. Check CustomHoliday
-  const customHoliday = await customHolidayModel.findOne({
-    date: {
-      $gte: startOfDay,
-      $lte: endOfDay,
-    },
-  });
-
-  if (customHoliday) {
-    return { isHoliday: true, reason: "public" };
-  }
-
-  // 2. Check WorkSchedule / weeklyHolidays
-  const workConfig = await workModel.findOne({ type: "default" });
-  if (workConfig) {
-    const weeklyHolidays = workConfig.weeklyHolidays || [];
-    const dayName = targetDate.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" }).toLowerCase();
-    if (weeklyHolidays.includes(dayName)) {
-      return { isHoliday: true, reason: "weekly" };
-    }
-  }
-
-  return { isHoliday: false, reason: null };
-}
-
-/**
- * Temporary workers get no holiday treatment — a holiday is an ordinary working
- * day for them (normal hours + overtime, no holiday-hours credit). Collapse the
- * day's holiday info to "not a holiday" so isHoliday/holidayReason/holidayHours
- * are cleared and overtime is computed normally.
- */
-function holidayInfoForEmployee(baseHolidayInfo, employmentType) {
-  if (employmentType === "temporary") return { isHoliday: false, reason: null };
-  return baseHolidayInfo;
-}
 
 // ---------------------------------------------------------------------------
 // LEAVE helpers — annual PAID leave and (unpaid, excused) EMERGENCY leave. The
@@ -5287,10 +5115,6 @@ export const bulkBackfillAttendance = async (req, res) => {
 
     // Holiday is date-based → resolve once; only the per-employee employmentType varies.
     const holidayInfo = await checkHolidayForDate(attendanceDate);
-    const hasCrossedMidnight = detectCrossedMidnight(
-      [{ checkIn: checkInDate, checkOut: checkOutDate, isNightShift }],
-      timezoneOffset
-    );
 
     const uniqueIds = [...new Set(employeeIds.filter(Boolean).map(String))];
 
@@ -5353,31 +5177,10 @@ export const bulkBackfillAttendance = async (req, res) => {
           continue;
         }
 
-        // Temporary workers get no holiday treatment (normal day + OT, no holiday credit).
-        const effHolidayInfo = holidayInfoForEmployee(holidayInfo, emp.employmentType);
-        const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
-          rawHours,
-          workConfig,
-          breaksTaken,
-          effHolidayInfo
-        );
-
-        const newAttendance = new Attendance({
-          employee: empId,
-          date: attendanceDate,
-          siteId,
-          jobId: sessionJobId,
-          markedBy,
-          isHoliday: effHolidayInfo.isHoliday,
-          holidayReason: effHolidayInfo.reason,
-          holidayHours,
-          isSickLeave: false,
-          status,
-          totalWorkHours: netWorkHours,
-          overtimeHours,
-          breaksTaken: breaksTaken !== undefined ? breaksTaken : null,
-          shiftType: hasCrossedMidnight ? 'night' : 'day',
-          crossedMidnight: hasCrossedMidnight,
+        // Shared with the supervisor backfill-request approval (utils/backfillRecord.js).
+        const { doc: newAttendance, auditRow } = await createBackfilledRecord({
+          employee: emp,
+          attendanceDate,
           sessions: [{
             siteId,
             jobId: sessionJobId,
@@ -5389,21 +5192,17 @@ export const bulkBackfillAttendance = async (req, res) => {
             markedBy,
             isNightShift,
           }],
-        });
-
-        await newAttendance.save();
-
-        // Same roster sync as single backfill — a no-op unless this is the employee's
-        // latest record AND the common site happens to be their current site.
-        await syncCurrentJobFromLatestSession({
-          empId,
-          siteId,
-          recordDate: attendanceDate,
-          doc: newAttendance,
+          breaksTaken,
+          workConfig,
+          holidayInfo,
+          markedBy,
+          auditActor,
+          auditSummary: "Record backfilled (bulk)",
+          timezoneOffset,
         });
 
         created.push({ employeeId: empId, name: emp.name, attendanceId: newAttendance._id });
-        auditRows.push(buildAuditRow(newAttendance, auditActor, "backfilled", "Record backfilled (bulk)"));
+        auditRows.push(auditRow);
       } catch (err) {
         console.error('bulkBackfillAttendance per-employee error:', empId, err);
         failed.push({

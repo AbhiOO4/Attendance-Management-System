@@ -3,6 +3,7 @@ import holidayModel from '../models/holidayModel.js';
 import siteModel from '../models/siteModel.js';
 import { getFeatures } from '../utils/features.js';
 import { MIN_OVERTIME_MULTIPLIER, MAX_OVERTIME_MULTIPLIER } from '../utils/activityTypes.js';
+import { MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS } from '../utils/backfillWindow.js';
 
 export const getWorkSchedule = async (req, res) => {
   try {
@@ -52,6 +53,7 @@ export const updateWorkSchedule = async (req, res) => {
       erpPaidLeaveType,
       countUnmarkedAsAbsent,
       overtimeActivityMultiplier,
+      supervisorBackfillWindowDays,
     } = req.body;
 
 
@@ -215,6 +217,24 @@ export const updateWorkSchedule = async (req, res) => {
         });
       }
       schedule.countUnmarkedAsAbsent = countUnmarkedAsAbsent;
+    }
+
+    // Supervisor backfill window: whole days, 1 to the hard-coded maximum.
+    if (supervisorBackfillWindowDays !== undefined) {
+      const days = Number(supervisorBackfillWindowDays);
+      if (
+        supervisorBackfillWindowDays === null ||
+        supervisorBackfillWindowDays === "" ||
+        !Number.isInteger(days) ||
+        days < 1 ||
+        days > MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: `Supervisor backfill window must be a whole number of days from 1 to ${MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS}`,
+        });
+      }
+      schedule.supervisorBackfillWindowDays = days;
     }
 
     // Optional validation

@@ -28,6 +28,8 @@ export type WorkConfig = {
   // Minutes a check-out may run past the category default before a supervisor remark
   // is required on edit. Optional for older configs — callers fall back to a default.
   checkoutRemarkGraceMinutes?: number;
+  // Past days a supervisor may backfill (1–10). See lib/backfillWindow.ts.
+  supervisorBackfillWindowDays?: number;
 };
 
 /**

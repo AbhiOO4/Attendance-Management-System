@@ -185,6 +185,16 @@ const workScheduleSchema = new mongoose.Schema(
       min: 0,
       default: 3.5,
     },
+
+    // How many PAST days (yesterday back to N days ago) a supervisor may backfill through a
+    // backfill request (models/backfillRequestModel.js). Admin-configurable on the Configure
+    // page; the 10-day ceiling is hard-coded (utils/backfillWindow.js).
+    supervisorBackfillWindowDays: {
+      type: Number,
+      min: 1,
+      max: 10,
+      default: 3,
+    },
   },
   { timestamps: true }
 );

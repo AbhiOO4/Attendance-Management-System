@@ -103,7 +103,8 @@ and never sees the token. Key pieces:
 - **WorkSchedule** (`workModel.js`) — single `type: "default"` config doc:
   `fullDayHours`, `halfDayHours`, `overtimeThreshold`, `weeklyHolidays`,
   `breakDurationMinutes`, `breakMinHours` (see Hours calculation §2, §5), plus the ERPNext
-  export labels and `overtimeActivityMultiplier` (see "Activity types"). (The weekly-holiday award knobs
+  export labels and `overtimeActivityMultiplier` (see "Activity types"), and
+  `supervisorBackfillWindowDays` (see "Supervisor backfill requests"). (The weekly-holiday award knobs
   `weeklyHolidayAwardEnabled` / `weeklyHolidayAwardHours` / `weeklyHolidayMinHours`,
   and the pay knobs `overtimeMultiplier` / `monthlyHoursDivisor`, were removed.)
 - **AttendanceLock** (`lockModel.js`) — one per `{siteId, date}`. Submitting
@@ -366,6 +367,47 @@ their type and OT/holiday hours under its twin (split always on); unallocated em
 so a mid-month change re-types the whole month. `GET /api/employees` takes `activityType` (id |
 `none`), `collarType`, `nationality`. Verify the master CSV labels against ERPNext's Download
 Template, and import it before a timesheet that uses new names.
+
+### Supervisor backfill requests (draft → admin approval)
+Supervisors fix days they forgot to mark WITHOUT writing attendance themselves. One
+**BackfillRequest** (`models/backfillRequestModel.js`) per `{siteId, date}` (unique): rows of
+`{ employee, sessions[{ jobId, checkIn, checkOut, checkInNextDay, checkOutNextDay }], breaksTaken,
+offRoster, outcome }` — raw `HH:mm` + explicit offsets, Dates only derived at approval.
+`optimisticConcurrency` is on, so concurrent edits 409 `REQUEST_CHANGED`.
+- **Lifecycle** — `draft` → `submitted` → `approved`, or `submitted` → `rejected` (admin, reason
+  required; `wasRejected` set) → edited back to `draft` → resubmitted. Supervisor edits only
+  draft/rejected; admin edits only submitted. Once submitted/approved the supervisor can't touch
+  the day again (`POST /rows` → 409 `BACKFILL_LOCKED`).
+- **Window** — `WorkSchedule.supervisorBackfillWindowDays` (default 3, Configure → Supervisor
+  Backfill; 1–10, `MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS = 10` hard-coded): yesterday back to N days
+  ago, never today, keyed off `getDateLocal` (`utils/backfillWindow.js` ↔ client
+  `lib/backfillWindow.ts`, keep in sync). Starting a document and sending a never-rejected draft
+  both need the day inside the window (else 400/409 `OUT_OF_WINDOW`); a rejected one can always
+  be fixed and resent.
+- **Picking people** — NOT limited to `currentSite` (it may have changed since the missed day):
+  `GET /candidates?tier=site|recent|search` = on the site now / had a session here within ±N days
+  of the date / search everyone (q ≥ 2, paginated). All tiers drop: a record that day, drivers,
+  inactive, people in this document or another site's open (draft/submitted/rejected) one. Rows
+  for someone not on the site now get `offRoster` ("Not on your site now" chip for the admin).
+- **Bulk only** — `POST /rows` applies the SAME 1–6 sessions to every picked employee (per-employee
+  added/skipped/failed result); rows are then edited one at a time (`PUT/DELETE /:id/rows/:employeeId`).
+  Validation (`utils/backfillRequestRows.js`): strict on add/edit (live job via `findSessionJob`;
+  `JOB_REQUIRED` when the site has live jobs; no overlap within the day; cross-day overlap via
+  `buildCrossDayOverlapChecker`), LENIENT on job liveness at approval.
+- **Approval** — `POST /:id/approve` claims `submitted → approved` atomically, then per row
+  (non-transactional, like the admin bulk backfill): re-screen (record exists → skipped; cross-day
+  overlap → failed) and create via `createBackfilledRecord` (`utils/backfillRecord.js`, SHARED with
+  `bulkBackfillAttendance` so both price a day identically; sessions `markedBy` = the supervisor,
+  audit "backfilled" by the admin). Outcomes + `approvalSummary` stay on the document.
+- `checkHolidayForDate` / `holidayInfoForEmployee` (`utils/holidayInfo.js`), `detectCrossedMidnight`
+  (`utils/crossedMidnight.js`) and `syncCurrentJobFromLatestSession` (`utils/currentJobSync.js`)
+  moved out of `attendanceController.js` for this; the controller imports them.
+- **UI** — supervisor sidebar "Backfill" → `/backfill` (days in the window + status) →
+  `/backfill/:date` (`BackfillEmployeePicker` → `BackfillRowDialog` bulk, `BackfillDocumentView`,
+  Send for approval / Discard). Admin sidebar "Past Attendance" (`/attendance/edit`, red badge =
+  `GET /pending-count`) → header "Backfill approvals" → `/attendance/edit/backfill-requests[/:id]`
+  (edit rows, Send back, Approve). Components in `client/src/components/backfill/`, shared types +
+  the totals preview (`previewDay`, a `computeAttendanceTotals` mirror) in `lib/backfillRequests.ts`.
 
 ### Shared cloud draft (runtime switch `CLOUD_DRAFT_ENABLED`)
 Lets several supervisors mark one site/day from different devices. Off by default; the server

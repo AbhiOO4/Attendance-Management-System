@@ -40,6 +40,7 @@ import {
 import {
   ArrowLeft,
   ChevronLeft,
+  ClipboardCheck,
   ChevronRight,
   ListChecks,
   Loader2,
@@ -423,6 +424,15 @@ function EditPastAttendance() {
     fetchMissingCount()
   }, [date])
 
+  // Supervisor backfill requests awaiting approval — badge on the "Backfill approvals" link.
+  const [pendingBackfills, setPendingBackfills] = useState(0)
+  useEffect(() => {
+    api
+      .get("/api/backfill-requests/pending-count")
+      .then((res) => setPendingBackfills(res.data?.data?.count || 0))
+      .catch(() => {})
+  }, [])
+
   const changeDate = ( direction: "prev" | "next" ) => {
     const current = new Date(date)
 
@@ -530,6 +540,21 @@ function EditPastAttendance() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mr-1 gap-1.5"
+                  onClick={() => navigate("/attendance/edit/backfill-requests")}
+                >
+                  <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+                  Backfill approvals
+                  {pendingBackfills > 0 && (
+                    <Badge className="ml-0.5 bg-red-500 text-white hover:bg-red-500">
+                      {pendingBackfills}
+                    </Badge>
+                  )}
+                </Button>
+
                 <Button
                   variant="outline"
                   size="sm"

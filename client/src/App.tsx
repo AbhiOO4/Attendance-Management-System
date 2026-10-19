@@ -22,6 +22,10 @@ const SiteAttendance = lazy(() => import("./pages/SiteAttendance"))
 const DriversAttendance = lazy(() => import("./pages/DriversAttendance"))
 const EditPastAttendance = lazy(() => import("./pages/EditPastAttendance"))
 const MissingEmployees = lazy(() => import("./pages/MissingEmployees"))
+const BackfillApprovals = lazy(() => import("./pages/BackfillApprovals"))
+const BackfillRequestDetail = lazy(() => import("./pages/BackfillRequestDetail"))
+const SupervisorBackfill = lazy(() => import("./pages/SupervisorBackfill"))
+const SupervisorBackfillDay = lazy(() => import("./pages/SupervisorBackfillDay"))
 
 const SiteJobs = lazy(() => import("./pages/SiteJobs"))
 const GlobalJobs = lazy(() => import("./pages/GlobalJobs"))
@@ -282,6 +286,43 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <MissingEmployees />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Supervisor backfill requests: admins review/approve, supervisors draft + send. */}
+        <Route
+          path="attendance/edit/backfill-requests"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <BackfillApprovals />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="attendance/edit/backfill-requests/:id"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <BackfillRequestDetail />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="backfill"
+          element={
+            <ProtectedRoute allowedRoles={["supervisor"]}>
+              <SupervisorBackfill />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="backfill/:date"
+          element={
+            <ProtectedRoute allowedRoles={["supervisor"]}>
+              <SupervisorBackfillDay />
             </ProtectedRoute>
           }
         />

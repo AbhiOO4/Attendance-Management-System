@@ -54,6 +54,7 @@ import requestRoutes from '../src/routes/requestRoutes.js'
 import driverRoutes from '../src/routes/driverRoutes.js'
 import jobRoutes from '../src/routes/jobRoutes.js'
 import activityTypeRoutes from '../src/routes/activityTypeRoutes.js'
+import backfillRequestRoutes from '../src/routes/backfillRequestRoutes.js'
 
 app.use(cookieParser())
 
@@ -74,6 +75,7 @@ app.use('/api/requests', requestRoutes)
 app.use('/api/drivers', driverRoutes)
 app.use('/api/jobs', jobRoutes)
 app.use('/api/activity-types', activityTypeRoutes)
+app.use('/api/backfill-requests', backfillRequestRoutes)
 
 
 

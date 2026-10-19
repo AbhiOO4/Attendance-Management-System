@@ -1,0 +1,196 @@
+// Supervisor backfill requests (server: controllers/backfillRequestController.js) — shared
+// types, labels and the hours preview used by the supervisor and admin pages.
+
+import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
+import { computeAutoBreaks, computeHolidayHours, resolveBreakMinHours, type HolidayReason } from "@/lib/attendanceUtils"
+import type { WorkConfig } from "@/lib/dateUtils"
+
+export type BackfillStatus = "draft" | "submitted" | "approved" | "rejected"
+
+export type BackfillSession = {
+  jobId: string | null
+  jobName?: string
+  jobCode?: string
+  isGlobalJob?: boolean
+  checkIn: string
+  checkOut: string
+  checkInNextDay: boolean
+  checkOutNextDay: boolean
+}
+
+export type BackfillRow = {
+  employee: {
+    _id: string
+    name: string
+    employeeId: string
+    jobTitle: string
+    employmentType?: string
+    currentSite: { _id: string; siteName: string } | null
+  } | null
+  sessions: BackfillSession[]
+  breaksTaken: number | null
+  offRoster: boolean
+  addedBy: { _id: string; name: string } | null
+  outcome: "created" | "skipped" | "failed" | null
+  outcomeMessage: string
+  attendanceId: string | null
+}
+
+export type SiteJob = { _id: string; name: string; jobCode: string | null }
+
+export type BackfillRequestDoc = {
+  _id: string
+  siteId: string
+  siteName: string
+  date: string
+  status: BackfillStatus
+  wasRejected: boolean
+  rejectionReason: string
+  createdBy: { _id: string; name: string } | null
+  submittedBy: { _id: string; name: string } | null
+  submittedAt: string | null
+  reviewedBy: { _id: string; name: string } | null
+  reviewedAt: string | null
+  approvalSummary: { createdCount: number; skippedCount: number; failedCount: number }
+  updatedAt: string
+  holiday: { isHoliday: boolean; reason: HolidayReason }
+  siteJobs: SiteJob[]
+  submitDeadline: string | null
+  permissions: { editable: boolean; canSubmit: boolean; canDiscard: boolean; canReview: boolean }
+  rows: BackfillRow[]
+}
+
+export type BackfillListItem = {
+  _id: string
+  siteId: string
+  siteName: string
+  date: string
+  status: BackfillStatus
+  rowCount: number
+  wasRejected: boolean
+  rejectionReason: string
+  createdBy: string | null
+  submittedBy: string | null
+  submittedAt: string | null
+  reviewedBy: string | null
+  reviewedAt: string | null
+  approvalSummary: { createdCount: number; skippedCount: number; failedCount: number } | null
+}
+
+export type CandidateEmployee = {
+  _id: string
+  name: string
+  employeeId: string
+  jobTitle: string
+  employmentType?: string
+  currentSite: { _id: string; siteName: string } | null
+  lastSeenHere?: string | null
+}
+
+export type RowResultEntry = { employeeId: string; name: string | null; reason?: string; message?: string }
+
+export const STATUS_LABEL: Record<BackfillStatus, string> = {
+  draft: "Draft",
+  submitted: "Awaiting approval",
+  approved: "Approved",
+  rejected: "Sent back",
+}
+
+export const STATUS_CLASS: Record<BackfillStatus, string> = {
+  draft: "bg-slate-500/10 text-slate-700 dark:text-slate-300 border-transparent",
+  submitted: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-transparent",
+  approved: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-transparent",
+  rejected: "bg-red-500/10 text-red-700 dark:text-red-400 border-transparent",
+}
+
+/** Fired after any backfill-request write, so badges refetch. */
+export const BACKFILL_UPDATED_EVENT = "backfill:updated"
+export const notifyBackfillUpdated = () => window.dispatchEvent(new Event(BACKFILL_UPDATED_EVENT))
+
+export const emptySession = (): BackfillSession => ({
+  jobId: null,
+  checkIn: "",
+  checkOut: "",
+  checkInNextDay: false,
+  checkOutNextDay: false,
+})
+
+/** First problem with a session list (client-side mirror of the server checks), or null. */
+export function sessionsError(sessions: BackfillSession[], jobRequired: boolean): string | null {
+  if (sessions.length === 0) return "Add at least one session"
+  for (const [i, s] of sessions.entries()) {
+    const n = sessions.length > 1 ? ` ${i + 1}` : ""
+    if (!s.checkIn || !s.checkOut) return `Session${n}: enter both check-in and check-out`
+    const err = validateSessionTimesV2(s.checkIn, s.checkOut, s.checkInNextDay, s.checkOutNextDay)
+    if (err) return `Session${n}: ${err}`
+    if (jobRequired && !s.jobId) return `Session${n}: pick a job`
+  }
+  // Overlap: minutes from the business day's midnight, sorted by start.
+  const spans = sessions
+    .map((s) => {
+      const [ih, im] = s.checkIn.split(":").map(Number)
+      const [oh, om] = s.checkOut.split(":").map(Number)
+      return { start: (s.checkInNextDay ? 1440 : 0) + ih * 60 + im, end: (s.checkOutNextDay ? 1440 : 0) + oh * 60 + om }
+    })
+    .sort((a, b) => a.start - b.start)
+  for (let i = 0; i < spans.length - 1; i++) {
+    if (spans[i].end > spans[i + 1].start) return "Sessions overlap — each must end before the next starts"
+  }
+  return null
+}
+
+export type DayPreview = {
+  rawHours: number
+  breaks: number
+  netHours: number
+  overtimeHours: number
+  holidayHours: number
+  status: "fullday" | "halfday" | "absent"
+  isNight: boolean
+}
+
+/** The day's totals as the server will compute them (computeAttendanceTotals mirror). */
+export function previewDay(
+  sessions: BackfillSession[],
+  breaksTaken: number | null,
+  workConfig: WorkConfig | null | undefined,
+  holidayReason: HolidayReason = null
+): DayPreview {
+  const fullDayHours = workConfig?.fullDayHours ?? 8
+  const halfDayHours = workConfig?.halfDayHours ?? 4
+  const overtimeThreshold = workConfig?.overtimeThreshold ?? 8
+  const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
+
+  const rawHours = Number(
+    sessions.reduce((sum, s) => sum + hoursFromOffset(s.checkIn, s.checkOut, s.checkInNextDay, s.checkOutNextDay), 0).toFixed(2)
+  )
+  const breaks = breaksTaken ?? computeAutoBreaks(rawHours, resolveBreakMinHours(workConfig))
+  const netHours = Number(Math.max(rawHours - breaks * (breakDurationMinutes / 60), 0).toFixed(2))
+  const isHoliday = holidayReason === "public" || holidayReason === "weekly"
+  const overtimeHours = !isHoliday && netHours > overtimeThreshold ? Number((netHours - overtimeThreshold).toFixed(2)) : 0
+  const status = rawHours >= fullDayHours ? "fullday" : rawHours >= halfDayHours ? "halfday" : "absent"
+  return {
+    rawHours,
+    breaks,
+    netHours,
+    overtimeHours,
+    holidayHours: computeHolidayHours(netHours, holidayReason),
+    status,
+    isNight: sessions.some((s) => s.checkInNextDay || s.checkOutNextDay),
+  }
+}
+
+/** Holiday reason for an employee on that day: temporary workers get none. */
+export const holidayReasonFor = (
+  holiday: { isHoliday: boolean; reason: HolidayReason } | null | undefined,
+  employmentType?: string
+): HolidayReason => (holiday?.isHoliday && employmentType !== "temporary" ? holiday.reason : null)
+
+export const toSessionPayload = (sessions: BackfillSession[]) =>
+  sessions.map((s) => ({
+    jobId: s.jobId,
+    checkIn: s.checkIn,
+    checkOut: s.checkOut,
+    checkInNextDay: s.checkInNextDay,
+    checkOutNextDay: s.checkOutNextDay,
+  }))

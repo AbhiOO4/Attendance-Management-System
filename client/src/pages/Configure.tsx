@@ -23,8 +23,10 @@ import {
   FileSpreadsheet,
   Briefcase,
   CalendarDays,
+  History,
   type LucideIcon,
 } from "lucide-react";
+import { DEFAULT_SUPERVISOR_BACKFILL_WINDOW_DAYS, MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS } from "@/lib/backfillWindow";
 
 import {
   Accordion,
@@ -83,6 +85,8 @@ type WorkSchedule = {
   // Mirrors ERPNext "Consider Unmarked Attendance As": true = Absent (deducted from
   // Payment Days in the report + timesheet), false = Present (paid).
   countUnmarkedAsAbsent: boolean;
+  // Past days a supervisor may backfill (1–10; the 10 is hard-coded).
+  supervisorBackfillWindowDays: number;
 };
 
 type Holiday = {
@@ -93,7 +97,7 @@ type Holiday = {
 
 // Each settings section saves on its own: PATCH /api/config/update only touches the fields
 // it is sent, so a section posts just its own fields and never overwrites the others.
-type SectionId = "hours" | "weekly" | "checkout" | "leave" | "erp";
+type SectionId = "hours" | "weekly" | "checkout" | "leave" | "backfill" | "erp";
 
 type SettingsSection = {
   id: SectionId;
@@ -132,6 +136,13 @@ const SECTIONS: Record<SectionId, SettingsSection> = {
     icon: CalendarCheck,
     fields: ["lopDeductionAmount"],
   },
+  backfill: {
+    id: "backfill",
+    title: "Supervisor Backfill",
+    description: "How many past days supervisors can backfill and send for approval.",
+    icon: History,
+    fields: ["supervisorBackfillWindowDays"],
+  },
   erp: {
     id: "erp",
     title: "ERPNext Export",
@@ -168,6 +179,7 @@ const normalizeSchedule = (data: WorkSchedule): WorkSchedule => ({
   overtimeActivityMultiplier: data.overtimeActivityMultiplier ?? DEFAULT_OVERTIME_MULTIPLIER,
   // Config docs that predate the field are ON (the server reads it the same way).
   countUnmarkedAsAbsent: data.countUnmarkedAsAbsent !== false,
+  supervisorBackfillWindowDays: data.supervisorBackfillWindowDays ?? DEFAULT_SUPERVISOR_BACKFILL_WINDOW_DAYS,
 });
 
 const pickFields = (src: WorkSchedule, fields: (keyof WorkSchedule)[]) =>
@@ -295,6 +307,7 @@ export default function Configure() {
     erpPaidLeaveType: "Annual Leave",
     overtimeActivityMultiplier: DEFAULT_OVERTIME_MULTIPLIER,
     countUnmarkedAsAbsent: true,
+    supervisorBackfillWindowDays: DEFAULT_SUPERVISOR_BACKFILL_WINDOW_DAYS,
   });
   const [saved, setSaved] = useState<WorkSchedule | null>(null);
   const [scheduleLoadFailed, setScheduleLoadFailed] = useState(false);
@@ -568,6 +581,7 @@ export default function Configure() {
             .join(", ") || "No weekly off days",
         checkout: `Reminder ${saved.checkoutReminderTime || "off"} · Remark after ${saved.checkoutRemarkGraceMinutes ?? 15} min over default`,
         leave: `LOP deduct ${saved.lopDeductionAmount ?? 3.5} OMR`,
+        backfill: `Past ${saved.supervisorBackfillWindowDays} day${saved.supervisorBackfillWindowDays === 1 ? "" : "s"}`,
         erp: `${saved.erpCompanyName || "Company name not set"} · Unmarked days = ${saved.countUnmarkedAsAbsent === false ? "Present" : "Absent"}`,
       }
     : {
@@ -575,6 +589,7 @@ export default function Configure() {
         weekly: "Loading…",
         checkout: "Loading…",
         leave: "Loading…",
+        backfill: "Loading…",
         erp: "Loading…",
       };
 
@@ -835,6 +850,28 @@ export default function Configure() {
                     step={0.5}
                     value={schedule.lopDeductionAmount ?? 3.5}
                     onChange={(e) => setField("lopDeductionAmount", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+            )}
+
+            {/* SUPERVISOR BACKFILL */}
+            {settingsSection(
+              SECTIONS.backfill,
+              <div className="grid gap-6 md:grid-cols-2">
+                <Field
+                  id="cfg-backfill-window"
+                  label="Backfill Window (days)"
+                  hint={<>Supervisors can backfill yesterday back to this many days ago (never today), and must send a draft for approval while its day is still inside the window. At most {MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS} days.</>}
+                >
+                  <Input
+                    id="cfg-backfill-window"
+                    type="number"
+                    min={1}
+                    max={MAX_SUPERVISOR_BACKFILL_WINDOW_DAYS}
+                    step={1}
+                    value={schedule.supervisorBackfillWindowDays ?? DEFAULT_SUPERVISOR_BACKFILL_WINDOW_DAYS}
+                    onChange={(e) => setField("supervisorBackfillWindowDays", Number(e.target.value))}
                   />
                 </Field>
               </div>
