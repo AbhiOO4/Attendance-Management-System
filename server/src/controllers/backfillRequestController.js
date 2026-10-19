@@ -34,6 +34,7 @@ import { checkHolidayForDate } from "../utils/holidayInfo.js"
 import { buildCrossDayOverlapChecker, crossDayOverlapMessage } from "../utils/sessionOverlap.js"
 import { resolveActor, recordAttendanceAuditBatch } from "../utils/attendanceAudit.js"
 import { DRIVER_TITLE_REGEX, isDriverTitle } from "../utils/driverPool.js"
+import { notifyBackfillSubmitted, notifyBackfillApproved, notifyBackfillRejected } from "../utils/backfillNotify.js"
 
 const isAdminRole = (role) => role === "admin" || role === "superadmin"
 const SUPERVISOR_EDITABLE = ["draft", "rejected"]
@@ -700,7 +701,9 @@ export const submitBackfillRequest = async (req, res) => {
       if (isVersionError(err)) return versionConflict(res)
       throw err
     }
-    return res.status(200).json({ success: true, message: "Sent for approval", data: await formatRequest(doc, req, workConfig) })
+    const data = await formatRequest(doc, req, workConfig)
+    await notifyBackfillSubmitted(doc, { siteName: data?.siteName || "a site", actorId: req.user.id })
+    return res.status(200).json({ success: true, message: "Sent for approval", data })
   } catch (error) {
     console.error("submitBackfillRequest error:", error)
     return res.status(500).json({ success: false, message: "Failed to send the backfill" })
@@ -731,7 +734,9 @@ export const rejectBackfillRequest = async (req, res) => {
       throw err
     }
     const workConfig = await loadWorkConfig()
-    return res.status(200).json({ success: true, message: "Sent back to the supervisor", data: await formatRequest(doc, req, workConfig) })
+    const data = await formatRequest(doc, req, workConfig)
+    await notifyBackfillRejected(doc, { siteName: data?.siteName || "your site", actorId: req.user.id, reason })
+    return res.status(200).json({ success: true, message: "Sent back to the supervisor", data })
   } catch (error) {
     console.error("rejectBackfillRequest error:", error)
     return res.status(500).json({ success: false, message: "Failed to reject the backfill" })
@@ -827,12 +832,15 @@ export const approveBackfillRequest = async (req, res) => {
     await doc.save()
     await recordAttendanceAuditBatch(auditRows)
 
+    const data = await formatRequest(doc, req, workConfig)
+    await notifyBackfillApproved(doc, { siteName: data?.siteName || "your site", actorId: req.user.id, summary })
+
     return res.status(200).json({
       success: true,
       message: `Approved — ${summary.createdCount} record(s) created` +
         (summary.skippedCount || summary.failedCount ? `, ${summary.skippedCount} skipped, ${summary.failedCount} failed` : ""),
       summary,
-      data: await formatRequest(doc, req, workConfig),
+      data,
     })
   } catch (error) {
     console.error("approveBackfillRequest error:", error)

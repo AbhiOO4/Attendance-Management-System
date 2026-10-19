@@ -20,7 +20,7 @@ import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
 import { formatFullDateLabel } from "@/lib/dateUtils"
 import type { HolidayReason } from "@/lib/attendanceUtils"
-import { notifyBackfillUpdated, type BackfillRequestDoc, type SiteJob } from "@/lib/backfillRequests"
+import { notifyBackfillUpdated, onBackfillChange, type BackfillRequestDoc, type SiteJob } from "@/lib/backfillRequests"
 
 type ByDayResponse = {
   data: BackfillRequestDoc | null
@@ -60,6 +60,9 @@ export default function SupervisorBackfillDay() {
   useEffect(() => {
     load()
   }, [load])
+
+  // An admin approving / sending it back shows up here live (via its notification).
+  useEffect(() => onBackfillChange(() => load()), [load])
 
   const doc = state?.data || null
   const siteName = doc?.siteName || state?.site?.siteName || ""

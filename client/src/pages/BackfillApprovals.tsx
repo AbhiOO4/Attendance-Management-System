@@ -16,7 +16,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
 import { formatFullDateLabel, formatLocalDateTime12h } from "@/lib/dateUtils"
 import {
-  BACKFILL_UPDATED_EVENT,
+  onBackfillChange,
   STATUS_CLASS,
   STATUS_LABEL,
   type BackfillListItem,
@@ -79,9 +79,7 @@ export default function BackfillApprovals() {
   }, [load])
 
   useEffect(() => {
-    const onUpdate = () => load()
-    window.addEventListener(BACKFILL_UPDATED_EVENT, onUpdate)
-    return () => window.removeEventListener(BACKFILL_UPDATED_EVENT, onUpdate)
+    return onBackfillChange(() => load())
   }, [load])
 
   return (

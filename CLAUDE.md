@@ -399,6 +399,14 @@ offRoster, outcome }` — raw `HH:mm` + explicit offsets, Dates only derived at 
   overlap → failed) and create via `createBackfilledRecord` (`utils/backfillRecord.js`, SHARED with
   `bulkBackfillAttendance` so both price a day identically; sessions `markedBy` = the supervisor,
   audit "backfilled" by the admin). Outcomes + `approvalSummary` stay on the document.
+- **Notifications** (`utils/backfillNotify.js`, best-effort after the save, via `utils/notify.js`
+  = in-app row + web push): submit → every admin/superadmin (`backfill_submitted`, links to
+  the review page); approve / send back → the site's supervisors + the sender, minus the acting
+  admin (`backfill_approved` with the created/not counts, `backfill_rejected` with the reason;
+  link `/backfill/:date`). No `relatedRequest`, so they land in Requests → Activity ("Open
+  backfill") and count in the Requests badge. The change stream's `notifications` event also
+  refreshes the backfill pages and the Past Attendance badge (`onBackfillChange` in
+  `lib/backfillRequests.ts`).
 - `checkHolidayForDate` / `holidayInfoForEmployee` (`utils/holidayInfo.js`), `detectCrossedMidnight`
   (`utils/crossedMidnight.js`) and `syncCurrentJobFromLatestSession` (`utils/currentJobSync.js`)
   moved out of `attendanceController.js` for this; the controller imports them.

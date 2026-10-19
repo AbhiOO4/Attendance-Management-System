@@ -26,6 +26,11 @@ const notificationSchema = new mongoose.Schema(
         "transfer_departed", // an employee was moved off your site (or their shift here was cut short) by someone else
         "request_expired", // your pending request was overtaken (employee placed directly, site closed, day ended)
         "request_escalated", // legacy: the stale-request escalation cron (removed; admins now see every request)
+        // Supervisor backfill requests (controllers/backfillRequestController.js). Not tied to a
+        // TransferRequest — `url` deep-links to the backfill instead; shown in Activity.
+        "backfill_submitted", // admins: a supervisor sent a past-day backfill for approval
+        "backfill_approved", // site supervisors: an admin approved it (records created)
+        "backfill_rejected", // site supervisors: an admin sent it back with a reason
       ],
       required: true,
     },

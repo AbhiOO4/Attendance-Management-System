@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { api } from "@/lib/api"
 import { formatFullDateLabel } from "@/lib/dateUtils"
 import { shiftDay } from "@/lib/backfillWindow"
-import { BACKFILL_UPDATED_EVENT, STATUS_CLASS, STATUS_LABEL, type BackfillListItem } from "@/lib/backfillRequests"
+import { onBackfillChange, STATUS_CLASS, STATUS_LABEL, type BackfillListItem } from "@/lib/backfillRequests"
 
 type Window = { from: string; to: string; days: number }
 
@@ -40,10 +40,10 @@ export default function SupervisorBackfill() {
   useEffect(() => {
     load()
     const onUpdate = () => load()
-    window.addEventListener(BACKFILL_UPDATED_EVENT, onUpdate)
+    const off = onBackfillChange(onUpdate)
     window.addEventListener("focus", onUpdate)
     return () => {
-      window.removeEventListener(BACKFILL_UPDATED_EVENT, onUpdate)
+      off()
       window.removeEventListener("focus", onUpdate)
     }
   }, [load])

@@ -690,6 +690,8 @@ export default function Requests() {
   const activityTarget = (n: Notification): string | null => {
     const t = tabOf(n)
     if (t !== "activity" && n.relatedRequest) return `View in ${TAB_LABEL[t]}`
+    // Supervisor backfill requests: submitted (admins) / approved / sent back (supervisors).
+    if (n.type.startsWith("backfill_") && n.url) return "Open backfill"
     if (n.url && n.url !== "/requests") return "Open site"
     return null
   }

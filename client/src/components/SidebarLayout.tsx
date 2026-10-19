@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 import { Menu } from "lucide-react"
 import { api } from "@/lib/api"
 import { startRequestsLive, REQUESTS_LIVE_EVENT } from "@/lib/requestsLive"
-import { BACKFILL_UPDATED_EVENT } from "@/lib/backfillRequests"
+import { onBackfillChange } from "@/lib/backfillRequests"
 
 import { Button } from "@/components/ui/button"
 import ScrollToTop from "./ScrollToTop"
@@ -240,7 +240,7 @@ export default function SidebarLayout() {
   }, [user])
 
   // Past Attendance badge (admins): supervisor backfill requests awaiting approval. Refetched when
-  // the tab becomes visible, after any backfill write in this tab, and on a light 90s poll.
+  // the tab becomes visible, after any backfill write or new notification, and on a light 90s poll.
   const [backfillCount, setBackfillCount] = useState(0)
   const reviewsBackfills = user?.role === "admin" || user?.role === "superadmin"
 
@@ -262,12 +262,12 @@ export default function SidebarLayout() {
       if (!document.hidden) fetchCount()
     }
     document.addEventListener("visibilitychange", onVisible)
-    window.addEventListener(BACKFILL_UPDATED_EVENT, fetchCount)
+    const offBackfill = onBackfillChange(fetchCount)
     return () => {
       cancelled = true
       window.clearInterval(id)
       document.removeEventListener("visibilitychange", onVisible)
-      window.removeEventListener(BACKFILL_UPDATED_EVENT, fetchCount)
+      offBackfill()
     }
   }, [reviewsBackfills])
 

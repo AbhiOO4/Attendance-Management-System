@@ -4,6 +4,7 @@
 import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
 import { computeAutoBreaks, computeHolidayHours, resolveBreakMinHours, type HolidayReason } from "@/lib/attendanceUtils"
 import type { WorkConfig } from "@/lib/dateUtils"
+import { REQUESTS_LIVE_EVENT, type RequestsLiveDetail } from "@/lib/requestsLive"
 
 export type BackfillStatus = "draft" | "submitted" | "approved" | "rejected"
 
@@ -106,6 +107,24 @@ export const STATUS_CLASS: Record<BackfillStatus, string> = {
 /** Fired after any backfill-request write, so badges refetch. */
 export const BACKFILL_UPDATED_EVENT = "backfill:updated"
 export const notifyBackfillUpdated = () => window.dispatchEvent(new Event(BACKFILL_UPDATED_EVENT))
+
+/**
+ * Run `cb` whenever backfill state may have changed: a write in this tab, or a new
+ * notification on the live stream (a backfill was sent / approved / sent back elsewhere —
+ * server utils/backfillNotify.js). Returns the unsubscribe.
+ */
+export function onBackfillChange(cb: () => void): () => void {
+  const onLive = (e: Event) => {
+    const scopes = (e as CustomEvent<RequestsLiveDetail>).detail?.scopes || []
+    if (scopes.includes("notifications") || scopes.includes("resync")) cb()
+  }
+  window.addEventListener(BACKFILL_UPDATED_EVENT, cb)
+  window.addEventListener(REQUESTS_LIVE_EVENT, onLive)
+  return () => {
+    window.removeEventListener(BACKFILL_UPDATED_EVENT, cb)
+    window.removeEventListener(REQUESTS_LIVE_EVENT, onLive)
+  }
+}
 
 export const emptySession = (): BackfillSession => ({
   jobId: null,
