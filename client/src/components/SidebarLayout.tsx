@@ -305,7 +305,7 @@ export default function SidebarLayout() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed md:static top-0 left-0 h-full w-64 border-r bg-background transform transition-transform duration-300 z-50 flex flex-col overflow-hidden pb-[env(safe-area-inset-bottom)]",
+          "fixed md:static top-0 left-0 h-dvh md:h-full w-64 border-r bg-background transform transition-transform duration-300 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]",
           open ? "translate-x-0" : "-translate-x-full md:translate-x-0",
           collapsed && "md:w-16"
         )}
