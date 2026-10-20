@@ -88,7 +88,7 @@ export default function PushReminderToggle({
         title={title}
         aria-label={label}
         className={cn(
-          "inline-flex h-10 w-10 items-center justify-center rounded-xl transition disabled:opacity-50",
+          "inline-flex h-9 w-9 items-center justify-center rounded-xl transition disabled:opacity-50",
           subscribed
             ? "text-primary hover:bg-muted"
             : "text-muted-foreground hover:bg-muted"
@@ -109,7 +109,7 @@ export default function PushReminderToggle({
       disabled={busy}
       title={title}
       className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors disabled:opacity-50",
+        "flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors disabled:opacity-50",
         subscribed
           ? "text-foreground hover:bg-muted/60"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
