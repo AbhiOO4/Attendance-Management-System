@@ -5,6 +5,7 @@
 //    (creates the site/day draft on first use; per-employee added/skipped/failed result).
 //  - edit: one existing row → PUT /api/backfill-requests/:id/rows/:employeeId
 //    (supervisor while drafting, admin while it awaits approval).
+// `driverMode` (a Drivers pool document): sessions name a site + job split, not one job.
 
 import { useEffect, useState } from "react"
 import toast from "react-hot-toast"
@@ -19,6 +20,7 @@ import type { HolidayReason } from "@/lib/attendanceUtils"
 import {
   emptySession,
   holidayReasonFor,
+  withPlaces,
   notifyBackfillUpdated,
   sessionsError,
   toSessionPayload,
@@ -51,6 +53,7 @@ export default function BackfillRowDialog({
   siteJobs,
   holiday,
   onSaved,
+  driverMode = false,
 }: {
   open: boolean
   onClose: () => void
@@ -61,6 +64,7 @@ export default function BackfillRowDialog({
   siteJobs: SiteJob[]
   holiday: { isHoliday: boolean; reason: HolidayReason } | null
   onSaved: (doc: BackfillRequestDoc | null) => void
+  driverMode?: boolean
 }) {
   const [sessions, setSessions] = useState<BackfillSession[]>([emptySession()])
   const [breaksTaken, setBreaksTaken] = useState<number | null>(null)
@@ -70,7 +74,7 @@ export default function BackfillRowDialog({
   useEffect(() => {
     if (!open || !target) return
     if (target.mode === "edit") {
-      setSessions(target.row.sessions.length ? target.row.sessions.map((s) => ({ ...s })) : [emptySession()])
+      setSessions(target.row.sessions.length ? withPlaces(target.row.sessions) : [emptySession()])
       setBreaksTaken(target.row.breaksTaken ?? null)
     } else {
       setSessions([emptySession()])
@@ -83,7 +87,7 @@ export default function BackfillRowDialog({
   if (!target) return null
 
   const jobRequired = siteJobs.length > 0
-  const error = sessionsError(sessions, jobRequired)
+  const error = sessionsError(sessions, jobRequired, driverMode)
   const count = target.mode === "bulk" ? target.employees.length : 1
   // A single row previews with that employee's holiday treatment; a bulk apply with the day's.
   const holidayReason =
@@ -103,21 +107,22 @@ export default function BackfillRowDialog({
           siteId,
           date,
           employeeIds: target.employees.map((e) => e._id),
-          sessions: toSessionPayload(sessions),
+          sessions: toSessionPayload(sessions, driverMode),
           breaksTaken,
         })
         const data = res.data
         onSaved(data.data)
         notifyBackfillUpdated()
         const saved = data.summary.addedCount + data.summary.updatedCount
-        if (saved > 0) toast.success(`Added ${saved} employee${saved === 1 ? "" : "s"} to the draft`)
+        const noun = driverMode ? "driver" : "employee"
+        if (saved > 0) toast.success(`Added ${saved} ${noun}${saved === 1 ? "" : "s"} to the draft`)
         else toast.error("Nobody was added — see details.")
         if (data.summary.skippedCount === 0 && data.summary.failedCount === 0) onClose()
         else setResult(data)
       } else {
         const res = await api.put<{ data: BackfillRequestDoc }>(
           `/api/backfill-requests/${target.requestId}/rows/${target.row.employee?._id}`,
-          { sessions: toSessionPayload(sessions), breaksTaken }
+          { sessions: toSessionPayload(sessions, driverMode), breaksTaken }
         )
         onSaved(res.data.data)
         notifyBackfillUpdated()
@@ -133,7 +138,7 @@ export default function BackfillRowDialog({
 
   const title =
     target.mode === "bulk"
-      ? `Backfill ${count} employee${count === 1 ? "" : "s"}`
+      ? `Backfill ${count} ${driverMode ? "driver" : "employee"}${count === 1 ? "" : "s"}`
       : `Edit ${target.row.employee?.name || "row"}`
 
   return (
@@ -207,6 +212,7 @@ export default function BackfillRowDialog({
               breaksTaken={breaksTaken}
               onBreaksChange={setBreaksTaken}
               holidayReason={holidayReason}
+              driverMode={driverMode}
             />
           )}
         </div>

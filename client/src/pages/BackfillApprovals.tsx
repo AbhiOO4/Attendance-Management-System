@@ -47,7 +47,8 @@ export default function BackfillApprovals() {
 
   useEffect(() => {
     api
-      .get<Site[]>("/api/site")
+      // Includes the Drivers pool (driver supervisors' backfills), listed as "Drivers".
+      .get<Site[]>("/api/site", { params: { includeDriverPool: true } })
       .then((res) => setSites(Array.isArray(res.data) ? res.data : []))
       .catch(() => {})
   }, [])

@@ -290,7 +290,8 @@ function App() {
           }
         />
 
-        {/* Supervisor backfill requests: admins review/approve, supervisors draft + send. */}
+        {/* Supervisor backfill requests: admins review/approve, supervisors (and driver
+            supervisors, for the Drivers pool) draft + send. */}
         <Route
           path="attendance/edit/backfill-requests"
           element={
@@ -312,7 +313,7 @@ function App() {
         <Route
           path="backfill"
           element={
-            <ProtectedRoute allowedRoles={["supervisor"]}>
+            <ProtectedRoute allowedRoles={["supervisor", "driverSupervisor"]}>
               <SupervisorBackfill />
             </ProtectedRoute>
           }
@@ -321,7 +322,7 @@ function App() {
         <Route
           path="backfill/:date"
           element={
-            <ProtectedRoute allowedRoles={["supervisor"]}>
+            <ProtectedRoute allowedRoles={["supervisor", "driverSupervisor"]}>
               <SupervisorBackfillDay />
             </ProtectedRoute>
           }

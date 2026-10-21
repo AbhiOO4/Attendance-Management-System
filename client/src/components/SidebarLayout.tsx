@@ -82,6 +82,8 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
 
 const DRIVER_SUPERVISOR_NAV_ITEMS: NavItem[] = [
   { name: "Drivers Attendance", path: "/drivers-attendance", icon: Truck },
+  // Past days they forgot to mark: drafted here, approved by an admin.
+  { name: "Backfill", path: "/backfill", icon: History },
 ]
 
 function getSupervisorNavItems(

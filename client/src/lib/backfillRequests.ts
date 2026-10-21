@@ -1,18 +1,25 @@
 // Supervisor backfill requests (server: controllers/backfillRequestController.js) — shared
 // types, labels and the hours preview used by the supervisor and admin pages.
+//
+// A driver supervisor's document sits on the hidden Drivers pool (`isDriverPool`): its rows are
+// drivers and each session names a SITE + job split (lib/jobSplit.ts) instead of one job —
+// "driver mode" in the helpers below.
 
 import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
 import { computeAutoBreaks, computeHolidayHours, resolveBreakMinHours, type HolidayReason } from "@/lib/attendanceUtils"
 import type { WorkConfig } from "@/lib/dateUtils"
 import { REQUESTS_LIVE_EVENT, type RequestsLiveDetail } from "@/lib/requestsLive"
+import { placeFromSession, type DriverPlace, type SessionSplitFields } from "@/lib/jobSplit"
 
 export type BackfillStatus = "draft" | "submitted" | "approved" | "rejected"
 
-export type BackfillSession = {
+export type BackfillSession = SessionSplitFields & {
   jobId: string | null
   jobName?: string
   jobCode?: string
   isGlobalJob?: boolean
+  // Driver mode: the editor's site + ticked jobs (seeded from servedSite/splitJobs by withPlaces).
+  place?: DriverPlace | null
   checkIn: string
   checkOut: string
   checkInNextDay: boolean
@@ -44,6 +51,7 @@ export type BackfillRequestDoc = {
   siteId: string
   siteName: string
   date: string
+  isDriverPool: boolean
   status: BackfillStatus
   wasRejected: boolean
   rejectionReason: string
@@ -135,14 +143,15 @@ export const emptySession = (): BackfillSession => ({
 })
 
 /** First problem with a session list (client-side mirror of the server checks), or null. */
-export function sessionsError(sessions: BackfillSession[], jobRequired: boolean): string | null {
+export function sessionsError(sessions: BackfillSession[], jobRequired: boolean, driverMode = false): string | null {
   if (sessions.length === 0) return "Add at least one session"
   for (const [i, s] of sessions.entries()) {
     const n = sessions.length > 1 ? ` ${i + 1}` : ""
     if (!s.checkIn || !s.checkOut) return `Session${n}: enter both check-in and check-out`
     const err = validateSessionTimesV2(s.checkIn, s.checkOut, s.checkInNextDay, s.checkOutNextDay)
     if (err) return `Session${n}: ${err}`
-    if (jobRequired && !s.jobId) return `Session${n}: pick a job`
+    if (driverMode && !s.place?.jobIds.length) return `Session${n}: pick a site and its jobs`
+    if (!driverMode && jobRequired && !s.jobId) return `Session${n}: pick a job`
   }
   // Overlap: minutes from the business day's midnight, sorted by start.
   const spans = sessions
@@ -205,9 +214,14 @@ export const holidayReasonFor = (
   employmentType?: string
 ): HolidayReason => (holiday?.isHoliday && employmentType !== "temporary" ? holiday.reason : null)
 
-export const toSessionPayload = (sessions: BackfillSession[]) =>
+/** Saved sessions ready for the editor: driver sessions get their `place` from the stored split. */
+export const withPlaces = (sessions: BackfillSession[]): BackfillSession[] =>
+  sessions.map((s) => ({ ...s, place: s.place !== undefined ? s.place : placeFromSession(s) }))
+
+export const toSessionPayload = (sessions: BackfillSession[], driverMode = false) =>
   sessions.map((s) => ({
-    jobId: s.jobId,
+    jobId: driverMode ? null : s.jobId,
+    ...(driverMode ? { splitJobIds: s.place?.jobIds ?? [] } : {}),
     checkIn: s.checkIn,
     checkOut: s.checkOut,
     checkInNextDay: s.checkInNextDay,

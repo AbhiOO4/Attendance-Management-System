@@ -8,6 +8,9 @@
 // The job picker offers the site's live jobs + the global jobs. A site with live jobs needs a
 // job on every session (the server refuses it otherwise — JOB_REQUIRED); a site with none keeps
 // it optional ("No job").
+//
+// `driverMode` (a Drivers pool document): each session instead names the SITE the driver served
+// and the jobs ticked there (SiteSplitPicker — hours split equally), required on every session.
 
 import { useMemo } from "react"
 import { Moon, Plus, Trash2 } from "lucide-react"
@@ -15,6 +18,7 @@ import { Moon, Plus, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import JobPicker from "@/components/drivers/JobPicker"
+import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
 import SessionTimeFields from "@/components/backfill/SessionTimeFields"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { MAX_BREAKS_PER_DAY } from "@/lib/attendanceUtils"
@@ -36,6 +40,7 @@ export default function BackfillSessionsForm({
   onBreaksChange,
   holidayReason = null,
   disabled = false,
+  driverMode = false,
 }: {
   date: string
   siteId: string
@@ -47,6 +52,7 @@ export default function BackfillSessionsForm({
   onBreaksChange: (next: number | null) => void
   holidayReason?: HolidayReason
   disabled?: boolean
+  driverMode?: boolean
 }) {
   const { config: workConfig } = useWorkConfig()
   const globalJobs = useGlobalJobs(true)
@@ -104,22 +110,38 @@ export default function BackfillSessionsForm({
             )}
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Job {jobRequired && <span className="text-red-500">*</span>}
-            </label>
-            <JobPicker
-              value={jobFor(s)}
-              onChange={(job) =>
-                update(i, { jobId: job._id, jobName: job.name, jobCode: job.jobCode || "", isGlobalJob: !!job.isGlobal })
-              }
-              onClear={jobRequired ? undefined : () => update(i, { jobId: null, jobName: "", jobCode: "", isGlobalJob: false })}
-              sites={groups}
-              invalid={jobRequired && !s.jobId && !!(s.checkIn || s.checkOut)}
-              disabled={disabled}
-              className="h-10"
-            />
-          </div>
+          {driverMode ? (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Worked for (hours split across its jobs) <span className="text-red-500">*</span>
+              </label>
+              <SiteSplitPicker
+                value={s.place ?? null}
+                knownJobs={s.splitJobs}
+                onChange={(place) => update(i, { place })}
+                invalid={!s.place?.jobIds.length && !!(s.checkIn || s.checkOut)}
+                disabled={disabled}
+                className="h-10"
+              />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Job {jobRequired && <span className="text-red-500">*</span>}
+              </label>
+              <JobPicker
+                value={jobFor(s)}
+                onChange={(job) =>
+                  update(i, { jobId: job._id, jobName: job.name, jobCode: job.jobCode || "", isGlobalJob: !!job.isGlobal })
+                }
+                onClear={jobRequired ? undefined : () => update(i, { jobId: null, jobName: "", jobCode: "", isGlobalJob: false })}
+                sites={groups}
+                invalid={jobRequired && !s.jobId && !!(s.checkIn || s.checkOut)}
+                disabled={disabled}
+                className="h-10"
+              />
+            </div>
+          )}
 
           <SessionTimeFields
             date={date}

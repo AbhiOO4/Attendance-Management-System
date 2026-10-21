@@ -12,6 +12,11 @@
  *
  * Supervisor writes are confined to their assignedSite: requireSiteAccess on the siteId routes,
  * and a check against the loaded document on the :id routes.
+ *
+ * Driver supervisors use the same flow: their assignedSite is the hidden Drivers pool
+ * (utils/driverPool.js), so their documents are keyed {pool, date}. A pool document lists only
+ * drivers and every session names a job SPLIT (servedSiteId + splitJobIds, utils/jobSplit.js)
+ * instead of one job — the "onPool" branches below and in utils/backfillRequestRows.js.
  */
 import mongoose from "mongoose"
 import BackfillRequest from "../models/backfillRequestModel.js"
@@ -33,7 +38,8 @@ import { createBackfilledRecord } from "../utils/backfillRecord.js"
 import { checkHolidayForDate } from "../utils/holidayInfo.js"
 import { buildCrossDayOverlapChecker, crossDayOverlapMessage } from "../utils/sessionOverlap.js"
 import { resolveActor, recordAttendanceAuditBatch } from "../utils/attendanceAudit.js"
-import { DRIVER_TITLE_REGEX, isDriverTitle } from "../utils/driverPool.js"
+import { DRIVER_TITLE_REGEX, driverEmployeeFilter, isDriverPool, isDriverTitle } from "../utils/driverPool.js"
+import { buildSplitLookup } from "../utils/jobSplit.js"
 import { notifyBackfillSubmitted, notifyBackfillApproved, notifyBackfillRejected } from "../utils/backfillNotify.js"
 
 const isAdminRole = (role) => role === "admin" || role === "superadmin"
@@ -123,9 +129,11 @@ async function formatRequest(doc, req, workConfig) {
   const sites = siteIds.length ? await Site.find({ _id: { $in: siteIds } }).select("siteName").lean() : []
   const siteName = new Map(sites.map((s) => [String(s._id), s.siteName]))
 
-  const [siteJobs, holiday] = await Promise.all([
-    liveSiteJobs(populated.siteId?._id || doc.siteId),
+  const onPool = await isDriverPool(populated.siteId?._id || doc.siteId)
+  const [siteJobs, holiday, splitInfo] = await Promise.all([
+    onPool ? [] : liveSiteJobs(populated.siteId?._id || doc.siteId),
     checkHolidayForDate(populated.date),
+    onPool ? buildSplitLookup((populated.rows || []).flatMap((r) => r.sessions || [])) : null,
   ])
 
   const editable = callerMayEdit(req, doc, workConfig)
@@ -136,6 +144,7 @@ async function formatRequest(doc, req, workConfig) {
     siteId: populated.siteId?._id || doc.siteId,
     siteName: populated.siteId?.siteName || "",
     date: dayKey(populated.date),
+    isDriverPool: onPool,
     status: populated.status,
     wasRejected: !!populated.wasRejected,
     rejectionReason: populated.rejectionReason || "",
@@ -173,6 +182,7 @@ async function formatRequest(doc, req, workConfig) {
         jobName: s.jobId?.name || "",
         jobCode: s.jobId?.jobCode || "",
         isGlobalJob: !!s.jobId?.isGlobal,
+        ...(splitInfo ? splitInfo(s) : {}),
         checkIn: s.checkIn,
         checkOut: s.checkOut,
         checkInNextDay: !!s.checkInNextDay,
@@ -294,11 +304,13 @@ export const getBackfillRequestByDay = async (req, res) => {
     const doc = await BackfillRequest.findOne({ siteId, date: day.attendanceDate })
     const site = await Site.findById(siteId).select("siteName").lean()
     const inWindow = isInSupervisorWindow(day.dateStr, workConfig)
+    const onPool = await isDriverPool(siteId)
     return res.status(200).json({
       success: true,
       data: doc ? await formatRequest(doc, req, workConfig) : null,
       site: site ? { _id: site._id, siteName: site.siteName } : null,
-      siteJobs: doc ? undefined : await liveSiteJobs(siteId),
+      isDriverPool: onPool,
+      siteJobs: doc ? undefined : onPool ? [] : await liveSiteJobs(siteId),
       holiday: doc ? undefined : await checkHolidayForDate(day.attendanceDate),
       window: supervisorBackfillRange(workConfig),
       // With no document yet, a supervisor can start one only inside the window.
@@ -317,6 +329,8 @@ export const getBackfillRequestByDay = async (req, res) => {
 //   site   — currentSite is this site (all, sorted by name)
 //   recent — had a session at this site within ±N window days of the date, now elsewhere
 //   search — everyone else, by name / employee ID (q ≥ 2 chars), paginated
+// On the Drivers pool it is the reverse: tier "site" is EVERY active driver (drivers have no
+// site, so there is nobody "recent" or left to search — those tiers come back empty).
 export const getBackfillCandidates = async (req, res) => {
   try {
     const { siteId, tier = "site" } = req.query
@@ -347,6 +361,26 @@ export const getBackfillCandidates = async (req, res) => {
       jobTitle: { $not: DRIVER_TITLE_REGEX },
     }
     const fields = "_id name employeeId jobTitle employmentType currentSite"
+
+    if (await isDriverPool(siteId)) {
+      if (tier !== "site") return res.status(200).json({ success: true, data: [], pagination: { page: 1, totalPages: 0, total: 0 } })
+      const drivers = await Employee.find({ ...driverEmployeeFilter(), _id: { $nin: excludedIds } })
+        .select(fields)
+        .sort({ name: 1 })
+        .limit(1000)
+        .lean()
+      return res.status(200).json({
+        success: true,
+        data: drivers.map((e) => ({
+          _id: e._id,
+          name: e.name,
+          employeeId: e.employeeId,
+          jobTitle: e.jobTitle,
+          employmentType: e.employmentType,
+          currentSite: null,
+        })),
+      })
+    }
 
     const shape = (emps, lastSeen = null) =>
       emps
@@ -452,8 +486,9 @@ export const getBackfillRequest = async (req, res) => {
  * where rows are ready-to-store row objects.
  */
 async function prepareRows({ req, siteId, day, employeeIds, rawSessions, breaksTaken, doc }) {
+  const onPool = await isDriverPool(siteId)
   const sessions = normalizeRawSessions(rawSessions)
-  const check = await validateSessions({ dateStr: day.dateStr, siteId, sessions, strict: true })
+  const check = await validateSessions({ dateStr: day.dateStr, siteId, sessions, strict: true, onPool })
   if (check.error) return { error: check.error, code: check.code }
 
   const { ok, skipped } = await screenEmployees({
@@ -461,6 +496,7 @@ async function prepareRows({ req, siteId, day, employeeIds, rawSessions, breaksT
     attendanceDate: day.attendanceDate,
     employeeIds,
     excludeRequestId: doc?._id || null,
+    onPool,
   })
 
   const failed = []
@@ -602,7 +638,8 @@ export const updateBackfillRow = async (req, res) => {
 
     const day = { dateStr: dayKey(doc.date), attendanceDate: doc.date }
     const sessions = normalizeRawSessions(req.body.sessions)
-    const check = await validateSessions({ dateStr: day.dateStr, siteId: doc.siteId, sessions, strict: true })
+    const onPool = await isDriverPool(doc.siteId)
+    const check = await validateSessions({ dateStr: day.dateStr, siteId: doc.siteId, sessions, strict: true, onPool })
     if (check.error) return res.status(400).json({ success: false, code: check.code, message: check.error })
 
     const crossDay = await buildCrossDayOverlapChecker({ employeeIds: [String(req.params.employeeId)], date: doc.date })
@@ -780,6 +817,7 @@ export const approveBackfillRequest = async (req, res) => {
     const timezoneOffset = timezoneOffsetOf(req)
     const auditRows = []
     const summary = { createdCount: 0, skippedCount: 0, failedCount: 0 }
+    const onPool = await isDriverPool(doc.siteId)
 
     for (const row of doc.rows) {
       const empId = String(row.employee)
@@ -792,12 +830,13 @@ export const approveBackfillRequest = async (req, res) => {
       }
 
       if (!emp || emp.isActive === false) { mark("skipped", "Employee not found or inactive"); continue }
-      if (isDriverTitle(emp.jobTitle)) { mark("skipped", "Driver — drivers are marked on Drivers Attendance"); continue }
+      if (onPool && !isDriverTitle(emp.jobTitle)) { mark("skipped", "Not a driver"); continue }
+      if (!onPool && isDriverTitle(emp.jobTitle)) { mark("skipped", "Driver — drivers are marked on Drivers Attendance"); continue }
       if (hasRecord.has(empId)) { mark("skipped", "Already has a record for this date"); continue }
 
       const markedBy = row.addedBy || doc.createdBy || req.user.id
       const rawSessions = normalizeRawSessions(row.sessions)
-      const check = await validateSessions({ dateStr, siteId: doc.siteId, sessions: rawSessions, markedBy, strict: false })
+      const check = await validateSessions({ dateStr, siteId: doc.siteId, sessions: rawSessions, markedBy, strict: false, onPool })
       if (check.error) { mark("failed", check.error); continue }
 
       const conflict = crossDay(empId, check.built)

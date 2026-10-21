@@ -407,6 +407,14 @@ offRoster, outcome }` — raw `HH:mm` + explicit offsets, Dates only derived at 
   backfill") and count in the Requests badge. The change stream's `notifications` event also
   refreshes the backfill pages and the Past Attendance badge (`onBackfillChange` in
   `lib/backfillRequests.ts`).
+- **Driver supervisors** use the SAME flow, routes and pages (`/backfill`, sidebar "Backfill"): their
+  `assignedSite` is the Drivers pool, so their document is `{poolId, date}` (shown as site "Drivers").
+  On the pool everything driver-specific flips (`onPool` in `backfillRequestRows.js` + the controller):
+  only drivers (`screenEmployees` skips "Not a driver"; candidates = every active driver, tier `site`
+  only), and each session stores a job SPLIT (`servedSiteId` + `splitJobIds`, `jobId: null`) resolved by
+  `resolveDriverSplit` — strict on add/edit, lenient at approval — instead of one job. Client:
+  `doc.isDriverPool` → `driverMode` on `BackfillSessionsForm` (SiteSplitPicker), `BackfillRowDialog`,
+  `BackfillEmployeePicker` (one "Drivers" list, local filter) and the row job cell (`sessionJobCell`).
 - `checkHolidayForDate` / `holidayInfoForEmployee` (`utils/holidayInfo.js`), `detectCrossedMidnight`
   (`utils/crossedMidnight.js`) and `syncCurrentJobFromLatestSession` (`utils/currentJobSync.js`)
   moved out of `attendanceController.js` for this; the controller imports them.

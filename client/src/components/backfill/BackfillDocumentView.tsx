@@ -5,6 +5,7 @@
 // happened to the row. Rows can be edited/removed when the caller may edit (supervisor while
 // drafting, admin while it awaits approval; `doc.permissions.editable`). Page-level actions
 // (add, send, approve, reject) are passed in by the supervisor/admin pages.
+// A Drivers pool document shows each session's site + job split and edits it with the split picker.
 
 import { useState, type ReactNode } from "react"
 import toast from "react-hot-toast"
@@ -23,6 +24,7 @@ import { StatusBadge } from "@/components/backfill/BackfillSessionsForm"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { api } from "@/lib/api"
 import { formatFullDateLabel, formatLocalDateTime12h, formatOffsetDayLabel } from "@/lib/dateUtils"
+import { sessionJobCell } from "@/lib/jobSplit"
 import {
   holidayReasonFor,
   notifyBackfillUpdated,
@@ -48,6 +50,8 @@ export default function BackfillDocumentView({
   const [editTarget, setEditTarget] = useState<BackfillRowDialogTarget | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const editable = doc.permissions.editable
+  const driverMode = !!doc.isDriverPool
+  const noun = driverMode ? "driver" : "employee"
 
   const removeRow = async (row: BackfillRow) => {
     if (!row.employee) return
@@ -95,7 +99,7 @@ export default function BackfillDocumentView({
         </div>
 
         <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-          <span>{doc.rows.length} employee{doc.rows.length === 1 ? "" : "s"}</span>
+          <span>{doc.rows.length} {noun}{doc.rows.length === 1 ? "" : "s"}</span>
           <span>{Number(totals.hours.toFixed(2))} hrs total{totals.ot > 0 ? ` · ${Number(totals.ot.toFixed(2))} OT` : ""}</span>
           {doc.createdBy && <span>Drafted by {doc.createdBy.name}</span>}
           {doc.submittedBy && doc.submittedAt && (
@@ -134,7 +138,7 @@ export default function BackfillDocumentView({
       {/* Rows */}
       {doc.rows.length === 0 ? (
         <div className="rounded-xl border border-dashed bg-background p-8 text-center text-sm text-muted-foreground">
-          {emptyHint || "No employees in this backfill yet."}
+          {emptyHint || `No ${noun}s in this backfill yet.`}
         </div>
       ) : (
         <div className="divide-y rounded-xl border bg-background">
@@ -149,7 +153,7 @@ export default function BackfillDocumentView({
                     <span className="text-xs text-muted-foreground">
                       {row.employee?.employeeId} · <span className="capitalize">{row.employee?.jobTitle}</span>
                     </span>
-                    {row.offRoster && (
+                    {row.offRoster && !driverMode && (
                       <Badge
                         variant="outline"
                         className="border-amber-300 text-[11px] text-amber-700 dark:border-amber-800 dark:text-amber-300"
@@ -175,7 +179,10 @@ export default function BackfillDocumentView({
                           </span>
                         )}
                         <span className="text-xs">
-                          {s.jobId ? [s.jobCode, s.jobName].filter(Boolean).join(" · ") + (s.isGlobalJob ? " (global)" : "") : "No job"}
+                          {sessionJobCell(
+                            s,
+                            s.jobId ? [s.jobCode, s.jobName].filter(Boolean).join(" · ") + (s.isGlobalJob ? " (global)" : "") : "No job"
+                          )}
                         </span>
                       </li>
                     ))}
@@ -225,6 +232,7 @@ export default function BackfillDocumentView({
         siteJobs={doc.siteJobs}
         holiday={doc.holiday}
         onSaved={(next) => next && onChanged(next)}
+        driverMode={driverMode}
       />
     </div>
   )

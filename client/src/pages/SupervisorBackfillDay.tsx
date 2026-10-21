@@ -5,6 +5,9 @@
 // of sessions is applied to all of them (BackfillRowDialog, bulk) — there is no per-employee
 // backfill. Rows can be edited or removed while the draft is open; "Send for approval" hands it
 // to an admin and locks the day for the supervisor.
+//
+// A driver supervisor gets the same page for the Drivers pool (their assignedSite): only drivers
+// are offered and each session names a site + job split (`driverMode`).
 
 import { useCallback, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
@@ -25,6 +28,7 @@ import { notifyBackfillUpdated, onBackfillChange, type BackfillRequestDoc, type 
 type ByDayResponse = {
   data: BackfillRequestDoc | null
   site: { _id: string; siteName: string } | null
+  isDriverPool?: boolean
   siteJobs?: SiteJob[]
   holiday?: { isHoliday: boolean; reason: HolidayReason }
   window: { from: string; to: string; days: number }
@@ -61,14 +65,25 @@ export default function SupervisorBackfillDay() {
     load()
   }, [load])
 
-  // An admin approving / sending it back shows up here live (via its notification).
-  useEffect(() => onBackfillChange(() => load()), [load])
+  // An admin approving / sending it back shows up here live (via its notification). Driver
+  // supervisors have no live stream, so returning to the tab refetches too.
+  useEffect(() => {
+    const off = onBackfillChange(() => load())
+    const onFocus = () => load()
+    window.addEventListener("focus", onFocus)
+    return () => {
+      off()
+      window.removeEventListener("focus", onFocus)
+    }
+  }, [load])
 
   const doc = state?.data || null
   const siteName = doc?.siteName || state?.site?.siteName || ""
   const siteJobs = doc?.siteJobs || state?.siteJobs || []
   const holiday = doc?.holiday || state?.holiday || null
   const canAdd = doc ? doc.permissions.editable : !!state?.canStart
+  const driverMode = !!(doc?.isDriverPool ?? state?.isDriverPool)
+  const noun = driverMode ? "driver" : "employee"
 
   const setDoc = (next: BackfillRequestDoc | null) => setState((s) => (s ? { ...s, data: next } : s))
 
@@ -116,7 +131,7 @@ export default function SupervisorBackfillDay() {
   const addButton = canAdd && (
     <Button size="sm" className="gap-1.5" onClick={() => setPickerOpen(true)}>
       <UserPlus className="h-3.5 w-3.5" />
-      Add employees
+      Add {noun}s
     </Button>
   )
 
@@ -134,7 +149,7 @@ export default function SupervisorBackfillDay() {
             <BackfillDocumentView
               doc={doc}
               onChanged={setDoc}
-              emptyHint="Add the employees you forgot to mark for this day."
+              emptyHint={`Add the ${noun}s you forgot to mark for this day.`}
               actions={
                 <>
                   {addButton}
@@ -143,7 +158,7 @@ export default function SupervisorBackfillDay() {
                       title="Send for approval?"
                       description={
                         <>
-                          {doc.rows.length} employee{doc.rows.length === 1 ? "" : "s"} for {formatFullDateLabel(doc.date)} go to an
+                          {doc.rows.length} {noun}{doc.rows.length === 1 ? "" : "s"} for {formatFullDateLabel(doc.date)} go to an
                           admin. After this you can't edit this backfill or add more people for this day.
                         </>
                       }
@@ -180,7 +195,7 @@ export default function SupervisorBackfillDay() {
             {state.canStart ? (
               <>
                 <p className="text-sm text-muted-foreground">
-                  Nothing backfilled for this day yet. Pick the employees you forgot to mark and enter their sessions —
+                  Nothing backfilled for this day yet. Pick the {noun}s you forgot to mark and enter their sessions —
                   it stays a draft until you send it for approval.
                 </p>
                 {addButton}
@@ -202,6 +217,7 @@ export default function SupervisorBackfillDay() {
           siteId={siteId}
           siteName={siteName}
           date={date}
+          driverMode={driverMode}
           onContinue={(employees) => {
             setPickerOpen(false)
             setBulkTarget({ mode: "bulk", employees })
@@ -218,6 +234,7 @@ export default function SupervisorBackfillDay() {
         siteName={siteName}
         siteJobs={siteJobs}
         holiday={holiday}
+        driverMode={driverMode}
         onSaved={(next) => {
           if (next) setDoc(next)
         }}

@@ -47,6 +47,9 @@ export function buildSessionsFromRaw(dateStr, siteId, rawSessions, markedBy) {
     sessions.push({
       siteId,
       jobId: raw.jobId || null,
+      // A Drivers-pool session's job split (already resolved by the caller), else empty.
+      servedSiteId: raw.servedSiteId || null,
+      splitJobIds: Array.isArray(raw.splitJobIds) ? raw.splitJobIds : [],
       checkIn,
       checkOut,
       workedHours: Number(workedHours.toFixed(2)),

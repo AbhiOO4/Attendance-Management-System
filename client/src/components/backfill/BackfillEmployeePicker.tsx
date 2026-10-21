@@ -8,10 +8,12 @@
 //   3. Search all employees    — everyone else, lazy-loaded by name / ID, page by page
 // Everyone listed has no record that day and isn't in another open backfill. Selections are
 // kept across tiers and searches.
+// `driverMode` (a driver supervisor's Drivers pool backfill): drivers have no site, so there is
+// one list — every driver (tier "site" on the pool) — filtered locally by name / ID.
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import toast from "react-hot-toast"
-import { History, Loader2, MapPin, Search, Users } from "lucide-react"
+import { History, Loader2, MapPin, Search, Truck, Users } from "lucide-react"
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -29,6 +31,7 @@ export default function BackfillEmployeePicker({
   siteName,
   date,
   onContinue,
+  driverMode = false,
 }: {
   open: boolean
   onClose: () => void
@@ -36,6 +39,7 @@ export default function BackfillEmployeePicker({
   siteName: string
   date: string
   onContinue: (employees: CandidateEmployee[]) => void
+  driverMode?: boolean
 }) {
   const [siteTier, setSiteTier] = useState<CandidateEmployee[]>([])
   const [recentTier, setRecentTier] = useState<CandidateEmployee[]>([])
@@ -60,15 +64,17 @@ export default function BackfillEmployeePicker({
     const params = { siteId, date }
     Promise.all([
       api.get<{ data: CandidateEmployee[] }>("/api/backfill-requests/candidates", { params: { ...params, tier: "site" } }),
-      api.get<{ data: CandidateEmployee[] }>("/api/backfill-requests/candidates", { params: { ...params, tier: "recent" } }),
+      driverMode
+        ? null
+        : api.get<{ data: CandidateEmployee[] }>("/api/backfill-requests/candidates", { params: { ...params, tier: "recent" } }),
     ])
       .then(([site, recent]) => {
         setSiteTier(site.data.data || [])
-        setRecentTier(recent.data.data || [])
+        setRecentTier(recent?.data.data || [])
       })
       .catch((err) => toast.error(err?.response?.data?.message || "Failed to load employees"))
       .finally(() => setLoading(false))
-  }, [open, siteId, date])
+  }, [open, siteId, date, driverMode])
 
   const runSearch = async (q: string, page: number, seq = searchSeq.current) => {
     setSearching(true)
@@ -90,7 +96,7 @@ export default function BackfillEmployeePicker({
 
   // Debounced search; a newer query wins over a slower older response.
   useEffect(() => {
-    if (!open) return
+    if (!open || driverMode) return
     const q = query.trim()
     if (q.length < 2) {
       searchSeq.current++
@@ -102,7 +108,7 @@ export default function BackfillEmployeePicker({
     const t = window.setTimeout(() => runSearch(q, 1, seq), 300)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, open])
+  }, [query, open, driverMode])
 
   // People already shown in tiers 1–2 aren't repeated in the search results.
   const shownIds = useMemo(() => new Set([...siteTier, ...recentTier].map((e) => e._id)), [siteTier, recentTier])
@@ -127,17 +133,25 @@ export default function BackfillEmployeePicker({
       return next
     })
 
-  const groups: Group[] = [
-    { key: "site", title: `On ${siteName} now`, icon: MapPin, items: siteTier, empty: "Everyone on your site has a record for this day." },
-    { key: "recent", title: "Recently at your site", icon: History, items: recentTier, empty: "Nobody else worked here around this day." },
-  ]
+  // Driver mode: the search box filters the one drivers list in place.
+  const driverFilter = query.trim().toLowerCase()
+  const drivers = driverFilter
+    ? siteTier.filter((e) => e.name.toLowerCase().includes(driverFilter) || e.employeeId.toLowerCase().includes(driverFilter))
+    : siteTier
+
+  const groups: Group[] = driverMode
+    ? [{ key: "drivers", title: "Drivers", icon: Truck, items: drivers, empty: driverFilter ? "No driver matches." : "Every driver has a record for this day." }]
+    : [
+        { key: "site", title: `On ${siteName} now`, icon: MapPin, items: siteTier, empty: "Everyone on your site has a record for this day." },
+        { key: "recent", title: "Recently at your site", icon: History, items: recentTier, empty: "Nobody else worked here around this day." },
+      ]
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="!w-[95vw] !max-w-[560px] max-h-[90vh] overflow-hidden p-0 flex flex-col rounded-2xl">
         <div className="border-b px-5 py-4 sm:px-6">
           <DialogHeader>
-            <DialogTitle className="text-lg font-semibold">Select employees</DialogTitle>
+            <DialogTitle className="text-lg font-semibold">Select {driverMode ? "drivers" : "employees"}</DialogTitle>
           </DialogHeader>
           <p className="mt-1 text-sm text-muted-foreground">
             Only people with no record for this day are listed.
@@ -145,6 +159,14 @@ export default function BackfillEmployeePicker({
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4 sm:px-6">
+          {driverMode && (
+            <Input
+              placeholder="Filter by name or employee ID"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-10"
+            />
+          )}
           {loading ? (
             <div className="flex h-32 items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -167,48 +189,50 @@ export default function BackfillEmployeePicker({
                 {g.items.length === 0 ? (
                   <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">{g.empty}</p>
                 ) : (
-                  <EmployeeList items={g.items} selected={selected} onToggle={toggle} showSite={g.key !== "site"} />
+                  <EmployeeList items={g.items} selected={selected} onToggle={toggle} showSite={g.key === "recent"} />
                 )}
               </section>
             ))
           )}
 
-          <section className="space-y-2">
-            <h3 className="flex items-center gap-1.5 text-sm font-medium">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              Search all employees
-            </h3>
-            <Input
-              placeholder="Name or employee ID (2+ letters)"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="h-10"
-            />
-            {query.trim().length >= 2 && (
-              searching && results.length === 0 ? (
-                <div className="flex h-16 items-center justify-center">
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                </div>
-              ) : searchItems.length === 0 ? (
-                <p className="px-1 text-xs text-muted-foreground">No other employee matches.</p>
-              ) : (
-                <>
-                  <EmployeeList items={searchItems} selected={selected} onToggle={toggle} showSite />
-                  {searchPage < searchPages && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      disabled={searching}
-                      onClick={() => runSearch(query.trim(), searchPage + 1)}
-                    >
-                      {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : "Load more"}
-                    </Button>
-                  )}
-                </>
-              )
-            )}
-          </section>
+          {!driverMode && (
+            <section className="space-y-2">
+              <h3 className="flex items-center gap-1.5 text-sm font-medium">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                Search all employees
+              </h3>
+              <Input
+                placeholder="Name or employee ID (2+ letters)"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="h-10"
+              />
+              {query.trim().length >= 2 && (
+                searching && results.length === 0 ? (
+                  <div className="flex h-16 items-center justify-center">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : searchItems.length === 0 ? (
+                  <p className="px-1 text-xs text-muted-foreground">No other employee matches.</p>
+                ) : (
+                  <>
+                    <EmployeeList items={searchItems} selected={selected} onToggle={toggle} showSite />
+                    {searchPage < searchPages && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                        disabled={searching}
+                        onClick={() => runSearch(query.trim(), searchPage + 1)}
+                      >
+                        {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : "Load more"}
+                      </Button>
+                    )}
+                  </>
+                )
+              )}
+            </section>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2 border-t px-5 py-3 sm:px-6">

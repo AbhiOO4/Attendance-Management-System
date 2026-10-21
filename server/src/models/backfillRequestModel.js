@@ -1,7 +1,8 @@
 import mongoose from "mongoose";
 
 // A supervisor's BACKFILL REQUEST for one site + one past business day: the records they
-// missed, drafted here and sent to an admin for approval. Nothing reaches `attendances`
+// missed, drafted here and sent to an admin for approval. A driver supervisor's document sits
+// on the hidden Drivers pool site (their assignedSite) and its sessions carry a job split. Nothing reaches `attendances`
 // until an admin approves (controllers/backfillRequestController.js), which then creates
 // one record per row via utils/backfillRecord.js.
 //
@@ -17,6 +18,10 @@ const MAX_BREAKS_PER_DAY = 1;
 const backfillSessionSchema = new mongoose.Schema(
   {
     jobId: { type: mongoose.Schema.Types.ObjectId, ref: "Job", default: null },
+    // Drivers pool documents only (utils/jobSplit.js): the site the driver served (null =
+    // "General", global jobs) and the jobs its hours are split equally across; jobId stays null.
+    servedSiteId: { type: mongoose.Schema.Types.ObjectId, ref: "Site", default: null },
+    splitJobIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Job" }], default: [] },
     checkIn: { type: String, required: true }, // "HH:mm"
     checkOut: { type: String, required: true }, // "HH:mm"
     checkInNextDay: { type: Boolean, default: false },

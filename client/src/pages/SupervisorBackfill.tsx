@@ -2,7 +2,8 @@
 //
 // The supervisor's backfill home: one card per day they may still backfill (yesterday back to
 // N days ago — WorkSchedule.supervisorBackfillWindowDays) with that day's request status, and
-// their earlier requests below (read-only). A day opens /backfill/:date.
+// their earlier requests below (read-only). A day opens /backfill/:date. Driver supervisors get
+// the same page for the Drivers pool.
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
@@ -14,11 +15,14 @@ import { api } from "@/lib/api"
 import { formatFullDateLabel } from "@/lib/dateUtils"
 import { shiftDay } from "@/lib/backfillWindow"
 import { onBackfillChange, STATUS_CLASS, STATUS_LABEL, type BackfillListItem } from "@/lib/backfillRequests"
+import { useAuth } from "@/context/AuthContext"
 
 type Window = { from: string; to: string; days: number }
 
 export default function SupervisorBackfill() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const noun = user?.role === "driverSupervisor" ? "driver" : "employee"
   const [items, setItems] = useState<BackfillListItem[]>([])
   const [window_, setWindow] = useState<Window | null>(null)
   const [loading, setLoading] = useState(true)
@@ -66,7 +70,7 @@ export default function SupervisorBackfill() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Backfill attendance</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Forgot to mark someone? Add them for a past day, then send it to an admin for approval.
+            Forgot to mark {noun === "driver" ? "a driver" : "someone"}? Add them for a past day, then send it to an admin for approval.
             {window_ && ` You can backfill the past ${window_.days} day${window_.days === 1 ? "" : "s"}.`}
           </p>
         </div>
@@ -83,7 +87,7 @@ export default function SupervisorBackfill() {
               </h2>
               <div className="divide-y rounded-xl border bg-background">
                 {days.map((d) => (
-                  <DayRow key={d} date={d} item={byDate.get(d)} onOpen={() => navigate(`/backfill/${d}`)} />
+                  <DayRow key={d} date={d} item={byDate.get(d)} noun={noun} onOpen={() => navigate(`/backfill/${d}`)} />
                 ))}
               </div>
             </section>
@@ -95,7 +99,7 @@ export default function SupervisorBackfill() {
                 </h2>
                 <div className="divide-y rounded-xl border bg-background">
                   {earlier.map((i) => (
-                    <DayRow key={i._id} date={i.date} item={i} onOpen={() => navigate(`/backfill/${i.date}`)} />
+                    <DayRow key={i._id} date={i.date} item={i} noun={noun} onOpen={() => navigate(`/backfill/${i.date}`)} />
                   ))}
                 </div>
               </section>
@@ -107,14 +111,14 @@ export default function SupervisorBackfill() {
   )
 }
 
-function DayRow({ date, item, onOpen }: { date: string; item?: BackfillListItem; onOpen: () => void }) {
+function DayRow({ date, item, noun, onOpen }: { date: string; item?: BackfillListItem; noun: string; onOpen: () => void }) {
   return (
     <button type="button" onClick={onOpen} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/40">
       <div className="min-w-0 flex-1">
         <p className="font-medium">{formatFullDateLabel(date)}</p>
         <p className="text-xs text-muted-foreground">
           {item
-            ? `${item.rowCount} employee${item.rowCount === 1 ? "" : "s"}` +
+            ? `${item.rowCount} ${noun}${item.rowCount === 1 ? "" : "s"}` +
               (item.status === "rejected" && item.rejectionReason ? ` · ${item.rejectionReason}` : "")
             : "Nothing backfilled"}
         </p>
