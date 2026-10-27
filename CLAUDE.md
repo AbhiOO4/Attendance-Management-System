@@ -17,6 +17,13 @@ There is no root package.json — each is installed and run separately.
 **Server** (`cd server`):
 - `npm run dev` — start API with nodemon (`src/server.js`)
 - `npm start` — start API with node
+- `npm test` — unit tests (`node:test`, `test/unit/`, pure — no DB)
+- `npm run test:integration` — HTTP tests through the real app (`test/integration/`) on a
+  throwaway single-node replica set (`mongodb-memory-server-core`). It uses
+  `MONGOMS_SYSTEM_BINARY` or a local MongoDB install (`C:/Program Files/MongoDB/Server/8.2/bin/mongod.exe`
+  etc. — see `test/helpers/integration.js`), else downloads a mongod. Never touches `.env`'s DB.
+- `src/app.js` is the Express app (middleware + routes, no connect/listen); `src/server.js`
+  boots it (DB, crons, change streams, listen). Tests mount `app.js` with supertest.
 - Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). `SAME_SITE` (`strict`|`lax`|`none`) sets the auth cookie's SameSite per deployment (`authCookieOptions()` in `utils/generateTokenAndSetCookie.js`): `lax` when client and API share a registrable domain (live: `ngdp.online` → `api.ngdp.online`), `none` when they're cross-site (forces `Secure`); unset/invalid keeps the legacy default (`none` in production, `strict` otherwise). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots.
 
 **Client** (`cd client`):
@@ -24,9 +31,25 @@ There is no root package.json — each is installed and run separately.
 - `npm run build` — `tsc -b && vite build`
 - `npm run lint` — ESLint over the project
 - `npm run preview` — preview the production build
+- `npm test` — vitest (`src/**/*.test.ts`, `vitest.config.ts`; test files are excluded from
+  `tsconfig.app.json`)
 - Requires `client/.env` with `VITE_API_URL` (default `http://localhost:3000`) and optionally `VITE_APP_TIMEZONE_OFFSET` (must match the server's offset).
 
-There is no test suite. `server/src/seed/seed.js` is a scratch script (edit the
+**Tests guard the payroll core.** `server/test/fixtures/parity/*.json` are GOLDEN cases for
+`computeAttendanceTotals`, `sumRawHours` and `classifyPayrollDay`, run by BOTH the server unit
+suite and the client vitest suite (`client/src/lib/parity.test.ts`) — a client mirror that drifts
+fails. A formula change means updating the fixtures (and re-running the recalc). The
+integration suite proves every write path prices a day like the shared math
+(`writePathParity`), and a seeded month reconciles report ↔ Attendance CSV and Jobs report ↔
+Timesheet CSV (`monthReconcile`) through `utils/exportReconcile.js`.
+
+**Read-only month reconciliation** of real data: `node src/seed/reconcileErpExport.js "<url>"
+YYYY-MM [--csv out.csv]` runs the real report/job-report/export controllers in-process and
+prints every inconsistency (stored totals vs the math, record invariants, report vs CSV, job
+hours vs timesheet) plus the AMS settings to compare with ERPNext by hand. Run it before an
+ERPNext import.
+
+`server/src/seed/seed.js` is a scratch script (edit the
 commented calls at the bottom, then `node src/seed/seed.js`) used to seed
 users/work schedule and to recalculate attendance after a config-formula change.
 Nothing connects on import: the one-off seed helpers need `await connectDB(url)` first,
@@ -121,6 +144,13 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 `computeAttendanceTotals(rawHours, workConfig, breaksTaken, holidayInfo)` in
 `server/src/utils/attendanceMath.js` is the single source of truth for the hours math
 (used by the controller, crons, default propagation, and the seed recalc script):
+0. **Raw hours** = `sumRawHours(sessions)` — the sessions' EXACT durations (check-out −
+   check-in) summed, rounded ONCE. Never Σ the stored per-session `workedHours`: each is
+   already 2dp, so 06:00–08:20 + 08:20–10:40 + 10:40–14:00 (exactly 8h) summed 2.33 + 2.33 +
+   3.33 = 7.99 → a half day (Half Day + LWP in ERPNext). Every write path uses it (client
+   mirror `sumRawHours` in `attendanceUtils.ts`). Records priced the old way are listed /
+   fixed by `seed/recalcRawRounding.js "<url>" FROM TO [--apply]` (dry run by default; only
+   records the fix changes, never ones that drifted for another reason).
 1. **Status** is derived from RAW session hours (break-agnostic) to avoid demotions.
 2. **Breaks** are 0 or 1 per day, NEVER more (`MAX_BREAKS_PER_DAY = 1`; a 24h shift
    still deducts one). `computeAutoBreaks(rawHours, breakMinHours)` gives 1 once raw hours
@@ -137,8 +167,11 @@ Route ordering matters: specific paths are declared before `/:id`-style wildcard
 4. **Overtime** = net hours over `overtimeThreshold`; forced to 0 on holidays.
 5. **Holiday hours** (`holidayHours` + `holidayReason` on the record): any holiday,
    public or weekly, credits the day's net worked hours (the `weekly` vs `public`
-   `reason` is retained only for display). The client mirrors this in
-   `client/src/lib/attendanceUtils.ts` (`computeHolidayHours`) — keep it in sync.
+   `reason` is retained only for display). The client mirrors the WHOLE function as
+   `computeAttendanceTotals(raw, cfg, breaksTaken, isHoliday)` in
+   `client/src/lib/attendanceUtils.ts`; every edit/backfill preview (BackfillModal,
+   BulkBackfillModal, EditRecord, EditSiteRecord, `previewDay`) calls it — never an inline
+   copy (they used to be five, and Bulk Backfill ignored holidays).
 Any change to this formula requires re-running the recalculation script in
 `seed/seed.js` against existing records.
 
@@ -181,6 +214,19 @@ Month | Date range (`components/DateRangePicker.tsx`); ERPNext export stays per-
 is disabled in range mode. It writes two files (Attendance, Timesheet — no OT summary) for
 the employees ticked in the table or everyone the page's filters list:
 `POST /reports/erpnext/:month/:year { type, employeeIds }` (Mongo ids; report rows carry `_id`).
+Month bounds are `Date.UTC` everywhere (export, employee timesheet, report) — server-local
+`new Date(y, m-1, 1)` shifted the month a day on a host west of UTC. Hours a file can't carry
+are reported, never dropped silently: `X-Erpnext-Dropped-Overtime-Hours` /
+`-Dropped-Holiday-Hours` (Attendance CSV with no `erpOvertimeType`), `X-Erpnext-Skipped-No-Job`
+/ `-Skipped-Hours` (Timesheet lines with no job or a job with no `jobCode` — not required on
+Job), exposed via `cors.exposedHeaders` in `app.js` and shown as a warning toast by
+`lib/erpExportWarnings.ts`. The Timesheet keeps a per-employee cursor so a log never starts
+before the previous one ends (a 2h55m session carries 2.92h = 2h55m12s and used to overlap a
+back-to-back next session — ERPNext rejects overlapping time logs). The Jobs report keeps
+soft-DELETED jobs (and deleted sites' job-less hours) while they have hours, flagged
+`isDeleted` — the Timesheet still bills them. Site/Dashboard man-hours
+(`recordNetFactor`, `siteController`) deliberately EXCLUDE staff and drivers' split hours, so
+they never equal the Jobs report.
 Absent-reason and annual-leave labels/colors are shared in `client/src/lib/leaveComposition.ts`
 (`ABSENT_REASONS`, `ANNUAL_LEAVE`; also used by the employee timesheet's tiles).
 

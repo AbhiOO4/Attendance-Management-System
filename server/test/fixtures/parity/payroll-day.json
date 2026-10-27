@@ -1,0 +1,19 @@
+{
+  "_comment": "Golden cases for classifyPayrollDay (holiday > annual > full/half > emergency > sick > lop > none). Shared by the server and client suites.",
+  "cases": [
+    { "name": "plain full day", "record": { "status": "fullday" }, "expected": { "kind": "full" } },
+    { "name": "half day", "record": { "status": "halfday" }, "expected": { "kind": "half" } },
+    { "name": "plain absence", "record": { "status": "absent" }, "expected": { "kind": "absent", "reason": "none" } },
+    { "name": "holiday beats a worked full day", "record": { "status": "fullday", "isHoliday": true }, "expected": { "kind": "holiday" } },
+    { "name": "holiday beats a half day", "record": { "status": "halfday", "isHoliday": true }, "expected": { "kind": "holiday" } },
+    { "name": "holiday beats annual leave", "record": { "status": "absent", "isHoliday": true, "isPaidLeave": true }, "expected": { "kind": "holiday" } },
+    { "name": "annual leave", "record": { "status": "absent", "isPaidLeave": true }, "expected": { "kind": "annual" } },
+    { "name": "emergency leave is an unpaid absence", "record": { "status": "absent", "isEmergencyLeave": true }, "expected": { "kind": "absent", "reason": "emergency" } },
+    { "name": "sick leave is an unpaid absence", "record": { "status": "absent", "isSickLeave": true }, "expected": { "kind": "absent", "reason": "sick" } },
+    { "name": "LOP", "record": { "status": "absent", "isLop": true }, "expected": { "kind": "absent", "reason": "lop" } },
+    { "name": "emergency beats sick and lop", "record": { "status": "absent", "isEmergencyLeave": true, "isSickLeave": true, "isLop": true }, "expected": { "kind": "absent", "reason": "emergency" } },
+    { "name": "sick beats lop", "record": { "status": "absent", "isSickLeave": true, "isLop": true }, "expected": { "kind": "absent", "reason": "sick" } },
+    { "name": "annual beats emergency", "record": { "status": "absent", "isPaidLeave": true, "isEmergencyLeave": true }, "expected": { "kind": "annual" } },
+    { "name": "a worked day ignores a stale leave flag (status first)", "record": { "status": "fullday", "isSickLeave": true }, "expected": { "kind": "full" } }
+  ]
+}

@@ -60,7 +60,8 @@ import { isCrossMidnight, validateSessionTimesV2, deriveOffsets, combineFromOffs
 import {
   clampBreaks,
   computeAutoBreaks,
-  computeHolidayHours,
+  computeAttendanceTotals,
+  sumRawHours,
   MAX_BREAKS_PER_DAY,
   resolveBreakMinHours,
   type HolidayReason,
@@ -348,35 +349,19 @@ function EditSiteRecord({ open, onClose, attendanceId, site, onUpdated, onStale 
   // DERIVED VALUES
   // --------------------------------------------------
 
-  const rawHours = useMemo(() => {
-    return Number(sessions.reduce((acc, curr) => acc + curr.workedHours, 0).toFixed(2))
-  }, [sessions])
+  // Exact durations summed once (never Σ rounded session hours) — the server's sumRawHours.
+  const rawHours = useMemo(() => sumRawHours(sessions), [sessions])
 
   const autoBreaks = useMemo(() => {
     return computeAutoBreaks(rawHours, config.breakMinHours)
   }, [rawHours, config.breakMinHours])
 
-  const breaksApplied = useMemo(() => {
-    return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
-  }, [breaksTaken, autoBreaks])
-
-  const totalWorkHours = useMemo(() => {
-    const breakHrs = breaksApplied * (config.breakDurationMinutes / 60)
-    return Number(Math.max(rawHours - breakHrs, 0).toFixed(2))
-  }, [rawHours, breaksApplied, config.breakDurationMinutes])
-
-  const overtimeHours = useMemo(() => {
-    // No overtime on holidays — only holiday hours are credited.
-    if (record?.isHoliday) return 0
-    if (totalWorkHours <= config.overtimeThreshold) return 0
-    return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [record?.isHoliday, totalWorkHours, config.overtimeThreshold])
-
-  const holidayHours = useMemo(() => {
-    if (!record?.isHoliday) return 0
-    // Any holiday (public or weekly) credits the day's net worked hours.
-    return computeHolidayHours(totalWorkHours, record?.holidayReason ?? null)
-  }, [record?.isHoliday, record?.holidayReason, totalWorkHours])
+  // The day's totals exactly as the server will store them (shared mirror of
+  // computeAttendanceTotals); holiday state is fixed by the record.
+  const { netWorkHours: totalWorkHours, overtimeHours, holidayHours } = useMemo(
+    () => computeAttendanceTotals(rawHours, config, breaksTaken, !!record?.isHoliday),
+    [rawHours, config, breaksTaken, record?.isHoliday]
+  )
 
   const currentSiteSessions = useMemo(() =>
     sessions

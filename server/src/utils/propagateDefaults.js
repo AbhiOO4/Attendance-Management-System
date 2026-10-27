@@ -37,7 +37,7 @@ import {
   MAX_SHIFT_HOURS,
 } from './timeLocal.js';
 import { hasSessionOverlap } from './sessionOverlap.js';
-import { computeAttendanceTotals } from './attendanceMath.js';
+import { computeAttendanceTotals, sumRawHours } from './attendanceMath.js';
 import { getEmployeeIdsByCategory } from './collar.js';
 import { FIELD_META, CATEGORY_LABELS } from './rosterFields.js';
 import { buildAuditRow, recordAttendanceAuditBatch } from './attendanceAudit.js';
@@ -352,10 +352,7 @@ export async function propagateDefaultChanges(site, prevDefaults, newDefaults, w
       if (recordModified) {
         // Recalculate record-level totals via the shared pay-math helper
         // (breaks, OT, holiday hours all consistent with the controller).
-        const rawHours = record.sessions.reduce(
-          (sum, s) => sum + (s.workedHours || 0),
-          0
-        );
+        const rawHours = sumRawHours(record.sessions);
 
         const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
           rawHours,

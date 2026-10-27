@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
 } from "lucide-react"
 import { api } from "@/lib/api"
+import { erpExportWarning } from "@/lib/erpExportWarnings"
 import * as XLSX from "xlsx"
 import { saveAs } from "file-saver"
 import { Input } from "@/components/ui/input"
@@ -156,6 +157,8 @@ interface JobReportJob {
   jobName: string
   isActive: boolean
   isCompleted: boolean
+  // Deleted job (or on a deleted site) that still has hours — they still bill in ERPNext.
+  isDeleted?: boolean
   unassigned?: boolean
   regularHours: number
   overtimeHours: number
@@ -169,6 +172,7 @@ interface JobReportSite {
   isActive: boolean
   isPermanent: boolean
   isCompleted: boolean
+  isDeleted?: boolean
   jobs: JobReportJob[]
 }
 
@@ -466,6 +470,9 @@ function MonthlyAttendanceTab() {
             ? `erpnext-${file.type}-${stamp}.csv`
             : `erpnext-${file.type}-${stamp}-${employees.length}-employees.csv`
       saveAs(res.data as Blob, filename)
+      // Hours the file could not carry (no Overtime Type, no job / job code).
+      const warning = erpExportWarning(res.headers)
+      if (warning) toast(`${file.label}: ${warning}`, { icon: "⚠️", duration: 12000 })
     } catch (error) {
       console.error(error)
       toast.error(`Failed to export ${file.label}`)
@@ -1061,6 +1068,7 @@ function JobReportTab() {
           "Job Name": job.jobName || "",
           Status: job.unassigned
             ? ""
+            : job.isDeleted ? "Deleted"
             : job.isCompleted ? "Completed" : job.isActive ? "Active" : "Inactive",
           "Regular Hours": job.regularHours,
           "Total OT Hours": job.totalOTHours,
@@ -1229,12 +1237,17 @@ function JobReportTab() {
                             }`}
                           />
                           <span>{site.siteName}</span>
-                          {site.isCompleted && (
+                          {site.isDeleted && (
+                            <span className="text-[10px] text-destructive font-medium uppercase tracking-wide">
+                              Deleted
+                            </span>
+                          )}
+                          {!site.isDeleted && site.isCompleted && (
                             <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
                               Completed
                             </span>
                           )}
-                          {!site.isCompleted && !site.isActive && (
+                          {!site.isDeleted && !site.isCompleted && !site.isActive && (
                             <span className="text-[10px] text-destructive font-medium uppercase tracking-wide">
                               Inactive
                             </span>
@@ -1260,19 +1273,27 @@ function JobReportTab() {
                       site.jobs.map((job) => (
                         <TableRow
                           key={job.jobId ?? `unassigned-${site.siteId}`}
-                          className={job.isCompleted || !job.isActive ? "opacity-50" : ""}
+                          className={job.isDeleted || job.isCompleted || !job.isActive ? "opacity-50" : ""}
                         >
                           <TableCell className="pl-10">{job.jobCode || "—"}</TableCell>
                           <TableCell>
                             <span className={job.unassigned ? "italic text-muted-foreground" : ""}>
                               {job.jobName || "—"}
                             </span>
-                            {job.isCompleted && (
+                            {job.isDeleted && (
+                              <span
+                                className="ml-1.5 text-[10px] text-destructive font-medium uppercase"
+                                title="Deleted job — its hours are still in the ERPNext timesheet"
+                              >
+                                Deleted
+                              </span>
+                            )}
+                            {!job.isDeleted && job.isCompleted && (
                               <span className="ml-1.5 text-[10px] text-muted-foreground font-medium uppercase">
                                 Completed
                               </span>
                             )}
-                            {!job.isCompleted && !job.isActive && (
+                            {!job.isDeleted && !job.isCompleted && !job.isActive && (
                               <span className="ml-1.5 text-[10px] text-destructive font-medium uppercase">
                                 Inactive
                               </span>

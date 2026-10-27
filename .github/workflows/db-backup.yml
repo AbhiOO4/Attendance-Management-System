@@ -1,0 +1,72 @@
+# Nightly MongoDB backup -> encrypted -> Cloudflare R2.
+# Setup + restore steps: docs/database-backup.md
+#
+# This repo is PUBLIC, so workflow logs are public too: nothing here prints data or
+# credentials, every secret comes from repository secrets, and the only triggers are a
+# schedule and a manual run (no pull_request, so forks can never reach the secrets).
+#
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   MONGO_URI_BACKUP     read-only Atlas user's connection string (db name in the path)
+#   BACKUP_PASSPHRASE    encrypts the dump before upload - keep a copy in a password manager
+#   R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+
+name: Database backup
+
+on:
+  schedule:
+    - cron: "30 21 * * *" # 21:30 UTC = 01:30 Oman (UTC+4)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # Recent aws-cli versions add checksum headers R2 doesn't accept.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - name: Dump database
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI_BACKUP }}
+        run: |
+          set -euo pipefail
+          echo "STAMP=$(date -u +%Y-%m-%d_%H%M)" >> "$GITHUB_ENV"
+          mkdir out
+          # The official mongo image bundles mongodump, so there is no tools version to pin.
+          docker run --rm -e MONGO_URI -v "$PWD/out:/out" mongo:8.0 \
+            sh -c 'mongodump --uri="$MONGO_URI" --gzip --archive=/out/dump.archive.gz'
+          SIZE=$(stat -c%s out/dump.archive.gz)
+          echo "dump size: $SIZE bytes"
+          # An empty/failed dump must never replace a good backup silently.
+          [ "$SIZE" -gt 20000 ] || { echo "dump is suspiciously small"; exit 1; }
+
+      - name: Encrypt
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          printf %s "$BACKUP_PASSPHRASE" | gpg --batch --pinentry-mode loopback \
+            --passphrase-fd 0 --symmetric --cipher-algo AES256 \
+            --output "out/ngdp-${STAMP}.archive.gz.gpg" out/dump.archive.gz
+
+      - name: Upload to R2
+        run: |
+          set -euo pipefail
+          FILE="ngdp-${STAMP}.archive.gz.gpg"
+          aws s3 cp "out/$FILE" "s3://$R2_BUCKET/daily/$FILE" --endpoint-url "$R2_ENDPOINT"
+          # Confirm the object really landed before calling the run a success.
+          aws s3api head-object --bucket "$R2_BUCKET" --key "daily/$FILE" \
+            --endpoint-url "$R2_ENDPOINT" --query ContentLength

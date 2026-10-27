@@ -1,6 +1,7 @@
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
+import { erpExportWarning } from "@/lib/erpExportWarnings"
 import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 import { sessionJobCell } from "@/lib/jobSplit"
@@ -254,6 +255,9 @@ function EmployeeAttendanceDetail() {
       const mm = String(month).padStart(2, "0")
       const who = employee?.employeeId ?? id
       saveAs(res.data as Blob, `erpnext-${type}-${who}-${year}-${mm}.csv`)
+      // Hours the file could not carry (no Overtime Type, no job / job code).
+      const warning = erpExportWarning(res.headers)
+      if (warning) toast(`${label}: ${warning}`, { icon: "⚠️", duration: 12000 })
     } catch (error) {
       console.log(error)
       toast.error(`Failed to export ${label}`)

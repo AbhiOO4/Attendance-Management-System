@@ -46,7 +46,8 @@ import {
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
 import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
-import { computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
+import { computeAttendanceTotals, computeAutoBreaks, MAX_BREAKS_PER_DAY, resolveBreakMinHours } from "@/lib/attendanceUtils"
+import { resolveDayHoliday, type DayHoliday } from "@/lib/dayHoliday"
 import { useWorkConfig } from "@/context/WorkConfigContext"
 import type { MissingEmployee } from "@/components/BackfillModal"
 import SiteSplitPicker from "@/components/drivers/SiteSplitPicker"
@@ -168,23 +169,27 @@ function BulkBackfillModal({
     () => computeAutoBreaks(rawHours, config.breakMinHours),
     [rawHours, config.breakMinHours]
   )
-  const breaksApplied = breaksTaken !== null ? breaksTaken : autoBreaks
 
-  const totalWorkHours = useMemo(() => {
-    const breakHrs = breaksApplied * (config.breakDurationMinutes / 60)
-    return Number(Math.max(rawHours - breakHrs, 0).toFixed(2))
-  }, [rawHours, breaksApplied, config.breakDurationMinutes])
+  // The date's holiday state (no record exists yet to carry it). Temporary workers get no
+  // holiday treatment — the server prices their day as a normal one, OT included.
+  const [dayHoliday, setDayHoliday] = useState<DayHoliday>({ isHoliday: false, reason: null })
+  useEffect(() => {
+    if (!open || !date) return
+    let cancelled = false
+    resolveDayHoliday(date, workConfig?.weeklyHolidays || []).then((info) => {
+      if (!cancelled) setDayHoliday(info)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, date, workConfig])
+  const temporaryCount = employees.filter((e) => e.employmentType === "temporary").length
 
-  const overtimeHours = useMemo(() => {
-    if (totalWorkHours <= config.overtimeThreshold) return 0
-    return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [totalWorkHours, config.overtimeThreshold])
-
-  const status = useMemo(() => {
-    if (rawHours >= config.fullDayHours) return "fullday"
-    if (rawHours >= config.halfDayHours) return "halfday"
-    return "absent"
-  }, [rawHours, config.fullDayHours, config.halfDayHours])
+  // Preview for a permanent employee — the shared mirror of the server's day math.
+  const { netWorkHours: totalWorkHours, overtimeHours, holidayHours, status } = useMemo(
+    () => computeAttendanceTotals(rawHours, config, breaksTaken, dayHoliday.isHoliday),
+    [rawHours, config, breaksTaken, dayHoliday.isHoliday]
+  )
 
   const isNight = checkInNextDay || checkOutNextDay
 
@@ -476,6 +481,21 @@ function BulkBackfillModal({
                     <span className="text-muted-foreground">Overtime</span>
                     <span className="text-lg font-bold">{overtimeHours} hrs</span>
                   </div>
+                )}
+
+                {holidayHours > 0 && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">
+                      Holiday hours ({dayHoliday.reason === "weekly" ? "weekly" : "public"} holiday)
+                    </span>
+                    <span className="text-lg font-bold">{holidayHours} hrs</span>
+                  </div>
+                )}
+                {dayHoliday.isHoliday && temporaryCount > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {temporaryCount} temporary worker{temporaryCount === 1 ? "" : "s"}: a normal working day
+                    (overtime instead of holiday hours).
+                  </p>
                 )}
 
                 <div className="flex items-center justify-between text-sm">

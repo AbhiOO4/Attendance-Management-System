@@ -1,34 +1,6 @@
-import dotenv from 'dotenv'
-dotenv.config({quiet: true})
-
-import express from 'express'
-import cookieParser from "cookie-parser"
-const app = express()
-
-import cors from "cors"
-
-// TEMPORARY origin audit — remove once the old client link is confirmed dead.
-// Logs the first time each distinct Origin/Referer host is seen so the Render
-// logs can be grepped for `[ORIGIN-AUDIT]` to spot old-link (*.onrender.com)
-// traffic. Runs BEFORE cors so it captures origins cors would otherwise reject.
-const seenOrigins = new Set();
-app.use((req, res, next) => {
-  const origin = req.headers.origin || req.headers.referer || "(none)";
-  if (!seenOrigins.has(origin)) {
-    seenOrigins.add(origin);
-    console.log(
-      `[ORIGIN-AUDIT] first seen: ${origin} | ua: ${req.headers["user-agent"] || "?"} | path: ${req.method} ${req.originalUrl}`
-    );
-  }
-  next();
-});
-
-app.use(
-  cors({
-    origin: [process.env.CLIENT_URL, process.env.CLIENT_URL_2],
-    credentials: true,
-  })
-)
+// Boot: connect to MongoDB, seed the fixed sites, start the crons and change-stream
+// watchers, then listen. The Express app itself (middleware + routes) lives in app.js.
+import app from './app.js'
 
 import connectDB from './config/db.js'
 import Site from './models/siteModel.js'
@@ -42,45 +14,6 @@ import { ensureDriverPool } from './utils/driverPool.js'
 // Requests inbox (requestController.incomingFilterFor), so nothing can sit unseen.
 // Night check-in is now pre-filled when a night shift is assigned (see
 // assignNightShift), so the auto check-in cron is no longer scheduled.
-
-app.use(express.json()); // Essential to parse JSON payloads
-//Importing routes
-import empRoutes from '../src/routes/empRoutes.js'
-import userRoutes from '../src/routes/userRoutes.js'
-import attendanceRoutes from '../src/routes/attendanceRoutes.js'
-import siteRoutes from '../src/routes/siteRoutes.js'
-import configRoutes from '../src/routes/configRoutes.js'
-import requestRoutes from '../src/routes/requestRoutes.js'
-import driverRoutes from '../src/routes/driverRoutes.js'
-import jobRoutes from '../src/routes/jobRoutes.js'
-import activityTypeRoutes from '../src/routes/activityTypeRoutes.js'
-import backfillRequestRoutes from '../src/routes/backfillRequestRoutes.js'
-
-app.use(cookieParser())
-
-// API responses are live state (rosters, locks, attendance) — never let a browser, webview
-// or proxy cache serve an old copy. The PWA service worker doesn't cache /api either.
-app.use('/api', (req, res, next) => {
-  res.set('Cache-Control', 'no-store')
-  next()
-})
-
-//Connecting routes
-app.use('/api/employees', empRoutes)
-app.use('/api/user', userRoutes)
-app.use('/api/attendance', attendanceRoutes)
-app.use('/api/site', siteRoutes)
-app.use('/api/config', configRoutes)
-app.use('/api/requests', requestRoutes)
-app.use('/api/drivers', driverRoutes)
-app.use('/api/jobs', jobRoutes)
-app.use('/api/activity-types', activityTypeRoutes)
-app.use('/api/backfill-requests', backfillRequestRoutes)
-
-
-
-
-
 
 const initializePermanentSite = async () => {
   try {
@@ -116,4 +49,3 @@ connectDB().then(async () => {
         console.log(`Server is running on PORT : ${process.env.PORT} `)
     })
 })
-

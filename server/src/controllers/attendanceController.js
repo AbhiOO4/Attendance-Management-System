@@ -15,7 +15,7 @@ import { getStaffEmployeeIds } from '../utils/collar.js';
 import { recordNetFactor } from '../utils/manHours.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal, isWithinCarryoverWindow } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
-import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { computeAttendanceTotals, sumRawHours } from '../utils/attendanceMath.js';
 import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
@@ -781,7 +781,9 @@ export const jobReport = async (req, res) => {
     ];
 
     const [jobs, jobResults, unassignedResults] = await Promise.all([
-      Job.find({ isDeleted: { $ne: true } })
+      // Deleted jobs too: their logged hours still bill in the ERPNext timesheet, so the
+      // report keeps them (flagged) — only deleted jobs with NO hours are dropped below.
+      Job.find({})
         .populate("site", "siteName isActive isPermanent isDeleted isCompleted")
         .lean(),
 
@@ -836,6 +838,7 @@ export const jobReport = async (req, res) => {
           isActive: site.isActive !== false,
           isPermanent: site.isPermanent === true,
           isCompleted: site.isCompleted === true,
+          isDeleted: site.isDeleted === true,
           jobs: [],
         });
       }
@@ -856,14 +859,17 @@ export const jobReport = async (req, res) => {
 
     // Real job rows.
     for (const job of jobs) {
+      const h = hoursMap.get(job._id.toString());
+      const ot = h ? h.overtimeHours : 0;
+      const holiday = h ? h.holidayHours : 0;
+      // A deleted job (or one on a deleted site) is listed only while it has hours.
+      const isDeleted = job.isDeleted === true || job.site?.isDeleted === true;
+      if (isDeleted && !(h && (h.regularHours || ot || holiday))) continue;
+
       let siteEntry;
       if (job.isGlobal) siteEntry = globalEntry;
       else if (job.site) siteEntry = ensureSite(job.site);
       else continue;
-
-      const h = hoursMap.get(job._id.toString());
-      const ot = h ? h.overtimeHours : 0;
-      const holiday = h ? h.holidayHours : 0;
 
       siteEntry.jobs.push({
         jobId: job._id,
@@ -871,6 +877,7 @@ export const jobReport = async (req, res) => {
         jobName: job.name,
         isActive: job.isActive !== false,
         isCompleted: job.isCompleted === true,
+        isDeleted,
         regularHours: round(h ? h.regularHours : 0),
         overtimeHours: round(ot),
         holidayHours: round(holiday),
@@ -881,9 +888,10 @@ export const jobReport = async (req, res) => {
     // Ensure sites that have ONLY job-less hours (no jobs at all) still appear.
     const missingSiteIds = [...unassignedMap.keys()].filter((id) => !siteMap.has(id));
     if (missingSiteIds.length) {
+      // Deleted sites included: their job-less hours are real worked (and paid) hours.
       const missingSites = await Site.find(
-        { _id: { $in: missingSiteIds }, isDeleted: { $ne: true } },
-        "siteName isActive isPermanent isCompleted"
+        { _id: { $in: missingSiteIds } },
+        "siteName isActive isPermanent isCompleted isDeleted"
       ).lean();
       for (const s of missingSites) ensureSite(s);
     }
@@ -1822,7 +1830,7 @@ export const siteFirstSubmitAttendance = async (req, res) => {
       // -----------------------------
       // TOTAL HOURS, STATUS & OT
       // -----------------------------
-      const rawHours = mergedSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0)
+      const rawHours = sumRawHours(mergedSessions)
 
       // Preserve existing breaksTaken override if not supplied in this submission
       const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
@@ -2057,7 +2065,33 @@ export const getSiteAttendance = async (req, res) => {
       // filter sessions by site
       {
         $addFields: {
-          totalRawHours: { $sum: "$sessions.workedHours" },
+          // Exact durations summed, rounded once — the sumRawHours rule (attendanceMath.js),
+          // so the auto-break chip agrees with the stored totals.
+          totalRawHours: {
+            $round: [
+              {
+                $divide: [
+                  {
+                    $sum: {
+                      $map: {
+                        input: "$sessions",
+                        as: "s",
+                        in: {
+                          $cond: [
+                            { $and: ["$$s.checkIn", "$$s.checkOut"] },
+                            { $max: [{ $subtract: ["$$s.checkOut", "$$s.checkIn"] }, 0] },
+                            0,
+                          ],
+                        },
+                      },
+                    },
+                  },
+                  3600000,
+                ],
+              },
+              2,
+            ],
+          },
           filteredSessions: {
             $filter: {
               input: "$sessions",
@@ -3229,10 +3263,7 @@ export const updateAttendance = async (req, res) => {
       // -----------------------------
       // Total hours, status & OT
       // -----------------------------
-      const rawHours = combinedSessions.reduce(
-        (total, session) => total + (session.workedHours || 0),
-        0
-      );
+      const rawHours = sumRawHours(combinedSessions);
 
       const effectiveBreaksTaken = (breaksTaken !== null && breaksTaken !== undefined)
         ? breaksTaken
@@ -3518,7 +3549,7 @@ export const updateAttendance = async (req, res) => {
       // Version token for the next edit's expectedUpdatedAt (see the check above).
       updatedAt: updatedAttendance.updatedAt,
 
-      totalRawHours: updatedAttendance.sessions.reduce((total, session) => total + (session.workedHours || 0), 0),
+      totalRawHours: sumRawHours(updatedAttendance.sessions),
 
 
       sessions:
@@ -3625,23 +3656,9 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
       });
     }
 
-    const startDate =
-      new Date(
-        Number(year),
-        Number(month) - 1,
-        1
-      );
-
-    const endDate =
-      new Date(
-        Number(year),
-        Number(month),
-        0,
-        23,
-        59,
-        59,
-        999
-      );
+    // UTC month bounds — how Attendance.date is stored (see monthFrom/monthTo below).
+    const startDate = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
+    const endDate = new Date(Date.UTC(Number(year), Number(month), 1) - 1);
 
     const attendance =
       await Attendance.find({
@@ -4221,15 +4238,25 @@ export const addSessionToAttendance = async (
       });
     }
 
+    // A closed session carries its hours like every other write path (they weight the job
+    // report and the ERPNext timesheet) — it used to be stored with 0.
+    const addIn = session.checkIn ? new Date(session.checkIn) : null
+    const addOut = session.checkOut ? new Date(session.checkOut) : null
+    if ((addIn && isNaN(addIn)) || (addOut && isNaN(addOut)) || (addOut && !addIn)) {
+      return res.status(400).json({ success: false, message: "Invalid check-in/check-out" })
+    }
+    const addHours = addIn && addOut ? (addOut.getTime() - addIn.getTime()) / (1000 * 60 * 60) : 0
+    if (addIn && addOut && !(addHours > 0 && addHours <= MAX_SHIFT_HOURS)) {
+      return res.status(400).json({ success: false, message: "Invalid shift duration" })
+    }
+
     attendance.sessions.push({
       siteId: session.siteId,
       jobId:
         session.jobId || null,
-      checkIn:
-        session.checkIn || null,
-      checkOut:
-        session.checkOut || null,
-      workedHours: 0,
+      checkIn: addIn,
+      checkOut: addOut,
+      workedHours: Number(addHours.toFixed(2)),
       markedBy: req.user.id,
     })
 
@@ -4237,10 +4264,7 @@ export const addSessionToAttendance = async (
     // record's stored holiday state.
     const workConfig = await workModel.findOne({ type: "default" })
     if (workConfig) {
-      const rawHours = attendance.sessions.reduce(
-        (sum, s) => sum + (s.workedHours || 0),
-        0
-      )
+      const rawHours = sumRawHours(attendance.sessions)
 
       const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
@@ -4910,7 +4934,7 @@ export const backfillAttendance = async (req, res) => {
     }
 
     // Totals
-    const rawHours = Number(builtSessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2));
+    const rawHours = sumRawHours(builtSessions);
 
     const holidayInfo = await checkHolidayForDate(attendanceDate);
     // Temporary workers are exempt from holiday treatment — for them a holiday is a
@@ -5389,7 +5413,7 @@ export const bulkCheckout = async (req, res) => {
         session.workedHours = Number(workedHours.toFixed(2));
         if (outNextDay) session.isNightShift = true;
 
-        const rawHours = record.sessions.reduce((sum, s) => sum + (s.workedHours || 0), 0);
+        const rawHours = sumRawHours(record.sessions);
         const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
           rawHours,
           workConfig,
@@ -5799,10 +5823,7 @@ export const assignNightShift = async (req, res) => {
       }
 
       // Recalculate totals
-      const rawHours = attendanceDoc.sessions.reduce(
-        (sum, s) => sum + (s.workedHours || 0),
-        0
-      );
+      const rawHours = sumRawHours(attendanceDoc.sessions);
 
       const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
         rawHours,
@@ -6686,8 +6707,10 @@ export const exportErpnext = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid month or year" });
     }
 
-    const startDate = new Date(yearNum, monthNum - 1, 1);
-    const endDate = new Date(yearNum, monthNum, 1);
+    // UTC month bounds — Attendance.date is the business day at UTC midnight (same as the
+    // monthly report). Server-local dates would shift the month a day on a host west of UTC.
+    const startDate = new Date(Date.UTC(yearNum, monthNum - 1, 1));
+    const endDate = new Date(Date.UTC(yearNum, monthNum, 1));
 
     // Optional employee scope, as Mongo _ids: one employee (the per-employee route or
     // ?employeeId=, from the employee detail page) or a list in the body (`employeeIds`,
@@ -6756,11 +6779,16 @@ export const exportErpnext = async (req, res) => {
       });
     }
 
-    if (built.meta?.skippedNoJob != null) {
-      res.setHeader("X-Erpnext-Skipped-No-Job", String(built.meta.skippedNoJob));
-    }
-    if (built.meta?.unallocated != null) {
-      res.setHeader("X-Erpnext-Unallocated-Activity", String(built.meta.unallocated));
+    // Hours the file could not carry — the client warns with these (exposed via cors in app.js).
+    const metaHeaders = {
+      "X-Erpnext-Skipped-No-Job": built.meta?.skippedNoJob,
+      "X-Erpnext-Skipped-Hours": built.meta?.skippedHours,
+      "X-Erpnext-Unallocated-Activity": built.meta?.unallocated,
+      "X-Erpnext-Dropped-Overtime-Hours": built.meta?.droppedOtHours,
+      "X-Erpnext-Dropped-Holiday-Hours": built.meta?.droppedHolidayHours,
+    };
+    for (const [name, value] of Object.entries(metaHeaders)) {
+      if (value != null) res.setHeader(name, String(value));
     }
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

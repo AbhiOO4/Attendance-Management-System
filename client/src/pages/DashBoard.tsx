@@ -545,7 +545,10 @@ function DashBoard() {
 
                             {/* Stats row */}
                             <div className="mt-3 grid grid-cols-3 gap-1.5">
-                              <div className="rounded-lg border bg-muted/30 p-1.5 text-center">
+                              <div
+                                className="rounded-lg border bg-muted/30 p-1.5 text-center"
+                                title="Labour man-hours, net of breaks. Excludes staff and drivers, so it won't match the Jobs report or the ERPNext timesheet."
+                              >
                                 <div className="flex items-center justify-center gap-1 text-muted-foreground">
                                   <Clock3 className="h-2.5 w-2.5" />
                                   <span className="text-[9px] font-medium uppercase tracking-wider">Hours</span>

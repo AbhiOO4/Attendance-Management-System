@@ -13,7 +13,7 @@ import {
 } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker } from '../utils/sessionOverlap.js';
 import { getEmployeeIdsByCategory } from '../utils/collar.js';
-import { computeAttendanceTotals } from '../utils/attendanceMath.js';
+import { computeAttendanceTotals, sumRawHours } from '../utils/attendanceMath.js';
 import { recordAttendanceAudit, SYSTEM_ACTOR } from '../utils/attendanceAudit.js';
 import { buildSiteActivityRow, recordSiteActivityBatch } from '../utils/siteActivity.js';
 import { CATEGORY_LABELS } from '../utils/rosterFields.js';
@@ -139,10 +139,7 @@ async function processSites(sites, dateStr, opts, workConfig) {
           // Recalculate totals for the entire attendance record via the shared
           // pay-math helper (breaks, OT, holiday hours all consistent with the
           // controller's save paths).
-          const rawHours = record.sessions.reduce(
-            (sum, s) => sum + (s.workedHours || 0),
-            0
-          );
+          const rawHours = sumRawHours(record.sessions);
 
           const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
             rawHours,

@@ -1,0 +1,26 @@
+{
+  "_comment": "Golden cases for computeAttendanceTotals. Run by server/test/unit/attendanceMath.test.js AND client/src/lib/parity.test.ts, so a mirror that drifts fails one suite. A case's config is defaultConfig merged with its own `config`.",
+  "defaultConfig": { "fullDayHours": 8, "halfDayHours": 4, "overtimeThreshold": 8, "breakDurationMinutes": 60, "breakMinHours": null },
+  "cases": [
+    { "name": "exactly a full day earns the auto break", "rawHours": 8, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 7, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "one hundredth under a full day is a half day, no break", "rawHours": 7.99, "expected": { "status": "halfday", "breaksApplied": 0, "netWorkHours": 7.99, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "exactly a half day", "rawHours": 4, "expected": { "status": "halfday", "breaksApplied": 0, "netWorkHours": 4, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "under a half day is absent", "rawHours": 3.99, "expected": { "status": "absent", "breaksApplied": 0, "netWorkHours": 3.99, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "nothing worked", "rawHours": 0, "expected": { "status": "absent", "breaksApplied": 0, "netWorkHours": 0, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "overtime is on NET hours", "rawHours": 11, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 10, "overtimeHours": 2, "holidayHours": 0 } },
+    { "name": "net exactly at the threshold is not overtime", "rawHours": 9, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 8, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "overtime keeps 2dp", "rawHours": 9.33, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 8.33, "overtimeHours": 0.33, "holidayHours": 0 } },
+    { "name": "supervisor override: no break", "rawHours": 10, "breaksTaken": 0, "expected": { "status": "fullday", "breaksApplied": 0, "netWorkHours": 10, "overtimeHours": 2, "holidayHours": 0 } },
+    { "name": "override can add a break on a short day", "rawHours": 6, "breaksTaken": 1, "expected": { "status": "halfday", "breaksApplied": 1, "netWorkHours": 5, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "legacy 2-break override is clamped to one", "rawHours": 10, "breaksTaken": 2, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 9, "overtimeHours": 1, "holidayHours": 0 } },
+    { "name": "a 24h shift still deducts one break", "rawHours": 24, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 23, "overtimeHours": 15, "holidayHours": 0 } },
+    { "name": "holiday: no overtime, the whole net is holiday hours", "rawHours": 10, "isHoliday": true, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 9, "overtimeHours": 0, "holidayHours": 9 } },
+    { "name": "holiday half day still credits its net", "rawHours": 5, "isHoliday": true, "expected": { "status": "halfday", "breaksApplied": 0, "netWorkHours": 5, "overtimeHours": 0, "holidayHours": 5 } },
+    { "name": "configured breakMinHours lowers the auto-break bar", "rawHours": 6, "config": { "breakMinHours": 5 }, "expected": { "status": "halfday", "breaksApplied": 1, "netWorkHours": 5, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "breakMinHours 0 falls back to fullDayHours", "rawHours": 7, "config": { "breakMinHours": 0 }, "expected": { "status": "halfday", "breaksApplied": 0, "netWorkHours": 7, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "break longer than the day floors net at 0", "rawHours": 0.5, "breaksTaken": 1, "expected": { "status": "absent", "breaksApplied": 1, "netWorkHours": 0, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "no break duration configured", "rawHours": 9, "config": { "breakDurationMinutes": 0 }, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 9, "overtimeHours": 1, "holidayHours": 0 } },
+    { "name": "30-minute break", "rawHours": 8.5, "config": { "breakDurationMinutes": 30 }, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 8, "overtimeHours": 0, "holidayHours": 0 } },
+    { "name": "10h full day, 9h OT threshold", "rawHours": 12, "config": { "fullDayHours": 10, "halfDayHours": 5, "overtimeThreshold": 9 }, "expected": { "status": "fullday", "breaksApplied": 1, "netWorkHours": 11, "overtimeHours": 2, "holidayHours": 0 } }
+  ]
+}

@@ -32,11 +32,9 @@ const connectDB = async (dbUrl = real_db_url) => {
 import employeeModel from "../models/empModel.js"
 import userModel from "../models/userModel.js";
 import workModel from "../models/workModel.js";
-import siteModel from "../models/siteModel.js";
 import jobTitleModel from "../models/jobTitleModel.js";
 import Attendance from "../models/attendanceModel.js";
-import { toLocalTimeString } from "../utils/timeLocal.js";
-import { computeAttendanceTotals, MAX_BREAKS_PER_DAY } from "../utils/attendanceMath.js";
+import { computeAttendanceTotals, MAX_BREAKS_PER_DAY, sumRawHours } from "../utils/attendanceMath.js";
 import customHolidayModel from "../models/holidayModel.js";
 
 
@@ -60,162 +58,6 @@ const seeWorkSchedule = async () => {
   }
 }
 
-const employeeNames = [
-  "Arjun Nair",
-  "Rahul Menon",
-  "Vivek Pillai",
-  "Akash Kumar",
-  "Sandeep Sharma",
-  "Rohit Verma",
-  "Karthik Iyer",
-  "Pranav Rao",
-  "Nikhil Joshi",
-  "Aditya Kulkarni",
-  "Rohan Desai",
-  "Varun Gupta",
-  "Abhishek Mishra",
-  "Deepak Yadav",
-  "Manoj Singh",
-  "Rajesh Patel",
-  "Harish Choudhary",
-  "Ashwin Krishnan",
-  "Gokul Subramanian",
-  "Dinesh Reddy",
-  "Amit Agarwal",
-  "Pavan Shetty",
-  "Naveen Bhat",
-  "Sanjay Tiwari",
-  "Vinod Saini",
-
-  "Mohammed Aslam",
-  "Abdul Rahman",
-  "Imran Khan",
-  "Nizamuddin Shaikh",
-  "Ameen Ahmed",
-  "Sameer Hussain",
-  "Farhan Siddiqui",
-  "Arif Ali",
-  "Salman Qureshi",
-  "Faizan Ansari",
-  "Shakir Malik",
-  "Bilal Sheikh",
-  "Yasir Mirza",
-  "Zubair Khan",
-  "Irfan Pathan",
-  "Junaid Hussain",
-  "Tariq Ahmed",
-  "Rafiq Memon",
-  "Sohail Khan",
-  "Danish Siddiqui",
-
-  "Joseph Mathew",
-  "Thomas Varghese",
-  "George Kurian",
-  "Mathew Chacko",
-  "Antony Joseph",
-  "Samuel Daniel",
-  "Paul Francis",
-  "Kevin D'Souza",
-  "Adrian Fernandes",
-  "Christopher Rodrigues",
-  "Martin Pereira",
-  "Allan Pinto",
-  "Vincent D'Cruz",
-  "Joel Abraham",
-  "Peter Jacob",
-  "Andrew Thomas",
-  "Benoy Mathew",
-  "Reji Varghese",
-  "John Kuruvilla",
-  "Philip George",
-
-  "Gurpreet Singh",
-  "Harpreet Singh",
-  "Manpreet Singh",
-  "Jaswinder Singh",
-  "Amarjeet Singh",
-  "Paramjit Singh",
-  "Balwinder Singh",
-  "Navdeep Singh",
-  "Hardeep Singh",
-  "Kuldeep Singh",
-
-  "Priya Nair",
-  "Anjali Menon",
-  "Meera Pillai",
-  "Kavya Iyer",
-  "Pooja Sharma",
-  "Neha Verma",
-  "Sneha Joshi",
-  "Aishwarya Rao",
-  "Divya Reddy",
-  "Lakshmi Krishnan",
-
-  "Fatima Khan",
-  "Ayesha Siddiqui",
-  "Sana Hussain",
-  "Zainab Sheikh",
-
-  "Mary Joseph",
-  "Elizabeth Mathew",
-  "Grace Varghese",
-  "Christina D'Souza",
-  "Teresa Fernandes",
-
-  "Simran Kaur",
-  "Harleen Kaur",
-  "Jasleen Kaur",
-  "Navjot Kaur",
-  "Amrit Kaur",
-  "Gurleen Kaur"
-];
-
-const jobTitles = [
-  "Welder",
-  "Staff",
-  "Mechanic",
-  "Fitter",
-  "Gas-cutter",
-  "Grinder",
-  "Mig-welder",
-  "T-welder",
-  "HSE",
-];
-
-const employees = [];
-
-for (let i = 1; i <= 100; i++) {
-  employees.push({
-    name: employeeNames[i-1],
-    employeeId: `EMP${String(i).padStart(4, "0")}`,
-    jobTitle: jobTitles[(i - 1) % jobTitles.length],
-    isActive: true,
-  });
-}
-
-// console.log(JSON.stringify(employees, null, 2));
-
-const jobtitles = [
-  { title: "Welder" },
-  { title: "Staff" },
-  { title: "Mechanic" },
-  { title: "Fitter" },
-  { title: "Gas-cutter" },
-  { title: "Grinder" },
-  { title: "Mig-welder" },
-  { title: "T-welder" },
-  { title: "HSE" },
-];
-
-// await jobTitleModel.insertMany(jobtitles);
-// await employeeModel.insertMany(employees);
-
-
-async function createAdmin (name, email, password) {
-    const admin = new userModel({name, email, password, role: 'admin'})
-    await admin.save()
-}
-
 async function createSuperAdmin (name, email, password) {
   try {
     const existing = await userModel.findOne({ email });
@@ -231,10 +73,10 @@ async function createSuperAdmin (name, email, password) {
   }
 }
 
+// Bootstrapping a fresh DB (edit, uncomment, then `node src/seed/seed.js`):
 // await connectDB(real_db_url)
-// seeWorkSchedule()
-// createAdmin('Abhi', 'abhi@gmail.com', "admin@2026", )
-// createSuperAdmin('Vishal', 'superadmin', "superadmin@2026")
+// await seeWorkSchedule()
+// await createSuperAdmin("<name>", "<email>", "<password>")
 
 // One-off backfill: set each employee's denormalized collarType from its job
 // title's collarType. Run once after deploying the collar feature. First
@@ -335,14 +177,14 @@ const recalculateAttendanceRecords = async (filter = {}) => {
   };
 
   const records = await Attendance.find(filter)
-    .select("employee date sessions.workedHours breaksTaken isHoliday holidayReason totalWorkHours status overtimeHours holidayHours")
+    .select("employee date sessions.workedHours sessions.checkIn sessions.checkOut breaksTaken isHoliday holidayReason totalWorkHours status overtimeHours holidayHours")
     .lean();
   console.log(`Found ${records.length} attendance records to recalculate.`);
 
   const ops = [];
   for (const record of records) {
     // Calculate raw work hours from sessions
-    const rawHours = (record.sessions || []).reduce((total, session) => total + (session.workedHours || 0), 0);
+    const rawHours = sumRawHours(record.sessions);
 
     const isTemp = tempIds.has(String(record.employee));
     const holidayReason = isTemp ? null : resolveHolidayReason(record);

@@ -9,7 +9,7 @@
  * caller's single recordAttendanceAuditBatch.
  */
 import Attendance from "../models/attendanceModel.js"
-import { computeAttendanceTotals } from "./attendanceMath.js"
+import { computeAttendanceTotals, sumRawHours } from "./attendanceMath.js"
 import { combineFromOffset, MAX_SHIFT_HOURS } from "./timeLocal.js"
 import { holidayInfoForEmployee } from "./holidayInfo.js"
 import { detectCrossedMidnight } from "./crossedMidnight.js"
@@ -85,7 +85,7 @@ export async function createBackfilledRecord({
   auditSummary,
   timezoneOffset = null,
 }) {
-  const rawHours = Number(sessions.reduce((sum, s) => sum + (s.workedHours || 0), 0).toFixed(2))
+  const rawHours = sumRawHours(sessions)
 
   // Temporary workers get no holiday treatment (normal day + OT, no holiday credit).
   const effHolidayInfo = holidayInfoForEmployee(holidayInfo, employee.employmentType)

@@ -138,13 +138,12 @@ export const updateCompanyIds = async (dbUrl, rows, { dryRun = false } = {}) => 
   }
 };
 
-// The rows live in company-ids.data.json next to this file (git-ignored — it holds real
-// employee names and IDs, so it never goes into the repo). Same shape as documented above.
-const data = JSON.parse(
-  readFileSync(new URL("./company-ids.data.json", import.meta.url), "utf8")
-)
-
-const db_url = ""
-
-await updateCompanyIds(db_url, data, { dryRun: true })
-await updateCompanyIds(db_url, data)
+// To run: put the rows (shape documented above) in a git-ignored company-ids.data.json next
+// to this file — it holds real employee names and IDs, so it must never go into the repo —
+// set db_url, then uncomment.
+// const data = JSON.parse(
+//   readFileSync(new URL("./company-ids.data.json", import.meta.url), "utf8")
+// )
+// const db_url = ""
+// await updateCompanyIds(db_url, data, { dryRun: true })
+// await updateCompanyIds(db_url, data)

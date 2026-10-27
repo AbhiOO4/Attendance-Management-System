@@ -116,6 +116,35 @@ export function allocateSessionNetHours(sessions, dayNetHours) {
   return allocateProRata(raws, dayNetHours);
 }
 
+/**
+ * A day's RAW worked hours: the sessions' EXACT durations summed, rounded ONCE to 2dp.
+ *
+ * Never sum the stored per-session `workedHours`: each is already rounded to 2dp, so three
+ * sessions that add up to exactly 8h (06:00–08:20, 08:20–10:40, 10:40–14:00 → 2.33 + 2.33 +
+ * 3.33) would sum to 7.99 and demote a full day to a half day. A session without both
+ * Dates (legacy, or a hand-built object) falls back to its `workedHours`; an open session
+ * contributes 0. Every write path feeds computeAttendanceTotals with this.
+ *
+ * @param {Array<{checkIn?: Date|string|null, checkOut?: Date|string|null, workedHours?: number}>} sessions
+ * @returns {number}
+ */
+export function sumRawHours(sessions) {
+  let ms = 0;
+  let fallbackHours = 0;
+  for (const s of Array.isArray(sessions) ? sessions : []) {
+    if (!s) continue;
+    const inMs = s.checkIn ? new Date(s.checkIn).getTime() : NaN;
+    const outMs = s.checkOut ? new Date(s.checkOut).getTime() : NaN;
+    if (Number.isFinite(inMs) && Number.isFinite(outMs)) {
+      ms += Math.max(outMs - inMs, 0);
+    } else if (!s.checkIn || s.checkOut) {
+      // No usable Dates: trust the stored hours. (Checked in, no check-out = open → 0.)
+      fallbackHours += Math.max(Number(s.workedHours) || 0, 0);
+    }
+  }
+  return round2(ms / 3600000 + fallbackHours);
+}
+
 export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null, holidayInfo = null) {
   const { fullDayHours, halfDayHours, overtimeThreshold } = workConfig;
   const breakDurationHours = (workConfig.breakDurationMinutes || 0) / 60;
@@ -161,7 +190,7 @@ export function computeAttendanceTotals(rawHours, workConfig, breaksTaken = null
  * @returns {{ netWorkHours, status, overtimeHours, breaksApplied, holidayHours }}
  */
 export function recomputeRecordTotals(record, workConfig) {
-  const rawHours = (record.sessions || []).reduce((sum, s) => sum + (s.workedHours || 0), 0);
+  const rawHours = sumRawHours(record.sessions);
   const totals = computeAttendanceTotals(
     rawHours,
     workConfig,

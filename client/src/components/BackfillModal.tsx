@@ -38,7 +38,8 @@ import toast from "react-hot-toast"
 import { isCrossMidnight, combineFromOffset, deriveOffsets, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
 import {
   computeAutoBreaks,
-  computeHolidayHours,
+  computeAttendanceTotals,
+  sumRawHours,
   MAX_BREAKS_PER_DAY,
   resolveBreakMinHours,
   type HolidayReason,
@@ -235,46 +236,24 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
   // DERIVED VALUES
   // --------------------------------------------------
 
-  const rawHours = useMemo(() => {
-    return Number(sessions.reduce((acc, curr) => acc + curr.workedHours, 0).toFixed(2))
-  }, [sessions])
+  // Exact durations summed once (never Σ rounded session hours) — the server's sumRawHours.
+  const rawHours = useMemo(() => sumRawHours(sessions), [sessions])
 
   const autoBreaks = useMemo(() => {
     return computeAutoBreaks(rawHours, config.breakMinHours)
   }, [rawHours, config.breakMinHours])
-
-  const breaksApplied = useMemo(() => {
-    return (breaksTaken !== null && breaksTaken !== undefined) ? breaksTaken : autoBreaks
-  }, [breaksTaken, autoBreaks])
-
-  const totalWorkHours = useMemo(() => {
-    const breakHrs = breaksApplied * (config.breakDurationMinutes / 60)
-    return Number(Math.max(rawHours - breakHrs, 0).toFixed(2))
-  }, [rawHours, breaksApplied, config.breakDurationMinutes])
-
-  const status = useMemo(() => {
-    if (rawHours >= config.fullDayHours) return "fullday"
-    if (rawHours >= config.halfDayHours) return "halfday"
-    return "absent"
-  }, [rawHours, config.fullDayHours, config.halfDayHours])
 
   // Temporary workers are exempt from holiday treatment — a holiday is a normal
   // working day for them (normal hours + OT, no holiday-hours credit), mirroring
   // the server. Only permanent workers get holiday handling.
   const applyHoliday = holidayInfo.isHoliday && employee?.employmentType !== "temporary"
 
-  const overtimeHours = useMemo(() => {
-    // No overtime on holidays — only holiday hours are credited (permanent only).
-    if (applyHoliday) return 0
-    if (totalWorkHours <= config.overtimeThreshold) return 0
-    return Number((totalWorkHours - config.overtimeThreshold).toFixed(2))
-  }, [applyHoliday, totalWorkHours, config.overtimeThreshold])
-
-  const holidayHours = useMemo(() => {
-    if (!applyHoliday) return 0
-    // Any holiday (public or weekly) credits the day's net worked hours.
-    return computeHolidayHours(totalWorkHours, holidayInfo.reason)
-  }, [applyHoliday, totalWorkHours, holidayInfo.reason])
+  // The day's totals exactly as the server will store them (shared mirror of
+  // computeAttendanceTotals in lib/attendanceUtils.ts).
+  const { netWorkHours: totalWorkHours, status, overtimeHours, holidayHours } = useMemo(
+    () => computeAttendanceTotals(rawHours, config, breaksTaken, applyHoliday),
+    [rawHours, config, breaksTaken, applyHoliday]
+  )
 
 
   // --------------------------------------------------

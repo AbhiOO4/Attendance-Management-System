@@ -63,17 +63,6 @@ function businessDayString(date) {
   return new Date(date).toISOString().slice(0, 10);
 }
 
-// "YYYY-MM-DD HH:mm:ss" of an absolute instant in the app's local timezone. Used for a
-// Timesheet From Time — the real punch wall-clock time.
-function localDateTimeString(instant) {
-  return `${toLocalDateString(instant)} ${toLocalTimeString(instant)}:00`;
-}
-
-// Same, but keeps the seconds (rounded to the nearest second). For a time-log start that is
-// derived from a previous log's end: ERPNext computes To Time = From Time + Hrs to the second,
-// so truncating to the minute would start the next log up to 59s BEFORE the previous one ends
-// and ERPNext rejects the import as an overlap. The APP offset is whole minutes, so the UTC
-// seconds are the local seconds.
 // A session's jobs, populated: `splitJobIds` when non-empty (a driver split), else
 // [jobId]. Mirrors sessionJobIds in utils/jobSplit.js, kept inline so this file stays pure.
 function sessionJobs(session) {
@@ -82,6 +71,11 @@ function sessionJobs(session) {
   return session?.jobId ? [session.jobId] : [];
 }
 
+// "YYYY-MM-DD HH:mm:ss" of an absolute instant in the app's local timezone, to the second
+// (rounded). Every Timesheet From Time: ERPNext computes To Time = From Time + Hrs to the
+// second, so a start derived from a previous log's end must keep its seconds or it would
+// begin up to 59s BEFORE that log ends and be rejected as an overlap. A punch-time start reads
+// "HH:mm:00". The APP offset is whole minutes, so the UTC seconds are the local seconds.
 function localDateTimeStringExact(instant) {
   const d = new Date(Math.round(new Date(instant).getTime() / 1000) * 1000);
   const ss = String(d.getUTCSeconds()).padStart(2, "0");
@@ -157,6 +151,10 @@ export function buildAttendanceCsv(
   let skippedHolidays = 0;
   let otRows = 0;
   let holidayOtRows = 0;
+  // Hours payroll would miss because no Overtime Type is configured: the report and the
+  // timesheet still carry them, so the caller must warn rather than let them vanish.
+  let droppedOtHours = 0;
+  let droppedHolidayHours = 0;
 
   for (const record of sorted) {
     if (record.isHoliday) {
@@ -182,6 +180,7 @@ export function buildAttendanceCsv(
         ]);
       } else {
         skippedHolidays++;
+        droppedHolidayHours += holidayHours;
       }
       continue;
     }
@@ -197,6 +196,7 @@ export function buildAttendanceCsv(
     const otHours = Number(record.overtimeHours) || 0;
     const hasOt = otHours > 0 && !!overtimeType;
     if (hasOt) otRows++;
+    else droppedOtHours += otHours;
 
     rows.push([
       "", // ID blank → ERPNext naming series (HR-ATT-.YYYY.-) auto-generates
@@ -214,7 +214,14 @@ export function buildAttendanceCsv(
 
   return {
     csv: toCsv(header, rows),
-    meta: { rows: rows.length, skippedHolidays, otRows, holidayOtRows },
+    meta: {
+      rows: rows.length,
+      skippedHolidays,
+      otRows,
+      holidayOtRows,
+      droppedOtHours: round2(droppedOtHours),
+      droppedHolidayHours: round2(droppedHolidayHours),
+    },
   };
 }
 
@@ -238,7 +245,8 @@ export function buildAttendanceCsv(
 // shift automatically).
 //
 // A worked session with no job can't bill to a Project: it is skipped and counted in
-// meta.skippedNoJob so nothing vanishes silently.
+// meta.skippedNoJob (lines) and meta.skippedHours (net hours) so nothing vanishes silently —
+// the controller sends both as headers and the client warns.
 //
 // Driver job splits (utils/jobSplit.js): a session whose hours are split across N jobs
 // (`splitJobIds`) becomes N slices of equal net (and equal OT), laid ONE AFTER ANOTHER from
@@ -303,6 +311,8 @@ export function buildTimesheetCsv(
   };
 
   let skippedNoJob = 0;
+  // Net hours of the skipped lines — the cost that never reaches a Job Order.
+  let skippedHours = 0;
   const unallocated = new Set();
 
   // ---- Pass 1: bucket time-log lines by (employee, job order) ----
@@ -318,7 +328,20 @@ export function buildTimesheetCsv(
     jobs.get(jobCode).push({ at, fromStr, hours });
   };
 
-  for (const record of records) {
+  // Where each employee's last emitted log ENDS. A session's Hrs are 2dp-rounded, so a
+  // session can carry up to 18s more than its real length (2h55m → 2.92h = 2h55m12s); laid
+  // from its check-in, its last log would then run into the next session when the two are
+  // back to back (a site switch at 08:35), and ERPNext rejects the import for overlapping
+  // time logs. So a log never starts before this cursor: the next session's first log moves
+  // a few seconds later instead. Hours are untouched. Records go in time order for it.
+  const logCursor = new Map(); // employeeId -> ms
+  const ordered = [...records].sort(
+    (a, b) =>
+      String(a.employee?.employeeId).localeCompare(String(b.employee?.employeeId)) ||
+      new Date(a.date) - new Date(b.date)
+  );
+
+  for (const record of ordered) {
     const worked = (record.sessions || []).filter(isWorkedSession);
     if (worked.length === 0) continue;
 
@@ -333,10 +356,16 @@ export function buildTimesheetCsv(
       ? allocateProRata(nets, premiumHours)
       : nets.map(() => 0);
 
-    worked.forEach((session, i) => {
+    // Lay the day's sessions in check-in order (nets/ots stay indexed like `worked`).
+    const inOrder = worked
+      .map((session, i) => ({ session, i }))
+      .sort((a, b) => new Date(a.session.checkIn) - new Date(b.session.checkIn));
+
+    inOrder.forEach(({ session, i }) => {
       const jobs = sessionJobs(session);
       if (!jobs.some((job) => job && job.jobCode)) {
         skippedNoJob++;
+        skippedHours += nets[i];
         return;
       }
       if (!record.employee?.activityType?.name) unallocated.add(employeeId);
@@ -344,7 +373,7 @@ export function buildTimesheetCsv(
       // One job → one slice (the whole session). N jobs → N equal slices, back to back.
       const netParts = allocateProRata(jobs.map(() => 1), nets[i]);
       const otParts = allocateProRata(jobs.map(() => 1), ots[i]);
-      let sliceStartMs = new Date(session.checkIn).getTime();
+      let sliceStartMs = Math.max(new Date(session.checkIn).getTime(), logCursor.get(employeeId) ?? -Infinity);
 
       jobs.forEach((job, k) => {
         const startMs = sliceStartMs;
@@ -354,10 +383,13 @@ export function buildTimesheetCsv(
         const jobCode = job && job.jobCode;
         if (!jobCode) {
           skippedNoJob++;
+          skippedHours += netParts[k];
           return;
         }
 
-        const from = k === 0 ? localDateTimeString(session.checkIn) : localDateTimeStringExact(new Date(startMs));
+        // Exact to the second — a check-in is a whole minute, so this reads "HH:mm:00" unless
+        // the cursor pushed the log a few seconds past a back-to-back session.
+        const from = localDateTimeStringExact(new Date(startMs));
         const otH = otParts[k];
         const regH = round2(netParts[k] - otH);
 
@@ -371,6 +403,7 @@ export function buildTimesheetCsv(
           addLine(employeeId, jobCode, regularType, from, round2(netParts[k]));
         }
       });
+      logCursor.set(employeeId, sliceStartMs);
     });
   }
 
@@ -414,6 +447,6 @@ export function buildTimesheetCsv(
 
   return {
     csv: toCsv(header, rows),
-    meta: { rows: rows.length, skippedNoJob, unallocated: unallocated.size },
+    meta: { rows: rows.length, skippedNoJob, skippedHours: round2(skippedHours), unallocated: unallocated.size },
   };
 }

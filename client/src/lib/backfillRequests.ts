@@ -5,8 +5,8 @@
 // drivers and each session names a SITE + job split (lib/jobSplit.ts) instead of one job —
 // "driver mode" in the helpers below.
 
-import { hoursFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
-import { computeAutoBreaks, computeHolidayHours, resolveBreakMinHours, type HolidayReason } from "@/lib/attendanceUtils"
+import { minutesFromOffset, validateSessionTimesV2 } from "@/lib/dateUtils"
+import { computeAttendanceTotals, type HolidayReason } from "@/lib/attendanceUtils"
 import type { WorkConfig } from "@/lib/dateUtils"
 import { REQUESTS_LIVE_EVENT, type RequestsLiveDetail } from "@/lib/requestsLive"
 import { placeFromSession, type DriverPlace, type SessionSplitFields } from "@/lib/jobSplit"
@@ -184,26 +184,29 @@ export function previewDay(
   workConfig: WorkConfig | null | undefined,
   holidayReason: HolidayReason = null
 ): DayPreview {
-  const fullDayHours = workConfig?.fullDayHours ?? 8
-  const halfDayHours = workConfig?.halfDayHours ?? 4
-  const overtimeThreshold = workConfig?.overtimeThreshold ?? 8
-  const breakDurationMinutes = workConfig?.breakDurationMinutes ?? 60
+  const cfg = {
+    fullDayHours: workConfig?.fullDayHours ?? 8,
+    halfDayHours: workConfig?.halfDayHours ?? 4,
+    overtimeThreshold: workConfig?.overtimeThreshold ?? 8,
+    breakDurationMinutes: workConfig?.breakDurationMinutes ?? 60,
+    breakMinHours: workConfig?.breakMinHours ?? null,
+  }
 
-  const rawHours = Number(
-    sessions.reduce((sum, s) => sum + hoursFromOffset(s.checkIn, s.checkOut, s.checkInNextDay, s.checkOutNextDay), 0).toFixed(2)
+  // Exact minutes summed, rounded once — the server's sumRawHours (never Σ rounded hours).
+  const minutes = sessions.reduce(
+    (sum, s) => sum + Math.max(minutesFromOffset(s.checkIn, s.checkOut, s.checkInNextDay, s.checkOutNextDay), 0),
+    0
   )
-  const breaks = breaksTaken ?? computeAutoBreaks(rawHours, resolveBreakMinHours(workConfig))
-  const netHours = Number(Math.max(rawHours - breaks * (breakDurationMinutes / 60), 0).toFixed(2))
+  const rawHours = Math.round((minutes / 60) * 100) / 100
   const isHoliday = holidayReason === "public" || holidayReason === "weekly"
-  const overtimeHours = !isHoliday && netHours > overtimeThreshold ? Number((netHours - overtimeThreshold).toFixed(2)) : 0
-  const status = rawHours >= fullDayHours ? "fullday" : rawHours >= halfDayHours ? "halfday" : "absent"
+  const totals = computeAttendanceTotals(rawHours, cfg, breaksTaken, isHoliday)
   return {
     rawHours,
-    breaks,
-    netHours,
-    overtimeHours,
-    holidayHours: computeHolidayHours(netHours, holidayReason),
-    status,
+    breaks: totals.breaksApplied,
+    netHours: totals.netWorkHours,
+    overtimeHours: totals.overtimeHours,
+    holidayHours: totals.holidayHours,
+    status: totals.status,
     isNight: sessions.some((s) => s.checkInNextDay || s.checkOutNextDay),
   }
 }

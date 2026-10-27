@@ -33,11 +33,15 @@ export const recordNetFactor = (record) => {
 
   const net = record.totalWorkHours;
 
-  // totalWorkHours defaults to 0, so a record with real worked hours but a 0 net
-  // is one whose net was never computed (legacy / pre-field doc). Fall back to
-  // gross rather than silently zeroing its hours. A short day (< full day, no
-  // break earned) legitimately has net === raw and lands here as factor 1 too.
-  if (!(net > 0)) return 1;
+  // A record whose net was never computed (legacy / pre-field doc: the field is absent —
+  // undefined on a lean read, a schema default on a hydrated one) falls back to gross
+  // rather than silently zeroing its hours. A STORED 0 is a real net (the break ate the
+  // whole day) and gives 0, exactly like the job report and the ERPNext timesheet.
+  const neverComputed =
+    net === undefined ||
+    net === null ||
+    (typeof record.$isDefault === "function" && record.$isDefault("totalWorkHours"));
+  if (neverComputed) return 1;
 
-  return net / rawTotal;
+  return Math.max(Number(net) || 0, 0) / rawTotal;
 };
