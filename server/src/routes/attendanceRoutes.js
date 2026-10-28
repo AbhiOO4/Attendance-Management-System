@@ -38,13 +38,13 @@ router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attend
 // The same hours report over any from–to span of business days (?from&to, YYYY-MM-DD, max a year).
 router.get('/reports/range', authorizeRoles("superadmin"), attendanceController.rangeReport)
 
-// ERPNext Data Import CSV export. Body { type: attendance|timesheet, employeeIds? } —
-// POST because the picked employee list can outgrow a query string. Superadmin only,
-// matching the Monthly Report page this lives on.
-router.post('/reports/erpnext/:month/:year', authorizeRoles("superadmin"), attendanceController.exportErpnext)
+// ERPNext Data Import CSV export. Body { type: attendance|timesheet, employeeIds } —
+// POST because the picked employee list can outgrow a query string. admin + superadmin,
+// from the Timesheets page; APPROVED timesheets only (409 TIMESHEET_NOT_APPROVED).
+router.post('/reports/erpnext/:month/:year', authorizeRoles("admin"), attendanceController.exportErpnext)
 
 // Per-employee ERPNext export (same CSVs, scoped to one employee for easier testing).
-// admin + superadmin — lives on the employee detail page. Bulk route above stays superadmin.
+// admin + superadmin — lives on the employee timesheet page. Approved timesheets only.
 router.get('/employee/:employeeId/erpnext/:month/:year', authorizeRoles("admin"), attendanceController.exportErpnext)
 
 // --- Leave: annual allocations + leave applications (admin implicitly allows superadmin) ---

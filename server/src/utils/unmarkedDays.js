@@ -55,20 +55,25 @@ export function buildCountableDays(spanDays, weeklyHolidays = [], customHolidays
 }
 
 /**
- * How many of `countableDays` the employee has no record for. Counted from the day the
- * employee was added, and not at all for inactive employees; holidays are days off
- * except for temporary workers, who have none.
+ * The days of `countableDays` ("YYYY-MM-DD" keys) the employee has no record for. Counted
+ * from the day the employee was added, and not at all for inactive employees; holidays
+ * are days off except for temporary workers, who have none.
  */
-export function countUnmarkedDays(employee, records, countableDays) {
-  if (employee.isActive === false) return 0;
+export function listUnmarkedDays(employee, records, countableDays) {
+  if (employee.isActive === false) return [];
   const isTemporary = employee.employmentType === "temporary";
   const addedOn = employee.createdAt ? utcMidnight(employee.createdAt).getTime() : 0;
   const recordedKeys = new Set(records.map((record) => utcDayKey(record.date)));
-  let unmarked = 0;
+  const unmarked = [];
   for (const day of countableDays) {
     if (day.time < addedOn) continue;
     if (day.isHoliday && !isTemporary) continue;
-    if (!recordedKeys.has(day.key)) unmarked += 1;
+    if (!recordedKeys.has(day.key)) unmarked.push(day.key);
   }
   return unmarked;
+}
+
+/** How many days listUnmarkedDays() returns. */
+export function countUnmarkedDays(employee, records, countableDays) {
+  return listUnmarkedDays(employee, records, countableDays).length;
 }

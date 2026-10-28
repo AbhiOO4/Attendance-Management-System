@@ -31,7 +31,7 @@ import {
 } from "../utils/exportReconcile.js";
 
 /** Call an Express controller with an in-memory request; resolves { status, body, headers }. */
-export function callController(handler, { params = {}, query = {}, body = {}, user = { role: "superadmin" } } = {}) {
+export function callController(handler, { params = {}, query = {}, body = {}, user = { role: "superadmin" }, skipApprovalGate = false } = {}) {
   return new Promise((resolve, reject) => {
     const headers = {};
     const res = {
@@ -54,7 +54,7 @@ export function callController(handler, { params = {}, query = {}, body = {}, us
         resolve({ status: this.statusCode, body: payload, headers });
       },
     };
-    Promise.resolve(handler({ params, query, body, user }, res)).catch(reject);
+    Promise.resolve(handler({ params, query, body, user, skipApprovalGate }, res)).catch(reject);
   });
 }
 
@@ -79,8 +79,9 @@ export async function reconcileMonth(year, month) {
   const [report, jobs, attendanceCsv, timesheetCsv] = await Promise.all([
     callController(monthlyReport, { params }),
     callController(jobReport, { query: params }),
-    callController(exportErpnext, { params, body: { type: "attendance" } }),
-    callController(exportErpnext, { params, body: { type: "timesheet" } }),
+    // Whole roster, approved or not: a read-only check run BEFORE approving/exporting.
+    callController(exportErpnext, { params, body: { type: "attendance" }, skipApprovalGate: true }),
+    callController(exportErpnext, { params, body: { type: "timesheet" }, skipApprovalGate: true }),
   ]);
   for (const [name, r] of [["monthlyReport", report], ["jobReport", jobs], ["attendance export", attendanceCsv], ["timesheet export", timesheetCsv]]) {
     if (r.status !== 200) throw new Error(`${name} failed (${r.status}): ${JSON.stringify(r.body).slice(0, 300)}`);

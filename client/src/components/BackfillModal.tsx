@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog"
 
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 
 import {
@@ -35,7 +34,8 @@ import {
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { isCrossMidnight, combineFromOffset, deriveOffsets, toLocalTimeString as toTimeValue, formatLocalTime12h } from "@/lib/dateUtils"
+import { combineFromOffset, toLocalTimeString as toTimeValue, formatLocalTime12h, validateSessionTimesV2 } from "@/lib/dateUtils"
+import SessionTimeFields, { type SessionTimes } from "@/components/backfill/SessionTimeFields"
 import {
   computeAutoBreaks,
   computeAttendanceTotals,
@@ -65,6 +65,10 @@ interface SessionDraft {
   place?: DriverPlace | null
   checkIn?: string | null
   checkOut?: string | null
+  // Day offsets from `date` (as in EditSiteRecord) — sent explicitly so a 24h shift or a
+  // standalone after-midnight session can be expressed.
+  checkInNextDay?: boolean
+  checkOutNextDay?: boolean
   workedHours: number
   isNightShift?: boolean
 }
@@ -271,34 +275,38 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       return
     }
 
-    if (field === "checkIn" || field === "checkOut") {
-      const checkInVal = field === "checkIn" ? value : toTimeValue(updated[index].checkIn)
-      const checkOutVal = field === "checkOut" ? value : toTimeValue(updated[index].checkOut)
-
-      // Times combine literally with the day being backfilled; a check-out earlier than its
-      // check-in rolls to the next calendar day (the standard offset rule).
-      const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkInVal, checkOutVal)
-
-      updated[index].isNightShift = checkInNextDay || checkOutNextDay
-
-      updated[index].checkIn = checkInVal ? combineFromOffset(date, checkInVal, checkInNextDay) : null
-      updated[index].checkOut = checkOutVal ? combineFromOffset(date, checkOutVal, checkOutNextDay) : null
-      updated[index].workedHours = calculateWorkedHours(
-        updated[index].checkIn,
-        updated[index].checkOut
-      )
-    } else {
-      updated[index] = {
-        ...updated[index],
-        [field as any]: value,
-      }
-
-      if (field === "siteId") {
-        updated[index].jobId = null
-        updated[index].place = null
-      }
+    updated[index] = {
+      ...updated[index],
+      [field as any]: value,
     }
 
+    if (field === "siteId") {
+      updated[index].jobId = null
+      updated[index].place = null
+    }
+
+    commitSessions(updated, index)
+  }
+
+  // Times combine with the day being backfilled at their day offsets. SessionTimeFields rolls
+  // a check-out earlier than its check-in to the next day; the pills set either offset by hand.
+  const setSessionTimes = (index: number, next: SessionTimes) => {
+    const updated = [...sessions]
+    const checkIn = next.checkIn ? combineFromOffset(date, next.checkIn, next.checkInNextDay) : null
+    const checkOut = next.checkOut ? combineFromOffset(date, next.checkOut, next.checkOutNextDay) : null
+    updated[index] = {
+      ...updated[index],
+      checkIn,
+      checkOut,
+      checkInNextDay: next.checkInNextDay,
+      checkOutNextDay: next.checkOutNextDay,
+      isNightShift: next.checkInNextDay || next.checkOutNextDay,
+      workedHours: calculateWorkedHours(checkIn, checkOut),
+    }
+    commitSessions(updated, index)
+  }
+
+  const commitSessions = (updated: SessionDraft[], index: number) => {
     setSessionErrors((prev) => {
       const next = { ...prev }
       delete next[index]
@@ -319,7 +327,16 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
     }
     setSessions([
       ...sessions,
-      { siteId: isDriver ? driverPoolId : "", jobId: null, place: null, checkIn: null, checkOut: null, workedHours: 0 },
+      {
+        siteId: isDriver ? driverPoolId : "",
+        jobId: null,
+        place: null,
+        checkIn: null,
+        checkOut: null,
+        checkInNextDay: false,
+        checkOutNextDay: false,
+        workedHours: 0,
+      },
     ])
   }
 
@@ -397,16 +414,20 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
       return
     }
 
-    // Cutoff-free: the only structural rule left is that a check-out needs a check-in.
+    // Cutoff-free: ordering + duration only (a check-out needs a check-in, after it, ≤ 26h).
     // Cross-day double-pay is caught by the server's overlap check against the
     // neighbouring days' records.
     let hasError = false
     const errors: Record<number, string> = {}
     sessions.forEach((session, index) => {
-      const inTime = toTimeValue(session.checkIn)
-      const outTime = toTimeValue(session.checkOut)
-      if (!inTime && outTime) {
-        errors[index] = "Check-out cannot exist without check-in"
+      const error = validateSessionTimesV2(
+        toTimeValue(session.checkIn),
+        toTimeValue(session.checkOut),
+        !!session.checkInNextDay,
+        !!session.checkOutNextDay
+      )
+      if (error) {
+        errors[index] = error
         hasError = true
       }
     })
@@ -438,6 +459,8 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
           splitJobIds: s.place?.jobIds ?? [],
           checkIn: s.checkIn ? toTimeValue(s.checkIn) : null,
           checkOut: s.checkOut ? toTimeValue(s.checkOut) : null,
+          checkInNextDay: !!s.checkInNextDay,
+          checkOutNextDay: !!s.checkOutNextDay,
           isNightShift: s.isNightShift || false,
         })),
         breaksTaken,
@@ -518,7 +541,7 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
             {sessions.map((session, index) => {
               const inT = toTimeValue(session.checkIn)
               const outT = toTimeValue(session.checkOut)
-              const night = session.isNightShift || (!!inT && !!outT && isCrossMidnight(inT, outT, session.isNightShift))
+              const night = !!session.isNightShift
               const hasIssue = overlapIndexes.includes(index) || !!sessionErrors[index]
 
               return (
@@ -574,27 +597,17 @@ function BackfillModal({ open, onClose, employee, date, onCreated }: BackfillMod
                     onPlaceChange={(value) => updateSessionField(index, "place", value)}
                   />
 
-                  {/* Time inputs */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Check In</label>
-                      <Input
-                        className="h-10 text-sm"
-                        type="time"
-                        value={toTimeValue(session.checkIn)}
-                        onChange={(e) => updateSessionField(index, "checkIn", e.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Check Out</label>
-                      <Input
-                        className="h-10 text-sm"
-                        type="time"
-                        value={toTimeValue(session.checkOut)}
-                        onChange={(e) => updateSessionField(index, "checkOut", e.target.value)}
-                      />
-                    </div>
-                  </div>
+                  {/* Time inputs + next-day pills */}
+                  <SessionTimeFields
+                    date={date}
+                    value={{
+                      checkIn: inT,
+                      checkOut: outT,
+                      checkInNextDay: !!session.checkInNextDay,
+                      checkOutNextDay: !!session.checkOutNextDay,
+                    }}
+                    onChange={(next) => setSessionTimes(index, next)}
+                  />
 
                   {/* Worked hours */}
                   <div className="flex items-center justify-between text-sm pt-1">

@@ -2,16 +2,22 @@ import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
 import { api } from "@/lib/api"
 import { erpExportWarning } from "@/lib/erpExportWarnings"
-import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
+import { resolveBreakMinHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
-import { sessionJobCell } from "@/lib/jobSplit"
+import { sessionJobLabels, sessionPlaceLabel } from "@/lib/jobSplit"
 import {
   exportSingleTimesheet,
   getDisplayStatus,
+  recordBreakCount,
   round2,
 } from "@/lib/timesheetExport"
 import { saveAs } from "file-saver"
 import { currentMonthYear, type MonthYear } from "@/lib/monthYear"
+import {
+  notApprovedFromError,
+  type ApprovalView,
+  type TimesheetBlockers,
+} from "@/lib/timesheetApproval"
 import {
   ABSENT_REASONS,
   emptyAbsentCounts,
@@ -28,11 +34,15 @@ import {
 import {
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom"
 
 import toast from "react-hot-toast"
+import axios from "axios"
 
 import EditRecord from "@/components/EditRecord"
+import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
+import TimesheetApprovalBar from "@/components/employee/TimesheetApprovalBar"
 import AttendanceRecordHistory from "@/components/AttendanceRecordHistory"
 import EmployeeTimesheetHeader, {
   type LeaveBalance,
@@ -70,6 +80,7 @@ import {
 } from "@/components/ui/table"
 
 import {
+  CalendarPlus,
   Loader2,
   Pencil,
 } from "lucide-react"
@@ -89,8 +100,19 @@ interface Employee {
 
   currentJob: string | null
 
+  employmentType?: "permanent" | "temporary"
+
   isActive: boolean
 }
+
+// One row of the timesheet table: a record, or a day with none (approval blocker).
+type TimesheetItem =
+  | { kind: "record"; key: string; record: AttendanceRecord }
+  | { kind: "missing"; key: string }
+
+const dayKeyOf = (date: string) => new Date(date).toISOString().slice(0, 10)
+
+const EMPTY_BLOCKERS: TimesheetBlockers = { missing: [], pending: [], noJob: [] }
 
 // `round2` and `getDisplayStatus` now live in @/lib/timesheetExport (shared with
 // the bulk export) and are imported above.
@@ -110,8 +132,8 @@ function EmployeeAttendanceDetail() {
   // Supervisors view this timesheet read-only: no per-record edit, export stays.
   const { user } = useAuth()
   const canWrite = user?.role === "admin" || user?.role === "superadmin"
-  // Columns: S.No, Date, Site, Job No, Check In, Check Out, Worked, Status,
-  // Total Hours, OT Hours, Holiday Hours, Breaks, Remark (+ Actions when canWrite).
+  // Columns: S.No, Date, Site, Job No, Check In, Check Out, Session Hrs, Status,
+  // Break, Net Hours, OT Hours, Holiday Hours, Remark (+ Actions when canWrite).
   const colCount = canWrite ? 14 : 13
 
 
@@ -130,11 +152,31 @@ function EmployeeAttendanceDetail() {
   const [editingRecord, setEditingRecord] =
     useState<AttendanceRecord | null>(null)
 
-  // The timesheet month (app timezone), picked like on the Monthly Report.
-  const [period, setPeriod] =
-    useState<MonthYear>(currentMonthYear)
+  // The timesheet month (app timezone), picked like on the Monthly Report. It lives in the
+  // URL (?month&year) so the Timesheets page links straight to a month.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const period = useMemo<MonthYear>(() => {
+    const m = Number(searchParams.get("month"))
+    const y = Number(searchParams.get("year"))
+    return m >= 1 && m <= 12 && y >= 2000 ? { month: m, year: y } : currentMonthYear()
+  }, [searchParams])
+  const setPeriod = (next: MonthYear) =>
+    setSearchParams(
+      { month: String(next.month), year: String(next.year) },
+      { replace: true }
+    )
 
   const { month, year } = period
+
+  // The month's timesheet approval (utils/timesheetMonth.js on the server): its status,
+  // what still blocks it (days to backfill / close / give a job), and whether it's over.
+  const [approval, setApproval] = useState<ApprovalView | null>(null)
+  const [blockers, setBlockers] = useState<TimesheetBlockers>(EMPTY_BLOCKERS)
+  const [monthClosed, setMonthClosed] = useState(false)
+  const [approvalBusy, setApprovalBusy] = useState(false)
+
+  // The missing day being backfilled ("YYYY-MM-DD"), or null.
+  const [backfillDate, setBackfillDate] = useState<string | null>(null)
 
   // Only the latest attendance request may update state — stepping months with
   // the ‹ › arrows would otherwise let a slower, older response overwrite the newer.
@@ -190,6 +232,9 @@ function EmployeeAttendanceDetail() {
         days: res.data.payroll?.unmarkedDays ?? 0,
         asAbsent: res.data.payroll?.unmarkedAsAbsent !== false,
       })
+      setApproval(res.data.approval ?? null)
+      setBlockers(res.data.blockers ?? EMPTY_BLOCKERS)
+      setMonthClosed(!!res.data.monthClosed)
     } catch (error: any) {
       if (seq !== attendanceSeq.current) return
       console.log(error)
@@ -259,10 +304,57 @@ function EmployeeAttendanceDetail() {
       const warning = erpExportWarning(res.headers)
       if (warning) toast(`${label}: ${warning}`, { icon: "⚠️", duration: 12000 })
     } catch (error) {
-      console.log(error)
-      toast.error(`Failed to export ${label}`)
+      // Revoked since the page loaded (its records changed): reload to show why.
+      if (await notApprovedFromError(error)) {
+        toast.error("This timesheet is no longer approved — its records changed")
+        fetchAttendance()
+      } else {
+        console.log(error)
+        toast.error(`Failed to export ${label}`)
+      }
     } finally {
       setErpBusy(false)
+    }
+  }
+
+  const approveTimesheet = async () => {
+    if (!id) return
+    try {
+      setApprovalBusy(true)
+      const res = await api.post("/api/timesheets/approve", {
+        month,
+        year,
+        employeeIds: [id],
+      })
+      if (res.data.approved?.length) toast.success("Timesheet approved")
+      else toast.error("Not approved — fix the flagged days first")
+    } catch (error) {
+      console.log(error)
+      toast.error(
+        (axios.isAxiosError(error) && error.response?.data?.message) ||
+          "Failed to approve timesheet"
+      )
+    } finally {
+      setApprovalBusy(false)
+      fetchAttendance()
+    }
+  }
+
+  const revokeTimesheet = async () => {
+    if (!id) return
+    try {
+      setApprovalBusy(true)
+      await api.post("/api/timesheets/revoke", { month, year, employeeId: id })
+      toast.success("Approval revoked")
+    } catch (error) {
+      console.log(error)
+      toast.error(
+        (axios.isAxiosError(error) && error.response?.data?.message) ||
+          "Failed to revoke approval"
+      )
+    } finally {
+      setApprovalBusy(false)
+      fetchAttendance()
     }
   }
 
@@ -279,24 +371,54 @@ function EmployeeAttendanceDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, year, canWrite])
 
-  const sortedAttendance =
-    useMemo(() => {
-      return [...attendance].sort(
-        (a, b) => {
-          const first = new Date(
-            a.date
-          ).getTime()
-
-          const second = new Date(
-            b.date
-          ).getTime()
-
-          return sortOrder === "asc"
-            ? first - second
-            : second - first
-        }
+  // Records plus a "No record" row for every missing day (each a Backfill target), in
+  // date order.
+  const timesheetItems =
+    useMemo<TimesheetItem[]>(() => {
+      const items: TimesheetItem[] = [
+        ...attendance.map((record) => ({
+          kind: "record" as const,
+          key: dayKeyOf(record.date),
+          record,
+        })),
+        ...blockers.missing.map((key) => ({ kind: "missing" as const, key })),
+      ]
+      return items.sort((a, b) =>
+        sortOrder === "asc"
+          ? a.key.localeCompare(b.key)
+          : b.key.localeCompare(a.key)
       )
-    }, [attendance, sortOrder])
+    }, [attendance, blockers.missing, sortOrder])
+
+  // Days with a record that still blocks approval: an open check-out, a session with no job.
+  const flaggedDays = useMemo(() => {
+    const flags = new Map<string, string[]>()
+    const add = (key: string, label: string) =>
+      flags.set(key, [...(flags.get(key) ?? []), label])
+    blockers.pending.forEach((key) => add(key, "Open check-out"))
+    blockers.noJob.forEach((key) => add(key, "No job"))
+    return flags
+  }, [blockers])
+
+  // BackfillModal shows the employee; it only needs the identity fields.
+  const backfillEmployee: MissingEmployee | null = employee
+    ? {
+        _id: employee._id,
+        name: employee.name,
+        employeeId: employee.employeeId,
+        jobTitle: employee.jobTitle,
+        currentSite: null,
+        currentJob: null,
+        employmentType: employee.employmentType,
+      }
+    : null
+
+  // Only the ERPNext files need an approved month; the spreadsheet exports any time (e.g.
+  // printed to check on paper before approving).
+  const erpBlockedReason =
+    approval?.status === "approved"
+      ? null
+      : "Only an approved timesheet can be sent to ERPNext — approve this month first"
 
   const totals = useMemo(() => {
     const sums = attendance.reduce(
@@ -355,6 +477,7 @@ function EmployeeAttendanceDetail() {
   }, [attendance, unmarked, month, year])
 
 
+  // An edit changes the month's blockers and may revoke its approval — reload both.
   const handleAttendanceUpdated = (updatedRecord: AttendanceRecord) => {
     setAttendance((prev) =>
       prev.map((record) =>
@@ -364,6 +487,7 @@ function EmployeeAttendanceDetail() {
           : record
       )
     )
+    fetchAttendance()
   }
 
   const timesheetTable = (
@@ -385,17 +509,17 @@ function EmployeeAttendanceDetail() {
 
                   <TableHead>Check Out</TableHead>
 
-                  <TableHead>Worked</TableHead>
+                  <TableHead>Session Hrs</TableHead>
 
                   <TableHead>Status</TableHead>
 
-                  <TableHead>Total Hours</TableHead>
+                  <TableHead>Break (deducted)</TableHead>
+
+                  <TableHead>Net Hours</TableHead>
 
                   <TableHead>OT Hours</TableHead>
 
                   <TableHead>Holiday Hours</TableHead>
-
-                  <TableHead>Breaks</TableHead>
 
                   <TableHead>Remark</TableHead>
 
@@ -419,7 +543,7 @@ function EmployeeAttendanceDetail() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ) : sortedAttendance.length === 0 ? (
+                ) : timesheetItems.length === 0 ? (
                   <TableRow>
                     <TableCell
                       colSpan={colCount}
@@ -429,8 +553,53 @@ function EmployeeAttendanceDetail() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  sortedAttendance.map(
-                    (record, index) => {
+                  timesheetItems.map(
+                    (item, index) => {
+                      // A day with no record: blocks approval until it is backfilled.
+                      if (item.kind === "missing") {
+                        return (
+                          <TableRow
+                            key={`missing-${item.key}`}
+                            className="bg-rose-50/60 dark:bg-rose-950/20"
+                          >
+                            <TableCell>{index + 1}</TableCell>
+                            <TableCell>
+                              {(() => {
+                                const d = new Date(`${item.key}T00:00:00Z`)
+                                return (
+                                  d.toLocaleDateString("en-IN", {
+                                    weekday: "short",
+                                    timeZone: "UTC",
+                                  }).slice(0, 3) +
+                                  " " +
+                                  d.getUTCDate()
+                                )
+                              })()}
+                            </TableCell>
+                            <TableCell
+                              colSpan={canWrite ? colCount - 3 : colCount - 2}
+                              className="text-sm font-medium text-rose-700 dark:text-rose-400"
+                            >
+                              No record — missing day
+                            </TableCell>
+                            {canWrite && (
+                              <TableCell className="text-right">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setBackfillDate(item.key)}
+                                >
+                                  <CalendarPlus className="h-4 w-4" />
+                                  Backfill
+                                </Button>
+                              </TableCell>
+                            )}
+                          </TableRow>
+                        )
+                      }
+
+                      const record = item.record
+                      const flags = flaggedDays.get(item.key)
                       const sessions =
                         record.sessions.length > 0
                           ? record.sessions
@@ -478,17 +647,30 @@ function EmployeeAttendanceDetail() {
                                       attendanceId={record.attendanceId}
                                     />
                                   </div>
+                                  {/* Blocks approval until fixed (Edit). */}
+                                  {flags && (
+                                    <div className="mt-0.5 text-xs font-medium text-rose-700 dark:text-rose-400">
+                                      {flags.join(" · ")}
+                                    </div>
+                                  )}
                                 </TableCell>
                               </>
                             )}
 
                             {/* SESSION DATA */}
                             <TableCell>
-                              {session?.siteName || "-"}
+                              {sessionPlaceLabel(session, session?.siteName || "-")}
                             </TableCell>
 
                             <TableCell>
-                              {sessionJobCell(session, session?.jobCode || "-")}
+                              {/* A driver's split session lists each job its hours were split across. */}
+                              <div className="divide-y divide-border/60">
+                                {sessionJobLabels(session, session?.jobCode || "-").map((job, jobIndex) => (
+                                  <div key={`${jobIndex}-${job}`} className="py-0.5 first:pt-0 last:pb-0">
+                                    {job}
+                                  </div>
+                                ))}
+                              </div>
                             </TableCell>
 
                             <TableCell>
@@ -556,6 +738,17 @@ function EmployeeAttendanceDetail() {
                                     sessions.length
                                   }
                                 >
+                                  {(() => {
+                                    const hrs = (recordBreakCount(record, breakMinHours) * breakDurationMinutes) / 60
+                                    return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`
+                                  })()}
+                                </TableCell>
+
+                                <TableCell
+                                  rowSpan={
+                                    sessions.length
+                                  }
+                                >
                                   {
                                     record.totalWorkHours
                                   }{" "}
@@ -583,21 +776,6 @@ function EmployeeAttendanceDetail() {
                                   {record.isHoliday
                                     ? `${Math.round((record.holidayHours || 0) * 100) / 100} hrs`
                                     : "-"}
-                                </TableCell>
-
-                                <TableCell
-                                  rowSpan={
-                                    sessions.length
-                                  }
-                                >
-                                  {(() => {
-                                    const count = record.breaksTaken !== null && record.breaksTaken !== undefined
-                                      ? clampBreaks(record.breaksTaken)
-                                      : computeAutoBreaks(record.sessions.reduce((acc, s) => acc + (s.workedHours || 0), 0), breakMinHours);
-                                    const hrs = (count * breakDurationMinutes) / 60;
-                                    return `${hrs} ${hrs === 1 ? "hr" : "hrs"}`;
-                                  })()}
-
                                 </TableCell>
 
                                 {/* Day-level remark — the LOP "Deduct … OMR" auto-remark
@@ -650,11 +828,11 @@ function EmployeeAttendanceDetail() {
                 )}
               </TableBody>
 
-              {!loading && sortedAttendance.length > 0 && (
+              {!loading && attendance.length > 0 && (
                 <TableFooter>
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className="text-right"
                     >
                       Totals
@@ -672,13 +850,16 @@ function EmployeeAttendanceDetail() {
                       {round2(totals.holidayHours)} hrs
                     </TableCell>
 
-                    {/* Breaks + Remark (+ Actions when canWrite) */}
-                    <TableCell colSpan={canWrite ? 3 : 2} />
+                    {/* Remark (+ Actions when canWrite) */}
+                    <TableCell colSpan={canWrite ? 2 : 1} />
                   </TableRow>
                 </TableFooter>
               )}
             </Table>
           </div>
+          <p className="border-t px-4 py-2 text-xs text-muted-foreground">
+            Net Hours = total session hours − break deducted.
+          </p>
         </CardContent>
       </Card>
   )
@@ -700,6 +881,21 @@ function EmployeeAttendanceDetail() {
           erpBusy={erpBusy}
           onExportSpreadsheet={exportSpreadsheet}
           onExportErp={downloadErp}
+          exportLoading={loading}
+          erpBlockedReason={erpBlockedReason}
+          approvalSlot={
+            employee && (
+              <TimesheetApprovalBar
+                approval={approval}
+                blockers={blockers}
+                monthClosed={monthClosed}
+                canWrite={canWrite}
+                busy={approvalBusy}
+                onApprove={approveTimesheet}
+                onRevoke={revokeTimesheet}
+              />
+            )
+          }
           onBack={() => navigate(-1)}
         />
 
@@ -742,6 +938,17 @@ function EmployeeAttendanceDetail() {
           onUpdated={(updatedRecord) =>
             handleAttendanceUpdated(updatedRecord as AttendanceRecord)
           }
+        />
+      )}
+
+      {/* BACKFILL a missing day straight from the timesheet (admin + superadmin). */}
+      {canWrite && (
+        <BackfillModal
+          open={!!backfillDate}
+          onClose={() => setBackfillDate(null)}
+          employee={backfillEmployee}
+          date={backfillDate ?? ""}
+          onCreated={() => fetchAttendance()}
         />
       )}
     </div>

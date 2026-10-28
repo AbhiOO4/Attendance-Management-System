@@ -4,7 +4,7 @@
 // back through the Monthly Report, the Jobs report and BOTH ERPNext exports and reconciled.
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
-import { startStack, seedBase, makeSite, makeJob, makeEmployee, makeSupervisor, api, ok } from "../helpers/integration.js";
+import { startStack, seedBase, makeSite, makeJob, makeEmployee, makeSupervisor, api, ok, approveMonthDirectly } from "../helpers/integration.js";
 import { parseCsv, checkRecords, checkAttendanceCsv, checkTimesheetCsv, INFO_KINDS } from "../../src/utils/exportReconcile.js";
 import { getDriverPoolId } from "../../src/utils/driverPool.js";
 
@@ -91,12 +91,15 @@ before(async () => {
   ok(await api(stack.app, admin).patch("/api/attendance/update/set-holiday").send({ date: "2026-09-24", isHoliday: true }), "declare 24");
   ok(await api(stack.app, admin).patch("/api/attendance/update/set-holiday").send({ date: "2026-09-24", isHoliday: false }), "undeclare 24");
 
-  // Read every view of the month through the API.
+  // Read every view of the month through the API. Only approved timesheets export, so the
+  // whole month is approved first (directly — it has blockers on purpose).
+  const everyone = Object.values(E).map((e) => String(e._id));
+  await approveMonthDirectly(everyone, 2026, 9, superadmin);
   const sa = api(stack.app, superadmin);
   report = ok(await sa.get("/api/attendance/reports/monthly/9/2026"), "monthly report").body;
   jobReport = ok(await sa.get("/api/attendance/reports/job-report?month=9&year=2026"), "job report").body.report;
-  const att = ok(await sa.post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance" }), "attendance export");
-  const ts = ok(await sa.post("/api/attendance/reports/erpnext/9/2026").send({ type: "timesheet" }), "timesheet export");
+  const att = ok(await sa.post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance", employeeIds: everyone }), "attendance export");
+  const ts = ok(await sa.post("/api/attendance/reports/erpnext/9/2026").send({ type: "timesheet", employeeIds: everyone }), "timesheet export");
   attendanceCsv = parseCsv(att.text);
   timesheetCsv = parseCsv(ts.text);
   attendanceHeaders = att.headers;
@@ -215,12 +218,17 @@ describe("the month reconciles across every view", () => {
 });
 
 describe("access", () => {
-  test("payroll reports and the bulk export are superadmin-only", async () => {
+  test("payroll reports are superadmin-only; the bulk export is admin + superadmin", async () => {
     const sup = await makeSupervisor(M, sites.alpha, "SUP-A");
     assert.equal((await api(stack.app, sup).get("/api/attendance/reports/monthly/9/2026")).status, 403);
     assert.equal((await api(stack.app, admin).get("/api/attendance/reports/monthly/9/2026")).status, 403);
-    assert.equal((await api(stack.app, admin).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance" })).status, 403);
+    assert.equal((await api(stack.app, sup).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance", employeeIds: [String(E.P2._id)] })).status, 403);
+    const mine = ok(await api(stack.app, admin).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance", employeeIds: [String(E.P2._id)] }), "admin bulk export");
+    assert.deepEqual(parseCsv(mine.text), attendanceCsv.filter((r) => r.Employee === "P2"));
     assert.equal((await api(stack.app, admin).get("/api/attendance/reports/job-report")).status, 403);
+  });
+  test("the bulk export needs an employee list over HTTP", async () => {
+    assert.equal((await api(stack.app, superadmin).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance" })).status, 400);
   });
   test("an admin can export one employee; the export carries the same hours", async () => {
     const res = ok(await api(stack.app, admin).get(`/api/attendance/employee/${E.P2._id}/erpnext/9/2026?type=attendance`), "employee export");

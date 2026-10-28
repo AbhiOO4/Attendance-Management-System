@@ -138,6 +138,35 @@ export async function makeSupervisor(M, site, employeeId) {
   });
 }
 
+/**
+ * Mark employees' month approved WITHOUT the approval rules (blockers) — for tests about what
+ * an approved month exports, not about approving. The fingerprint is the records' current one.
+ */
+export async function approveMonthDirectly(employeeIds, year, month, approver) {
+  const [{ default: TimesheetApproval }, { default: Attendance }, { timesheetFingerprint, monthBounds }] = await Promise.all([
+    import("../../src/models/timesheetApprovalModel.js"),
+    import("../../src/models/attendanceModel.js"),
+    import("../../src/utils/timesheetApproval.js"),
+  ]);
+  const { from, to } = monthBounds(year, month);
+  for (const id of employeeIds) {
+    const records = await Attendance.find({ employee: id, date: { $gte: from, $lte: to } }).lean();
+    await TimesheetApproval.findOneAndUpdate(
+      { employee: id, year, month },
+      {
+        $set: {
+          status: "approved",
+          fingerprint: timesheetFingerprint(records),
+          approvedBy: approver?._id ?? null,
+          approvedByName: approver?.name ?? null,
+          approvedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+  }
+}
+
 /** Expect a 2xx; on failure show the body (supertest's own message hides it). */
 export function ok(res, label = "") {
   if (res.status < 200 || res.status >= 300) {

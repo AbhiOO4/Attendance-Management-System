@@ -87,6 +87,17 @@ export const sessionJobCell = (s: SessionSplitFields | null | undefined, single:
     : single
 
 /**
+ * A session's Site cell in timesheets: a driver split shows the site actually served (or
+ * "General"), not the hidden Drivers pool; any other session keeps `fallback` (its own site).
+ */
+export const sessionPlaceLabel = (s: SessionSplitFields | null | undefined, fallback: string) =>
+  s?.splitJobs?.length ? (s.servedSite?.siteName ?? GENERAL_PLACE_LABEL) : fallback
+
+/** One label per job a session's hours are split across; any other session is `[single]`. */
+export const sessionJobLabels = (s: SessionSplitFields | null | undefined, single: string): string[] =>
+  s?.splitJobs?.length ? s.splitJobs.map((j) => j.jobCode || j.name) : [single]
+
+/**
  * True when a session sits on the Drivers pool and has a time but no site + jobs (blocks
  * save). `place` is the editor's working pick — undefined on an untouched legacy single-job
  * session, whose `jobId` then still counts.

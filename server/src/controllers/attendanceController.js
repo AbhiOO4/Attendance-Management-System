@@ -19,6 +19,9 @@ import { computeAttendanceTotals, sumRawHours } from '../utils/attendanceMath.js
 import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
+import { isMonthClosed, timesheetBlockers, timesheetFingerprint } from '../utils/timesheetApproval.js';
+import { findNotApproved, notApprovedBody, resolveApproval, approvalView } from '../utils/timesheetMonth.js';
+import TimesheetApproval from '../models/timesheetApprovalModel.js';
 import { isAssignableSite, findAssignableJob, siteHasLiveJobs } from '../utils/siteAssignable.js';
 import { findSessionJob } from '../utils/globalJobs.js';
 import { supervisorMayCloseCarryover } from '../utils/carryoverAccess.js';
@@ -339,7 +342,7 @@ const MAX_REPORT_RANGE_DAYS = 366;
 // `toDay` are UTC midnights (how Attendance.date is stored). Shared by the monthly
 // report and the date-range report. Returns `{ report, unmarkedAsAbsent }`, or null when
 // the work schedule is missing.
-async function buildAttendanceReport(fromDay, toDay) {
+export async function buildAttendanceReport(fromDay, toDay) {
   const [employees, attendances, workConfig, customHolidays] =
     await Promise.all([
       empModel.find({}).lean(),
@@ -3830,7 +3833,7 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
     // UTC month bounds — how Attendance.date is stored.
     const monthFrom = new Date(Date.UTC(Number(year), Number(month) - 1, 1));
     const monthTo = new Date(Date.UTC(Number(year), Number(month), 0));
-    const [employeeDoc, workConfig, customHolidays] = await Promise.all([
+    const [employeeDoc, workConfig, customHolidays, approvalDoc] = await Promise.all([
       empModel
         .findById(employeeId)
         .select("isActive createdAt employmentType")
@@ -3844,12 +3847,24 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
           },
         })
         .lean(),
+      TimesheetApproval.findOne({
+        employee: employeeId,
+        year: Number(year),
+        month: Number(month),
+      }).lean(),
     ]);
     const countableDays = buildCountableDays(
       eachUtcDay(monthFrom, monthTo),
       workConfig?.weeklyHolidays || [],
       customHolidays
     );
+
+    // Timesheet approval (utils/timesheetMonth.js): what still blocks it, and its status as
+    // the records stand now (an approval whose records changed is revoked on this read).
+    const blockers = employeeDoc
+      ? timesheetBlockers(employeeDoc, attendance, countableDays)
+      : { missing: [], pending: [], noJob: [] };
+    const approval = await resolveApproval(approvalDoc, timesheetFingerprint(attendance));
 
     return res.status(200).json({
       success: true,
@@ -3865,7 +3880,12 @@ export const getEmployeeAttendanceByMonth = async (req, res) => {
           ? countUnmarkedDays(employeeDoc, attendance, countableDays)
           : 0,
         unmarkedAsAbsent: unmarkedAsAbsent(workConfig),
+        unmarkedDates: blockers.missing,
       },
+
+      approval: approvalView(approval),
+      blockers,
+      monthClosed: isMonthClosed(Number(year), Number(month)),
     });
   } catch (error) {
     console.error(error);
@@ -4822,7 +4842,11 @@ export const backfillAttendance = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Check-out cannot exist without check-in' });
       }
 
-      const { checkInNextDay, checkOutNextDay } = deriveOffsets(checkIn, checkOut, !!session.startsAfterMidnight);
+      // Explicit offsets (the modal's next-day pills) win — how a 24h shift or a standalone
+      // after-midnight session is expressed; otherwise the standard derivation applies.
+      const derivedOffsets = deriveOffsets(checkIn, checkOut, !!session.startsAfterMidnight);
+      const checkInNextDay = typeof session.checkInNextDay === 'boolean' ? session.checkInNextDay : derivedOffsets.checkInNextDay;
+      const checkOutNextDay = typeof session.checkOutNextDay === 'boolean' ? session.checkOutNextDay : derivedOffsets.checkOutNextDay;
       const sessionIsNight = checkInNextDay || checkOutNextDay;
 
       let workedHours = 0;
@@ -6712,18 +6736,22 @@ export const exportErpnext = async (req, res) => {
     const startDate = new Date(Date.UTC(yearNum, monthNum - 1, 1));
     const endDate = new Date(Date.UTC(yearNum, monthNum, 1));
 
-    // Optional employee scope, as Mongo _ids: one employee (the per-employee route or
-    // ?employeeId=, from the employee detail page) or a list in the body (`employeeIds`,
-    // the employees picked on the Reports page). Absent → whole roster.
+    // Employee scope, as Mongo _ids: one employee (the per-employee route or ?employeeId=,
+    // from the employee timesheet page) or a list in the body (`employeeIds`, the employees
+    // picked on the Timesheets page). Only in-process callers that set skipApprovalGate (the
+    // read-only reconcile script) may omit it for the whole roster.
+    const skipGate = req.skipApprovalGate === true;
     const empId = req.params.employeeId || req.query.employeeId;
     const employeeIds = req.body?.employeeIds;
     const filter = { date: { $gte: startDate, $lt: endDate } };
+    let scopeIds = null;
     if (empId) {
       if (!mongoose.isValidObjectId(empId)) {
         return res.status(400).json({ success: false, message: "Invalid employeeId" });
       }
       filter.employee = empId;
-    } else if (employeeIds !== undefined) {
+      scopeIds = [String(empId)];
+    } else if (employeeIds !== undefined || !skipGate) {
       if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
         return res.status(400).json({ success: false, message: "Select at least one employee" });
       }
@@ -6731,6 +6759,14 @@ export const exportErpnext = async (req, res) => {
         return res.status(400).json({ success: false, message: "Invalid employeeId" });
       }
       filter.employee = { $in: employeeIds };
+      scopeIds = employeeIds;
+    }
+
+    // Only APPROVED timesheets leave the app (utils/timesheetMonth.js — a timesheet whose
+    // records changed since approval is revoked on this read).
+    if (!skipGate) {
+      const notApproved = await findNotApproved(yearNum, monthNum, scopeIds);
+      if (notApproved.length) return res.status(409).json(notApprovedBody(notApproved));
     }
 
     const [attendances, workConfig] = await Promise.all([

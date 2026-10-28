@@ -4,6 +4,7 @@ import jobTitleModel from '../models/jobTitleModel.js';
 import userModel from '../models/userModel.js'
 import mongoose from 'mongoose'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
+import { siteClause, searchClauses } from '../utils/employeeListFilter.js'
 import AttendanceLock from '../models/lockModel.js'
 import attendanceModel from '../models/attendanceModel.js'
 import siteModel from '../models/siteModel.js'
@@ -100,24 +101,12 @@ export const getAllEmployees = async (req, res) => {
         },
       ];
     } else if (site) {
-      if (site === "null") {
-        filter.currentSite = null;
-      } else {
-        // On-site employees AND today's "only for today" visitors: such a transfer/add
-        // leaves currentSite elsewhere but stamps pendingTransferSiteId = this site, so
-        // without this they'd be missing from the draft and their carried session lost.
-        // (Permanent moves set currentSite = site, so they match either way.) Wrapped in
-        // $and so it never clashes with the notSupervisor $or above — same as rosterForSite.
-        filter.$and = [
-          ...(filter.$and || []),
-          {
-            $or: [
-              { currentSite: site },
-              { pendingTransferSiteId: site },
-            ],
-          },
-        ];
-      }
+      // On-site employees AND today's "only for today" visitors: such a transfer/add
+      // leaves currentSite elsewhere but stamps pendingTransferSiteId = this site, so
+      // without this they'd be missing from the draft and their carried session lost.
+      // (Permanent moves set currentSite = site, so they match either way.) Wrapped in
+      // $and so it never clashes with the notSupervisor $or above — same as rosterForSite.
+      filter.$and = [...(filter.$and || []), siteClause(site)];
     }
 
     if (job) {
@@ -140,20 +129,10 @@ export const getAllEmployees = async (req, res) => {
       };
     }
 
-    // Unified search box: split into whitespace tokens; each token must match
-    // (substring, case-insensitive) at least one of name / employeeId / jobTitle.
-    // So "john welder" matches John whose job title is Welder. Composed via $and
-    // so it never clashes with the notSupervisor $or or the site/roster $and.
-    if (search && search.trim()) {
-      const tokenClauses = search
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((tok) => {
-          const rx = { $regex: escapeRegExp(tok), $options: "i" };
-          return { $or: [{ name: rx }, { employeeId: rx }, { jobTitle: rx }] };
-        });
-
+    // Unified search box (name / employeeId / jobTitle). Composed via $and so it never
+    // clashes with the notSupervisor $or or the site/roster $and.
+    const tokenClauses = searchClauses(search);
+    if (tokenClauses.length) {
       filter.$and = [...(filter.$and || []), ...tokenClauses];
     }
 

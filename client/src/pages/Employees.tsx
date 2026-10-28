@@ -2,11 +2,10 @@
 
 import { api } from "@/lib/api"
 import toast from "react-hot-toast"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   Table,
@@ -49,10 +48,8 @@ import AddEmployee from "@/components/AddEmployee"
 import axios from "axios"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
-import { useWorkConfig } from "@/context/WorkConfigContext"
 import { useAuth } from "@/context/AuthContext"
-import { Download, Loader2, MoreHorizontal, Pencil, RotateCcw, Search, Trash2, X } from "lucide-react"
-import type { AttendanceRecord } from "@/pages/EditPastAttendance"
+import { MoreHorizontal, Pencil, RotateCcw, Search, Trash2 } from "lucide-react"
 import { isDriverTitle } from "@/lib/driverJobs"
 
 interface Employee {
@@ -275,29 +272,9 @@ function Employees() {
   const [totalPages, setTotalPages] = useState(1)
   const [totalEmployees, setTotalEmployees] = useState(0)
 
-  const { config: workConfig } = useWorkConfig()
-
-  // Supervisors get read-only access: they can browse + export but not add/edit/delete.
+  // Supervisors no longer reach this page (they use Timesheets); admins + superadmins write.
   const { user } = useAuth()
   const canWrite = user?.role === "admin" || user?.role === "superadmin"
-
-  // --- Bulk timesheet export ---
-  const currentYear = new Date().getFullYear()
-  const [selectionMode, setSelectionMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [exportMonth, setExportMonth] = useState(
-    String(new Date().getMonth() + 1)
-  )
-  const [exportYear, setExportYear] = useState(String(currentYear))
-  const [selectingAll, setSelectingAll] = useState(false)
-  const [exporting, setExporting] = useState(false)
-  const [exportProgress, setExportProgress] = useState<{
-    done: number
-    total: number
-  } | null>(null)
-  // Employee meta accumulated across every fetch (current page + "select all"),
-  // so selected ids on other pages still resolve their name/id/title at export time.
-  const employeeMetaRef = useRef<Map<string, Employee>>(new Map())
 
   async function fetchEmployees() {
     try {
@@ -316,10 +293,6 @@ function Employees() {
       )
 
       setEmployees(res.data.employees)
-
-      res.data.employees.forEach((e) =>
-        employeeMetaRef.current.set(e._id, e)
-      )
 
       setCurrentPage(res.data.currentPage ?? 1)
 
@@ -443,170 +416,11 @@ function Employees() {
     }
   }
 
-  const toggleSelectionMode = () => {
-    setSelectionMode((prev) => {
-      // Leaving selection mode clears the current selection.
-      if (prev) setSelectedIds(new Set())
-      return !prev
-    })
-  }
-
-  const toggleOne = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const clearSelection = () => setSelectedIds(new Set())
-
-  // Select every employee matching the CURRENT filters (across all pages) by
-  // re-fetching the list without pagination — mirrors the page's own filters.
-  const selectAllMatching = async () => {
-    try {
-      setSelectingAll(true)
-
-      const params: Record<string, string> = {}
-      if (filters.search) params.search = filters.search
-      if (filters.site) params.site = filters.site
-      if (filters.employmentType) params.employmentType = filters.employmentType
-
-      const res = await api.get<{ employees: Employee[] }>("/api/employees", {
-        params,
-      })
-
-      const all = res.data.employees || []
-      all.forEach((e) => employeeMetaRef.current.set(e._id, e))
-      setSelectedIds(new Set(all.map((e) => e._id)))
-    } catch (error) {
-      console.log(error)
-      toast.error("Failed to select all employees")
-    } finally {
-      setSelectingAll(false)
-    }
-  }
-
-  // Run async workers over ids with a fixed concurrency cap, reporting progress.
-  const runWithConcurrency = async <T,>(
-    ids: string[],
-    limit: number,
-    worker: (id: string) => Promise<T>
-  ): Promise<Array<{ id: string; value?: T; error?: unknown }>> => {
-    const results: Array<{ id: string; value?: T; error?: unknown }> = []
-    let cursor = 0
-
-    const runNext = async (): Promise<void> => {
-      const i = cursor++
-      if (i >= ids.length) return
-      const id = ids[i]
-      try {
-        results[i] = { id, value: await worker(id) }
-      } catch (error) {
-        results[i] = { id, error }
-      }
-      setExportProgress((p) => (p ? { ...p, done: p.done + 1 } : p))
-      await runNext()
-    }
-
-    await Promise.all(
-      Array.from({ length: Math.min(limit, ids.length) }, () => runNext())
-    )
-
-    return results
-  }
-
-  const handleBulkExport = async () => {
-    const ids = Array.from(selectedIds)
-    if (ids.length === 0) {
-      toast.error("Select at least one employee")
-      return
-    }
-
-    try {
-      setExporting(true)
-      setExportProgress({ done: 0, total: ids.length })
-
-      const results = await runWithConcurrency(ids, 5, (id) =>
-        api
-          .get(`/api/attendance/employee/${id}`, {
-            params: { month: exportMonth, year: exportYear },
-          })
-          .then((res) => (res.data.data || []) as AttendanceRecord[])
-      )
-
-      const succeeded = results.filter((r) => r && !r.error)
-      const failed = results.filter((r) => r && r.error)
-
-      if (succeeded.length === 0) {
-        toast.error("Failed to fetch attendance for the selected employees")
-        return
-      }
-
-      const employeesForExport = succeeded.map((r) => {
-        const meta = employeeMetaRef.current.get(r.id)
-        const records = (r.value || []) as AttendanceRecord[]
-        const fallback = records[0]
-        return {
-          name: meta?.name ?? fallback?.name ?? "",
-          employeeId: meta?.employeeId ?? fallback?.employeeId ?? "",
-          jobTitle: meta?.jobTitle ?? fallback?.jobTitle ?? "",
-          companyId: meta?.companyId ?? null,
-          records,
-        }
-      })
-
-      // Lazy-load the exporter so exceljs stays out of this route's chunk until
-      // a bulk export is actually run.
-      const { exportBulkTimesheets } = await import("@/lib/timesheetExport")
-
-      await exportBulkTimesheets({
-        employees: employeesForExport,
-        month: exportMonth,
-        year: exportYear,
-        workConfig,
-        sortOrder: "asc",
-      })
-
-      if (failed.length > 0) {
-        toast.success(
-          `Exported ${succeeded.length} timesheet(s); ${failed.length} failed`
-        )
-      } else {
-        toast.success(`Exported ${succeeded.length} timesheet(s)`)
-      }
-    } catch (error) {
-      console.log(error)
-      toast.error("Failed to export timesheets")
-    } finally {
-      setExporting(false)
-      setExportProgress(null)
-    }
-  }
-
   const filtersActive =
     filters.search !== "" ||
     filters.site !== "" ||
     filters.status !== "active" ||
     filters.employmentType !== ""
-
-  const pageIds = employees.map((e) => e._id)
-  const allPageSelected =
-    pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
-  const somePageSelected = pageIds.some((id) => selectedIds.has(id))
-
-  const togglePage = () => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (allPageSelected) {
-        pageIds.forEach((id) => next.delete(id))
-      } else {
-        pageIds.forEach((id) => next.add(id))
-      }
-      return next
-    })
-  }
 
   return (
     <div className="px-6 pb-6 space-y-6">
@@ -624,14 +438,6 @@ function Employees() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant={selectionMode ? "secondary" : "outline"}
-            onClick={toggleSelectionMode}
-          >
-            <Download className="mr-2 h-4 w-4" />
-            Bulk Export Timesheet
-          </Button>
-
           {canWrite && <AddEmployee onAdd={addEmployee} />}
         </div>
       </div>
@@ -762,102 +568,6 @@ function Employees() {
         )}
       </div>
 
-      {/* BULK EXPORT ACTION BAR */}
-      {selectionMode && (
-        <div className="flex flex-col gap-3 rounded-lg border bg-muted/40 p-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm font-medium">
-              {selectedIds.size} selected
-            </span>
-
-            {selectedIds.size < totalEmployees && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={selectAllMatching}
-                disabled={selectingAll || exporting}
-              >
-                {selectingAll && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                )}
-                Select all {totalEmployees}
-              </Button>
-            )}
-
-            {selectedIds.size > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearSelection}
-                disabled={exporting}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {/* MONTH */}
-            <Select value={exportMonth} onValueChange={setExportMonth}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue placeholder="Month" />
-              </SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: 12 }, (_, i) => (
-                  <SelectItem key={i + 1} value={String(i + 1)}>
-                    {new Date(0, i).toLocaleString("en-IN", {
-                      month: "long",
-                    })}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {/* YEAR */}
-            <Select value={exportYear} onValueChange={setExportYear}>
-              <SelectTrigger className="w-[110px]">
-                <SelectValue placeholder="Year" />
-              </SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: 5 }, (_, i) => {
-                  const yr = currentYear - i
-                  return (
-                    <SelectItem key={yr} value={String(yr)}>
-                      {yr}
-                    </SelectItem>
-                  )
-                })}
-              </SelectContent>
-            </Select>
-
-            <Button
-              onClick={handleBulkExport}
-              disabled={exporting || selectedIds.size === 0}
-            >
-              {exporting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="mr-2 h-4 w-4" />
-              )}
-              {exporting && exportProgress
-                ? `Exporting ${exportProgress.done}/${exportProgress.total}`
-                : `Export Selected${
-                    selectedIds.size ? ` (${selectedIds.size})` : ""
-                  }`}
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleSelectionMode}
-              disabled={exporting}
-              aria-label="Exit selection mode"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
       </div>
 
       {/* TABLE */}
@@ -866,21 +576,6 @@ function Employees() {
         <Table>
           <TableHeader>
             <TableRow>
-              {selectionMode && (
-                <TableHead className="w-10">
-                  <Checkbox
-                    checked={
-                      allPageSelected
-                        ? true
-                        : somePageSelected
-                          ? "indeterminate"
-                          : false
-                    }
-                    onCheckedChange={togglePage}
-                    aria-label="Select all on this page"
-                  />
-                </TableHead>
-              )}
               <TableHead className="w-16 hidden md:table-cell">Sl No</TableHead>
               <TableHead>Name</TableHead>
 
@@ -916,18 +611,6 @@ function Employees() {
                   }`}
                   onClick={() => navigate(`/employees/${employee._id}`)}
                 >
-                  {selectionMode && (
-                    <TableCell
-                      className="w-10"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Checkbox
-                        checked={selectedIds.has(employee._id)}
-                        onCheckedChange={() => toggleOne(employee._id)}
-                        aria-label={`Select ${employee.name}`}
-                      />
-                    </TableCell>
-                  )}
                   <TableCell className="hidden md:table-cell font-medium text-muted-foreground">
                     {(currentPage - 1) * filters.limit + index + 1}
                   </TableCell>
@@ -1014,7 +697,7 @@ function Employees() {
             ) : (
               <TableRow>
                 <TableCell
-                  colSpan={6 + (selectionMode ? 1 : 0) + (canWrite ? 1 : 0)}
+                  colSpan={6 + (canWrite ? 1 : 0)}
                   className="text-center py-6"
                 >
                   No employees found

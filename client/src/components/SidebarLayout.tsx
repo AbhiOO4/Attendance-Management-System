@@ -27,6 +27,7 @@ import {
   Truck,
   Tags,
   CalendarDays,
+  FileCheck,
   History,
   type LucideIcon,
 } from "lucide-react"
@@ -56,6 +57,7 @@ type NavItem = {
 const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   { name: "Employees", path: "/employees", icon: Users },
+  { name: "Timesheets", path: "/timesheets", icon: FileCheck },
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
   { name: "Past Attendance", path: "/attendance/edit", icon: History },
   { name: "Reports", path: "/reports", icon: BarChart3 },
@@ -71,6 +73,7 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
 const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
   { name: "Employees", path: "/employees", icon: Users },
+  { name: "Timesheets", path: "/timesheets", icon: FileCheck },
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
   { name: "Past Attendance", path: "/attendance/edit", icon: History },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
@@ -91,7 +94,8 @@ function getSupervisorNavItems(
 ): NavItem[] {
   const items: NavItem[] = [
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
-    { name: "Employees", path: "/employees", icon: Users },
+    // Read-only: browse the month's timesheets, download approved ones.
+    { name: "Timesheets", path: "/timesheets", icon: FileCheck },
   ]
 
   if (assignedSite) {

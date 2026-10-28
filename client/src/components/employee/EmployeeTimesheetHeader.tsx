@@ -78,6 +78,13 @@ interface Props {
   erpBusy: boolean
   onExportSpreadsheet: () => void
   onExportErp: (type: ErpExportType, label: string) => void
+  // The month's records are still loading — nothing to export yet.
+  exportLoading: boolean
+  // Why the ERPNext files are off (the month's timesheet isn't approved), or null when
+  // allowed. The spreadsheet is never gated.
+  erpBlockedReason: string | null
+  // The approval band, shown under the toolbar.
+  approvalSlot?: ReactNode
   onBack: () => void
 }
 
@@ -95,6 +102,9 @@ export default function EmployeeTimesheetHeader({
   erpBusy,
   onExportSpreadsheet,
   onExportErp,
+  exportLoading,
+  erpBlockedReason,
+  approvalSlot,
   onBack,
 }: Props) {
   return (
@@ -164,10 +174,11 @@ export default function EmployeeTimesheetHeader({
           </SelectContent>
         </Select>
 
+        {/* The spreadsheet exports any time; only the ERPNext files need an APPROVED month. */}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" disabled={erpBusy}>
+              <Button variant="outline" disabled={erpBusy || exportLoading}>
                 {erpBusy ? <Loader2 className="animate-spin" /> : <Download />}
                 Export
                 <ChevronDown className="text-muted-foreground" />
@@ -184,14 +195,20 @@ export default function EmployeeTimesheetHeader({
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel>ERPNext import (CSV)</DropdownMenuLabel>
+                  {/* A disabled item shows no tooltip, so the reason is a line of its own. */}
+                  {erpBlockedReason && (
+                    <p className="px-2 pb-1.5 text-xs text-muted-foreground">
+                      {erpBlockedReason}
+                    </p>
+                  )}
                   <DropdownMenuItem
-                    disabled={erpBusy}
+                    disabled={erpBusy || !!erpBlockedReason}
                     onSelect={() => onExportErp("attendance", "Attendance (payroll)")}
                   >
                     Attendance (payroll)
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    disabled={erpBusy}
+                    disabled={erpBusy || !!erpBlockedReason}
                     onSelect={() => onExportErp("timesheet", "Timesheet (job cost)")}
                   >
                     Timesheet (job cost)
@@ -202,6 +219,8 @@ export default function EmployeeTimesheetHeader({
           </DropdownMenu>
         </div>
       </div>
+
+      {approvalSlot}
 
       {/* STATS — cells divided by 1px lines (the gap shows the border color through).
           Two columns on mobile (dense flow fills the hole the wide Absent cell leaves),

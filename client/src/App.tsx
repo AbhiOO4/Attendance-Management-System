@@ -8,6 +8,7 @@ import { useAuth } from "@/context/AuthContext"
 // stay out of the initial bundle.
 const DashBoard = lazy(() => import("./pages/DashBoard"))
 const Employees = lazy(() => import("./pages/Employees"))
+const Timesheets = lazy(() => import("./pages/Timesheets"))
 const Supervisor = lazy(() => import("./pages/Supervisor"))
 const AddSupervisor = lazy(() => import("./pages/AddSupervisor"))
 const Login = lazy(() => import("./pages/Login"))
@@ -108,8 +109,18 @@ function App() {
         <Route
           path="employees"
           element={
-            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <Employees />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Monthly timesheet approval + every export. Supervisors: read-only. */}
+        <Route
+          path="timesheets"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin", "supervisor"]}>
+              <Timesheets />
             </ProtectedRoute>
           }
         />

@@ -13,9 +13,9 @@
 import ExcelJS from "exceljs"
 import { saveAs } from "file-saver"
 
-import { clampBreaks, computeAutoBreaks, resolveBreakMinHours } from "@/lib/attendanceUtils"
+import { clampBreaks, computeAutoBreaks, resolveBreakMinHours, sumRawHours } from "@/lib/attendanceUtils"
 import { formatLocalTime12h } from "@/lib/dateUtils"
-import { sessionJobCell } from "@/lib/jobSplit"
+import { sessionJobLabels, sessionPlaceLabel } from "@/lib/jobSplit"
 
 import type { AttendanceRecord } from "@/pages/EditPastAttendance"
 
@@ -83,6 +83,14 @@ export const getDisplayStatus = (record: AttendanceRecord): string => {
   }
   return record.status
 }
+
+// Breaks deducted on a day: the supervisor's override (clamped to 0–1), else the automatic
+// break from the day's exact raw hours (sumRawHours, like the server — never Σ the rounded
+// per-session workedHours).
+export const recordBreakCount = (record: AttendanceRecord, breakMinHours: number): number =>
+  record.breaksTaken !== null && record.breaksTaken !== undefined
+    ? clampBreaks(record.breaksTaken)
+    : computeAutoBreaks(sumRawHours(record.sessions), breakMinHours)
 
 export interface ExportDay {
   date: Date
@@ -466,50 +474,52 @@ export function addTimesheetSheet(
 
     const sessions = record.sessions.length > 0 ? record.sessions : [null]
 
-    const startRow = currentRow
+    const breakCount = recordBreakCount(record, breakMinHours)
 
-    sessions.forEach((session, sessionIndex) => {
-      const breakCount =
-        record.breaksTaken !== null && record.breaksTaken !== undefined
-          ? clampBreaks(record.breaksTaken)
-          : computeAutoBreaks(
-              record.sessions.reduce(
-                (acc, s) => acc + (s.workedHours || 0),
-                0
-              ),
-              breakMinHours
-            )
+    // One physical row per session — except a driver's split session, which gets one row
+    // per job it was split across (Site / times / hours are merged down those rows).
+    const lines = sessions.flatMap((session) => {
+      const jobs = sessionJobLabels(session, session?.jobCode || "-")
+      return jobs.map((job, jobIndex) => ({ session, job, jobIndex, span: jobs.length }))
+    })
+
+    const startRow = currentRow
+    const sessionMerges: [number, number][] = []
+
+    lines.forEach(({ session, job, jobIndex, span }, lineIndex) => {
+      const firstOfSession = jobIndex === 0
+      const first = lineIndex === 0
 
       const row = worksheet.addRow([
-        sessionIndex === 0 ? shortDate : "",
+        first ? shortDate : "",
 
-        session?.siteName || "-",
+        firstOfSession ? sessionPlaceLabel(session, session?.siteName || "-") : "",
 
-        sessionJobCell(session, session?.jobCode || "-"),
+        job,
 
-        session?.checkIn ? formatLocalTime12h(session.checkIn) : "-",
+        firstOfSession ? (session?.checkIn ? formatLocalTime12h(session.checkIn) : "-") : "",
 
-        session?.checkOut ? formatLocalTime12h(session.checkOut) : "-",
+        firstOfSession ? (session?.checkOut ? formatLocalTime12h(session.checkOut) : "-") : "",
 
-        session?.workedHours ?? "-",
+        firstOfSession ? (session?.workedHours ?? "-") : "",
 
-        sessionIndex === 0 ? breakCount : "",
+        first ? breakCount : "",
 
-        sessionIndex === 0 ? record.totalWorkHours : "",
+        first ? record.totalWorkHours : "",
 
-        sessionIndex === 0
+        first
           ? typeof record.overtimeHours === "number"
             ? Math.round(record.overtimeHours * 100) / 100
             : record.overtimeHours
           : "",
 
-        sessionIndex === 0
+        first
           ? record.isHoliday
             ? Math.round((record.holidayHours || 0) * 100) / 100
             : "-"
           : "",
 
-        sessionIndex === 0
+        first
           ? getDisplayStatus(record) === "sick"
             ? "Sick Leave"
             : getDisplayStatus(record) === "leave"
@@ -523,7 +533,7 @@ export function addTimesheetSheet(
 
         // Remark (day-level): the LOP "Deduct … OMR" auto-remark or any manual
         // supervisor note. Merged across the day's session rows like Status.
-        sessionIndex === 0 ? (record.remark || "") : "",
+        first ? (record.remark || "") : "",
       ])
 
       row.eachCell((cell) => {
@@ -563,16 +573,27 @@ export function addTimesheetSheet(
         }
       })
 
+      // A driver's split session: Site / Check In / Check Out / Worked span its job rows.
+      // Merged only after the whole day is written — merging creates the rows below, which
+      // would push addRow past them.
+      if (firstOfSession && span > 1) {
+        sessionMerges.push([currentRow, currentRow + span - 1])
+      }
+
       currentRow++
     })
 
     const endRow = currentRow - 1
 
+    sessionMerges.forEach(([from, to]) => {
+      ;[2, 4, 5, 6].forEach((col) => worksheet.mergeCells(from, col, to, col))
+    })
+
     // --------------------------
     // MERGE COMMON CELLS
     // --------------------------
 
-    if (sessions.length > 1) {
+    if (lines.length > 1) {
       ;[
         1, // Date
         7, // Break

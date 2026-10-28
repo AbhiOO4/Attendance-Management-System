@@ -10,7 +10,7 @@ import { parseCsv } from "../../src/utils/exportReconcile.js";
 await mongoose.connect(process.env.TEST_MONGO_URI);
 try {
   const params = { month: "9", year: "2026" };
-  const exported = await callController(exportErpnext, { params, body: { type: "attendance" } });
+  const exported = await callController(exportErpnext, { params, body: { type: "attendance" }, skipApprovalGate: true });
   const timesheet = await callController(getEmployeeAttendanceByMonth, {
     params: { employeeId: process.env.TEST_EMPLOYEE_ID },
     query: { month: "9", year: "2026" },

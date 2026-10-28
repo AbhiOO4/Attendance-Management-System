@@ -210,10 +210,12 @@ Overtime Slip only reads Present rows); unworked holidays stay skipped. The tall
 `buildAttendanceReport(fromDay, toDay)` (inclusive UTC-midnight bounds), shared by
 `GET /reports/monthly/:month/:year` and `GET /reports/range?from&to`
 (`rangeReport`, superadmin, strict `YYYY-MM-DD`, ≤ 366 days). The Reports page offers
-Month | Date range (`components/DateRangePicker.tsx`); ERPNext export stays per-month and
-is disabled in range mode. It writes two files (Attendance, Timesheet — no OT summary) for
-the employees ticked in the table or everyone the page's filters list:
-`POST /reports/erpnext/:month/:year { type, employeeIds }` (Mongo ids; report rows carry `_id`).
+Month | Date range (`components/DateRangePicker.tsx`) and is VIEW-ONLY (its Job Report
+spreadsheet is the one export left there). Every per-employee export lives on the Timesheets
+page; the ERPNext files are approval-gated (see "Timesheet approval"): two ERPNext files (Attendance,
+Timesheet — no OT summary) via `POST /reports/erpnext/:month/:year { type, employeeIds }`
+(admin + superadmin; Mongo ids REQUIRED over HTTP — only the in-process reconcile script may
+omit them, with `req.skipApprovalGate`).
 Month bounds are `Date.UTC` everywhere (export, employee timesheet, report) — server-local
 `new Date(y, m-1, 1)` shifted the month a day on a host west of UTC. Hours a file can't carry
 are reported, never dropped silently: `X-Erpnext-Dropped-Overtime-Hours` /
@@ -413,6 +415,45 @@ their type and OT/holiday hours under its twin (split always on); unallocated em
 so a mid-month change re-types the whole month. `GET /api/employees` takes `activityType` (id |
 `none`), `collarType`, `nationality`. Verify the master CSV labels against ERPNext's Download
 Template, and import it before a timesheet that uses new names.
+
+### Timesheet approval (per employee, per month)
+Only an APPROVED timesheet goes to ERPNext: the ERPNext CSVs (bulk + per-employee route,
+409 `TIMESHEET_NOT_APPROVED { notApproved }`). The Excel files are deliberately UNGATED (user
+decision — a pending month is printed / passed on to be checked before approving): the
+monthly summary .xlsx (`POST /api/timesheets/export/summary`, `buildAttendanceReport` rows),
+the timesheet .xlsx (client-built from `GET /api/attendance/employee/:id`) and the Job Report
+spreadsheet.
+- **Model** `TimesheetApproval` (`models/timesheetApprovalModel.js`) — unique
+  `{employee, year, month}`, `status` approved|revoked (no doc = pending), approver/revoker
+  name + time, `history[]` (approved / revoked / auto_revoked).
+- **Rules** (`utils/timesheetApproval.js`, pure, unit-tested) — approvable only once the month
+  is over (`isMonthClosed`, app timezone) and with no BLOCKERS (`timesheetBlockers`): missing
+  days (`listUnmarkedDays` in `utils/unmarkedDays.js` — the report's own unmarked rule),
+  pending check-outs, and worked sessions with no job (`sessionJobIds` empty — so a site with
+  no jobs needs a global job picked). `timesheetFingerprint` hashes only what the exports read
+  (day status/hours/holiday/leave flags, each session's site, job(s), times; NOT remarks).
+- **Auto-revoke** (`utils/timesheetMonth.js`) — every read (`loadMonthTimesheets`,
+  `findNotApproved`, the employee timesheet) recomputes the fingerprint; an approved doc that no
+  longer matches is revoked there (`records_changed`, guarded update). Content-based, so EVERY
+  write path counts — controllers, crons, leave, recalc scripts — with no per-path hook.
+- **API** `/api/timesheets` (`timesheetController.js`): `GET /` (admin + supervisor; month,
+  search/site/employmentType via the Employees filter helpers in `utils/employeeListFilter.js`,
+  `approval`, page/limit — status filtered in memory), `POST /approve { month, year,
+  employeeIds }` (admin; 400 `MONTH_OPEN`; per-employee `approved` / `skipped` with blockers),
+  `POST /revoke`, `POST /export/summary`. The employee timesheet endpoint adds `approval`,
+  `blockers`, `monthClosed`, `payroll.unmarkedDates`.
+- **UI** — `pages/Timesheets.tsx` (`/timesheets`, sidebar "Timesheets"; URL filters, month
+  defaults to LAST month; approve + all bulk exports — Excel for every selected row, ERPNext for
+  approved rows only). Supervisors no longer get the Employees page: Timesheets is read-only for
+  them (Timesheet .xlsx).
+  The employee timesheet (`/employees/:id?month&year`) shows `TimesheetApprovalBar`
+  (Approve / Revoke / history), a "No record" row with **Backfill** (`BackfillModal`) per
+  missing day (with the next-day pills of `backfill/SessionTimeFields`; `backfillAttendance`
+  honours explicit `checkInNextDay`/`checkOutNextDay`), flags open/job-less days, and disables
+  only the ERPNext export items until approved. Shared client
+  bits: `lib/timesheetApproval.ts`, `lib/monthlySummaryExport.ts`.
+- Tests: `test/unit/timesheetApproval.test.js`, `test/integration/timesheetApproval.test.js`;
+  `approveMonthDirectly` (test helper) approves a seeded month without the rules.
 
 ### Supervisor backfill requests (draft → admin approval)
 Supervisors fix days they forgot to mark WITHOUT writing attendance themselves. One
