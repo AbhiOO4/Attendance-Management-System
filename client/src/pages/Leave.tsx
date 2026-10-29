@@ -60,6 +60,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import HelpButton from "@/components/help/HelpButton"
 
 type TabId = "applications" | "allocations"
 const PAGE_SIZE = 25
@@ -84,7 +85,10 @@ export default function Leave() {
               <CalendarDays className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Leave</h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Leave</h1>
+                <HelpButton topic="leave" />
+              </div>
               <p className="text-sm text-muted-foreground">
                 Allocate annual leave to employees for a period, and record annual or emergency
                 leave applications against it.

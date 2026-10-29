@@ -35,6 +35,7 @@ import type { MonthYear } from "@/lib/monthYear"
 import { round2 } from "@/lib/timesheetExport"
 import { fmtLeaveRange, type LeaveBalance } from "@/lib/leave"
 import { cn } from "@/lib/utils"
+import HelpButton from "@/components/help/HelpButton"
 
 export interface TimesheetEmployee {
   _id: string
@@ -125,6 +126,7 @@ export default function EmployeeTimesheetHeader({
               <h1 className="truncate text-2xl font-bold tracking-tight">
                 {employee.name}
               </h1>
+              <HelpButton topic="employee-timesheet" />
               {!employee.isActive && <Badge variant="secondary">Inactive</Badge>}
             </div>
             <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">

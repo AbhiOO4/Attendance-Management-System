@@ -18,6 +18,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Site {
   _id: string
@@ -220,7 +221,10 @@ function SiteJobs() {
                 <Briefcase className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Jobs</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Jobs</h1>
+                  <HelpButton topic="sites" />
+                </div>
                 <p className="text-sm text-muted-foreground">{site?.siteName}</p>
               </div>
             </div>

@@ -14,6 +14,9 @@ export default defineConfig({
       injectRegister: 'auto',
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        // The Help manual's screenshots load on demand when Help is opened — never precache
+        // them into every installed PWA.
+        globIgnores: ['help/**'],
         // Layer our hand-written push / notificationclick handlers onto the
         // auto-generated Workbox SW (see public/push-sw.js). The generated sw.js
         // runs importScripts('push-sw.js') at startup, so the listeners register

@@ -81,6 +81,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
+import HelpButton from "@/components/help/HelpButton"
 
 interface JobRef {
   _id: string
@@ -1436,9 +1437,12 @@ function SiteRoster({
             only: on phones the stacked filters would swallow most of the screen.
             Relies on the parent Card being overflow-visible (see SiteDetail). */}
         <div ref={headerRef} className="sticky top-0 z-30 space-y-3 bg-card pb-3 md:space-y-4 md:pb-4">
-          <h2 className="hidden text-xl font-bold tracking-tight md:block">
-            Employees
-          </h2>
+          <div className="hidden items-center gap-2 md:flex">
+            <h2 className="text-xl font-bold tracking-tight">
+              Employees
+            </h2>
+            <HelpButton topic="site-roster" className="h-7 w-7" />
+          </div>
 
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">

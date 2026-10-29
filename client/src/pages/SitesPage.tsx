@@ -23,6 +23,7 @@ import {
 import toast from "react-hot-toast"
 
 import AddSiteModal from "@/components/AddSiteModal"
+import HelpButton from "@/components/help/HelpButton"
 
 type Site = {
   _id: string
@@ -107,9 +108,12 @@ export default function SitesPage() {
       <div className="mx-auto max-w-5xl">
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-4xl font-bold tracking-tight">
-              Sites
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-4xl font-bold tracking-tight">
+                Sites
+              </h1>
+              <HelpButton topic="sites" />
+            </div>
 
             <p className="mt-1 text-muted-foreground">
               Manage all your sites

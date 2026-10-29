@@ -38,6 +38,7 @@ const Leave = lazy(() => import("./pages/Leave"))
 const EmployeeDetailAttendance = lazy(() => import("./pages/EmployeeDetailAttendance"))
 const InstaAddEmployees = lazy(() => import("./pages/InstaAddEmployees"))
 const Requests = lazy(() => import("./pages/Requests"))
+const Help = lazy(() => import("./pages/Help"))
 
 import SidebarLayout from "./components/SidebarLayout"
 import ProtectedRoute from "./components/ProtectedRoute"
@@ -241,6 +242,24 @@ function App() {
           element={
             <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <Leave />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* In-app user manual (admins + superadmins for now) */}
+        <Route
+          path="help"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <Help />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="help/:topicId"
+          element={
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+              <Help />
             </ProtectedRoute>
           }
         />

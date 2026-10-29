@@ -35,6 +35,7 @@ import { fetchSitesWithDriverPool } from "@/lib/driverJobs"
 import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
 import BulkBackfillModal, { type BulkBackfillResult } from "@/components/BulkBackfillModal"
 import type { PickerSite } from "@/components/SessionSiteJobFields"
+import HelpButton from "@/components/help/HelpButton"
 
 type Site = PickerSite
 
@@ -187,9 +188,12 @@ function MissingEmployees() {
 
         <div className="flex items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              Missing Employees
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Missing Employees
+              </h1>
+              <HelpButton topic="past-attendance" />
+            </div>
             <p className="mt-0.5 text-sm text-muted-foreground">
               No attendance record for {formattedDate}
             </p>

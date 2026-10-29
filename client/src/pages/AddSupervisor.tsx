@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 import toast from "react-hot-toast"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Employee {
   _id: string
@@ -194,9 +195,12 @@ function AddSupervisor() {
 
         {/* Header */}
         <div className="mt-6 space-y-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Create supervisor account
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Create supervisor account
+            </h1>
+            <HelpButton topic="supervisors" />
+          </div>
           <p className="text-sm text-muted-foreground">
             Generate login credentials for this employee. Share them with the
             supervisor — they'll be asked to set a new password on first login.

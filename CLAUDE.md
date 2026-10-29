@@ -584,6 +584,17 @@ subscribe/unsubscribe flow is `client/src/lib/push.ts`, surfaced by the
 `PushReminderToggle` in the sidebar (self-hides where Web Push is unsupported, e.g.
 iOS before the PWA is installed to the home screen).
 
+### In-app Help (user manual)
+An admin + superadmin user manual in simple English (readers may have weak English): sidebar
+"Help" → `/help` (topic grid + search) and `/help/:topicId` (`pages/Help.tsx`), plus a "?"
+`HelpButton topic="…"` in each admin page header that opens the chapter in a dialog (so an
+unsaved attendance draft is never lost). Content is typed data, one file per chapter in
+`client/src/help/topics/*.ts` (`help/types.ts`, order + groups in `help/index.ts`; `roles` hides
+superadmin-only chapters). Screenshots live in `client/public/help/<topic>/*.jpg`, taken from a
+FICTIONAL seeded demo DB (never real employee data) and excluded from the PWA precache
+(`globIgnores: ['help/**']` in `vite.config.ts`). When a page's buttons/labels/flow change,
+update its chapter text (exact on-screen labels in `**bold**`) and its screenshots.
+
 ## Conventions
 - Server is ESM (`"type": "module"`) — use `import`/`export`, include `.js` extensions
   in relative imports.

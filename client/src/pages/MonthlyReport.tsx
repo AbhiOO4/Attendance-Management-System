@@ -56,6 +56,7 @@ import {
   absentCountsOf,
   type ReportEmployee,
 } from "@/lib/monthlySummaryExport"
+import HelpButton from "@/components/help/HelpButton"
 
 // Round to 2 decimals (avoids float artifacts when summing rounded hours).
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -976,7 +977,10 @@ function MonthlyReport() {
   return (
     <div className="min-h-screen bg-muted/30 px-3 py-6 sm:px-4">
       <div className="mx-auto max-w-none space-y-4">
-        <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
+          <HelpButton topic="reports" />
+        </div>
 
         <Tabs defaultValue="monthly">
           <TabsList>

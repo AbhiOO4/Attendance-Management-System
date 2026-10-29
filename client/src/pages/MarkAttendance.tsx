@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Link } from "react-router-dom"
 import { Pencil, Truck } from "lucide-react"
+import HelpButton from "@/components/help/HelpButton"
 
 type Site = {
   _id: string
@@ -92,9 +93,12 @@ function MarkAttendance() {
       <div className="mx-auto max-w-6xl space-y-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
-            <h1 className="text-3xl font-bold">
-              Mark Attendance
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-3xl font-bold">
+                Mark Attendance
+              </h1>
+              <HelpButton topic="daily-attendance" />
+            </div>
 
             <p className="text-muted-foreground">
               {formattedDate}

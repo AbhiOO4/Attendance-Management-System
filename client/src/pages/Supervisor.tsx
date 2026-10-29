@@ -47,6 +47,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Employee {
   _id: string
@@ -184,7 +185,10 @@ function Supervisor() {
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-10">
         {/* Header */}
         <div className="space-y-1.5">
-          <h1 className="text-2xl font-semibold tracking-tight">Supervisors</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Supervisors</h1>
+            <HelpButton topic="supervisors" />
+          </div>
           <p className="text-sm text-muted-foreground">
             Create supervisor accounts from existing employees, and manage
             everyone with access.

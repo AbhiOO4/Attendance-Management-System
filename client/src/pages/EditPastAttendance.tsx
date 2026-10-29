@@ -67,6 +67,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { formatLocalTime12h } from "@/lib/dateUtils"
+import HelpButton from "@/components/help/HelpButton"
 
 // Add these updated interfaces
 
@@ -530,9 +531,12 @@ function EditPastAttendance() {
           <CardContent className="space-y-6 p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h1 className="text-3xl font-bold">
-                  Edit Attendance
-                </h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-3xl font-bold">
+                    Edit Attendance
+                  </h1>
+                  <HelpButton topic="past-attendance" />
+                </div>
 
                 <p className="text-muted-foreground">
                   {formattedDate}

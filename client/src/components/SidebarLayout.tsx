@@ -29,6 +29,7 @@ import {
   CalendarDays,
   FileCheck,
   History,
+  CircleHelp,
   type LucideIcon,
 } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -68,6 +69,7 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Activity Types", path: "/activity-types", icon: Tags },
   { name: "Configure", path: "/configure", icon: Settings },
   { name: "Manage Users", path: "/manage-users", icon: ShieldCheck },
+  { name: "Help", path: "/help", icon: CircleHelp },
 ]
 
 const ADMIN_NAV_ITEMS: NavItem[] = [
@@ -81,6 +83,7 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Requests", path: "/requests", icon: Inbox },
   { name: "Leave", path: "/leave", icon: CalendarDays },
   { name: "Configure", path: "/configure", icon: Settings },
+  { name: "Help", path: "/help", icon: CircleHelp },
 ]
 
 const DRIVER_SUPERVISOR_NAV_ITEMS: NavItem[] = [

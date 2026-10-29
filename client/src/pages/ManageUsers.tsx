@@ -50,6 +50,7 @@ import {
   Truck,
   UserPlus
 } from "lucide-react"
+import HelpButton from "@/components/help/HelpButton"
 
 interface User {
   _id: string
@@ -223,9 +224,12 @@ function ManageUsers() {
       {/* Header Section */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            Manage Users
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">
+              Manage Users
+            </h1>
+            <HelpButton topic="manage-users" />
+          </div>
           <p className="text-sm text-muted-foreground mt-1">
             Overview, assignment, and access control for system supervisors and admins.
           </p>

@@ -41,6 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import HelpButton from "@/components/help/HelpButton"
 
 interface SiteSummary {
   siteId: string
@@ -207,9 +208,12 @@ function DashBoard() {
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-foreground">
-              Dashboard
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                Dashboard
+              </h1>
+              <HelpButton topic="dashboard" />
+            </div>
             <p className="mt-1.5 text-sm text-muted-foreground">
               Welcome back,{" "}
               <span className="font-medium text-foreground">{user?.name || "User"}</span>

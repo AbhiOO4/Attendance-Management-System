@@ -22,6 +22,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import HelpButton from "@/components/help/HelpButton"
 
 interface GlobalJob {
   _id: string
@@ -177,7 +178,10 @@ function GlobalJobs() {
                 <Globe className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Global Jobs</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Global Jobs</h1>
+                  <HelpButton topic="sites" />
+                </div>
                 <p className="text-sm text-muted-foreground">
                   Jobs available on every site's attendance sheet and the drivers sheet — for
                   hours tracked against general expenses.

@@ -32,6 +32,7 @@ import SiteActivityLog from "@/components/SiteActivityLog"
 import SiteManpowerReport from "@/components/site/SiteManpowerReport"
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
 import { useAuth } from "@/context/AuthContext"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Site {
   _id: string
@@ -295,6 +296,7 @@ function SiteDetail() {
                   <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
                     {site?.siteName || "Site"}
                   </h1>
+                  <HelpButton topic="sites" />
 
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs font-medium ${

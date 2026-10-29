@@ -125,6 +125,7 @@ import {
   type Nationality,
   type RosterCategory,
 } from "@/lib/rosterUtils"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Employee {
   _id: string
@@ -4897,6 +4898,7 @@ function SiteAttendance({ siteIdOverride, variant = "site" }: SiteAttendanceProp
               <div>
                 <CardTitle className="flex items-center gap-2.5 flex-wrap">
                   <span>{isDrivers ? "Drivers Attendance" : site?.siteName}</span>
+                  <HelpButton topic={isDrivers ? "drivers-attendance" : "daily-attendance"} className="h-7 w-7" />
                   <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground ring-1 ring-inset ring-muted-foreground/10">
                     {stats.totalPresent} / {stats.totalAssigned} Present
                   </span>

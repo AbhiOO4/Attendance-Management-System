@@ -60,6 +60,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import HelpButton from "@/components/help/HelpButton"
 
 type WorkSchedule = {
   fullDayHours: number;
@@ -670,9 +671,12 @@ export default function Configure() {
 
         {/* ================= PAGE HEADER ================= */}
         <div className="space-y-1">
-          <h1 className="text-3xl font-bold tracking-tight">
-            Configure Attendance System
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-3xl font-bold tracking-tight">
+              Configure Attendance System
+            </h1>
+            <HelpButton topic="configure" />
+          </div>
 
           <p className="text-muted-foreground">
             Manage work schedules, weekly holidays, job titles and custom holidays.

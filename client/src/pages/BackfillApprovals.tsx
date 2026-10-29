@@ -22,6 +22,7 @@ import {
   type BackfillListItem,
   type BackfillStatus,
 } from "@/lib/backfillRequests"
+import HelpButton from "@/components/help/HelpButton"
 
 type Site = { _id: string; siteName: string }
 type Tab = "submitted" | "approved" | "rejected" | "draft"
@@ -92,7 +93,10 @@ export default function BackfillApprovals() {
         </Button>
 
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Backfill approvals</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Backfill approvals</h1>
+            <HelpButton topic="backfill-approvals" />
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             Records supervisors drafted for past days. Nothing is in attendance until you approve it.
           </p>

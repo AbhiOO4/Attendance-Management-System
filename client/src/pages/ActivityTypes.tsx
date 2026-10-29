@@ -63,6 +63,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Site {
   _id: string
@@ -396,7 +397,10 @@ function ActivityTypes() {
                 <Tags className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Activity Types</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Activity Types</h1>
+                  <HelpButton topic="activity-types" />
+                </div>
                 <p className="text-sm text-muted-foreground">
                   ERPNext activity types with their costing and billing rates. Each employee's
                   allocated type is used on their ERPNext timesheet export.

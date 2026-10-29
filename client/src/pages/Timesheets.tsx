@@ -65,6 +65,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import HelpButton from "@/components/help/HelpButton"
 
 interface TimesheetRow {
   _id: string
@@ -498,6 +499,7 @@ export default function Timesheets() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-4xl font-bold">Timesheets</h1>
+            <HelpButton topic="timesheets" />
             <MonthYearPicker
               value={period}
               onChange={(v) => {

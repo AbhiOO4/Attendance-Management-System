@@ -51,6 +51,7 @@ import { Badge } from "@/components/ui/badge"
 import { useAuth } from "@/context/AuthContext"
 import { MoreHorizontal, Pencil, RotateCcw, Search, Trash2 } from "lucide-react"
 import { isDriverTitle } from "@/lib/driverJobs"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Employee {
   _id: string
@@ -432,6 +433,7 @@ function Employees() {
           <h1 className="text-4xl font-bold">
             Employees
           </h1>
+          <HelpButton topic="employees" />
           <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20 text-sm font-semibold px-3 py-1 mt-1">
             Total: {totalEmployees}
           </Badge>

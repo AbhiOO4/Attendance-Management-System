@@ -83,6 +83,7 @@ import {
 } from "@/components/ui/dialog"
 
 import { Label } from "@/components/ui/label"
+import HelpButton from "@/components/help/HelpButton"
 
 interface Employee {
     _id: string
@@ -693,6 +694,7 @@ function InstaAddEmployees() {
 
                             <h1 className="text-lg sm:text-3xl font-bold tracking-tight flex items-center gap-2 sm:gap-3">
                                 Add New Employees
+                                <HelpButton topic="site-roster" />
                                 {searching && (
                                     <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin text-primary" />
                                 )}

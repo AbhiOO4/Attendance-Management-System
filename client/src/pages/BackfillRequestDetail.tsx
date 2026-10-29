@@ -17,6 +17,7 @@ import ConfirmButton from "@/components/backfill/ConfirmButton"
 import { api } from "@/lib/api"
 import { formatFullDateLabel } from "@/lib/dateUtils"
 import { notifyBackfillUpdated, type BackfillRequestDoc } from "@/lib/backfillRequests"
+import HelpButton from "@/components/help/HelpButton"
 
 export default function BackfillRequestDetail() {
   const navigate = useNavigate()
@@ -81,15 +82,18 @@ export default function BackfillRequestDetail() {
   return (
     <div className="px-4 py-6">
       <div className="mx-auto max-w-3xl space-y-5">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 w-fit text-muted-foreground"
-          onClick={() => navigate("/attendance/edit/backfill-requests")}
-        >
-          <ArrowLeft className="mr-1.5 h-4 w-4" />
-          Back to approvals
-        </Button>
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-2 w-fit text-muted-foreground"
+            onClick={() => navigate("/attendance/edit/backfill-requests")}
+          >
+            <ArrowLeft className="mr-1.5 h-4 w-4" />
+            Back to approvals
+          </Button>
+          <HelpButton topic="backfill-approvals" />
+        </div>
 
         {loading ? (
           <div className="flex h-40 items-center justify-center">
