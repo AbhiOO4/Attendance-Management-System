@@ -5,11 +5,13 @@ import {
   sumRawHours,
   allocateProRata,
   allocateSessionNetHours,
+  allocateDaySessionHours,
   recomputeRecordTotals,
   resolveBreakMinHours,
   computeAutoBreaks,
 } from "../../src/utils/attendanceMath.js";
 import { dayTotals, rawHours, configFor } from "../helpers/fixtures.js";
+import { record, session } from "../helpers/records.js";
 
 // Deterministic PRNG (mulberry32) so property tests are reproducible.
 const prng = (seed) => () => {
@@ -184,5 +186,109 @@ describe("recomputeRecordTotals", () => {
       { s: holiday.status, n: holiday.totalWorkHours, o: holiday.overtimeHours, h: holiday.holidayHours },
       { s: "fullday", n: 11, o: 0, h: 11 }
     );
+  });
+});
+
+describe("allocateDaySessionHours (overtime window)", () => {
+  const D = "2026-09-01";
+  const split = (r) =>
+    allocateDaySessionHours(r.sessions, {
+      netHours: r.totalWorkHours,
+      overtimeHours: r.overtimeHours,
+      holidayHours: r.holidayHours,
+    });
+  const strip = (parts) => parts.map(({ regular, premium }) => [regular, premium]);
+
+  test("07:00–17:00: 10 raw − 1 break = 9 net → 8 regular + 1 OT", () => {
+    const r = record(D, { sessions: [session(D, "07:00", "17:00")] });
+    assert.deepEqual(split(r), [{ net: 9, regular: 8, premium: 1 }]);
+  });
+
+  test("OT lands only on the session in the window (16:00–17:00); break pro-rata over regular", () => {
+    const r = record(D, { sessions: [session(D, "07:00", "15:00"), session(D, "15:00", "17:00")] });
+    assert.deepEqual(strip(split(r)), [
+      [7.11, 0],
+      [0.89, 1],
+    ]);
+  });
+
+  test("input order is kept (sessions given latest first)", () => {
+    const r = record(D, { sessions: [session(D, "15:00", "17:00"), session(D, "07:00", "15:00")] });
+    assert.deepEqual(strip(split(r)), [
+      [0.89, 1],
+      [7.11, 0],
+    ]);
+  });
+
+  test("a window straddling two sessions splits by overlap; regular never goes negative", () => {
+    const r = record(D, { sessions: [session(D, "07:00", "16:30"), session(D, "16:30", "17:00")] });
+    const parts = split(r);
+    assert.deepEqual(parts.map((p) => p.premium), [0.5, 0.5]);
+    assert.deepEqual(parts.map((p) => p.regular), [8, 0]);
+  });
+
+  test("gaps between sessions are skipped when walking the window back", () => {
+    // 07–12 + 13–18 = 10 raw → 9 net → 1 OT, all on the last hour (17–18).
+    const r = record(D, { sessions: [session(D, "07:00", "12:00"), session(D, "13:00", "18:00")] });
+    assert.deepEqual(split(r).map((p) => p.premium), [0, 1]);
+    // 06–16 + 17–18 = 11 raw → 10 net → 2 OT: 17–18, then back over the gap to 15–16.
+    const r2 = record(D, { sessions: [session(D, "06:00", "16:00"), session(D, "17:00", "18:00")] });
+    assert.equal(r2.overtimeHours, 2);
+    assert.deepEqual(split(r2).map((p) => p.premium), [1, 1]);
+  });
+
+  test("no break (override 0): the window is still the last OT hours", () => {
+    const r = record(D, { breaksTaken: 0, sessions: [session(D, "07:00", "14:00"), session(D, "14:00", "17:00")] });
+    assert.equal(r.overtimeHours, 2);
+    assert.deepEqual(strip(split(r)), [
+      [7, 0],
+      [1, 2],
+    ]);
+  });
+
+  test("night shift across midnight: the window is the morning tail", () => {
+    const r = record(D, { sessions: [session(D, "18:00", "23:00"), session(D, "23:00", "04:00")] });
+    // 10 raw → 9 net → 1 OT on 03:00–04:00 (next day).
+    assert.deepEqual(split(r).map((p) => p.premium), [0, 1]);
+  });
+
+  test("a worked holiday is all premium, split by raw length", () => {
+    const r = record(D, { isHoliday: true, sessions: [session(D, "07:00", "11:00"), session(D, "11:00", "13:00")] });
+    const parts = split(r);
+    assert.ok(parts.every((p) => p.regular === 0 && p.premium === p.net));
+    assert.equal(round2(parts.reduce((s, p) => s + p.premium, 0)), r.holidayHours);
+  });
+
+  test("no OT: the day net split pro-rata by EXACT session length", () => {
+    // 2h20 / 2h40 / 3h → 8 raw → 7 net. Weighted by exact minutes, not the 2dp workedHours.
+    const sessions = [session(D, "07:00", "09:20"), session(D, "09:20", "12:00"), session(D, "12:00", "15:00")];
+    const r = record(D, { sessions });
+    assert.equal(r.overtimeHours, 0);
+    assert.deepEqual(split(r).map((p) => p.net), allocateProRata([140, 160, 180], r.totalWorkHours));
+    assert.ok(split(r).every((p) => p.premium === 0 && p.regular === p.net));
+  });
+
+  test("property: Σnet = day net, Σpremium = OT + holiday, regular ≥ 0", () => {
+    const rnd = prng(4242);
+    const hhmm = (min) => `${String(Math.floor(min / 60) % 24).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+    for (let k = 0; k < 500; k++) {
+      const n = 1 + Math.floor(rnd() * 4);
+      let t = 5 * 60 + Math.floor(rnd() * 36) * 5;
+      const sessions = [];
+      for (let j = 0; j < n; j++) {
+        const len = 30 + Math.floor(rnd() * 84) * 5;
+        sessions.push(session(D, hhmm(t), hhmm(t + len)));
+        t += len + (rnd() < 0.5 ? 0 : 5 * Math.floor(rnd() * 12));
+      }
+      const r = record(D, { sessions, isHoliday: rnd() < 0.15, breaksTaken: rnd() < 0.1 ? 0 : null });
+      const parts = split(r);
+      const sum = (f) => round2(parts.reduce((s, p) => s + p[f], 0));
+      assert.equal(sum("net"), r.totalWorkHours);
+      assert.equal(sum("premium"), round2(r.overtimeHours + r.holidayHours));
+      for (const p of parts) {
+        assert.ok(p.regular >= 0 && p.premium >= 0, JSON.stringify(parts));
+        assert.equal(round2(p.regular + p.premium), p.net);
+      }
+    }
   });
 });

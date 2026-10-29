@@ -15,8 +15,8 @@ import { getStaffEmployeeIds } from '../utils/collar.js';
 import { recordNetFactor } from '../utils/manHours.js';
 import { combineFromOffset, deriveOffsets, resolveDayOffsets, validateSessionTimesV2, MAX_SHIFT_HOURS, getDateLocal, getTodayLocal, isWithinCarryoverWindow } from '../utils/timeLocal.js';
 import { hasSessionOverlap, buildCrossDayOverlapChecker, crossDayOverlapMessage } from '../utils/sessionOverlap.js';
-import { computeAttendanceTotals, sumRawHours } from '../utils/attendanceMath.js';
-import { buildAttendanceCsv, buildTimesheetCsv, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
+import { computeAttendanceTotals, sumRawHours, allocateDaySessionHours, allocateProRata } from '../utils/attendanceMath.js';
+import { buildAttendanceCsv, buildTimesheetCsv, isWorkedSession, DEFAULT_COMPANY, DEFAULT_ACTIVITY_TYPE } from '../utils/erpnextExport.js';
 import { classifyPayrollDay, hasOpenSession } from '../utils/payrollDay.js';
 import { buildCountableDays, countUnmarkedDays, unmarkedAsAbsent } from '../utils/unmarkedDays.js';
 import { isMonthClosed, timesheetBlockers, timesheetFingerprint } from '../utils/timesheetApproval.js';
@@ -681,7 +681,7 @@ export const jobReport = async (req, res) => {
     const hasMonth = month !== undefined && month !== "";
     const hasYear = year !== undefined && year !== "";
 
-    let dateMatch = [];
+    let dateFilter = {};
     let scopeMonth = null;
     let scopeYear = null;
 
@@ -709,7 +709,7 @@ export const jobReport = async (req, res) => {
       // server's own timezone. End is exclusive: first instant of the next month.
       const startDate = new Date(Date.UTC(yearNum, monthNum - 1, 1));
       const endDate = new Date(Date.UTC(yearNum, monthNum, 1));
-      dateMatch = [{ $match: { date: { $gte: startDate, $lt: endDate } } }];
+      dateFilter = { date: { $gte: startDate, $lt: endDate } };
       scopeMonth = monthNum;
       scopeYear = yearNum;
     }
@@ -718,7 +718,7 @@ export const jobReport = async (req, res) => {
     // Uses the employee's CURRENT type. Permanent is "not temporary" so legacy docs
     // without the field still count.
     const { employmentType } = req.query;
-    let employeeMatch = [];
+    let employeeFilter = {};
     if (employmentType !== undefined && employmentType !== "") {
       if (employmentType !== "temporary" && employmentType !== "permanent") {
         return res.status(400).json({
@@ -730,106 +730,62 @@ export const jobReport = async (req, res) => {
         ? { employmentType: "temporary" }
         : { employmentType: { $ne: "temporary" } };
       const employeeIds = await Employee.find(empFilter).distinct("_id");
-      employeeMatch = [{ $match: { employee: { $in: employeeIds } } }];
+      employeeFilter = { employee: { $in: employeeIds } };
     }
 
-    // Per-session apportionment: each session takes its share of the record's
-    // net / OT / holiday by its fraction of the day's raw worked hours.
-    // Regular = net − (OT + holiday): the base-rate (normal-status) portion only.
-    // On a holiday OT is 0 and holidayHours = net, so regular is 0 — those worked
-    // hours belong to the holiday bucket (Total OT), not regular, and must not be
-    // counted twice. Never negative (OT and holiday are mutually exclusive and
-    // their sum never exceeds net; _rawTotal > 0 is guaranteed by the $match).
-    // A driver session split across N jobs (utils/jobSplit.js) gives each job 1/N of it.
-    const share = {
-      $divide: [{ $ifNull: ["$sessions.workedHours", 0] }, { $multiply: ["$_rawTotal", { $max: ["$_n", 1] }] }],
+    // Deleted jobs too: their logged hours still bill in the ERPNext timesheet, so the
+    // report keeps them (flagged) — only deleted jobs with NO hours are dropped below.
+    const jobs = await Job.find({})
+      .populate("site", "siteName isActive isPermanent isDeleted isCompleted")
+      .lean();
+
+    // Per-session split of each day, by the SAME allocateDaySessionHours the ERPNext
+    // timesheet uses (so the two agree per job): the day's OT goes to the sessions in the
+    // overtime window, the break comes out of the regular part, and a worked holiday is all
+    // holiday hours (the holiday bucket / Total OT, never regular). A driver session split
+    // across N jobs (utils/jobSplit.js) gives each job an equal slice, like the timesheet.
+    // Sessions with a job go to hoursMap (by job); job-less ones to unassignedMap (by site),
+    // otherwise their hours would drop out and every site total would undercount them.
+    const hoursMap = new Map();
+    const unassignedMap = new Map();
+    const addHours = (map, id, regular, premium, isHoliday) => {
+      const key = id.toString();
+      const entry = map.get(key) || { regularHours: 0, overtimeHours: 0, holidayHours: 0 };
+      entry.regularHours += regular;
+      if (isHoliday) entry.holidayHours += premium;
+      else entry.overtimeHours += premium;
+      map.set(key, entry);
     };
-    const regularExpr = {
-      $sum: {
-        $multiply: [
-          {
-            $subtract: [
-              { $ifNull: ["$totalWorkHours", 0] },
-              { $add: [{ $ifNull: ["$overtimeHours", 0] }, { $ifNull: ["$holidayHours", 0] }] },
-            ],
-          },
-          share,
-        ],
-      },
-    };
-    const overtimeExpr = { $sum: { $multiply: [{ $ifNull: ["$overtimeHours", 0] }, share] } };
-    const holidayExpr = { $sum: { $multiply: [{ $ifNull: ["$holidayHours", 0] }, share] } };
 
-    // Scope to the selected month / employment type (if any) FIRST, then keep
-    // records with worked hours and unwind to one session per document.
-    const basePipeline = [
-      ...dateMatch,
-      ...employeeMatch,
-      { $addFields: { _rawTotal: { $sum: "$sessions.workedHours" } } },
-      { $match: { _rawTotal: { $gt: 0 } } },
-      { $unwind: "$sessions" },
-      // The session's jobs: splitJobIds when non-empty, else [jobId] (see sessionJobIds).
-      {
-        $addFields: {
-          _jobs: {
-            $cond: [
-              { $gt: [{ $size: { $ifNull: ["$sessions.splitJobIds", []] } }, 0] },
-              "$sessions.splitJobIds",
-              { $cond: [{ $ifNull: ["$sessions.jobId", false] }, ["$sessions.jobId"], []] },
-            ],
-          },
-        },
-      },
-      { $addFields: { _n: { $size: "$_jobs" } } },
-    ];
+    const cursor = Attendance.find({ ...dateFilter, ...employeeFilter })
+      .select("sessions totalWorkHours overtimeHours holidayHours")
+      .lean()
+      .cursor();
+    for await (const record of cursor) {
+      const worked = (record.sessions || []).filter(isWorkedSession);
+      if (worked.length === 0) continue;
+      const isHoliday = (Number(record.holidayHours) || 0) > 0;
+      const parts = allocateDaySessionHours(worked, {
+        netHours: record.totalWorkHours || 0,
+        overtimeHours: record.overtimeHours,
+        holidayHours: record.holidayHours,
+      });
 
-    const [jobs, jobResults, unassignedResults] = await Promise.all([
-      // Deleted jobs too: their logged hours still bill in the ERPNext timesheet, so the
-      // report keeps them (flagged) — only deleted jobs with NO hours are dropped below.
-      Job.find({})
-        .populate("site", "siteName isActive isPermanent isDeleted isCompleted")
-        .lean(),
-
-      // Hours grouped by job (sessions that HAVE a job).
-      Attendance.aggregate([
-        ...basePipeline,
-        { $match: { _n: { $gt: 0 } } },
-        { $unwind: "$_jobs" },
-        {
-          $group: {
-            _id: "$_jobs",
-            regularHours: regularExpr,
-            overtimeHours: overtimeExpr,
-            holidayHours: holidayExpr,
-          },
-        },
-      ]),
-
-      // Hours grouped by SITE for sessions with NO job — otherwise these worked
-      // hours are dropped from the report and every site total undercounts them.
-      Attendance.aggregate([
-        ...basePipeline,
-        { $match: { _n: 0, "sessions.siteId": { $ne: null } } },
-        {
-          $group: {
-            _id: "$sessions.siteId",
-            regularHours: regularExpr,
-            overtimeHours: overtimeExpr,
-            holidayHours: holidayExpr,
-          },
-        },
-      ]),
-    ]);
+      worked.forEach((session, i) => {
+        const { regular, premium } = parts[i];
+        const jobIds = sessionJobIds(session);
+        if (jobIds.length === 0) {
+          if (session.siteId) addHours(unassignedMap, session.siteId, regular, premium, isHoliday);
+          return;
+        }
+        const ones = jobIds.map(() => 1);
+        const regularParts = allocateProRata(ones, regular);
+        const premiumParts = allocateProRata(ones, premium);
+        jobIds.forEach((jobId, k) => addHours(hoursMap, jobId, regularParts[k], premiumParts[k], isHoliday));
+      });
+    }
 
     const round = (n) => Number((n || 0).toFixed(2));
-
-    const hoursMap = new Map();
-    for (const r of jobResults) hoursMap.set(r._id.toString(), r);
-
-    const unassignedMap = new Map();
-    for (const r of unassignedResults) {
-      if (r._id) unassignedMap.set(r._id.toString(), r);
-    }
 
     const siteMap = new Map();
     const ensureSite = (site) => {

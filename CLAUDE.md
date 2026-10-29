@@ -224,7 +224,12 @@ are reported, never dropped silently: `X-Erpnext-Dropped-Overtime-Hours` /
 Job), exposed via `cors.exposedHeaders` in `app.js` and shown as a warning toast by
 `lib/erpExportWarnings.ts`. The Timesheet keeps a per-employee cursor so a log never starts
 before the previous one ends (a 2h55m session carries 2.92h = 2h55m12s and used to overlap a
-back-to-back next session — ERPNext rejects overlapping time logs). The Jobs report keeps
+back-to-back next session — ERPNext rejects overlapping time logs). Per-job hours (Timesheet
+AND Jobs report) come from ONE split, `allocateDaySessionHours` (`attendanceMath.js`): a day's
+OT belongs to the OVERTIME WINDOW, the last `overtimeHours` of worked time walked back from the
+latest check-out (07:00–17:00, 1h break, threshold 8 → 16:00–17:00), so only sessions in it
+carry OT. The break comes out of the regular portions pro-rata, a worked holiday is all premium,
+and it's read-time only (no recalc). The Jobs report keeps
 soft-DELETED jobs (and deleted sites' job-less hours) while they have hours, flagged
 `isDeleted` — the Timesheet still bills them. Site/Dashboard man-hours
 (`recordNetFactor`, `siteController`) deliberately EXCLUDE staff and drivers' split hours, so
@@ -376,7 +381,7 @@ listed muted + unpickable — `GET /api/drivers/jobs` now includes them with `jo
 ticks every live job; the last tick can't be removed). Used by the Drivers sheet (draft + inline),
 `EditSiteRecord`, `SessionSiteJobFields` (Edit past, Backfill) and Bulk backfill. Draft prefill =
 `lastPlace` from `GET /api/drivers/roster` (last site served, ALL its current live jobs ticked).
-Readers that divide by N: `jobReport` (`_jobs`/`_n` after `$unwind`), `jobManHoursAndDays`, and
+Readers that divide by N: `jobReport` (a JS pass over the records, `allocateProRata(ones, …)` per session), `jobManHoursAndDays`, and
 `buildTimesheetCsv`, which lays the N slices ONE AFTER ANOTHER from check-in (each in its own job's
 Timesheet) so ERPNext never sees overlapping time logs. Responses carry `servedSite` + `splitJobs`
 (`buildSplitLookup`); `sessionJobCell` renders them in tables/exports.

@@ -88,8 +88,38 @@ describe("a worked holiday is all premium time", () => {
   });
 });
 
+describe("overtime goes to the jobs worked in the overtime window", () => {
+  test("A 07–15 + B 15–17: the 16:00–17:00 OT hour lands on B only", () => {
+    const r = record("2026-09-11", {
+      employee: employee("EMP-7"),
+      sessions: [session("2026-09-11", "07:00", "15:00", A), session("2026-09-11", "15:00", "17:00", B)],
+    });
+    assert.equal(r.overtimeHours, 1);
+    const { rows } = build([r], { overtimeActivityType: "Construction OT" });
+    assert.deepEqual(rows.map(lineOf).map((l) => [l.job, l.activity, l.from, l.hrs]), [
+      ["JOB-A", "Construction", "2026-09-11 07:00:00", 7.11],
+      ["JOB-B", "Construction", "2026-09-11 15:00:00", 0.89],
+      ["JOB-B", "Construction OT", "2026-09-11 15:53:24", 1],
+    ]);
+    assertNoOverlap(rows);
+  });
+
+  test("a session entirely inside the window is a single OT line from its check-in", () => {
+    const r = record("2026-09-12", {
+      employee: employee("EMP-8"),
+      sessions: [session("2026-09-12", "07:00", "16:00", A), session("2026-09-12", "16:00", "17:00", B)],
+    });
+    const { rows } = build([r], { overtimeActivityType: "Construction OT" });
+    assert.deepEqual(rows.map(lineOf).map((l) => [l.job, l.activity, l.hrs]), [
+      ["JOB-A", "Construction", 8],
+      ["JOB-B", "Construction OT", 1],
+    ]);
+    assertNoOverlap(rows);
+  });
+});
+
 describe("multi-site day", () => {
-  // 3 sessions, exactly 8h raw → net 7 (one break), split pro-rata across 2 jobs.
+  // 3 sessions, exactly 8h raw → net 7 (one break), no OT: split pro-rata across 2 jobs.
   const E = employee("EMP-3");
   const r = record("2026-09-02", {
     employee: E,

@@ -11,13 +11,12 @@
 //                    ("Job Order"); Site is NOT a cost dimension here.
 //
 // Break handling: breaks are a single DAY-LEVEL deduction (see attendanceMath.js), so
-// the timesheet's per-session Hours are the day net split PRO-RATA across sessions by
-// allocateSessionNetHours — Σ session hours == record.totalWorkHours (the paid net),
-// which keeps project cost reconciled to payroll. Payroll itself is break-agnostic:
-// status comes from raw hours and OT is already net.
+// the timesheet's per-session Hours come from allocateDaySessionHours — Σ session hours ==
+// record.totalWorkHours (the paid net), which keeps project cost reconciled to payroll.
+// Payroll itself is break-agnostic: status comes from raw hours and OT is already net.
 
 import { toLocalDateString, toLocalTimeString } from "./timeLocal.js";
-import { allocateSessionNetHours, allocateProRata } from "./attendanceMath.js";
+import { allocateDaySessionHours, allocateProRata } from "./attendanceMath.js";
 import { classifyPayrollDay } from "./payrollDay.js";
 import { overtimeNameFor } from "./activityTypes.js";
 
@@ -84,7 +83,7 @@ function localDateTimeStringExact(instant) {
 
 // A session that actually contributes worked time (a closed session with positive
 // hours). Open sessions (check-in, no check-out) carry 0 hours and are excluded.
-const isWorkedSession = (s) => !!(s && s.checkIn && (Number(s.workedHours) || 0) > 0);
+export const isWorkedSession = (s) => !!(s && s.checkIn && (Number(s.workedHours) || 0) > 0);
 
 // --------------------------------------------------------------------------
 // 1. Attendance (payroll payment-days)
@@ -258,8 +257,9 @@ export function buildAttendanceCsv(
 // Regular/OT split: when `overtimeActivityType` is set, a session is emitted as up to TWO
 // time-logs — the regular hours under `activityType` and the overtime hours under
 // `overtimeActivityType` — so ERPNext can cost OT at a premium (its own Activity Cost per
-// employee). OT is a DAY-level figure (record.overtimeHours), so it is spread across the
-// day's sessions pro-rata by net hours. HOLIDAY hours (record.holidayHours) are paid at the
+// employee). OT is a DAY-level figure (record.overtimeHours) that belongs to the OVERTIME
+// WINDOW — the last OT hours of the worked day — so only the sessions worked in that window
+// carry it (allocateDaySessionHours; the break comes out of the regular part). HOLIDAY hours (record.holidayHours) are paid at the
 // OT rate too, so a worked holiday goes entirely under `overtimeActivityType` — matching the
 // Attendance CSV, which sends them as overtime duration. The OT log is placed as the shift's TAIL
 // (From = check-in + regular hours) so the two contiguous logs never overlap in ERPNext.
@@ -316,9 +316,9 @@ export function buildTimesheetCsv(
   const unallocated = new Set();
 
   // ---- Pass 1: bucket time-log lines by (employee, job order) ----
-  // The per-DAY math must run per record first: allocateSessionNetHours splits the day net
-  // across the day's worked sessions (Σ === record.totalWorkHours) and OT is a day-level
-  // figure spread across them. A single day can span jobs (multi-site day), so each
+  // The per-DAY math must run per record first: allocateDaySessionHours splits the day net
+  // across the day's worked sessions (Σ === record.totalWorkHours) and puts the day's OT on
+  // the sessions in the overtime window. A single day can span jobs (multi-site day), so each
   // resulting line is then routed to its OWN job's bucket.
   const byEmployee = new Map(); // employeeId -> Map<jobCode, Array<{ at, fromStr, hours }>>
   const addLine = (employeeId, jobCode, at, fromStr, hours) => {
@@ -348,13 +348,15 @@ export function buildTimesheetCsv(
     const employeeId = record.employee.employeeId;
     const { regular: regularType, overtime: overtimeType } = activityFor(record);
     const splitOt = !!overtimeType;
-    const nets = allocateSessionNetHours(worked, record.totalWorkHours || 0);
-    // Hours paid at the OT rate: overtime on a normal day, the whole holiday credit on a
-    // worked holiday (overtimeHours is 0 on holidays upstream, so the two never stack).
-    const premiumHours = (Number(record.overtimeHours) || 0) + (Number(record.holidayHours) || 0);
-    const ots = splitOt
-      ? allocateProRata(nets, premiumHours)
-      : nets.map(() => 0);
+    // Premium = hours paid at the OT rate: overtime on a normal day, the whole holiday credit
+    // on a worked holiday (overtimeHours is 0 on holidays upstream, so the two never stack).
+    const parts = allocateDaySessionHours(worked, {
+      netHours: record.totalWorkHours || 0,
+      overtimeHours: record.overtimeHours,
+      holidayHours: record.holidayHours,
+    });
+    const nets = parts.map((p) => p.net);
+    const ots = parts.map((p) => (splitOt ? p.premium : 0));
 
     // Lay the day's sessions in check-in order (nets/ots stay indexed like `worked`).
     const inOrder = worked

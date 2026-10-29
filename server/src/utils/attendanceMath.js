@@ -62,9 +62,8 @@ const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
  * Distribute a total across weighted buckets PRO-RATA, rounded to 2dp, with the rounding
  * residual pushed onto the largest-weight bucket so the parts sum EXACTLY to `total`.
  *
- * The shared primitive behind the ERPNext export's two day-level splits: a day's NET
- * hours across sessions (weighted by raw hours) and a day's OVERTIME across sessions
- * (weighted by net hours). Zero total weight → all zeros; a single bucket → the whole total.
+ * The shared primitive behind the day-level splits (allocateDaySessionHours) and a driver
+ * session's equal per-job slices. Zero total weight → all zeros; a single bucket → the whole total.
  *
  * @param {number[]} weights  non-negative bucket weights, in order
  * @param {number}   total    the amount to distribute (2dp)
@@ -100,10 +99,9 @@ export function allocateProRata(weights, total) {
  * Breaks are a single day-level deduction (see computeAttendanceTotals) — a session
  * carries only its raw `workedHours`, never a per-session net. This spreads the day's
  * break deduction across sessions in proportion to their raw share, so the per-session
- * net sums EXACTLY back to the day net (`record.totalWorkHours`). Used by the ERPNext
- * timesheet export so that per-job/project cost reconciles to the net hours actually
- * paid. On a single-session day the whole net (and thus the whole break) sits on that
- * one session.
+ * net sums EXACTLY back to the day net (`record.totalWorkHours`). On a single-session day
+ * the whole net (and thus the whole break) sits on that one session. The ERPNext timesheet
+ * and Jobs report use allocateDaySessionHours, which also places the day's overtime.
  *
  * @param {Array<{workedHours?: number}>} sessions  the day's sessions (raw workedHours each)
  * @param {number} dayNetHours                       record.totalWorkHours (net, already 2dp)
@@ -114,6 +112,76 @@ export function allocateSessionNetHours(sessions, dayNetHours) {
     (s) => Math.max(Number(s?.workedHours) || 0, 0)
   );
   return allocateProRata(raws, dayNetHours);
+}
+
+// A session's exact length in ms: check-out − check-in when both Dates exist, else its
+// stored workedHours (legacy / hand-built), and 0 for an open session — sumRawHours' rule.
+function sessionLengthMs(s) {
+  if (!s) return 0;
+  const inMs = s.checkIn ? new Date(s.checkIn).getTime() : NaN;
+  const outMs = s.checkOut ? new Date(s.checkOut).getTime() : NaN;
+  if (Number.isFinite(inMs) && Number.isFinite(outMs)) return Math.max(outMs - inMs, 0);
+  if (!s.checkIn || s.checkOut) return Math.max(Number(s.workedHours) || 0, 0) * 3600000;
+  return 0;
+}
+
+/**
+ * Split a day's stored totals across its sessions: each session's NET hours, and how much
+ * of it is REGULAR vs PREMIUM (overtime, or the holiday credit on a worked holiday).
+ *
+ * Overtime belongs to the OVERTIME WINDOW — the last `overtimeHours` of the worked day — so
+ * only the sessions worked in that window carry it. The break is part of the regular block
+ * (regular raw = threshold + break), so it never comes out of OT time: e.g. 07:00–17:00 =
+ * 10 raw − 1 break = 9 net, threshold 8 → 1 OT, window 16:00–17:00. With job A 07:00–15:00
+ * and job B 15:00–17:00, B carries the whole hour of OT. The window is walked back from the
+ * latest check-out over WORKED time, so gaps between sessions are skipped.
+ *
+ * The break (and any rounding) is deducted from the regular portions PRO-RATA by their raw
+ * length: above, A 8 raw + B 1 raw share 8 regular net → A 7.11, B 0.89 (+ 1 OT).
+ * A worked holiday is all premium, split by raw length; a day with no OT is split by raw
+ * length exactly like allocateSessionNetHours.
+ *
+ * Used by the ERPNext timesheet export and the Jobs report, so the two agree per job.
+ *
+ * @param {Array<{checkIn?, checkOut?, workedHours?}>} sessions  the day's WORKED sessions
+ * @param {{netHours: number, overtimeHours?: number, holidayHours?: number}} totals  stored day totals
+ * @returns {Array<{net: number, regular: number, premium: number}>} per session, input order;
+ *          Σnet === netHours, Σpremium === overtimeHours + holidayHours, net = regular + premium
+ */
+export function allocateDaySessionHours(sessions, { netHours = 0, overtimeHours = 0, holidayHours = 0 } = {}) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const raws = list.map(sessionLengthMs);
+  const net = Math.max(Number(netHours) || 0, 0);
+  const holiday = Math.max(Number(holidayHours) || 0, 0);
+  const ot = Math.min(Math.max(Number(overtimeHours) || 0, 0), net);
+
+  // A worked holiday: every hour is premium.
+  if (holiday > 0) {
+    const nets = allocateProRata(raws, net);
+    const premiums = allocateProRata(nets, Math.min(holiday, net));
+    return nets.map((n, i) => ({ net: n, regular: round2(n - premiums[i]), premium: premiums[i] }));
+  }
+
+  if (ot <= 0) {
+    return allocateProRata(raws, net).map((n) => ({ net: n, regular: n, premium: 0 }));
+  }
+
+  // Each session's overlap with the OT window, walking back from the latest check-out.
+  const endMs = (s) => (s?.checkOut ? new Date(s.checkOut).getTime() : -Infinity);
+  const byEndDesc = list.map((s, i) => i).sort((a, b) => endMs(list[b]) - endMs(list[a]));
+  const overlaps = raws.map(() => 0);
+  let remaining = Math.round(ot * 3600000);
+  for (const i of byEndDesc) {
+    if (remaining <= 0) break;
+    overlaps[i] = Math.min(raws[i], remaining);
+    remaining -= overlaps[i];
+  }
+
+  const premiums = allocateProRata(overlaps, ot);
+  const regularRaws = raws.map((r, i) => r - overlaps[i]);
+  const regularWeights = regularRaws.some((r) => r > 0) ? regularRaws : raws;
+  const regulars = allocateProRata(regularWeights, round2(net - ot));
+  return regulars.map((r, i) => ({ net: round2(r + premiums[i]), regular: r, premium: premiums[i] }));
 }
 
 /**
