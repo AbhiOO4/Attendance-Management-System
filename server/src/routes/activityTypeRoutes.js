@@ -13,8 +13,8 @@ import {
 const router = express.Router()
 
 router.use(verifyToken)
-// Rates are money: the whole page is superadmin-only.
-router.use(authorizeRoles("superadmin"))
+// The whole page is admin + superadmin (admin implicitly allows superadmin).
+router.use(authorizeRoles("admin"))
 
 // Prefix /api/activity-types (see utils/activityTypes.js). Specific paths before /:id.
 router.get('/', getActivityTypes)

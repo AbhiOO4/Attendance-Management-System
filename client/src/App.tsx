@@ -144,11 +144,10 @@ function App() {
           }
         />
 
-        {/* SUPERADMIN ONLY */}
         <Route
           path="reports"
           element={
-            <ProtectedRoute allowedRoles={["superadmin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <MonthlyReport />
             </ProtectedRoute>
           }
@@ -231,7 +230,7 @@ function App() {
         <Route
           path="activity-types"
           element={
-            <ProtectedRoute allowedRoles={["superadmin"]}>
+            <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
               <ActivityTypes />
             </ProtectedRoute>
           }

@@ -77,7 +77,7 @@ export const configure: HelpTopic = {
         {
           text: "**Consider Unmarked Attendance As**: what a day with no record means. **Absent** = not paid. **Present** = paid.",
         },
-        { text: "**Overtime Activity Multiplier** (superadmin only): overtime rate = normal rate × this number. For example 1.25." },
+        { text: "**Overtime Activity Multiplier**: overtime rate = normal rate × this number. For example 1.25." },
       ],
       seeAlso: [{ topic: "activity-types", label: "Activity types" }],
     },

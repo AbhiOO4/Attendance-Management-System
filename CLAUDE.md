@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Attendance tracking system ("NGDP AMS") for a construction/workshop
 company. Supervisors mark daily attendance per site; admins manage sites,
-employees and users; superadmins configure the work schedule and pull monthly
-attendance reports. There is NO payroll/pay-rate logic — the app tracks hours
+employees and users, configure the work schedule and pull monthly attendance
+reports; superadmins additionally manage users. There is NO payroll/pay-rate logic — the app tracks hours
 (worked, overtime, holiday) only, not money. Monorepo with two independent
 packages: `server/` (Express + MongoDB API) and `client/` (React + Vite PWA).
 There is no root package.json — each is installed and run separately.
@@ -209,7 +209,7 @@ workers have no ERPNext slip. A WORKED holiday goes into the ERPNext Attendance 
 Overtime Slip only reads Present rows); unworked holidays stay skipped. The tally lives in
 `buildAttendanceReport(fromDay, toDay)` (inclusive UTC-midnight bounds), shared by
 `GET /reports/monthly/:month/:year` and `GET /reports/range?from&to`
-(`rangeReport`, superadmin, strict `YYYY-MM-DD`, ≤ 366 days). The Reports page offers
+(`rangeReport`, admin + superadmin, strict `YYYY-MM-DD`, ≤ 366 days). The Reports page offers
 Month | Date range (`components/DateRangePicker.tsx`) and is VIEW-ONLY (its Job Report
 spreadsheet is the one export left there). Every per-employee export lives on the Timesheets
 page; the ERPNext files are approval-gated (see "Timesheet approval"): two ERPNext files (Attendance,
@@ -409,12 +409,11 @@ ERPNext costs time-logs at the type's DEFAULT rates with no per-employee Activit
 type has an automatic OVERTIME twin that is never stored: name = `name + " - Overtime"`
 (`overtimeNameFor`; a name ending in the suffix is refused), rates = base ×
 `WorkSchedule.overtimeActivityMultiplier` (default 1.25, Configure → ERPNext Export), derived on
-read so changing the multiplier re-rates every twin. Superadmin only: the Activity Types page
+read so changing the multiplier re-rates every twin. Admin + superadmin: the Activity Types page
 (`/activity-types`, `pages/ActivityTypes.tsx`), `/api/activity-types` (list, create, PATCH rates
 — names are fixed ERPNext keys, DELETE refused while allocated, `POST /allocate`
 `{ activityTypeId|null, employeeIds }`, `GET /erpnext?mode=insert|update` = the Activity Type
-master Data Import CSV, two rows per type), and the multiplier (`updateWorkSchedule` 403s anyone
-else). `buildTimesheetCsv` picks names PER RECORD: an allocated employee's regular hours go under
+master Data Import CSV, two rows per type), and the multiplier. `buildTimesheetCsv` picks names PER RECORD: an allocated employee's regular hours go under
 their type and OT/holiday hours under its twin (split always on); unallocated employees keep the
 `erpDefaultActivityType` / `erpOvertimeActivityType` fallback. CURRENT allocation only — no history,
 so a mid-month change re-types the whole month. `GET /api/employees` takes `activityType` (id |

@@ -14,7 +14,7 @@ import {
 } from "../utils/activityTypes.js"
 
 // Activity types (utils/activityTypes.js): ERPNext rate bands allocated per employee.
-// Every route is superadmin-only (activityTypeRoutes.js).
+// Every route is admin + superadmin (activityTypeRoutes.js).
 
 async function loadMultiplier() {
   const cfg = await workModel.findOne({ type: "default" }, "overtimeActivityMultiplier").lean()

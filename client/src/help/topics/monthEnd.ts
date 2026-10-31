@@ -38,7 +38,7 @@ export const monthEnd: HelpTopic = {
           text: "Repeat until the **Pending** list is empty.",
         },
         {
-          text: "Superadmin: open **Reports** and compare **Payment Days** with the ERPNext salary slips.",
+          text: "Open **Reports** and compare **Payment Days** with the ERPNext salary slips.",
         },
         {
           text: "Back on **Timesheets**, click **Select all approved**. Click **Export** → **Attendance (payroll)**. Then **Export** → **Timesheet (job cost)**.",

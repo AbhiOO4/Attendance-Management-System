@@ -1,5 +1,5 @@
 // pages/ActivityTypes.tsx — ERPNext activity types (costing/billing rate bands) and their
-// allocation to employees. Superadmin only. Server: utils/activityTypes.js, routes under
+// allocation to employees. Admin + superadmin. Server: utils/activityTypes.js, routes under
 // /api/activity-types. The ERPNext timesheet export stamps each employee's allocated type
 // (and its automatic "- Overtime" twin) on their time-logs.
 

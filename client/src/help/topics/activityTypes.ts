@@ -5,7 +5,7 @@ export const activityTypes: HelpTopic = {
   id: "activity-types",
   title: "Activity types (rates)",
   icon: Tags,
-  roles: ["superadmin"],
+  roles: ["superadmin", "admin"],
   summary:
     "An activity type is a rate group for ERPNext, for example Skilled Labour. Each person gets one type. ERPNext uses it to cost their hours. The app makes an overtime type for every type by itself.",
   whereToFind: "Sidebar → **Activity Types**",

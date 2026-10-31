@@ -182,15 +182,8 @@ export const updateWorkSchedule = async (req, res) => {
       schedule.erpPaidLeaveType = String(erpPaidLeaveType).trim();
     }
 
-    // Activity-type overtime twin multiplier. Rates are money, so — unlike the rest of this
-    // admin-level route — only a superadmin may change it (the Activity Types page is theirs).
+    // Activity-type overtime twin multiplier (admin + superadmin, like the Activity Types page).
     if (overtimeActivityMultiplier !== undefined) {
-      if (req.user?.role !== "superadmin") {
-        return res.status(403).json({
-          success: false,
-          message: "Only a superadmin can change the overtime activity multiplier",
-        });
-      }
       const m = Number(overtimeActivityMultiplier);
       if (
         overtimeActivityMultiplier === null ||

@@ -5,7 +5,7 @@ export const reports: HelpTopic = {
   id: "reports",
   title: "Reports",
   icon: BarChart3,
-  roles: ["superadmin"],
+  roles: ["superadmin", "admin"],
   summary:
     "Two reports. **Monthly Attendance** shows every person's payment days, absent days and overtime, to check against the ERPNext salary slip. **Job Report** shows the hours spent on each job.",
   whereToFind: "Sidebar → **Reports**",

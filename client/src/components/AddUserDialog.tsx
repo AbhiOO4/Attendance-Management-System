@@ -22,7 +22,7 @@ const ROLES: { key: Role; label: string; desc: string }[] = [
   { key: "supervisor", label: "Supervisor", desc: "Marks attendance for their employee's site." },
   { key: "driverSupervisor", label: "Driver Supervisor", desc: "Marks every driver with no site." },
   { key: "admin", label: "Admin", desc: "Manages sites, employees and users." },
-  { key: "superadmin", label: "Superadmin", desc: "Admin plus reports and user management." },
+  { key: "superadmin", label: "Superadmin", desc: "Admin plus user management." },
 ]
 
 type EmployeeHit = { _id: string; name: string; employeeId: string; jobTitle: string; user?: string | null }

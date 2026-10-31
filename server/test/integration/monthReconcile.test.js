@@ -218,14 +218,18 @@ describe("the month reconciles across every view", () => {
 });
 
 describe("access", () => {
-  test("payroll reports are superadmin-only; the bulk export is admin + superadmin", async () => {
+  test("payroll reports and the bulk export are admin + superadmin", async () => {
     const sup = await makeSupervisor(M, sites.alpha, "SUP-A");
     assert.equal((await api(stack.app, sup).get("/api/attendance/reports/monthly/9/2026")).status, 403);
-    assert.equal((await api(stack.app, admin).get("/api/attendance/reports/monthly/9/2026")).status, 403);
+    ok(await api(stack.app, admin).get("/api/attendance/reports/monthly/9/2026"), "admin monthly report");
+    ok(await api(stack.app, admin).get("/api/attendance/reports/range?from=2026-09-01&to=2026-09-30"), "admin range report");
     assert.equal((await api(stack.app, sup).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance", employeeIds: [String(E.P2._id)] })).status, 403);
     const mine = ok(await api(stack.app, admin).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance", employeeIds: [String(E.P2._id)] }), "admin bulk export");
     assert.deepEqual(parseCsv(mine.text), attendanceCsv.filter((r) => r.Employee === "P2"));
-    assert.equal((await api(stack.app, admin).get("/api/attendance/reports/job-report")).status, 403);
+    assert.equal((await api(stack.app, sup).get("/api/attendance/reports/job-report?month=9&year=2026")).status, 403);
+    ok(await api(stack.app, admin).get("/api/attendance/reports/job-report?month=9&year=2026"), "admin job report");
+    ok(await api(stack.app, admin).get("/api/activity-types"), "admin activity types");
+    assert.equal((await api(stack.app, sup).get("/api/activity-types")).status, 403);
   });
   test("the bulk export needs an employee list over HTTP", async () => {
     assert.equal((await api(stack.app, superadmin).post("/api/attendance/reports/erpnext/9/2026").send({ type: "attendance" })).status, 400);

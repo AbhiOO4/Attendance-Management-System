@@ -78,10 +78,12 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { name: "Timesheets", path: "/timesheets", icon: FileCheck },
   { name: "Mark Attendance", path: "/attendance", icon: ClipboardCheck },
   { name: "Past Attendance", path: "/attendance/edit", icon: History },
+  { name: "Reports", path: "/reports", icon: BarChart3 },
   { name: "Add Supervisors", path: "/supervisor", icon: UserPlus },
   { name: "Site", path: "/site", icon: Building2 },
   { name: "Requests", path: "/requests", icon: Inbox },
   { name: "Leave", path: "/leave", icon: CalendarDays },
+  { name: "Activity Types", path: "/activity-types", icon: Tags },
   { name: "Configure", path: "/configure", icon: Settings },
   { name: "Help", path: "/help", icon: CircleHelp },
 ]

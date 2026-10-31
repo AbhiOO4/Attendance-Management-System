@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useWorkConfig } from "@/context/WorkConfigContext";
-import { useAuth } from "@/context/AuthContext";
 import {
   DEFAULT_OVERTIME_MULTIPLIER,
   MAX_OVERTIME_MULTIPLIER,
@@ -81,7 +80,6 @@ type WorkSchedule = {
   erpOvertimeType: string;
   erpPaidLeaveType: string;
   // Rate multiplier of every activity type's automatic overtime twin (Activity Types page).
-  // Superadmin-only: the server 403s anyone else, so admins never send it.
   overtimeActivityMultiplier: number;
   // Mirrors ERPNext "Consider Unmarked Attendance As": true = Absent (deducted from
   // Payment Days in the report + timesheet), false = Present (paid).
@@ -283,12 +281,6 @@ function Field({
 
 export default function Configure() {
   const { refreshConfig } = useWorkConfig();
-  const { user } = useAuth();
-  const isSuperadmin = user?.role === "superadmin";
-  // The fields a section posts: the activity-type multiplier is superadmin-only (the server
-  // refuses it from anyone else), so an admin's ERPNext save leaves it out.
-  const postedFields = (section: SettingsSection) =>
-    isSuperadmin ? section.fields : section.fields.filter((f) => f !== "overtimeActivityMultiplier");
 
   // `schedule` is the editable draft; `saved` is the last copy the server confirmed.
   const [schedule, setSchedule] = useState<WorkSchedule>({
@@ -390,7 +382,7 @@ export default function Configure() {
       setSavingSection(section.id);
       const res = await api.patch(
         "/api/config/update",
-        pickFields(schedule, postedFields(section))
+        pickFields(schedule, section.fields)
       );
 
       const raw = res.data?.data as WorkSchedule | undefined;
@@ -950,23 +942,21 @@ export default function Configure() {
                   />
                 </Field>
 
-                {isSuperadmin && (
-                  <Field
+                <Field
+                  id="cfg-ot-activity-multiplier"
+                  label="Overtime Activity Multiplier"
+                  hint={`Every activity type gets an automatic "- Overtime" type whose costing and billing rates are the type's rates × this (default ${DEFAULT_OVERTIME_MULTIPLIER}). Changing it re-rates every overtime type — re-import the Activity Types master CSV into ERPNext afterwards.`}
+                >
+                  <Input
                     id="cfg-ot-activity-multiplier"
-                    label="Overtime Activity Multiplier"
-                    hint={`Every activity type gets an automatic "- Overtime" type whose costing and billing rates are the type's rates × this (default ${DEFAULT_OVERTIME_MULTIPLIER}). Changing it re-rates every overtime type — re-import the Activity Types master CSV into ERPNext afterwards.`}
-                  >
-                    <Input
-                      id="cfg-ot-activity-multiplier"
-                      type="number"
-                      min={MIN_OVERTIME_MULTIPLIER}
-                      max={MAX_OVERTIME_MULTIPLIER}
-                      step={0.05}
-                      value={schedule.overtimeActivityMultiplier ?? ""}
-                      onChange={(e) => setField("overtimeActivityMultiplier", Number(e.target.value))}
-                    />
-                  </Field>
-                )}
+                    type="number"
+                    min={MIN_OVERTIME_MULTIPLIER}
+                    max={MAX_OVERTIME_MULTIPLIER}
+                    step={0.05}
+                    value={schedule.overtimeActivityMultiplier ?? ""}
+                    onChange={(e) => setField("overtimeActivityMultiplier", Number(e.target.value))}
+                  />
+                </Field>
 
                 {/* Unmarked days never reach the ERPNext file, so ERPNext applies its own
                     rule to them — this mirrors it so the report's Payment Days match the slip. */}

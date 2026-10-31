@@ -18,7 +18,7 @@ export const manageUsers: HelpTopic = {
         { text: "**Supervisor**: marks attendance for their own site only." },
         { text: "**Driver Supervisor**: marks the **Drivers Attendance** sheet only." },
         { text: "**Admin**: manages sites, employees, attendance, leave and timesheets." },
-        { text: "**Superadmin**: everything an admin does, plus **Reports**, **Activity Types** and **Manage Users**." },
+        { text: "**Superadmin**: everything an admin does, plus **Manage Users**." },
       ],
     },
     {

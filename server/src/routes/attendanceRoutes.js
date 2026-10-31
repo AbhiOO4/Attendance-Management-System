@@ -33,10 +33,10 @@ router.get('/reports/daily', authorizeRoles("admin", "supervisor", "driverSuperv
 // to their own site.
 router.get('/reports/carryovers', authorizeRoles("admin", "supervisor", "driverSupervisor"), requireSiteAccess, attendanceController.getSiteCarryovers)
 
-router.get('/reports/monthly/:month/:year', authorizeRoles("superadmin"), attendanceController.monthlyReport)
+router.get('/reports/monthly/:month/:year', authorizeRoles("admin"), attendanceController.monthlyReport)
 
 // The same hours report over any from–to span of business days (?from&to, YYYY-MM-DD, max a year).
-router.get('/reports/range', authorizeRoles("superadmin"), attendanceController.rangeReport)
+router.get('/reports/range', authorizeRoles("admin"), attendanceController.rangeReport)
 
 // ERPNext Data Import CSV export. Body { type: attendance|timesheet, employeeIds } —
 // POST because the picked employee list can outgrow a query string. admin + superadmin,
@@ -75,7 +75,7 @@ router.patch('/leave/:leaveId/cancel', authorizeRoles("admin"), attendanceContro
 
 router.delete('/leave/:leaveId', authorizeRoles("admin"), attendanceController.deleteLeave)
 
-router.get('/reports/job-report', authorizeRoles("superadmin"), attendanceController.jobReport)
+router.get('/reports/job-report', authorizeRoles("admin"), attendanceController.jobReport)
 
 router.get('/employee/:employeeId', authorizeRoles("admin", "supervisor"), attendanceController.getEmployeeAttendanceByMonth)
 
