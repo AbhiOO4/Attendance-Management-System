@@ -33,6 +33,7 @@ export const generateTokenAndSetCookie = (res, user) => {
     const token = jwt.sign({
     id: user._id,
     role: user.role,
+    v: user.tokenVersion ?? 0, // verifyToken refuses the token once the account's version moves on
   }, process.env.JWT_SECRET, {expiresIn: '30d'})
 
     res.cookie('token', token, {

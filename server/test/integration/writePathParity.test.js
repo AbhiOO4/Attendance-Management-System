@@ -23,7 +23,7 @@ before(async () => {
   jobB = await makeJob(M, siteB, "B-200");
   jobC = await makeJob(M, siteC, "C-300");
   emps = {};
-  for (const id of ["E1", "E2", "E3", "E5", "E7"]) emps[id] = await makeEmployee(M, id, { currentSite: siteA._id });
+  for (const id of ["E1", "E2", "E3", "E7"]) emps[id] = await makeEmployee(M, id, { currentSite: siteA._id });
   emps.E4 = await makeEmployee(M, "E4", { currentSite: siteA._id, employmentType: "temporary" });
   emps.E6 = await makeEmployee(M, "E6", { currentSite: siteC._id, currentJob: jobC._id });
   await M.Job.updateOne({ _id: jobC._id }, { $push: { employees: emps.E6._id } });
@@ -95,25 +95,6 @@ describe("write paths", () => {
     assert.deepEqual(totals(await recordOf(emps.E1, "2026-09-01")), { status: "fullday", net: 9, ot: 1, holiday: 0, isHoliday: false });
   });
 
-  test("adding a session re-prices the day", async () => {
-    ok(
-      await api(stack.app, admin).post("/api/attendance/backfill").send({
-        employeeMongoId: emps.E5._id,
-        date: "2026-09-03",
-        sessions: [{ siteId: siteA._id, jobId: jobA._id, checkIn: "06:00", checkOut: "09:55" }],
-      }),
-      "backfill"
-    );
-    const r = await recordOf(emps.E5, "2026-09-03");
-    ok(
-      await api(stack.app, admin).post(`/api/attendance/${r._id}/sessions`).send({
-        session: { siteId: siteB._id, jobId: jobB._id, checkIn: iso("2026-09-03", "09:55"), checkOut: iso("2026-09-03", "11:00") },
-      }),
-      "add session"
-    );
-    assert.deepEqual(totals(await recordOf(emps.E5, "2026-09-03")), { status: "halfday", net: 5, ot: 0, holiday: 0, isHoliday: false });
-  });
-
   test("bulk checkout closes an open session and re-prices the day", async () => {
     ok(
       await api(stack.app, admin).post("/api/attendance/backfill").send({
@@ -153,7 +134,7 @@ describe("write paths", () => {
 
   test("EVERY stored record still equals the shared math and passes the invariants", async () => {
     const records = await M.Attendance.find({}).populate("employee", "employeeId employmentType").lean();
-    assert.equal(records.length, 8, `expected the records written above, got ${records.length}`);
+    assert.equal(records.length, 7, `expected the records written above, got ${records.length}`);
     assert.deepEqual(checkRecords(records, workConfig.toObject()), []);
   });
 });

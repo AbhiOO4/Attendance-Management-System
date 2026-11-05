@@ -11,21 +11,11 @@ const app = express()
 
 import cors from "cors"
 
-// TEMPORARY origin audit — remove once the old client link is confirmed dead.
-// Logs the first time each distinct Origin/Referer host is seen so the Render
-// logs can be grepped for `[ORIGIN-AUDIT]` to spot old-link (*.onrender.com)
-// traffic. Runs BEFORE cors so it captures origins cors would otherwise reject.
-const seenOrigins = new Set();
-app.use((req, res, next) => {
-  const origin = req.headers.origin || req.headers.referer || "(none)";
-  if (!seenOrigins.has(origin)) {
-    seenOrigins.add(origin);
-    console.log(
-      `[ORIGIN-AUDIT] first seen: ${origin} | ua: ${req.headers["user-agent"] || "?"} | path: ${req.method} ${req.originalUrl}`
-    );
-  }
-  next();
-});
+// How many proxies sit between visitors and this app, so req.ip (the login rate limit's key)
+// is the visitor rather than the host's proxy. Too low is the safe mistake: everyone looks
+// like one network. Too high lets a caller fake their address. Never set this to `true`.
+const proxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? "", 10);
+app.set("trust proxy", Number.isInteger(proxyHops) && proxyHops >= 0 ? proxyHops : 1);
 
 app.use(
   cors({

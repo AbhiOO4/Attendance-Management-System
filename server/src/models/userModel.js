@@ -48,6 +48,13 @@ const userSchema = new mongoose.Schema({
     sparse: true,
   },
 
+  // Bumped to end every session of this account (logout, password change). Tokens carry the
+  // version they were issued with, and verifyToken refuses any other.
+  tokenVersion: {
+    type: Number,
+    default: 0,
+  },
+
   // Web-Push subscriptions for this user's installed PWA instances. An array
   // (not a single object) because a supervisor may install the PWA on several
   // devices (phone + desktop); each is deduped by `endpoint`. Dead endpoints

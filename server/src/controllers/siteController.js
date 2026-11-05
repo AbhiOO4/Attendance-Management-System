@@ -32,6 +32,7 @@ import { recomputeRecordTotals } from '../utils/attendanceMath.js'
 import { supersedePendingRequests, notifySuperseded } from '../utils/transferRequests.js'
 import { buildSiteManpower } from '../utils/siteManpower.js'
 import { sessionJobIds } from '../utils/jobSplit.js'
+import { isOwnEmployeeRecord, SELF_MOVE_MESSAGE } from '../utils/selfMove.js'
 
 
 //Admin
@@ -316,6 +317,13 @@ export const removeEmployee = async (req, res) => {
     // handled below as a session-only delete.
     const onHomeSite =
       employee.currentSite && employee.currentSite.toString() === siteId;
+
+    // Removing someone from their home site clears a linked supervisor's access.
+    if (onHomeSite && (await isOwnEmployeeRecord(req, employee, session))) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE });
+    }
 
     // App-timezone business day: the anchor for today's record and for matching the
     // pendingTransferDate stash (both stored on the business day). Raw UTC midnight would
@@ -1580,6 +1588,12 @@ export const instaAddEmployee = async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
+    }
+
+    if (!onlyForToday && (await isOwnEmployeeRecord(req, employee, session))) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE });
     }
 
     const site = await siteModel.findById(siteId).session(session)
@@ -3073,6 +3087,10 @@ export const scheduleEmployeeRemoval = async (req, res) => {
       });
     }
 
+    if (await isOwnEmployeeRecord(req, employee)) {
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE });
+    }
+
     // A pending move or visit to another site would be silently replaced by the removal
     // (they'd end up on no site at all) — make the user cancel it first. A pending job
     // change at this site is simply superseded.
@@ -3171,6 +3189,11 @@ export const sendEmployeeToSite = async (req, res) => {
     if (isDriverTitle(employee.jobTitle)) {
       await session.abortTransaction(); session.endSession()
       return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
+    }
+
+    if ((mode === "permanent" || mode === "scheduled") && (await isOwnEmployeeRecord(req, employee, session))) {
+      await session.abortTransaction(); session.endSession()
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE })
     }
 
     // Owner check: the employee must be homed at the source site the caller owns.

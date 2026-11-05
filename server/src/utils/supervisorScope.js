@@ -11,18 +11,15 @@ import userModel from "../models/userModel.js";
  * the pendingTransfer* stash) leave currentSite alone and must NOT call this, so a
  * visit never moves a supervisor's access.
  *
- * The account is found by the employee's `user` link or, for older docs without it,
- * by the shared employeeId. A no-op for employees with no supervisor account.
+ * The account is found by the shared employeeId only. The `user` link is not trusted on its
+ * own, because older records may hold a link planted through the employee form, which could
+ * move a colleague's access. A no-op for employees with no supervisor account.
  */
 export async function syncSupervisorScope(employee, session = null) {
-  if (!employee) return;
-  const or = [];
-  if (employee.user) or.push({ _id: employee.user });
-  if (employee.employeeId) or.push({ employeeId: employee.employeeId });
-  if (or.length === 0) return;
+  if (!employee?.employeeId) return;
 
   await userModel.updateMany(
-    { role: "supervisor", $or: or },
+    { role: "supervisor", employeeId: employee.employeeId },
     { $set: { assignedSite: employee.currentSite || null } },
     { session }
   );

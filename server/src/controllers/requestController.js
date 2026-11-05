@@ -50,6 +50,7 @@ import {
 import { openEventStream } from "../utils/realtime.js"
 import { touchSiteRosters, isWriteConflict } from "../utils/draftRoster.js"
 import { isDriverTitle, DRIVER_ONLY_MESSAGE } from "../utils/driverPool.js"
+import { isOwnEmployeeRecord, SELF_MOVE_MESSAGE } from "../utils/selfMove.js"
 
 const isAdmin = (role) => role === "admin" || role === "superadmin"
 
@@ -204,6 +205,9 @@ export const createRequest = async (req, res) => {
     // Drivers live only on the Drivers sheet — never requested onto a site.
     if (isDriverTitle(employee.jobTitle)) {
       return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE })
+    }
+    if (mode === "permanent" && (await isOwnEmployeeRecord(req, employee))) {
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE })
     }
 
     if (!employee.currentSite) {
@@ -483,6 +487,12 @@ export const acceptRequest = async (req, res) => {
       await session.abortTransaction()
       session.endSession()
       return res.status(404).json({ success: false, message: "Employee not found" })
+    }
+    // Accepting a permanent request for your own record would move your own site access.
+    if (request.mode === "permanent" && (await isOwnEmployeeRecord(req, employee, session))) {
+      await session.abortTransaction()
+      session.endSession()
+      return res.status(403).json({ success: false, code: "SELF_MOVE", message: SELF_MOVE_MESSAGE })
     }
     if (!employee.isActive) {
       return expireAndRespond({

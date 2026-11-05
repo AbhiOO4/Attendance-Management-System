@@ -2,6 +2,9 @@ import empModel from '../models/empModel.js'
 import jobModel from '../models/jobModel.js';
 import jobTitleModel from '../models/jobTitleModel.js';
 import userModel from '../models/userModel.js'
+
+// The only account roles an employee record can legitimately be linked to.
+const LINKED_ACCOUNT_ROLES = ['supervisor', 'driverSupervisor']
 import mongoose from 'mongoose'
 import { escapeRegExp } from '../utils/escapeRegExp.js'
 import { siteClause, searchClauses } from '../utils/employeeListFilter.js'
@@ -506,11 +509,13 @@ export const editEmployee = async (req, res) => {
     );
 
     if (employee.user) {
-      // Keep the linked supervisor account's name/ID in step.
-      await userModel.findByIdAndUpdate(employee.user, {
-        name,
-        employeeId,
-      }, { session });
+      // Keep the linked supervisor account's name/ID in step. Only a real supervisor account
+      // of this same employee: a stray link must never touch an admin or a colleague.
+      await userModel.updateOne(
+        { _id: employee.user, role: { $in: LINKED_ACCOUNT_ROLES }, employeeId: existingEmployee.employeeId },
+        { name, employeeId },
+        { session }
+      );
     }
     // An edit that re-homes the employee is a permanent move: their supervisor
     // account's site access follows it (cleared when the site is cleared).
@@ -606,7 +611,11 @@ export const deleteEmployee = async (req, res) => {
     }
 
     if (employee.user) {
-      await userModel.deleteOne({ _id: employee.user }, { session });
+      // Same rule as the rename in editEmployee: deactivating never deletes anyone else's account.
+      await userModel.deleteOne(
+        { _id: employee.user, role: { $in: LINKED_ACCOUNT_ROLES }, employeeId: employee.employeeId },
+        { session }
+      );
     }
 
     employee.isActive = false;

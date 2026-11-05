@@ -1,21 +1,27 @@
 import userModel from "../models/userModel.js";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
+import jwt from "jsonwebtoken";
 import { authCookieOptions, generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookie.js";
 import empModel from "../models/empModel.js";
 import mongoose from "mongoose";
 import { getDriverPoolId } from "../utils/driverPool.js";
 
+// Checked when no account matches, so an unknown email takes as long as a wrong password.
+const UNKNOWN_ACCOUNT_HASH = bcrypt.hashSync(crypto.randomUUID(), 10)
+
 export const login = async (req, res) => {
     try{
-        const {email, password} = req.body
-        const user = await userModel.findOne({email}).select("+password")
+        const {email, password} = req.body ?? {}
         const AuthFailMessage = "Auth failed, email or password is wrong"
-        if (!user){
+        // Strings only: a JSON object here would reach findOne as a query operator.
+        if (typeof email !== "string" || typeof password !== "string"){
             return res.status(403).json({message: AuthFailMessage})
         }
 
-        const isValid = await bcrypt.compare(password, user.password)
-        if (!isValid){
+        const user = await userModel.findOne({email}).select("+password")
+        const isValid = await bcrypt.compare(password, user?.password ?? UNKNOWN_ACCOUNT_HASH)
+        if (!user || !isValid){
             return res.status(403).json({message: AuthFailMessage})
         }
         generateTokenAndSetCookie(res, user)
@@ -26,7 +32,29 @@ export const login = async (req, res) => {
     }
 }
 
-export function logout(req, res) {
+// Ends the account's sessions on EVERY device, not just this browser. Only a token that is
+// still current can do it, so an old copied token can't keep logging the user out.
+async function endSessionsForToken(token) {
+    let decoded
+    try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET)
+    } catch {
+        return // expired or invalid: there's no session to end
+    }
+    const version = decoded.v ?? 0
+    await userModel.updateOne(
+        {_id: decoded.id, tokenVersion: version === 0 ? {$in: [0, null]} : version},
+        {$inc: {tokenVersion: 1}},
+        {timestamps: false}
+    )
+}
+
+export async function logout(req, res) {
+    try {
+        if (req.cookies?.token) await endSessionsForToken(req.cookies.token)
+    } catch (error) {
+        console.error("logout error:", error)
+    }
     res.clearCookie("token", authCookieOptions());
     res.status(200).json({success: true, message: "Logged out successfully"})
 }
@@ -69,6 +97,8 @@ export async function updateUser(req, res) {
     if (password) {
       const hashedPassword = await bcrypt.hash(password, 10);
       updateData.password = hashedPassword;
+      // A new password ends every existing session, including a stolen one.
+      updateData.$inc = { tokenVersion: 1 };
     }
 
     // assignedSite (the supervisor's site access) is NOT editable here: it mirrors the
@@ -79,6 +109,11 @@ export async function updateUser(req, res) {
 
     await session.commitTransaction();
     session.endSession();
+
+    // Someone changing their own password stays logged in on this device.
+    if (password && String(userId) === String(req.user.id)) {
+      generateTokenAndSetCookie(res, updatedUser);
+    }
 
     res.status(200).json({
       success: true,
@@ -332,8 +367,12 @@ export const getMe = async (req, res) => {
 }
 
 export const demoLogin = async (req, res) => {
+  // Development only. Refused here so that setting the variables in production can't enable it.
+  if (process.env.NODE_ENV === "production") {
+    return res.status(404).json({ success: false, message: "Not found" });
+  }
   try {
-    const { token } = req.body;
+    const { token } = req.body ?? {};
     const configuredToken = process.env.DEMO_LOGIN_TOKEN;
     if (!configuredToken) {
       return res.status(500).json({
@@ -362,7 +401,15 @@ export const demoLogin = async (req, res) => {
     }
 
     let user = await userModel.findOne({ email }).select("+password");
-    if (!user) {
+    if (user) {
+      // The token only opens the demo account: it must never sign in as someone else's.
+      if (!(await bcrypt.compare(password, user.password))) {
+        return res.status(403).json({
+          success: false,
+          message: "Demo guest credentials don't match this account."
+        });
+      }
+    } else {
       // Create guest user if it doesn't exist
       user = new userModel({
         name,

@@ -4,6 +4,7 @@ import { getMe, getUsers, login, logout, updateUser, addAdmin, addSuperadmin, ad
 import { getVapidPublicKey, savePushSubscription, deletePushSubscription } from '../controllers/pushController.js'
 import { verifyToken } from '../middlewares/verifyToken.js'
 import { authorizeRoles } from '../middlewares/rbac.js'
+import { loginFailureLimiter, loginNetworkLimiter, logClientIpForProxyCheck } from '../middlewares/loginRateLimit.js'
 
 const router = express.Router()
 
@@ -13,9 +14,9 @@ const router = express.Router()
 router.get("/me", verifyToken, getMe)
 
 //login
-router.post('/login', login)
+router.post('/login', logClientIpForProxyCheck, loginNetworkLimiter, loginFailureLimiter, login)
 
-router.post('/demo-login', demoLogin)
+router.post('/demo-login', loginNetworkLimiter, loginFailureLimiter, demoLogin)
 
 router.post('/logout', logout)
 

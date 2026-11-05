@@ -26,7 +26,8 @@ const employeeSchema = Joi.object({
       'string.empty': 'Job title is required'
     }),
 
-  user: Joi.string().hex().length(24).optional(), // ObjectId
+  // No `user` key: the link to an account is set only by the supervisor endpoints. Accepting
+  // it here let a caller tie an employee to anyone's account (and so rename, delete or move it).
   currentSite: Joi.string().hex().length(24).allow(null).optional(),  // ObjectId
   currentJob: Joi.string().hex().length(24).allow(null).optional(),   // ObjectId
 

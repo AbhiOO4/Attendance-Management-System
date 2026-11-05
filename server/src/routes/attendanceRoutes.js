@@ -114,8 +114,6 @@ router.patch('/update/set-holiday', authorizeRoles("admin"), attendanceControlle
 
 router.patch('/update/:attendanceId', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.updateAttendance)
 
-router.post('/:attendanceId/sessions', authorizeRoles("admin", "supervisor"), attendanceController.addSessionToAttendance)
-
 // Per-record edit log + supervisor remark. Site-scope for supervisors is enforced inside
 // the controller (the param is an attendance id, not a site id, so requireSiteAccess can't).
 router.get('/:attendanceId/history', authorizeRoles("admin", "supervisor", "driverSupervisor"), attendanceController.getAttendanceHistory)

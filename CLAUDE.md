@@ -24,7 +24,7 @@ There is no root package.json — each is installed and run separately.
   etc. — see `test/helpers/integration.js`), else downloads a mongod. Never touches `.env`'s DB.
 - `src/app.js` is the Express app (middleware + routes, no connect/listen); `src/server.js`
   boots it (DB, crons, change streams, listen). Tests mount `app.js` with supertest.
-- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). `SAME_SITE` (`strict`|`lax`|`none`) sets the auth cookie's SameSite per deployment (`authCookieOptions()` in `utils/generateTokenAndSetCookie.js`): `lax` when client and API share a registrable domain (live: `ngdp.online` → `api.ngdp.online`), `none` when they're cross-site (forces `Secure`); unset/invalid keeps the legacy default (`none` in production, `strict` otherwise). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots.
+- Requires `server/.env` with `MONGO_URI`, `JWT_SECRET`, `PORT`, `CLIENT_URL`, and optionally `APP_TIMEZONE_OFFSET` (minutes, default `-330` = IST). `SAME_SITE` (`strict`|`lax`|`none`) sets the auth cookie's SameSite per deployment (`authCookieOptions()` in `utils/generateTokenAndSetCookie.js`): `lax` when client and API share a registrable domain (live: `ngdp.online` → `api.ngdp.online`), `none` when they're cross-site (forces `Secure`); unset/invalid keeps the legacy default (`none` in production, `strict` otherwise). For PWA push reminders it also reads `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` or URL) — generate a keypair with `npx web-push generate-vapid-keys`. If VAPID vars are absent, push is a no-op and the app still boots. `TRUST_PROXY_HOPS` (default `1`) is how many proxies sit in front of the API, so `req.ip` is the visitor for the login rate limit; `TRUST_PROXY_DEBUG=1` temporarily logs `req.ip` and `X-Forwarded-For` on each login to find the right value (the lines contain visitors' IPs, so turn it off afterwards).
 
 **Client** (`cd client`):
 - `npm run dev` — Vite dev server (default http://localhost:5173)
@@ -65,7 +65,8 @@ recalc writes only the day-total fields via `bulkWrite` (timestamps off), never
 Three roles: `superadmin` > `admin` > `supervisor`. Auth is JWT stored in an
 httpOnly cookie (`token`); the client uses axios with `withCredentials: true`
 and never sees the token. Key pieces:
-- `server/src/middlewares/verifyToken.js` — verifies the cookie, sets `req.user`.
+- `server/src/middlewares/verifyToken.js` — verifies the cookie, loads the account on every request and sets `req.user` from it (role included). A deleted account or a token whose `v` differs from `User.tokenVersion` gets 401. Logout and password changes bump `tokenVersion`, ending the account's sessions on every device; tokens with no `v` count as 0.
+- `server/src/middlewares/loginRateLimit.js` — `/login` and `/demo-login`: 10 failures per email + network and 100 attempts per network, per 15 minutes, in process memory (single API instance only). Demo login answers 404 in production and needs the account's own password when `DEMO_USER_EMAIL` already exists.
 - `server/src/middlewares/rbac.js` — `authorizeRoles(...)` (note: any route allowing
   `admin` implicitly allows `superadmin`) and `requireSiteAccess` (supervisors are
   restricted to their single `assignedSite`; admins/superadmins bypass it).
@@ -349,12 +350,14 @@ send-to-site, requests (create; accept expires it), `transferEmployee` (also fro
 assign/pool, `addEmployee` with a site, plus a backstop in `utils/handover.js`; the scheduled-assignment
 cron DROPS a driver's schedule. Attendance writers refuse a driver's session at a real site
 (`nonPoolDriverSessionError`): site-sheet submit, `updateAttendance` (NEW/moved sessions only — history
-already at a site stays editable), backfill, add-session; bulk backfill / night shift / bulk edit skip
+already at a site stays editable), backfill; bulk backfill / night shift / bulk edit skip
 them. Editing a title INTO a driver title clears every placement (`releaseSitePlacement`: site, job,
 Job.employees, visit stash, schedule) and re-syncs supervisor scope. `seed/moveDriversToPool.js
 "<mongo url>" [--apply]` does the same for drivers placed before the rule (dry run by default). The
 Employees list shows a driver's site as the one their LATEST pool session served
 (`latestServedPlaces` → `driverSite` on `GET /api/employees` rows), with no job.
+
+**A supervisor can't permanently move their own employee record** (`utils/selfMove.js`, 403 `SELF_MOVE`): send-to-site permanent/scheduled, remove, schedule removal, insta-add, permanent transfer, permanent requests (create and accept). Their site access follows that record, so this would let them choose their own site. One-day visits don't move access and stay allowed, as does moving a colleague's record. `syncSupervisorScope` finds the account by `employeeId` only, and the employee form has no `user` field: an `Employee.user` link alone never renames, deletes or moves an account.
 
 **Drivers in the past-day editors.** Driver sessions live on the hidden Drivers pool site
 (`utils/driverPool.js`), which `GET /api/site` hides unless `?includeDriverPool=true` (admins

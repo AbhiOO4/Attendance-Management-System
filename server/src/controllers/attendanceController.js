@@ -43,6 +43,7 @@ import { syncCurrentJobFromLatestSession } from '../utils/currentJobSync.js';
 import { detectCrossedMidnight } from '../utils/crossedMidnight.js';
 import { checkHolidayForDate, holidayInfoForEmployee } from '../utils/holidayInfo.js';
 import { createBackfilledRecord } from '../utils/backfillRecord.js';
+import { isOwnEmployeeRecord, SELF_MOVE_MESSAGE } from '../utils/selfMove.js';
 
 // Shape of the auto-remark written when a record is toggled to LOP (Loss of Pay):
 // "Deduct <amount> OMR". Used to recognise (and clear) a previously auto-filled LOP
@@ -4144,166 +4145,6 @@ export const getAttendanceById = async (req, res) => {
   }
 }//
 
-export const addSessionToAttendance = async (
-  req,
-  res
-) => {
-  try {
-    const { attendanceId } =
-      req.params
-
-    const { session } = req.body
-
-    if (!session?.siteId) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Site ID is required",
-      })
-    }
-
-    const attendance =
-      await Attendance.findById(
-        attendanceId
-      )
-
-    if (!attendance) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Attendance record not found",
-      })
-    }
-
-    // A paid-leave day is locked — no sessions may be added until an admin cancels
-    // the leave grant (see updateAttendance for the same rule).
-    if (isGrantedLeaveDay(attendance)) {
-      return res.status(409).json({
-        success: false,
-        message: leaveLockedMessage(attendance),
-      })
-    }
-
-    if (isSiteScopedRole(req.user.role)) {
-      const user = await userModel.findById(req.user.id);
-      // Check against the NEW session's own site, not the doc's primary
-      // site — this session may belong to a different site than whichever
-      // site's submission originally created the doc.
-      if (!user || !user.assignedSite || user.assignedSite.toString() !== session.siteId.toString()) {
-        return res.status(403).json({ success: false, message: "Forbidden: Access denied to this attendance record" });
-      }
-    }
-
-    // Drivers live only on the Drivers sheet — never given a session at a real site.
-    if (!(await isDriverPool(session.siteId))) {
-      const sessionEmployee = await Employee.findById(attendance.employee).select("jobTitle").lean();
-      if (isDriverTitle(sessionEmployee?.jobTitle)) {
-        return res.status(400).json({ success: false, code: "DRIVER_ONLY", message: DRIVER_ONLY_MESSAGE });
-      }
-    }
-
-    // Check if there are any existing sessions for this site that are incomplete
-    const incompleteSession = attendance.sessions.find(
-      (s) => s.siteId.toString() === session.siteId.toString() && (!s.checkIn || !s.checkOut)
-    );
-
-    if (incompleteSession) {
-      return res.status(400).json({
-        success: false,
-        message: "Please complete check-in and check-out for the existing session at this site first.",
-      });
-    }
-
-    // A closed session carries its hours like every other write path (they weight the job
-    // report and the ERPNext timesheet) — it used to be stored with 0.
-    const addIn = session.checkIn ? new Date(session.checkIn) : null
-    const addOut = session.checkOut ? new Date(session.checkOut) : null
-    if ((addIn && isNaN(addIn)) || (addOut && isNaN(addOut)) || (addOut && !addIn)) {
-      return res.status(400).json({ success: false, message: "Invalid check-in/check-out" })
-    }
-    const addHours = addIn && addOut ? (addOut.getTime() - addIn.getTime()) / (1000 * 60 * 60) : 0
-    if (addIn && addOut && !(addHours > 0 && addHours <= MAX_SHIFT_HOURS)) {
-      return res.status(400).json({ success: false, message: "Invalid shift duration" })
-    }
-
-    attendance.sessions.push({
-      siteId: session.siteId,
-      jobId:
-        session.jobId || null,
-      checkIn: addIn,
-      checkOut: addOut,
-      workedHours: Number(addHours.toFixed(2)),
-      markedBy: req.user.id,
-    })
-
-    // Recompute totals so holidayHours/overtime stay consistent with the
-    // record's stored holiday state.
-    const workConfig = await workModel.findOne({ type: "default" })
-    if (workConfig) {
-      const rawHours = sumRawHours(attendance.sessions)
-
-      const { netWorkHours, status, overtimeHours, holidayHours } = computeAttendanceTotals(
-        rawHours,
-        workConfig,
-        attendance.breaksTaken ?? null,
-        { isHoliday: attendance.isHoliday, reason: attendance.holidayReason }
-      )
-
-      attendance.totalWorkHours = netWorkHours
-      attendance.status = status
-      attendance.overtimeHours = overtimeHours
-      attendance.holidayHours = holidayHours
-    }
-
-    await attendance.save()
-
-    // --- Audit: a session was added (best-effort; no transaction on this path) ---
-    let addedLabel = ""
-    try {
-      if (session.jobId) {
-        const j = await Job.findById(session.jobId).select("name").lean()
-        if (j?.name) addedLabel = ` for ${j.name}`
-      }
-    } catch { /* label is best-effort */ }
-    await recordAttendanceAudit({
-      attendance,
-      actor: await resolveActor(req),
-      type: "session_added",
-      summary: `New session created${addedLabel}`,
-    })
-
-    // Keep the roster job in step with the latest session's job (this site, latest
-    // record only). `session` here is the request-body session, not a mongoose session.
-    await syncCurrentJobFromLatestSession({
-      empId: attendance.employee,
-      siteId: session.siteId,
-      recordDate: attendance.date,
-      doc: attendance,
-    })
-
-    const newSession =
-      attendance.sessions[
-        attendance.sessions.length - 1
-      ]
-
-    return res.status(201).json({
-      success: true,
-      message:
-        "Session added successfully",
-      session: newSession,
-    })
-  } catch (error) {
-    console.log(error)
-
-    return res.status(500).json({
-      success: false,
-      message:
-        "Failed to add session",
-    })
-  }
-}//
-
-
 // POST /api/attendance/transfer
 // Moves an employee from their current site to a new one, carrying their
 // checkout time at the source site forward as the check-in at the
@@ -4385,6 +4226,9 @@ export const transferEmployee = async (req, res) => {
     // Drivers live only on the Drivers sheet — never transferred onto (or off it to) a site.
     if (isDriverTitle(employee.jobTitle) || (await isDriverPool(fromSiteId, dbSession))) {
       throwValidationError(400, DRIVER_ONLY_MESSAGE)
+    }
+    if (!onlyForToday && (await isOwnEmployeeRecord(req, employee, dbSession))) {
+      throwValidationError(403, SELF_MOVE_MESSAGE)
     }
 
     // Only the employee's HOME site (or an admin) may re-home them. A site they are merely
@@ -6812,7 +6656,6 @@ const attendanceController = {
   getEmployeeAttendanceByMonth,
   siteFirstSubmitAttendance,
   getAttendanceById,
-  addSessionToAttendance,
   transferEmployee,
   getMissingEmployees,
   backfillAttendance,
