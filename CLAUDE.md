@@ -369,6 +369,9 @@ on it, and preselected for drivers. A Drivers session names a site + job split (
 Server: `validateDriverPoolSessions` (backfill, admin edit without `?siteId`) and the bulk backfill
 pool branch (non-drivers skipped "Not a driver") check it — LENIENT on liveness for past days.
 Edit past + Missing offer a "Drivers" filter (Missing maps it to `driverEmployeeFilter()`).
+Missing's bulk selection never mixes drivers and workers: the first pick locks the group (other rows
+disabled, "Select all shown" adds only that group — the first shown row's when empty); the server's
+"Not a driver" / "Driver — use Drivers" skips remain as the backstop.
 
 **Driver job splits** (`utils/jobSplit.js`, client `lib/jobSplit.ts` — keep in sync). A driver serves a
 SITE, not one job: a Drivers-pool session stores `servedSiteId` + `splitJobIds` (`jobId: null`) and its

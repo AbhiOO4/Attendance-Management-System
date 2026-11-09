@@ -8,6 +8,11 @@
 //  - Bulk: the "Bulk Backfill" button enters selection mode (checkboxes on each row, a
 //    site filter to narrow by currentSite). Selecting employees + "Backfill selected"
 //    opens BulkBackfillModal, which applies one common site/job + check-in/out to all.
+//    The selection persists across search / filter / page changes (cleared on date change)
+//    and is listed as removable chips in the toolbar so hidden picks stay visible.
+//    A selection is ALL drivers or ALL workers: the first pick locks the group (drivers'
+//    hours are split across a site's jobs on the Drivers pool, workers take one site/job),
+//    rows of the other group can't be ticked until the selection is cleared.
 
 import { Fragment, useEffect, useMemo, useState } from "react"
 import { api } from "@/lib/api"
@@ -31,13 +36,24 @@ import {
 import { ArrowLeft, Loader2, ListChecks, Truck, UserPlus, X } from "lucide-react"
 
 import { getCurrentTargetDateString } from "@/lib/dateUtils"
-import { fetchSitesWithDriverPool } from "@/lib/driverJobs"
+import { fetchSitesWithDriverPool, isDriverTitle } from "@/lib/driverJobs"
 import BackfillModal, { type MissingEmployee } from "@/components/BackfillModal"
 import BulkBackfillModal, { type BulkBackfillResult } from "@/components/BulkBackfillModal"
 import type { PickerSite } from "@/components/SessionSiteJobFields"
 import HelpButton from "@/components/help/HelpButton"
+import SelectionChips from "@/components/SelectionChips"
 
 type Site = PickerSite
+
+// Bulk backfill groups — never mixed in one selection (see header).
+type BulkGroup = "drivers" | "workers"
+const groupOf = (emp: MissingEmployee): BulkGroup =>
+  isDriverTitle(emp.jobTitle) ? "drivers" : "workers"
+// The group a selection is locked to (all members share it), or null when empty.
+const groupOfSelection = (sel: Map<string, MissingEmployee>): BulkGroup | null => {
+  const first = sel.values().next().value
+  return first ? groupOf(first) : null
+}
 
 function MissingEmployees() {
   const navigate = useNavigate()
@@ -76,7 +92,9 @@ function MissingEmployees() {
 
   // Bulk backfill
   const [selectionMode, setSelectionMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // Selected employees keyed by _id. Full objects (not just ids) so a selection survives
+  // searching / filtering / paging — rows hidden by the current filter still reach the modal.
+  const [selected, setSelected] = useState<Map<string, MissingEmployee>>(new Map())
   const [bulkOpen, setBulkOpen] = useState(false)
 
   const fetchSites = async () => {
@@ -116,62 +134,90 @@ function MissingEmployees() {
     fetchSites()
   }, [])
 
-  // Any change to the date or filters reloads the list and clears the selection, so
-  // "select all (loaded)" always refers to exactly what is on screen.
+  // Any change to the date or filters reloads the list. The selection persists across
+  // search / filter / page changes; it is only cleared when the date changes (a different
+  // day has a different missing list).
   useEffect(() => {
     fetchMissing()
-    setSelectedIds(new Set())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date, filters])
 
+  useEffect(() => {
+    setSelected(new Map())
+  }, [date])
+
   // On single backfill, drop the row and decrement the count in place.
   const handleBackfillCreated = (newRecord: any) => {
-    setEmployees((prev) => prev.filter((e) => e._id !== newRecord.employee?.toString()))
+    const employeeId = newRecord.employee?.toString()
+    setEmployees((prev) => prev.filter((e) => e._id !== employeeId))
     setTotalCount((prev) => Math.max(prev - 1, 0))
-  }
-
-  const handleBulkCompleted = (_result: BulkBackfillResult) => {
-    // Created employees now have a record → refetch removes them; skipped/failed remain.
-    setSelectedIds(new Set())
-    setSelectionMode(false)
-    fetchMissing()
-  }
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+    setSelected((prev) => {
+      if (!prev.has(employeeId)) return prev
+      const next = new Map(prev)
+      next.delete(employeeId)
       return next
     })
   }
 
-  const allLoadedSelected =
-    employees.length > 0 && employees.every((e) => selectedIds.has(e._id))
+  const handleBulkCompleted = (_result: BulkBackfillResult) => {
+    // Created employees now have a record → refetch removes them; skipped/failed remain.
+    setSelected(new Map())
+    setSelectionMode(false)
+    fetchMissing()
+  }
 
+  const toggleSelect = (emp: MissingEmployee) => {
+    setSelected((prev) => {
+      const next = new Map(prev)
+      if (next.has(emp._id)) next.delete(emp._id)
+      // Locked to the first pick's group — the other group's rows are disabled anyway.
+      else if (groupOfSelection(prev) && groupOfSelection(prev) !== groupOf(emp)) return prev
+      else next.set(emp._id, emp)
+      return next
+    })
+  }
+
+  const removeSelected = (id: string) => {
+    setSelected((prev) => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }
+
+  // The selection's group; with nothing picked yet, "Select all" follows the first shown row.
+  const selectedGroup = groupOfSelection(selected)
+  const selectAllGroup: BulkGroup | null = selectedGroup ?? (employees[0] ? groupOf(employees[0]) : null)
+  const selectableShown = useMemo(
+    () => employees.filter((e) => groupOf(e) === selectAllGroup),
+    [employees, selectAllGroup]
+  )
+  const isLockedOut = (emp: MissingEmployee) => !!selectedGroup && groupOf(emp) !== selectedGroup
+
+  const allLoadedSelected =
+    selectableShown.length > 0 && selectableShown.every((e) => selected.has(e._id))
+
+  // "Select all" adds / removes only the rows currently shown; selections made under
+  // other filters are left untouched — and only those of the selection's group.
   const toggleSelectAll = () => {
-    setSelectedIds((prev) => {
-      if (allLoadedSelected) {
-        // Deselect the loaded rows only.
-        const next = new Set(prev)
-        employees.forEach((e) => next.delete(e._id))
-        return next
-      }
-      const next = new Set(prev)
-      employees.forEach((e) => next.add(e._id))
+    setSelected((prev) => {
+      const next = new Map(prev)
+      if (allLoadedSelected) selectableShown.forEach((e) => next.delete(e._id))
+      else selectableShown.forEach((e) => next.set(e._id, e))
       return next
     })
   }
 
   const exitSelectionMode = () => {
     setSelectionMode(false)
-    setSelectedIds(new Set())
+    setSelected(new Map())
   }
 
-  const selectedEmployees = useMemo(
-    () => employees.filter((e) => selectedIds.has(e._id)),
-    [employees, selectedIds]
-  )
+  const selectedEmployees = useMemo(() => Array.from(selected.values()), [selected])
+  const hiddenSelectedCount = useMemo(() => {
+    const shown = new Set(employees.map((e) => e._id))
+    return selectedEmployees.filter((e) => !shown.has(e._id)).length
+  }, [employees, selectedEmployees])
 
   return (
     <div className="px-4 py-6">
@@ -265,27 +311,43 @@ function MissingEmployees() {
 
         {/* Bulk selection toolbar */}
         {selectionMode && (
-          <div className="sticky top-2 z-10 flex items-center justify-between rounded-lg border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
+          <div className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-y-2 rounded-lg border bg-background/95 px-3 py-2 shadow-sm backdrop-blur">
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <Checkbox
                 checked={allLoadedSelected}
                 onCheckedChange={toggleSelectAll}
-                disabled={employees.length === 0}
+                disabled={selectableShown.length === 0}
               />
-              Select all ({employees.length})
+              Select all shown ({selectableShown.length}
+              {selectAllGroup && selectableShown.length < employees.length
+                ? ` ${selectAllGroup}`
+                : ""}
+              )
             </label>
             <div className="flex items-center gap-3">
+              {selectedGroup && (
+                <Badge variant="secondary" className="gap-1 font-normal">
+                  {selectedGroup === "drivers" && <Truck className="h-3 w-3" />}
+                  {selectedGroup === "drivers" ? "Drivers only" : "Workers only"}
+                </Badge>
+              )}
               <span className="text-sm text-muted-foreground">
-                {selectedIds.size} selected
+                {selected.size} selected
+                {hiddenSelectedCount > 0 && ` · ${hiddenSelectedCount} not shown`}
               </span>
               <Button
                 size="sm"
-                disabled={selectedIds.size === 0}
+                disabled={selected.size === 0}
                 onClick={() => setBulkOpen(true)}
               >
                 Backfill selected
               </Button>
             </div>
+            <SelectionChips
+              items={selectedEmployees.map((e) => ({ id: e._id, label: e.name, sublabel: e.employeeId }))}
+              onRemove={removeSelected}
+              onClear={() => setSelected(new Map())}
+            />
           </div>
         )}
 
@@ -301,20 +363,34 @@ function MissingEmployees() {
             </div>
           ) : (
             employees.map((emp) => {
-              const checked = selectedIds.has(emp._id)
+              const checked = selected.has(emp._id)
+              // In selection mode, rows of the other group than the selection's are locked out.
+              const lockedOut = selectionMode && isLockedOut(emp)
               return (
                 <div
                   key={emp._id}
                   className={`flex items-center justify-between gap-3 px-4 py-3 ${
-                    selectionMode ? "cursor-pointer hover:bg-muted/40" : ""
+                    lockedOut
+                      ? "cursor-not-allowed opacity-50"
+                      : selectionMode
+                        ? "cursor-pointer hover:bg-muted/40"
+                        : ""
                   } ${checked ? "bg-primary/5" : ""}`}
-                  onClick={selectionMode ? () => toggleSelect(emp._id) : undefined}
+                  onClick={selectionMode && !lockedOut ? () => toggleSelect(emp) : undefined}
+                  title={
+                    lockedOut
+                      ? selectedGroup === "drivers"
+                        ? "Workers are backfilled separately — clear the selection to pick workers"
+                        : "Drivers are backfilled separately — clear the selection to pick drivers"
+                      : undefined
+                  }
                 >
                   <div className="flex min-w-0 items-center gap-3">
                     {selectionMode && (
                       <Checkbox
                         checked={checked}
-                        onCheckedChange={() => toggleSelect(emp._id)}
+                        disabled={lockedOut}
+                        onCheckedChange={() => toggleSelect(emp)}
                         onClick={(e) => e.stopPropagation()}
                       />
                     )}

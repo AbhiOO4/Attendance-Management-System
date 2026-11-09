@@ -68,6 +68,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatLocalTime12h } from "@/lib/dateUtils"
 import HelpButton from "@/components/help/HelpButton"
+import SelectionChips from "@/components/SelectionChips"
 
 // Add these updated interfaces
 
@@ -238,9 +239,11 @@ function EditPastAttendance() {
   useState<AttendanceRecord | null>(null)
 
   // Bulk check-out selection mode (close unclosed sessions in one shot). Only rows with an
-  // open session — the "pending" amber status — are selectable.
+  // open session — the "pending" amber status — are selectable. Selected records are kept
+  // keyed by attendanceId (full objects) so the selection survives search / filter / page
+  // changes; it is only cleared when the date changes.
   const [selectionMode, setSelectionMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Map<string, AttendanceRecord>>(new Map())
   const [bulkCheckoutOpen, setBulkCheckoutOpen] = useState(false)
 
   const [isHoliday, setIsHoliday] = useState<boolean>(false)
@@ -384,6 +387,20 @@ function EditPastAttendance() {
 
       setAttendance(res.data.data)
 
+      // Refresh any selected records that came back with this page (their sessions may
+      // have changed); drop those that no longer have an open session.
+      setSelected((prev) => {
+        if (prev.size === 0) return prev
+        let changed = false
+        const next = new Map(prev)
+        for (const record of res.data.data) {
+          if (!next.has(record.attendanceId)) continue
+          changed = true
+          if (getDisplayStatus(record) === "pending") next.set(record.attendanceId, record)
+          else next.delete(record.attendanceId)
+        }
+        return changed ? next : prev
+      })
       setTotalPages(res.data.pagination.totalPages)
     } catch (error: any) {
       toast.error(
@@ -417,9 +434,13 @@ function EditPastAttendance() {
   useEffect(() => {
     checkHolidayStatus()
     fetchAttendance()
-    // Selection is per-loaded-page, so clear it whenever the list reloads.
-    setSelectedIds(new Set())
   }, [date, filters])
+
+  // The selection persists across search / filter / page changes; a different day has
+  // different records, so clear it only when the date changes.
+  useEffect(() => {
+    setSelected(new Map())
+  }, [date])
 
   useEffect(() => {
     fetchMissingCount()
@@ -462,6 +483,14 @@ function EditPastAttendance() {
     setAttendance((prev) =>
       prev.map((record) => record.attendanceId === updatedRecord.attendanceId ? updatedRecord : record)
     )
+    // Keep a selected record in sync; drop it if the edit closed its open session.
+    setSelected((prev) => {
+      if (!prev.has(updatedRecord.attendanceId)) return prev
+      const next = new Map(prev)
+      if (getDisplayStatus(updatedRecord) === "pending") next.set(updatedRecord.attendanceId, updatedRecord)
+      else next.delete(updatedRecord.attendanceId)
+      return next
+    })
   }
 
   // --- Bulk check-out selection ---
@@ -470,43 +499,48 @@ function EditPastAttendance() {
     [attendance]
   )
   const allPendingSelected =
-    pendingRecords.length > 0 && pendingRecords.every((r) => selectedIds.has(r.attendanceId))
-  const selectedRecords = useMemo(
-    () => attendance.filter((r) => selectedIds.has(r.attendanceId)),
-    [attendance, selectedIds]
-  )
+    pendingRecords.length > 0 && pendingRecords.every((r) => selected.has(r.attendanceId))
+  const selectedRecords = useMemo(() => Array.from(selected.values()), [selected])
+  const hiddenSelectedCount = useMemo(() => {
+    const shown = new Set(attendance.map((r) => r.attendanceId))
+    return selectedRecords.filter((r) => !shown.has(r.attendanceId)).length
+  }, [attendance, selectedRecords])
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+  const toggleSelect = (record: AttendanceRecord) => {
+    setSelected((prev) => {
+      const next = new Map(prev)
+      if (next.has(record.attendanceId)) next.delete(record.attendanceId)
+      else next.set(record.attendanceId, record)
       return next
     })
   }
 
-  // "Select all" toggles the loaded pending rows only.
+  const removeSelected = (id: string) => {
+    setSelected((prev) => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }
+
+  // "Select all" toggles the shown pending rows only; picks made under other filters stay.
   const toggleSelectAllPending = () => {
-    setSelectedIds((prev) => {
-      if (allPendingSelected) {
-        const next = new Set(prev)
-        pendingRecords.forEach((r) => next.delete(r.attendanceId))
-        return next
-      }
-      const next = new Set(prev)
-      pendingRecords.forEach((r) => next.add(r.attendanceId))
+    setSelected((prev) => {
+      const next = new Map(prev)
+      if (allPendingSelected) pendingRecords.forEach((r) => next.delete(r.attendanceId))
+      else pendingRecords.forEach((r) => next.set(r.attendanceId, r))
       return next
     })
   }
 
   const exitSelectionMode = () => {
     setSelectionMode(false)
-    setSelectedIds(new Set())
+    setSelected(new Map())
   }
 
   const handleBulkCheckoutCompleted = () => {
     setBulkCheckoutOpen(false)
-    setSelectedIds(new Set())
+    setSelected(new Map())
     setSelectionMode(false)
     fetchAttendance()
   }
@@ -743,20 +777,28 @@ function EditPastAttendance() {
                 onCheckedChange={toggleSelectAllPending}
                 disabled={pendingRecords.length === 0}
               />
-              Select all unclosed ({pendingRecords.length})
+              Select all unclosed shown ({pendingRecords.length})
             </label>
             <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
+              <span className="text-sm text-muted-foreground">
+                {selected.size} selected
+                {hiddenSelectedCount > 0 && ` · ${hiddenSelectedCount} not shown`}
+              </span>
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={selectedIds.size === 0}
+                disabled={selected.size === 0}
                 onClick={() => setBulkCheckoutOpen(true)}
               >
                 <LogOut className="h-3.5 w-3.5" />
                 Check out selected
               </Button>
             </div>
+            <SelectionChips
+              items={selectedRecords.map((r) => ({ id: r.attendanceId, label: r.name, sublabel: r.employeeId }))}
+              onRemove={removeSelected}
+              onClear={() => setSelected(new Map())}
+            />
           </div>
         )}
 
@@ -862,9 +904,9 @@ function EditPastAttendance() {
                                     {selectionMode && (
                                       <TableCell rowSpan={sessions.length}>
                                         <Checkbox
-                                          checked={selectedIds.has(record.attendanceId)}
+                                          checked={selected.has(record.attendanceId)}
                                           disabled={getDisplayStatus(record) !== "pending"}
-                                          onCheckedChange={() => toggleSelect(record.attendanceId)}
+                                          onCheckedChange={() => toggleSelect(record)}
                                           aria-label={`Select ${record.name} for bulk check-out`}
                                         />
                                       </TableCell>

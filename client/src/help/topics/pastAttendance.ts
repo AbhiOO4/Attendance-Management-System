@@ -58,7 +58,7 @@ export const pastAttendance: HelpTopic = {
         },
         { text: "For one person: click **Backfill** on their row. Enter the site, job and times. Click **Create Record**." },
         {
-          text: "For many people with the same times: tick them, then click **Backfill selected**.",
+          text: "For many people with the same times: tick them, then click **Backfill selected**. Drivers and other workers are backfilled separately — once you tick one, the other kind can't be ticked until you clear the selection.",
         },
         {
           text: "In **Bulk Backfill**, pick the site and job, type **Check In** and **Check Out**, and click the **Backfill** button.",

@@ -117,12 +117,11 @@ function BulkBackfillModal({
   const [driverPlace, setDriverPlace] = useState<DriverPlace | null>(null)
 
   // "Drivers" (the hidden pool) is offered — and preselected — only when every selected
-  // employee is a driver; the server skips non-drivers anyway. Drivers live only on Drivers
-  // Attendance, so an all-driver selection gets no regular sites, and on a site any selected
-  // drivers are skipped by the server (noted below).
+  // employee is a driver. Missing Employees never mixes drivers and workers in one selection
+  // (the first pick locks the group); the server still skips the wrong group if one arrives.
+  // Drivers live only on Drivers Attendance, so an all-driver selection gets no regular sites.
   const driverPool = sites.find((s) => s.isDriverPool)
   const allDrivers = employees.length > 0 && employees.every((e) => isDriverTitle(e.jobTitle))
-  const driverCount = employees.filter((e) => isDriverTitle(e.jobTitle)).length
   const regularSites = allDrivers ? [] : sites.filter((s) => !s.isDriverPool)
   const onPool = !!driverPool && siteId === driverPool._id
 
@@ -273,12 +272,6 @@ function BulkBackfillModal({
             </span>
             .
           </p>
-          {driverCount > 0 && !allDrivers && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-              {driverCount} driver{driverCount === 1 ? "" : "s"} will be skipped — drivers are
-              backfilled on Drivers only.
-            </p>
-          )}
         </div>
 
         {/* BODY */}
